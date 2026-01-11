@@ -4,6 +4,7 @@ export namespace Flag {
   export const ATOMCLI_CONFIG = process.env["ATOMCLI_CONFIG"]
   export const ATOMCLI_CONFIG_DIR = process.env["ATOMCLI_CONFIG_DIR"]
   export const ATOMCLI_CONFIG_CONTENT = process.env["ATOMCLI_CONFIG_CONTENT"]
+  export const ATOMCLI_INSTALL_DIR = process.env["ATOMCLI_INSTALL_DIR"]
   export const ATOMCLI_DISABLE_AUTOUPDATE = truthy("ATOMCLI_DISABLE_AUTOUPDATE")
   export const ATOMCLI_DISABLE_PRUNE = truthy("ATOMCLI_DISABLE_PRUNE")
   export const ATOMCLI_DISABLE_TERMINAL_TITLE = truthy("ATOMCLI_DISABLE_TERMINAL_TITLE")

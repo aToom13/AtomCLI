@@ -1,4 +1,5 @@
 import z from "zod"
+import path from "path"
 import { Config } from "../config/config"
 import { Instance } from "../project/instance"
 import { NamedError } from "@atomcli/util/error"
@@ -70,15 +71,43 @@ export namespace Skill {
     // Scan .claude/skills/ directories (project-level)
     const claudeDirs = await Array.fromAsync(
       Filesystem.up({
-        targets: [".claude"],
+        targets: [".claude", ".atomcli"],
         start: Instance.directory,
         stop: Instance.worktree,
       }),
     )
     // Also include global ~/.claude/skills/
     const globalClaude = `${Global.Path.home}/.claude`
+    const globalAtom = `${Global.Path.home}/.atomcli`
     if (await exists(globalClaude)) {
       claudeDirs.push(globalClaude)
+    }
+    if (await exists(globalAtom)) {
+      claudeDirs.push(globalAtom)
+    }
+
+    // Add bundled skills from installation directory
+    if (Flag.ATOMCLI_INSTALL_DIR) {
+      const installClaude = `${Flag.ATOMCLI_INSTALL_DIR}/.claude`
+      if (await exists(installClaude)) claudeDirs.push(installClaude)
+
+      const installAtom = `${Flag.ATOMCLI_INSTALL_DIR}/.atomcli`
+      if (await exists(installAtom)) claudeDirs.push(installAtom)
+    } else {
+      // Fallback for compiled binary: check relative to executable
+      try {
+        // Binary is likely in bin/atomcli, so look in root of distro (../)
+        const binaryDir = path.dirname(process.execPath)
+        const distRoot = path.resolve(binaryDir, "..")
+
+        const bundledClaude = path.join(distRoot, ".claude")
+        if (await exists(bundledClaude)) claudeDirs.push(bundledClaude)
+
+        const bundledAtom = path.join(distRoot, ".atomcli")
+        if (await exists(bundledAtom)) claudeDirs.push(bundledAtom)
+      } catch (e) {
+        // ignore
+      }
     }
 
     if (!Flag.ATOMCLI_DISABLE_CLAUDE_CODE_SKILLS) {

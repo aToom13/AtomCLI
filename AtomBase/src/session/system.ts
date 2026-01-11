@@ -2,6 +2,7 @@ import { Ripgrep } from "../file/ripgrep"
 import { Global } from "../global"
 import { Filesystem } from "../util/filesystem"
 import { Config } from "../config/config"
+import { Skill } from "../skill/skill"
 
 import { Instance } from "../project/instance"
 import path from "path"
@@ -49,16 +50,29 @@ export namespace SystemPrompt {
         `  Today's date: ${new Date().toDateString()}`,
         `</env>`,
         `<files>`,
-        `  ${
-          project.vcs === "git" && false
-            ? await Ripgrep.tree({
-                cwd: Instance.directory,
-                limit: 200,
-              })
-            : ""
+        `  ${project.vcs === "git" && false
+          ? await Ripgrep.tree({
+            cwd: Instance.directory,
+            limit: 200,
+          })
+          : ""
         }`,
         `</files>`,
       ].join("\n"),
+      (() => {
+        return Promise.all([Skill.state(), Config.get()]).then(([skills, config]) => {
+          const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
+          const mcpList = Object.entries(config.mcp || {}).filter(([_, v]) => (v as any).enabled).map(([k, v]) => `  - ${k} (${(v as any).type})`).join("\n")
+          return [
+            `<skills>`,
+            skillList || "  (No skills found)",
+            `</skills>`,
+            `<mcp_servers>`,
+            mcpList || "  (No MCP servers enabled)",
+            `</mcp_servers>`
+          ].join("\n")
+        })
+      })()
     ]
   }
 

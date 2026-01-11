@@ -25,73 +25,73 @@ const allTargets: {
   abi?: "musl"
   avx2?: false
 }[] = [
-  {
-    os: "linux",
-    arch: "arm64",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    avx2: false,
-  },
-  {
-    os: "linux",
-    arch: "arm64",
-    abi: "musl",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    abi: "musl",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    abi: "musl",
-    avx2: false,
-  },
-  {
-    os: "darwin",
-    arch: "arm64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-    avx2: false,
-  },
-  {
-    os: "win32",
-    arch: "x64",
-  },
-  {
-    os: "win32",
-    arch: "x64",
-    avx2: false,
-  },
-]
+    {
+      os: "linux",
+      arch: "arm64",
+    },
+    {
+      os: "linux",
+      arch: "x64",
+    },
+    {
+      os: "linux",
+      arch: "x64",
+      avx2: false,
+    },
+    {
+      os: "linux",
+      arch: "arm64",
+      abi: "musl",
+    },
+    {
+      os: "linux",
+      arch: "x64",
+      abi: "musl",
+    },
+    {
+      os: "linux",
+      arch: "x64",
+      abi: "musl",
+      avx2: false,
+    },
+    {
+      os: "darwin",
+      arch: "arm64",
+    },
+    {
+      os: "darwin",
+      arch: "x64",
+    },
+    {
+      os: "darwin",
+      arch: "x64",
+      avx2: false,
+    },
+    {
+      os: "win32",
+      arch: "x64",
+    },
+    {
+      os: "win32",
+      arch: "x64",
+      avx2: false,
+    },
+  ]
 
 const targets = singleFlag
   ? allTargets.filter((item) => {
-      if (item.os !== process.platform || item.arch !== process.arch) {
-        return false
-      }
+    if (item.os !== process.platform || item.arch !== process.arch) {
+      return false
+    }
 
-      // When building for the current platform, prefer a single native binary by default.
-      // Baseline binaries require additional Bun artifacts and can be flaky to download.
-      if (item.avx2 === false) {
-        return baselineFlag
-      }
+    // When building for the current platform, prefer a single native binary by default.
+    // Baseline binaries require additional Bun artifacts and can be flaky to download.
+    if (item.avx2 === false) {
+      return baselineFlag
+    }
 
-      return true
-    })
+    return true
+  })
   : allTargets
 
 await $`rm -rf dist`
@@ -161,6 +161,28 @@ for (const item of targets) {
       2,
     ),
   )
+
+  // Copy skills directories to be bundled with the binary
+  // .atomcli and .claude are in the project root (one level up from AtomBase)
+  const rootAtom = path.resolve(dir, "../.atomcli")
+  const rootClaude = path.resolve(dir, "../.claude")
+
+  console.log(`Checking for skills in ${rootAtom} and ${rootClaude}...`)
+
+  if (fs.existsSync(rootAtom)) {
+    console.log(`Copying .atomcli to dist/${name}/...`)
+    await $`cp -r ${rootAtom} dist/${name}/`
+  } else {
+    console.log("WARNING: .atomcli directory not found at project root!")
+  }
+
+  if (fs.existsSync(rootClaude)) {
+    console.log(`Copying .claude to dist/${name}/...`)
+    await $`cp -r ${rootClaude} dist/${name}/`
+  } else {
+    console.log("WARNING: .claude directory not found at project root!")
+  }
+
   binaries[name] = Script.version
 }
 

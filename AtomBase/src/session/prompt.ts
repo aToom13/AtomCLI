@@ -588,12 +588,13 @@ export namespace SessionPrompt {
 
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
 
+      const [environment, custom] = await Promise.all([SystemPrompt.environment(), SystemPrompt.custom()])
       const result = await processor.process({
         user: lastUser,
         agent,
         abort,
         sessionID,
-        system: [...(await SystemPrompt.environment()), ...(await SystemPrompt.custom())],
+        system: [...environment, ...custom],
         messages: [
           ...MessageV2.toModelMessage(sessionMessages),
           ...(isLastStep
