@@ -1,0 +1,23 @@
+#!/usr/bin/env bun
+import { spawnSync } from "child_process";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, "..");
+
+// Execute src/index.ts
+// We set CWD to projectRoot so Bun resolves dependencies (react, etc.) correctly from AtomBase/node_modules
+// We pass the USER's CWD via ATOMCLI_CWD env var, which src/shim.ts picks up to masquerade process.cwd()
+const result = spawnSync("bun", ["run", "--conditions=browser", join(projectRoot, "src/index.ts"), ...process.argv.slice(2)], {
+  cwd: projectRoot,
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    ATOMCLI_CWD: process.cwd(),
+    // Add path to node_modules/bin to PATH so invoked tools (like npx) can find them if needed
+    PATH: `${join(projectRoot, "node_modules", ".bin")}:${process.env.PATH}`
+  }
+});
+
+process.exit(result.status ?? 0);

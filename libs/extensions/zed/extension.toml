@@ -1,0 +1,36 @@
+id = "atomcli"
+name = "AtomCLI"
+description = "The open source coding agent."
+version = "1.1.13"
+schema_version = 1
+authors = ["Anomaly"]
+repository = "https://github.com/anomalyco/atomcli"
+
+[agent_servers.atomcli]
+name = "AtomCLI"
+icon = "./icons/atomcli.svg"
+
+[agent_servers.atomcli.targets.darwin-aarch64]
+archive = "https://github.com/anomalyco/atomcli/releases/download/v1.1.13/atomcli-darwin-arm64.zip"
+cmd = "./atomcli"
+args = ["acp"]
+
+[agent_servers.atomcli.targets.darwin-x86_64]
+archive = "https://github.com/anomalyco/atomcli/releases/download/v1.1.13/atomcli-darwin-x64.zip"
+cmd = "./atomcli"
+args = ["acp"]
+
+[agent_servers.atomcli.targets.linux-aarch64]
+archive = "https://github.com/anomalyco/atomcli/releases/download/v1.1.13/atomcli-linux-arm64.tar.gz"
+cmd = "./atomcli"
+args = ["acp"]
+
+[agent_servers.atomcli.targets.linux-x86_64]
+archive = "https://github.com/anomalyco/atomcli/releases/download/v1.1.13/atomcli-linux-x64.tar.gz"
+cmd = "./atomcli"
+args = ["acp"]
+
+[agent_servers.atomcli.targets.windows-x86_64]
+archive = "https://github.com/anomalyco/atomcli/releases/download/v1.1.13/atomcli-windows-x64.zip"
+cmd = "./atomcli.exe"
+args = ["acp"]

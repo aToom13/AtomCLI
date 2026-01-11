@@ -1,0 +1,7 @@
+@import "@atomcli/ui/styles/tailwind";
+
+:root {
+  a {
+    cursor: default;
+  }
+}
