@@ -261,6 +261,13 @@ export namespace Ripgrep {
       if (buffer) yield buffer
     } finally {
       reader.releaseLock()
+      // Kill the process if it's still running to prevent zombie processes
+      // This happens when the iterator is abandoned early (e.g., break in for await)
+      try {
+        proc.kill()
+      } catch {
+        // Process may have already exited
+      }
       await proc.exited
     }
   }

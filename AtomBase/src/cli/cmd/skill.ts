@@ -127,8 +127,8 @@ export const SkillAddCommand = cmd({
             rawUrl = `https://raw.githubusercontent.com/${rawUrl}`
         }
 
-        // Ensure it ends with SKILL.md
-        if (!rawUrl.endsWith("SKILL.md")) {
+        // If no file extension, assume SKILL.md
+        if (!rawUrl.endsWith(".md")) {
             rawUrl = rawUrl.endsWith("/") ? rawUrl + "SKILL.md" : rawUrl + "/SKILL.md"
         }
 

@@ -3,6 +3,7 @@ import { Global } from "../global"
 import { Filesystem } from "../util/filesystem"
 import { Config } from "../config/config"
 import { Skill } from "../skill/skill"
+import { MCP } from "../mcp"
 
 import { Instance } from "../project/instance"
 import path from "path"
@@ -60,15 +61,18 @@ export namespace SystemPrompt {
         `</files>`,
       ].join("\n"),
       (() => {
-        return Promise.all([Skill.state(), Config.get()]).then(([skills, config]) => {
+        return Promise.all([Skill.state(), MCP.status()]).then(([skills, mcpStatus]) => {
           const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
-          const mcpList = Object.entries(config.mcp || {}).filter(([_, v]) => (v as any).enabled).map(([k, v]) => `  - ${k} (${(v as any).type})`).join("\n")
+          const mcpList = Object.entries(mcpStatus)
+            .filter(([_, status]) => status.status === "connected")
+            .map(([name, _]) => `  - ${name}`)
+            .join("\n")
           return [
             `<skills>`,
             skillList || "  (No skills found)",
             `</skills>`,
             `<mcp_servers>`,
-            mcpList || "  (No MCP servers enabled)",
+            mcpList || "  (No MCP servers connected)",
             `</mcp_servers>`
           ].join("\n")
         })
