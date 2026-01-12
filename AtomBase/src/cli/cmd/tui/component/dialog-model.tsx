@@ -40,74 +40,74 @@ export function DialogModel(props: { providerID?: string }) {
 
     const recentList = showSections
       ? recents.filter(
-          (item) => !favorites.some((fav) => fav.providerID === item.providerID && fav.modelID === item.modelID),
-        )
+        (item) => !favorites.some((fav) => fav.providerID === item.providerID && fav.modelID === item.modelID),
+      )
       : []
 
     const favoriteOptions = showSections
       ? favorites.flatMap((item) => {
-          const provider = sync.data.provider.find((x) => x.id === item.providerID)
-          if (!provider) return []
-          const model = provider.models[item.modelID]
-          if (!model) return []
-          return [
-            {
-              key: item,
-              value: {
-                providerID: provider.id,
-                modelID: model.id,
-              },
-              title: model.name ?? item.modelID,
-              description: provider.name,
-              category: "Favorites",
-              disabled: provider.id === "atomcli" && model.id.includes("-nano"),
-              footer: model.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
-              onSelect: () => {
-                dialog.clear()
-                local.model.set(
-                  {
-                    providerID: provider.id,
-                    modelID: model.id,
-                  },
-                  { recent: true },
-                )
-              },
+        const provider = sync.data.provider.find((x) => x.id === item.providerID)
+        if (!provider) return []
+        const model = provider.models[item.modelID]
+        if (!model) return []
+        return [
+          {
+            key: item,
+            value: {
+              providerID: provider.id,
+              modelID: model.id,
             },
-          ]
-        })
+            title: model.name ?? item.modelID,
+            description: provider.name,
+            category: "Favorites",
+            disabled: false,
+            footer: model.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
+            onSelect: () => {
+              dialog.clear()
+              local.model.set(
+                {
+                  providerID: provider.id,
+                  modelID: model.id,
+                },
+                { recent: true },
+              )
+            },
+          },
+        ]
+      })
       : []
 
     const recentOptions = showSections
       ? recentList.flatMap((item) => {
-          const provider = sync.data.provider.find((x) => x.id === item.providerID)
-          if (!provider) return []
-          const model = provider.models[item.modelID]
-          if (!model) return []
-          return [
-            {
-              key: item,
-              value: {
-                providerID: provider.id,
-                modelID: model.id,
-              },
-              title: model.name ?? item.modelID,
-              description: provider.name,
-              category: "Recent",
-              disabled: provider.id === "atomcli" && model.id.includes("-nano"),
-              footer: model.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
-              onSelect: () => {
-                dialog.clear()
-                local.model.set(
-                  {
-                    providerID: provider.id,
-                    modelID: model.id,
-                  },
-                  { recent: true },
-                )
-              },
+        const provider = sync.data.provider.find((x) => x.id === item.providerID)
+        if (!provider) return []
+        const model = provider.models[item.modelID]
+        if (!model) return []
+        return [
+          {
+            key: item,
+            value: {
+              providerID: provider.id,
+              modelID: model.id,
             },
-          ]
-        })
+            title: model.name ?? item.modelID,
+            description: provider.name,
+            category: "Recent",
+            disabled: false,
+            footer: model.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
+            onSelect: () => {
+              dialog.clear()
+              local.model.set(
+                {
+                  providerID: provider.id,
+                  modelID: model.id,
+                },
+                { recent: true },
+              )
+            },
+          },
+        ]
+      })
       : []
 
     const providerOptions = pipe(
@@ -136,7 +136,7 @@ export function DialogModel(props: { providerID?: string }) {
                 ? "(Favorite)"
                 : undefined,
               category: connected() ? provider.name : undefined,
-              disabled: provider.id === "atomcli" && model.includes("-nano"),
+              disabled: false,
               footer: info.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
               onSelect() {
                 dialog.clear()
@@ -173,15 +173,15 @@ export function DialogModel(props: { providerID?: string }) {
 
     const popularProviders = !connected()
       ? pipe(
-          providers(),
-          map((option) => {
-            return {
-              ...option,
-              category: "Popular providers",
-            }
-          }),
-          take(6),
-        )
+        providers(),
+        map((option) => {
+          return {
+            ...option,
+            category: "Popular providers",
+          }
+        }),
+        take(6),
+      )
       : []
 
     // Search shows a single merged list (favorites inline)

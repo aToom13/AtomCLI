@@ -110,27 +110,7 @@ export namespace Provider {
       return {
         autoload: input.models ? Object.keys(input.models).length > 0 : false,
         options: hasKey ? {} : { apiKey: "public" },
-        // Handle g4f: prefixed models with custom fetch for g4f.dev API
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
-          if (modelID.startsWith("g4f:")) {
-            // g4f models need special handling - create SDK with custom fetch
-            const g4fModelId = modelID.slice(4) // Remove "g4f:" prefix
-            const g4fSdk = createOpenAICompatible({
-              name: "gpt4free",
-              baseURL: "https://g4f.dev/api/pollinations",
-              apiKey: "none",
-              // Strip Authorization header - g4f.dev rejects bearer tokens
-              fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-                const headers = new Headers(init?.headers)
-                headers.delete("Authorization")
-                return fetch(input, { ...init, headers })
-              }) as typeof fetch,
-            })
-            return g4fSdk(g4fModelId)
-          }
-          // Default behavior for non-g4f models
-          return sdk(modelID)
-        },
+
       }
     },
     openai: async () => {
@@ -656,62 +636,7 @@ export namespace Provider {
         options: { apiKey: "public" } // Hint that no API key is needed
       }
 
-      // Add gpt4free models (via g4f.dev API)
-      // Using allowed model names from the API
-      const G4F_API_URL = "https://g4f.dev/api/pollinations"
-      const g4fModels: [string, string, boolean?][] = [
-        // Text models (allowed by g4f.dev API) - with full model names
-        ["openai", "GPT-4.1 Nano"],
-        ["openai-fast", "GPT-4.1 Mini"],
-        ["openai-large", "GPT-4.1"],
-        ["gemini", "Gemini 3"],
-        ["gemini-fast", "Gemini 3 Flash"],
-        ["gemini-large", "Gemini 3 Pro"],
-        ["deepseek", "DeepSeek V3", true],
-        ["grok", "Grok 3"],
-        ["claude", "Claude Sonnet 4.5"],
-        ["claude-fast", "Claude Haiku 4.5"],
-        ["claude-large", "Claude Opus 4.5"],
-        ["perplexity-fast", "Perplexity Sonar"],
-        ["perplexity-reasoning", "Perplexity Sonar Pro", true],
-        ["kimi", "Kimi K2"],
-        ["qwen-coder", "Qwen 3 Coder"],
-        ["mistral", "Mistral Small 3.1"],
-        ["nova-fast", "Amazon Nova Micro"],
-        ["glm", "GLM-4.7"],
-        ["minimax", "MiniMax M2.1"],
-        ["midijourney", "MidiJourney"],
-      ]
 
-      // Add all g4f models directly to atomcli provider (no separate gpt4free provider)
-      for (const [modelId, modelName, reasoning] of g4fModels) {
-        const g4fModel: Model = {
-          id: `g4f:${modelId}`,
-          providerID: "atomcli",
-          name: modelName,
-          api: {
-            id: `g4f:${modelId}`, // Include g4f: prefix so getModel can detect it
-            url: G4F_API_URL,
-            npm: "@ai-sdk/openai-compatible",
-          },
-          status: "active",
-          headers: {},
-          options: {},
-          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-          limit: { context: 128000, output: 4096 },
-          capabilities: {
-            temperature: true,
-            reasoning: reasoning ?? false,
-            attachment: false,
-            toolcall: true,
-            input: { text: true, audio: false, image: false, video: false, pdf: false },
-            output: { text: true, audio: false, image: false, video: false, pdf: false },
-            interleaved: false,
-          },
-          release_date: "2025-01-01",
-        }
-        database["atomcli"].models[`g4f:${modelId}`] = g4fModel
-      }
     }
 
     const disabled = new Set(config.disabled_providers ?? [])
