@@ -241,29 +241,26 @@ install_binary() {
     
     cd AtomBase
     step "Building (this may take a minute)..."
-    bun run build >/dev/null 2>&1
+    bun run build --single >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         error "Failed to build"
         exit 1
     fi
     success "Built AtomCLI"
     
+    # Debug: Show what's in dist
+    step "Finding binary..."
+    
     # Find and copy binary - check multiple possible paths
     local binary_path=""
-    local search_paths=(
-        "dist/atomcli-${OS_TYPE}-${ARCH_TYPE}/bin/atomcli"
-        "dist/atomcli-linux-x64/bin/atomcli"
-        "dist/atomcli-linux-arm64/bin/atomcli"
-        "dist/atomcli-darwin-arm64/bin/atomcli"
-        "dist/atomcli-darwin-x64/bin/atomcli"
-    )
     
-    for path in "${search_paths[@]}"; do
-        if [ -f "$path" ]; then
-            binary_path="$path"
-            break
-        fi
-    done
+    # First try exact match
+    binary_path=$(find dist -path "*/bin/atomcli" -type f 2>/dev/null | head -1)
+    
+    # Fallback: any atomcli file
+    if [ -z "$binary_path" ]; then
+        binary_path=$(find dist -name "atomcli" -type f 2>/dev/null | head -1)
+    fi
     
     # Fallback: find any atomcli binary
     if [ -z "$binary_path" ]; then
