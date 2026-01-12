@@ -241,8 +241,9 @@ install_binary() {
     
     cd AtomBase
     step "Building (this may take a minute)..."
-    bun run build --single >/dev/null 2>&1
-    if [ $? -ne 0 ]; then
+    
+    # Show build output for debugging
+    if ! bun run build --single 2>&1; then
         error "Failed to build"
         exit 1
     fi
