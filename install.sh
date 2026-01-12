@@ -267,15 +267,35 @@ install_binary() {
     
     echo -e "${YELLOW}[4/4]${NC} Locating binary..."
     
-    # Find and copy binary - check multiple possible paths
+    # Detect libc type
+    local libc_type="glibc"
+    if ldd --version 2>&1 | grep -qi musl; then
+        libc_type="musl"
+    fi
+    info "Detected libc: $libc_type"
+    
+    # Find and copy binary - prefer matching libc type
     local binary_path=""
     
-    # First try exact match
-    binary_path=$(find dist -path "*/bin/atomcli" -type f 2>/dev/null | head -1)
+    # First try exact match for our libc type (avoid musl if glibc)
+    if [ "$libc_type" = "glibc" ]; then
+        # Prefer non-musl version
+        binary_path=$(find dist -path "*linux-x64/bin/atomcli" -type f ! -path "*musl*" 2>/dev/null | head -1)
+        if [ -z "$binary_path" ]; then
+            binary_path=$(find dist -path "*linux-arm64/bin/atomcli" -type f ! -path "*musl*" 2>/dev/null | head -1)
+        fi
+    else
+        # Prefer musl version
+        binary_path=$(find dist -path "*musl*/bin/atomcli" -type f 2>/dev/null | head -1)
+    fi
     
-    # Fallback: any atomcli file
+    # Fallback: any atomcli binary (excluding musl if glibc)
     if [ -z "$binary_path" ]; then
-        binary_path=$(find dist -name "atomcli" -type f 2>/dev/null | head -1)
+        if [ "$libc_type" = "glibc" ]; then
+            binary_path=$(find dist -name "atomcli" -type f ! -path "*musl*" 2>/dev/null | head -1)
+        else
+            binary_path=$(find dist -name "atomcli" -type f 2>/dev/null | head -1)
+        fi
     fi
     
     # Fallback: find any atomcli binary
