@@ -1,6 +1,8 @@
 #!/bin/bash
 # AtomCLI Installer - https://github.com/aToom13/AtomCLI
-# Usage: curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
+# 
+# Install:   curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
+# Uninstall: curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --uninstall
 
 set -e
 
@@ -417,7 +419,7 @@ print_complete() {
 }
 
 # Main installation flow
-main() {
+main_install() {
     print_banner
     detect_os
     
@@ -432,5 +434,101 @@ main() {
     print_complete
 }
 
-# Run main
-main "$@"
+# Uninstall function
+uninstall() {
+    print_banner
+    
+    echo -e "${YELLOW}${BOLD}Uninstalling AtomCLI...${NC}"
+    echo ""
+    
+    local removed=false
+    
+    # Remove binary
+    if [ -f "$INSTALL_DIR/atomcli" ]; then
+        step "Removing binary..."
+        rm -f "$INSTALL_DIR/atomcli"
+        success "Removed $INSTALL_DIR/atomcli"
+        removed=true
+    else
+        info "Binary not found at $INSTALL_DIR/atomcli"
+    fi
+    
+    # Ask about config
+    echo ""
+    echo -e "${YELLOW}Do you want to remove configuration and data?${NC}"
+    echo -e "${DIM}  This will delete: $CONFIG_DIR${NC}"
+    echo -e "${DIM}  (includes skills, sessions, and settings)${NC}"
+    echo ""
+    
+    # Check if running interactively
+    if [ -t 0 ]; then
+        read -p "Remove config? [y/N] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if [ -d "$CONFIG_DIR" ]; then
+                step "Removing configuration..."
+                rm -rf "$CONFIG_DIR"
+                success "Removed $CONFIG_DIR"
+                removed=true
+            fi
+        else
+            info "Keeping configuration at $CONFIG_DIR"
+        fi
+    else
+        # Non-interactive: keep config by default
+        info "Non-interactive mode: keeping configuration"
+        info "To remove config manually: rm -rf $CONFIG_DIR"
+    fi
+    
+    # Remove from PATH (inform user)
+    echo ""
+    info "Note: PATH entry in shell config was not removed."
+    info "You can manually remove the AtomCLI line from your shell config."
+    
+    # Print completion
+    echo ""
+    if [ "$removed" = true ]; then
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${GREEN}${CHECK}${NC} ${BOLD}AtomCLI uninstalled successfully!${NC}"
+        echo ""
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    else
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${YELLOW}!${NC} AtomCLI was not fully installed."
+        echo ""
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    fi
+    echo ""
+}
+
+# Show help
+show_help() {
+    echo "AtomCLI Installer"
+    echo ""
+    echo "Usage:"
+    echo "  install.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --uninstall    Remove AtomCLI from the system"
+    echo "  --help         Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  curl -fsSL .../install.sh | bash                      # Install"
+    echo "  curl -fsSL .../install.sh | bash -s -- --uninstall    # Uninstall"
+}
+
+# Parse arguments and run
+case "${1:-}" in
+    --uninstall|-u)
+        uninstall
+        ;;
+    --help|-h)
+        show_help
+        ;;
+    *)
+        main_install
+        ;;
+esac
+
