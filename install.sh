@@ -240,17 +240,32 @@ install_binary() {
     success "Installed dependencies"
     
     cd AtomBase
-    step "Building (this may take a minute)..."
+    echo ""
+    echo -e "${YELLOW}[1/4]${NC} Preparing build environment..."
     
-    # Show build output for debugging
-    if ! bun run build --single 2>&1; then
-        error "Failed to build"
+    # Create a log file for debugging
+    local build_log="/tmp/atomcli_build_$$.log"
+    
+    echo -e "${YELLOW}[2/4]${NC} Running build script..."
+    echo -e "${DIM}    (This may take 2-5 minutes depending on your system)${NC}"
+    echo -e "${DIM}    Build log: $build_log${NC}"
+    
+    # Run build with timeout and capture output
+    if timeout 300 bun run build --single > "$build_log" 2>&1; then
+        echo -e "${YELLOW}[3/4]${NC} Build completed"
+        success "Built AtomCLI"
+    else
+        local exit_code=$?
+        error "Build failed (exit code: $exit_code)"
+        echo ""
+        echo -e "${DIM}Last 20 lines of build log:${NC}"
+        tail -20 "$build_log" 2>/dev/null || echo "(no log available)"
+        echo ""
+        info "Full log available at: $build_log"
         exit 1
     fi
-    success "Built AtomCLI"
     
-    # Debug: Show what's in dist
-    step "Finding binary..."
+    echo -e "${YELLOW}[4/4]${NC} Locating binary..."
     
     # Find and copy binary - check multiple possible paths
     local binary_path=""
