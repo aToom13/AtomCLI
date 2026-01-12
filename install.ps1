@@ -230,23 +230,15 @@ function Set-AtomCLIConfig {
     $configPath = Join-Path $ConfigDir "atomcli.json"
     
     if (-not (Test-Path $configPath)) {
+        # Empty config - user adds MCPs via mcpadd
         $config = @{
-            mcp = @{
-                "memory-bank" = @{
-                    type = "local"
-                    command = @("npx", "-y", "github:alioshr/memory-bank-mcp")
-                    enabled = $true
-                }
-                "sequential-thinking" = @{
-                    type = "local"
-                    command = @("npx", "-y", "@modelcontextprotocol/server-sequential-thinking")
-                    enabled = $true
-                }
-            }
+            mcp = @{}
         }
         
         $config | ConvertTo-Json -Depth 10 | Set-Content $configPath
         Write-Success "Created default configuration"
+        Write-Host "  Use 'mcpadd' to add MCP servers" -ForegroundColor DarkGray
+        Write-Host "  Use 'skilladd' to add skills" -ForegroundColor DarkGray
     } else {
         Write-Host "  Configuration already exists" -ForegroundColor DarkGray
     }

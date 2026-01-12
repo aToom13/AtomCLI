@@ -367,25 +367,16 @@ setup_path() {
 setup_config() {
     step "Setting up configuration..."
     
-    # Create default config
+    # Create default config (empty - user adds MCPs via mcpadd)
     if [ ! -f "$CONFIG_DIR/atomcli.json" ]; then
         cat > "$CONFIG_DIR/atomcli.json" << 'EOF'
 {
-  "mcp": {
-    "memory-bank": {
-      "type": "local",
-      "command": ["npx", "-y", "github:alioshr/memory-bank-mcp"],
-      "enabled": true
-    },
-    "sequential-thinking": {
-      "type": "local",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"],
-      "enabled": true
-    }
-  }
+  "mcp": {}
 }
 EOF
         success "Created default configuration"
+        info "Use 'mcpadd' to add MCP servers"
+        info "Use 'skilladd' to add skills"
     else
         info "Configuration already exists"
     fi
