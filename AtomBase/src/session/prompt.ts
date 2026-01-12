@@ -44,6 +44,7 @@ import { SessionStatus } from "./status"
 import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
+import { Skill } from "../skill"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -198,6 +199,18 @@ export namespace SessionPrompt {
 
         const stats = await fs.stat(filepath).catch(() => undefined)
         if (!stats) {
+          // First, check if it's a skill
+          const skill = await Skill.get(name)
+          if (skill) {
+            const parsed = await ConfigMarkdown.parse(skill.location)
+            parts.push({
+              type: "text",
+              text: `\n<skill name="${skill.name}">\n${parsed.content.trim()}\n</skill>\n`,
+            })
+            return
+          }
+
+          // If not a skill, check for agent
           const agent = await Agent.get(name)
           if (agent) {
             parts.push({
@@ -599,11 +612,11 @@ export namespace SessionPrompt {
           ...MessageV2.toModelMessage(sessionMessages),
           ...(isLastStep
             ? [
-                {
-                  role: "assistant" as const,
-                  content: MAX_STEPS,
-                },
-              ]
+              {
+                role: "assistant" as const,
+                content: MAX_STEPS,
+              },
+            ]
             : []),
         ],
         tools,
@@ -991,8 +1004,8 @@ export namespace SessionPrompt {
                       agent: input.agent!,
                       messageID: info.id,
                       extra: { bypassCwdCheck: true, model },
-                      metadata: async () => {},
-                      ask: async () => {},
+                      metadata: async () => { },
+                      ask: async () => { },
                     }
                     const result = await t.execute(args, readCtx)
                     pieces.push({
@@ -1052,8 +1065,8 @@ export namespace SessionPrompt {
                   agent: input.agent!,
                   messageID: info.id,
                   extra: { bypassCwdCheck: true },
-                  metadata: async () => {},
-                  ask: async () => {},
+                  metadata: async () => { },
+                  ask: async () => { },
                 }
                 const result = await ListTool.init().then((t) => t.execute(args, listCtx))
                 return [
@@ -1104,6 +1117,48 @@ export namespace SessionPrompt {
                   source: part.source,
                 },
               ]
+          }
+        }
+
+        // Handle skill injection for text parts
+        if (part.type === "text" && part.text) {
+          const skillMatches = ConfigMarkdown.files(part.text)
+          const skillParts: MessageV2.Part[] = []
+          const seenSkills = new Set<string>()
+
+          for (const match of skillMatches) {
+            const name = match[1]
+            if (seenSkills.has(name)) continue
+
+            const skill = await Skill.get(name)
+            if (skill) {
+              seenSkills.add(name)
+              try {
+                const parsed = await ConfigMarkdown.parse(skill.location)
+                skillParts.push({
+                  id: Identifier.ascending("part"),
+                  messageID: info.id,
+                  sessionID: input.sessionID,
+                  type: "text",
+                  synthetic: true,
+                  text: `\n<skill name="${skill.name}">\n${parsed.content.trim()}\n</skill>\n`,
+                })
+              } catch (error) {
+                log.error("failed to load skill", { name, error })
+              }
+            }
+          }
+
+          if (skillParts.length > 0) {
+            return [
+              {
+                id: Identifier.ascending("part"),
+                ...part,
+                messageID: info.id,
+                sessionID: input.sessionID,
+              },
+              ...skillParts,
+            ]
           }
         }
 
@@ -1549,15 +1604,15 @@ export namespace SessionPrompt {
     const parts =
       (agent.mode === "subagent" && command.subtask !== false) || command.subtask === true
         ? [
-            {
-              type: "subtask" as const,
-              agent: agent.name,
-              description: command.description ?? "",
-              command: input.command,
-              // TODO: how can we make task tool accept a more complex input?
-              prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
-            },
-          ]
+          {
+            type: "subtask" as const,
+            agent: agent.name,
+            description: command.description ?? "",
+            command: input.command,
+            // TODO: how can we make task tool accept a more complex input?
+            prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
+          },
+        ]
         : [...templateParts, ...(input.parts ?? [])]
 
     const result = (await prompt({
