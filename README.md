@@ -18,6 +18,12 @@
 
 ## 📦 Installation
 
+### Quick Install (Recommended)
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
+```
+
+### Manual Installation
 1.  **Clone the Repository:**
     ```bash
     git clone https://github.com/aToom13/AtomCLI.git
@@ -27,13 +33,13 @@
 2.  **Install & Build:**
     ```bash
     bun install
-    bun run build
+    cd AtomBase && bun run build
     ```
 
-3.  **Link & Run:**
+3.  **Add to PATH:**
     ```bash
-    cd AtomBase
-    bun link
+    cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
+    # or for macOS: cp dist/atomcli-darwin-arm64/bin/atomcli /usr/local/bin/
     atomcli
     ```
 
@@ -63,6 +69,12 @@ Run `atomcli` in your project folder.
 
 ## 📦 Kurulum
 
+### Hızlı Kurulum (Önerilen)
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
+```
+
+### Manuel Kurulum
 1.  **Depoyu Klonlayın:**
     ```bash
     git clone https://github.com/aToom13/AtomCLI.git
@@ -72,13 +84,12 @@ Run `atomcli` in your project folder.
 2.  **Kur ve Derle:**
     ```bash
     bun install
-    bun run build
+    cd AtomBase && bun run build
     ```
 
-3.  **Bağla ve Çalıştır:**
+3.  **PATH'e Ekle:**
     ```bash
-    cd AtomBase
-    bun link
+    cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
     atomcli
     ```
 
