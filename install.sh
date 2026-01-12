@@ -221,40 +221,63 @@ install_binary() {
     local tmp_dir=$(mktemp -d)
     cd "$tmp_dir"
     
-    git clone --depth 1 https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1 &
-    spin $! "Cloning repository..."
+    step "Cloning repository..."
+    git clone --depth 1 https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        error "Failed to clone repository"
+        exit 1
+    fi
     success "Cloned repository"
     
     cd AtomCLI
     
-    bun install >/dev/null 2>&1 &
-    spin $! "Installing dependencies..."
+    step "Installing dependencies..."
+    bun install >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        error "Failed to install dependencies"
+        exit 1
+    fi
     success "Installed dependencies"
     
     cd AtomBase
-    bun run build >/dev/null 2>&1 &
-    spin $! "Building AtomCLI..."
+    step "Building (this may take a minute)..."
+    bun run build >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        error "Failed to build"
+        exit 1
+    fi
     success "Built AtomCLI"
     
-    # Find and copy binary
+    # Find and copy binary - check multiple possible paths
     local binary_path=""
-    for path in "dist/${binary_name}/bin/atomcli" "dist/atomcli-${OS_TYPE}-${ARCH_TYPE}/bin/atomcli" "dist/atomcli-linux-x64/bin/atomcli"; do
+    local search_paths=(
+        "dist/atomcli-${OS_TYPE}-${ARCH_TYPE}/bin/atomcli"
+        "dist/atomcli-linux-x64/bin/atomcli"
+        "dist/atomcli-linux-arm64/bin/atomcli"
+        "dist/atomcli-darwin-arm64/bin/atomcli"
+        "dist/atomcli-darwin-x64/bin/atomcli"
+    )
+    
+    for path in "${search_paths[@]}"; do
         if [ -f "$path" ]; then
             binary_path="$path"
             break
         fi
     done
     
+    # Fallback: find any atomcli binary
     if [ -z "$binary_path" ]; then
-        # Try to find any atomcli binary
-        binary_path=$(find dist -name "atomcli" -type f 2>/dev/null | head -1)
+        binary_path=$(find dist -name "atomcli" -type f -executable 2>/dev/null | head -1)
     fi
     
-    if [ -n "$binary_path" ]; then
+    if [ -n "$binary_path" ] && [ -f "$binary_path" ]; then
         cp "$binary_path" "$INSTALL_DIR/atomcli"
         chmod +x "$INSTALL_DIR/atomcli"
+        success "Installed binary from $binary_path"
     else
-        error "Could not find built binary"
+        error "Could not find built binary in dist/"
+        info "Available files:"
+        find dist -name "atomcli" 2>/dev/null || echo "  (none)"
         exit 1
     fi
     
