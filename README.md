@@ -1,104 +1,162 @@
+<div align="center">
+
 # AtomCLI
 
-**[English](#atomcli-english) | [Türkçe](#atomcli-türkçe)**
+```
+     █████╗ ████████╗ ██████╗ ███╗   ███╗   ██████╗██╗     ██╗
+    ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║  ██╔════╝██║     ██║
+    ███████║   ██║   ██║   ██║██╔████╔██║  ██║     ██║     ██║
+    ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║  ██║     ██║     ██║
+    ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║  ╚██████╗███████╗██║
+    ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝   ╚═════╝╚══════╝╚═╝
+```
+
+**Terminal AI Coding Assistant**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub Stars](https://img.shields.io/github/stars/aToom13/AtomCLI)](https://github.com/aToom13/AtomCLI/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/aToom13/AtomCLI)](https://github.com/aToom13/AtomCLI/issues)
+
+[English](#english) • [Türkçe](#türkçe)
+
+</div>
 
 ---
 
-<a name="atomcli-english"></a>
-# AtomCLI (English)
+<a name="english"></a>
 
-**AtomCLI** is a terminal-based AI coding assistant. It integrates directly into your command line workflow using the **Model Context Protocol (MCP)** and a custom **Skill** system.
+## 🚀 Quick Install
 
-## 🚀 Key Features
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
+```
 
-*   **TUI (Terminal User Interface):** Interactive, mouse-supported CLI.
-*   **MCP Support:** Connects with local and remote MCP servers.
-*   **Skills:** Extend functionality via `.atomcli/skills/`.
-*   **Privacy:** All data and configuration are stored locally in your project.
+That's it! Run `atomcli` to start.
+
+## ✨ Features
+
+- **🖥️ Beautiful TUI** - Interactive terminal interface with mouse support
+- **🤖 Free Models** - Use without API keys via built-in free providers (MiniMax, GLM, etc.)
+- **🔧 MCP Support** - Extend capabilities with Model Context Protocol servers
+- **📚 Skills System** - Add specialized behaviors from GitHub or locally
+- **🔒 Privacy First** - All data stored locally, no telemetry
 
 ## 📦 Installation
 
-### Quick Install (Recommended)
+### One-Line Install (Recommended)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
 ```
 
-### Manual Installation
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/aToom13/AtomCLI.git
-    cd AtomCLI
-    ```
+### Manual Install
 
-2.  **Install & Build:**
-    ```bash
-    bun install
-    cd AtomBase && bun run build
-    ```
+```bash
+git clone https://github.com/aToom13/AtomCLI.git
+cd AtomCLI && bun install
+cd AtomBase && bun run build
+cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
+```
 
-3.  **Add to PATH:**
-    ```bash
-    cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
-    # or for macOS: cp dist/atomcli-darwin-arm64/bin/atomcli /usr/local/bin/
-    atomcli
-    ```
+### Uninstall
 
-## 🛠 Usage
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --uninstall
+```
 
-Run `atomcli` in your project folder.
+## 🛠️ Usage
 
-### Commands
-*   `/skill` - List available skills.
-*   `/connect` - Connect to an AI provider.
-*   `/status` - Show MCP status.
-*   `/quit` - Exit.
+```bash
+atomcli                 # Start interactive session
+atomcli mcp list        # List MCP servers
+atomcli skill list      # List available skills
+```
+
+### Adding MCP Servers
+
+Add capabilities via chat:
+
+```
+> Add memory-bank MCP
+> Add filesystem MCP for /home/user/projects
+```
+
+### Adding Skills
+
+Skills provide specialized instructions:
+
+```
+> Add this skill: https://github.com/davila7/claude-code-templates/blob/main/.../code-reviewer.md
+```
+
+## 🔧 Configuration
+
+Config file: `~/.atomcli/atomcli.json`
+
+```json
+{
+  "mcp": {
+    "memory-bank": {
+      "type": "local",
+      "command": ["npx", "-y", "github:alioshr/memory-bank-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+## 🌍 Supported Platforms
+
+| Platform            | Status |
+| ------------------- | ------ |
+| Linux x64           | ✅      |
+| Linux ARM64         | ✅      |
+| macOS x64           | ✅      |
+| macOS ARM64 (M1/M2) | ✅      |
+| Windows (WSL)       | ✅      |
 
 ---
 
-<a name="atomcli-türkçe"></a>
-# AtomCLI (Türkçe)
+<a name="türkçe"></a>
 
-**AtomCLI**, terminal tabanlı bir yapay zeka kodlama asistanıdır. **Model Context Protocol (MCP)** ve özel **Yetenek (Skill)** sistemi kullanarak komut satırı iş akışınıza doğrudan entegre olur.
+## 🇹🇷 Türkçe
 
-## 🚀 Temel Özellikler
+### Hızlı Kurulum
 
-*   **TUI (Terminal Kullanıcı Arayüzü):** Fare destekli, etkileşimli terminal arayüzü.
-*   **MCP Desteği:** Yerel ve uzak MCP sunucuları ile bağlantı kurar.
-*   **Yetenekler (Skills):** `.atomcli/skills/` üzerinden işlevselliği genişletin.
-*   **Gizlilik:** Tüm veriler ve yapılandırma proje içinde yerel olarak saklanır.
-
-## 📦 Kurulum
-
-### Hızlı Kurulum (Önerilen)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
 ```
 
-### Manuel Kurulum
-1.  **Depoyu Klonlayın:**
-    ```bash
-    git clone https://github.com/aToom13/AtomCLI.git
-    cd AtomCLI
-    ```
+### Özellikler
 
-2.  **Kur ve Derle:**
-    ```bash
-    bun install
-    cd AtomBase && bun run build
-    ```
+- **TUI Arayüzü** - Fare destekli etkileşimli terminal
+- **Ücretsiz Modeller** - API anahtarı olmadan kullanın (MiniMax, GLM vb.)
+- **MCP Desteği** - Model Context Protocol ile yetenekleri genişletin
+- **Skill Sistemi** - GitHub'dan veya yerel olarak özel davranışlar ekleyin
+- **Gizlilik** - Tüm veriler yerel olarak saklanır
 
-3.  **PATH'e Ekle:**
-    ```bash
-    cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
-    atomcli
-    ```
+### Kaldırma
 
-## 🛠 Kullanım
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --uninstall
+```
 
-Proje dizininizde `atomcli` komutunu çalıştırın.
+### MCP Ekleme
 
-### Komutlar
-*   `/skill` - Mevcut yetenekleri listele.
-*   `/connect` - Bir AI sağlayıcısına bağlan.
-*   `/status` - MCP durumunu göster.
-*   `/quit` - Çıkış yap.
+```
+> Memory-bank MCP'sini ekle
+> Filesystem MCP'sini ekle
+```
+
+### Skill Ekleme
+
+```
+> Bu skill'i ekle: https://github.com/.../code-reviewer.md
+```
+
+
+<div align="center">
+
+Developed by **[Atom13](https://github.com/aToom13)**
+
+</div>
