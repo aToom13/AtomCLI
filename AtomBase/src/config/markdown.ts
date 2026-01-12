@@ -31,6 +31,15 @@ export namespace ConfigMarkdown {
     }
   }
 
+  export function parseString(content: string) {
+    try {
+      const md = matter(content)
+      return md
+    } catch (err) {
+      return undefined
+    }
+  }
+
   export const FrontmatterError = NamedError.create(
     "ConfigFrontmatterError",
     z.object({

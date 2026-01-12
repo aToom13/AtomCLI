@@ -12,6 +12,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "@/util/locale"
 import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
+import { Skill } from "@/skill"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -312,6 +313,42 @@ export function Autocomplete(props: {
       )
   })
 
+  const [skillsList] = createResource(
+    () => store.visible === "@",
+    async (shouldFetch) => {
+      if (!shouldFetch) return []
+      return await Skill.all()
+    },
+    { initialValue: [] }
+  )
+
+  const skills = createMemo((): AutocompleteOption[] => {
+    const list = skillsList() || []
+    return list.map(
+      (skill): AutocompleteOption => ({
+        display: "@" + skill.name,
+        description: skill.description,
+        onSelect: () => {
+          // Insert skill as text part with @ prefix (will be resolved by skill injection)
+          const input = props.input()
+          const currentCursorOffset = input.cursorOffset
+
+          const charAfterCursor = props.value.at(currentCursorOffset)
+          const needsSpace = charAfterCursor !== " "
+          const append = "@" + skill.name + (needsSpace ? " " : "")
+
+          input.cursorOffset = store.index
+          const startCursor = input.logicalCursor
+          input.cursorOffset = currentCursorOffset
+          const endCursor = input.logicalCursor
+
+          input.deleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+          input.insertText(append)
+        },
+      })
+    )
+  })
+
   const session = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID) : undefined))
   const commands = createMemo((): AutocompleteOption[] => {
     const results: AutocompleteOption[] = []
@@ -479,9 +516,10 @@ export function Autocomplete(props: {
     const filesValue = files()
     const agentsValue = agents()
     const commandsValue = commands()
+    const skillsValue = skills()
 
     const mixed: AutocompleteOption[] = (
-      store.visible === "@" ? [...agentsValue, ...(filesValue || []), ...mcpResources()] : [...commandsValue]
+      store.visible === "@" ? [...skillsValue, ...agentsValue, ...(filesValue || []), ...mcpResources()] : [...commandsValue]
     ).filter((x) => x.disabled !== true)
 
     const currentFilter = filter()

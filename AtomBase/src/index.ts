@@ -17,6 +17,7 @@ import { ServeCommand } from "./cli/cmd/serve"
 import { DebugCommand } from "./cli/cmd/debug"
 import { StatsCommand } from "./cli/cmd/stats"
 import { McpCommand } from "./cli/cmd/mcp"
+import { SkillCommand } from "./cli/cmd/skill"
 import { GithubCommand } from "./cli/cmd/github"
 import { ExportCommand } from "./cli/cmd/export"
 import { ImportCommand } from "./cli/cmd/import"
@@ -80,6 +81,7 @@ const cli = yargs(hideBin(process.argv))
   .completion("completion", "generate shell completion script")
   .command(AcpCommand)
   .command(McpCommand)
+  .command(SkillCommand)
   .command(TuiThreadCommand)
   .command(TuiSpawnCommand)
   .command(AttachCommand)
