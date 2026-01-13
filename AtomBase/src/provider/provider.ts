@@ -36,6 +36,7 @@ import { createTogetherAI } from "@ai-sdk/togetherai"
 import { createPerplexity } from "@ai-sdk/perplexity"
 import { createVercel } from "@ai-sdk/vercel"
 import { ProviderTransform } from "./transform"
+import { createAntigravity } from "./antigravity"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -62,6 +63,8 @@ export namespace Provider {
     "@ai-sdk/vercel": createVercel,
     // @ts-ignore (TODO: kill this code so we dont have to maintain it)
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
+    // @ts-ignore - Antigravity provider for Claude/Gemini via Google OAuth
+    "@atomcli/antigravity": createAntigravity,
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
