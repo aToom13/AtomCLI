@@ -36,6 +36,7 @@ import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
+import { ChainProvider, useChain } from "./context/chain"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -142,7 +143,9 @@ export function tui(input: {
                                       <FrecencyProvider>
                                         <PromptHistoryProvider>
                                           <PromptRefProvider>
-                                            <App />
+                                            <ChainProvider>
+                                              <App />
+                                            </ChainProvider>
                                           </PromptRefProvider>
                                         </PromptHistoryProvider>
                                       </FrecencyProvider>
@@ -629,6 +632,42 @@ function App() {
       message: `AtomCLI v${evt.properties.version} is available. Run 'atomcli upgrade' to update manually.`,
       duration: 10000,
     })
+  })
+
+  // Chain event handlers
+  const chainCtx = useChain()
+
+  sdk.event.on(TuiEvent.ChainStart.type, (evt) => {
+    chainCtx.startChain(evt.properties.mode)
+  })
+
+  sdk.event.on(TuiEvent.ChainAddStep.type, (evt) => {
+    chainCtx.addStep(evt.properties.name, evt.properties.description, evt.properties.todos)
+  })
+
+  sdk.event.on(TuiEvent.ChainUpdateStep.type, (evt) => {
+    chainCtx.updateStepStatus(evt.properties.status, evt.properties.tool)
+  })
+
+  sdk.event.on(TuiEvent.ChainCompleteStep.type, (evt) => {
+    chainCtx.completeStep(evt.properties.output)
+  })
+
+  sdk.event.on(TuiEvent.ChainFailStep.type, (evt) => {
+    chainCtx.failStep(evt.properties.error)
+  })
+
+
+  sdk.event.on(TuiEvent.ChainSetTodos.type, (evt) => {
+    chainCtx.setCurrentStepTodos(evt.properties.todos)
+  })
+
+  sdk.event.on(TuiEvent.ChainTodoDone.type, (evt) => {
+    chainCtx.markTodoDone(evt.properties.todoIndex)
+  })
+
+  sdk.event.on(TuiEvent.ChainClear.type, () => {
+    chainCtx.clearChain()
   })
 
   return (

@@ -43,4 +43,65 @@ export const TuiEvent = {
       sessionID: z.string().regex(/^ses/).describe("Session ID to navigate to"),
     }),
   ),
+  // Chain events for agent task chain UI
+  ChainStart: BusEvent.define(
+    "tui.chain.start",
+    z.object({
+      mode: z.enum(["safe", "autonomous"]).default("safe"),
+    }),
+  ),
+  ChainAddStep: BusEvent.define(
+    "tui.chain.add_step",
+    z.object({
+      name: z.string(),
+      description: z.string(),
+      todos: z.array(z.object({
+        id: z.string(),
+        content: z.string(),
+        status: z.enum(["pending", "in_progress", "complete", "failed"]),
+      })).optional(),
+    }),
+  ),
+  ChainUpdateStep: BusEvent.define(
+    "tui.chain.update_step",
+    z.object({
+      status: z.enum([
+        "pending", "running", "coding", "searching_web", "searching_code",
+        "reading_file", "writing_file", "running_command", "analyzing",
+        "thinking", "complete", "failed", "retrying"
+      ]),
+      tool: z.string().optional(),
+    }),
+  ),
+  ChainCompleteStep: BusEvent.define(
+    "tui.chain.complete_step",
+    z.object({
+      output: z.string().optional(),
+    }),
+  ),
+  ChainFailStep: BusEvent.define(
+    "tui.chain.fail_step",
+    z.object({
+      error: z.string(),
+    }),
+  ),
+  ChainSetTodos: BusEvent.define(
+    "tui.chain.set_todos",
+    z.object({
+      todos: z.array(z.object({
+        id: z.string(),
+        content: z.string(),
+        status: z.enum(["pending", "in_progress", "complete", "failed"]),
+      })),
+    }),
+  ),
+  ChainTodoDone: BusEvent.define(
+    "tui.chain.todo_done",
+    z.object({
+      todoIndex: z.number(),
+    }),
+  ),
+  ChainClear: BusEvent.define("tui.chain.clear", z.object({})),
 }
+
+

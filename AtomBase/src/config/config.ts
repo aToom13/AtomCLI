@@ -202,11 +202,11 @@ export namespace Config {
       {
         cwd: dir,
       },
-    ).catch(() => {})
+    ).catch(() => { })
 
     // Install any additional dependencies defined in the package.json
     // This allows local plugins and custom tools to use external packages
-    await BunProc.run(["install"], { cwd: dir }).catch(() => {})
+    await BunProc.run(["install"], { cwd: dir }).catch(() => { })
   }
 
   const COMMAND_GLOB = new Bun.Glob("{command,commands}/**/*.md")
@@ -910,6 +910,7 @@ export namespace Config {
           // primary
           plan: Agent.optional(),
           build: Agent.optional(),
+          agent: Agent.optional(),
           // subagent
           general: Agent.optional(),
           explore: Agent.optional(),
@@ -921,6 +922,19 @@ export namespace Config {
         .catchall(Agent)
         .optional()
         .describe("Agent configuration, see https://atomcli.ai/docs/agent"),
+      agent_mode: z
+        .enum(["safe", "autonomous"])
+        .optional()
+        .describe(
+          "Agent execution mode: 'safe' requires confirmation per step, 'autonomous' runs fully without prompts"
+        ),
+      agent_retry: z
+        .object({
+          max_retries: z.number().int().positive().optional().default(3),
+          ask_user_after: z.number().int().positive().optional().default(2),
+        })
+        .optional()
+        .describe("Retry configuration for Agent mode"),
       provider: z
         .record(z.string(), Provider)
         .optional()
@@ -1077,7 +1091,7 @@ export namespace Config {
         await Bun.write(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
         await fs.unlink(path.join(Global.Path.config, "config"))
       })
-      .catch(() => {})
+      .catch(() => { })
 
     return result
   })
@@ -1172,7 +1186,7 @@ export namespace Config {
           const plugin = data.plugin[i]
           try {
             data.plugin[i] = import.meta.resolve!(plugin, configFilepath)
-          } catch (err) {}
+          } catch (err) { }
         }
       }
       return data

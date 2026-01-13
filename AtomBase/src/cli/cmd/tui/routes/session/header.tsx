@@ -6,6 +6,8 @@ import { useTheme } from "@tui/context/theme"
 import { SplitBorder } from "@tui/component/border"
 import type { AssistantMessage, Session } from "@atomcli/sdk/v2"
 import { useKeybind } from "../../context/keybind"
+import { ChainProgressBar } from "@tui/component/chain-widget"
+import { useChain } from "@tui/context/chain"
 
 const Title = (props: { session: Accessor<Session> }) => {
   const { theme } = useTheme()
@@ -30,6 +32,7 @@ const ContextInfo = (props: { context: Accessor<string | undefined>; cost: Acces
 export function Header() {
   const route = useRouteData("session")
   const sync = useSync()
+  const { chain } = useChain()
   const session = createMemo(() => sync.session.get(route.sessionID)!)
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
 
@@ -61,7 +64,8 @@ export function Header() {
   const keybind = useKeybind()
 
   return (
-    <box flexShrink={0}>
+    <box flexShrink={0} flexDirection="column">
+      {/* Title Bar */}
       <box
         paddingTop={1}
         paddingBottom={1}
@@ -100,6 +104,10 @@ export function Header() {
           </Match>
         </Switch>
       </box>
+
+      {/* Chain Progress Bar - Below Title */}
+      <ChainProgressBar chain={chain()} />
     </box>
   )
 }
+
