@@ -59,6 +59,9 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
+import { FileTree } from "@tui/component/file-tree"
+import { CodePanel } from "@tui/component/code-panel"
+import { useFileTree } from "@tui/context/file-tree"
 import parsers from "../../../../../../parsers-config.ts"
 import { Clipboard } from "../../util/clipboard"
 import { Toast, useToast } from "../../ui/toast"
@@ -885,6 +888,10 @@ export function Session() {
       }}
     >
       <box flexDirection="row">
+        {/* Left: File Tree Sidebar */}
+        <FileTree />
+
+        {/* Center: Chat Area */}
         <box flexGrow={1} paddingBottom={1} paddingTop={1} paddingLeft={2} paddingRight={2} gap={1}>
           <Show when={session()}>
             <Show when={!sidebarVisible() || !wide()}>
@@ -1031,6 +1038,9 @@ export function Session() {
           </Show>
           <Toast />
         </box>
+
+        {/* Right: Code Panel */}
+        <CodePanel />
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>

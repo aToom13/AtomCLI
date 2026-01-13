@@ -751,6 +751,8 @@ export namespace Config {
       session_parent: z.string().optional().default("<leader>up").describe("Go to parent session"),
       terminal_suspend: z.string().optional().default("ctrl+z").describe("Suspend terminal"),
       terminal_title_toggle: z.string().optional().default("none").describe("Toggle terminal title"),
+      filetree_toggle: z.string().optional().default("ctrl+b").describe("Toggle file tree sidebar"),
+      codepanel_toggle: z.string().optional().default("ctrl+e").describe("Toggle code panel"),
       tips_toggle: z.string().optional().default("<leader>h").describe("Toggle tips on home screen"),
     })
     .strict()

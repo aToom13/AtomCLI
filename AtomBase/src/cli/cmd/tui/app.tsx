@@ -37,6 +37,7 @@ import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { ChainProvider, useChain } from "./context/chain"
+import { FileTreeProvider, useFileTree } from "./context/file-tree"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -144,7 +145,9 @@ export function tui(input: {
                                         <PromptHistoryProvider>
                                           <PromptRefProvider>
                                             <ChainProvider>
-                                              <App />
+                                              <FileTreeProvider>
+                                                <App />
+                                              </FileTreeProvider>
                                             </ChainProvider>
                                           </PromptRefProvider>
                                         </PromptHistoryProvider>
@@ -289,6 +292,7 @@ function App() {
   )
 
   const connected = useConnected()
+  const fileTreeCtx = useFileTree()
   command.register(() => [
     {
       title: "Switch session",
@@ -548,6 +552,26 @@ function App() {
         dialog.clear()
       }
     },
+    {
+      title: "Toggle file tree",
+      value: "filetree.toggle",
+      keybind: "filetree_toggle",
+      category: "View",
+      onSelect: (dialog) => {
+        fileTreeCtx.toggleFileTree()
+        dialog.clear()
+      }
+    },
+    {
+      title: "Toggle code panel",
+      value: "codepanel.toggle",
+      keybind: "codepanel_toggle",
+      category: "View",
+      onSelect: (dialog) => {
+        fileTreeCtx.toggleCodePanel()
+        dialog.clear()
+      }
+    },
   ])
 
   createEffect(() => {
@@ -668,6 +692,32 @@ function App() {
 
   sdk.event.on(TuiEvent.ChainClear.type, () => {
     chainCtx.clearChain()
+  })
+
+  // File Tree event handlers
+  sdk.event.on(TuiEvent.FileTreeToggle.type, () => {
+    fileTreeCtx.toggleFileTree()
+  })
+
+  sdk.event.on(TuiEvent.FileTreeOpen.type, (evt) => {
+    fileTreeCtx.openFile(
+      evt.properties.path,
+      evt.properties.content,
+      evt.properties.language,
+      evt.properties.highlight
+    )
+  })
+
+  sdk.event.on(TuiEvent.FileTreeClose.type, (evt) => {
+    fileTreeCtx.closeFile(evt.properties.path)
+  })
+
+  sdk.event.on(TuiEvent.FileTreeDirToggle.type, (evt) => {
+    fileTreeCtx.toggleDir(evt.properties.path)
+  })
+
+  sdk.event.on(TuiEvent.CodePanelToggle.type, () => {
+    fileTreeCtx.toggleCodePanel()
   })
 
   return (

@@ -102,6 +102,41 @@ export const TuiEvent = {
     }),
   ),
   ChainClear: BusEvent.define("tui.chain.clear", z.object({})),
+
+  // File Tree events for file browser and code panel
+  FileTreeToggle: BusEvent.define("tui.filetree.toggle", z.object({})),
+  FileTreeOpen: BusEvent.define(
+    "tui.filetree.open",
+    z.object({
+      path: z.string(),
+      content: z.string().optional(),
+      language: z.string().optional(),
+      highlight: z.object({
+        startLine: z.number(),
+        endLine: z.number(),
+      }).optional(),
+    }),
+  ),
+  FileTreeClose: BusEvent.define(
+    "tui.filetree.close",
+    z.object({
+      path: z.string(),
+    }),
+  ),
+  FileTreeDirToggle: BusEvent.define(
+    "tui.filetree.dir_toggle",
+    z.object({
+      path: z.string(),
+    }),
+  ),
+  CodePanelToggle: BusEvent.define("tui.codepanel.toggle", z.object({})),
+  CodePanelSave: BusEvent.define(
+    "tui.codepanel.save",
+    z.object({
+      path: z.string(),
+      content: z.string(),
+    }),
+  ),
 }
 
 
