@@ -598,24 +598,23 @@ EOF
         
         # Add MCPs to config
         local config_file="$CONFIG_DIR/atomcli.json"
-        local tmp_config=$(mktemp)
         
-        # Read existing config and add MCPs
+        # Read existing config and add MCPs with simple names
         if [ -f "$config_file" ]; then
             # Use node to merge JSON (more reliable than sed)
             node -e "
                 const fs = require('fs');
                 const config = JSON.parse(fs.readFileSync('$config_file', 'utf8'));
                 config.mcp = config.mcp || {};
-                config.mcp['@anthropic/mcp-server-filesystem'] = {
+                config.mcp['filesystem'] = {
                     command: 'npx',
                     args: ['-y', '@anthropic/mcp-server-filesystem', process.env.HOME]
                 };
-                config.mcp['@anthropic/mcp-server-memory'] = {
+                config.mcp['memory'] = {
                     command: 'npx',
                     args: ['-y', '@anthropic/mcp-server-memory']
                 };
-                config.mcp['@anthropic/mcp-server-sequential-thinking'] = {
+                config.mcp['sequential-thinking'] = {
                     command: 'npx',
                     args: ['-y', '@anthropic/mcp-server-sequential-thinking']
                 };
