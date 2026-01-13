@@ -68,9 +68,10 @@ export namespace SystemPrompt {
             .map(([name, _]) => `  - ${name}`)
             .join("\n")
           return [
-            `<skills>`,
+            `<skills_available>`,
+            `  <!-- STRATEGY: Load these skills using 'skill' tool if your task matches the description -->`,
             skillList || "  (No skills found)",
-            `</skills>`,
+            `</skills_available>`,
             `<mcp_servers>`,
             mcpList || "  (No MCP servers connected)",
             `</mcp_servers>`
