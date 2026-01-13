@@ -599,7 +599,7 @@ EOF
         # Add MCPs to config
         local config_file="$CONFIG_DIR/atomcli.json"
         
-        # Read existing config and add MCPs with simple names
+        # Read existing config and add MCPs with correct format
         if [ -f "$config_file" ]; then
             # Use node to merge JSON (more reliable than sed)
             node -e "
@@ -607,16 +607,19 @@ EOF
                 const config = JSON.parse(fs.readFileSync('$config_file', 'utf8'));
                 config.mcp = config.mcp || {};
                 config.mcp['filesystem'] = {
-                    command: 'npx',
-                    args: ['-y', '@anthropic/mcp-server-filesystem', process.env.HOME]
+                    type: 'local',
+                    command: ['npx', '-y', '@modelcontextprotocol/server-filesystem', process.env.HOME],
+                    enabled: true
                 };
                 config.mcp['memory'] = {
-                    command: 'npx',
-                    args: ['-y', '@anthropic/mcp-server-memory']
+                    type: 'local',
+                    command: ['npx', '-y', '@modelcontextprotocol/server-memory'],
+                    enabled: true
                 };
                 config.mcp['sequential-thinking'] = {
-                    command: 'npx',
-                    args: ['-y', '@anthropic/mcp-server-sequential-thinking']
+                    type: 'local',
+                    command: ['npx', '-y', '@modelcontextprotocol/server-sequential-thinking'],
+                    enabled: true
                 };
                 fs.writeFileSync('$config_file', JSON.stringify(config, null, 2));
             " 2>/dev/null && success "Installed 3 MCP servers" || warn "Could not configure MCPs automatically"
