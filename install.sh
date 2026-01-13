@@ -369,7 +369,11 @@ setup_path() {
 setup_config() {
     step "Setting up configuration..."
     
-    # Create default config (empty - user adds MCPs via mcpadd)
+    # Create config directory
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$CONFIG_DIR/skills"
+    
+    # Create default config if doesn't exist
     if [ ! -f "$CONFIG_DIR/atomcli.json" ]; then
         cat > "$CONFIG_DIR/atomcli.json" << 'EOF'
 {
@@ -377,14 +381,250 @@ setup_config() {
 }
 EOF
         success "Created default configuration"
-        info "Use 'mcpadd' to add MCP servers"
-        info "Use 'skilladd' to add skills"
     else
         info "Configuration already exists"
     fi
+}
+
+# Interactive setup for optional features
+setup_optional_features() {
+    echo ""
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}  Optional Features${NC}"
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
     
-    # Create skills directory
-    mkdir -p "$CONFIG_DIR/skills"
+    # Check if running interactively
+    if [ ! -t 0 ]; then
+        info "Non-interactive mode: skipping optional features"
+        info "Run 'atomcli auth login' to set up manually"
+        return 0
+    fi
+    
+    # ─────────────────────────────────────────────────────────────
+    # Antigravity (Free Claude & Gemini models)
+    # ─────────────────────────────────────────────────────────────
+    echo -e "${CYAN}┌─────────────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  ${BOLD}🚀 Antigravity - Free AI Models${NC}              ${CYAN}│${NC}"
+    echo -e "${CYAN}├─────────────────────────────────────────────────┤${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}Access Claude Sonnet 4.5, Gemini 3, and more${NC} ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}completely FREE via Google OAuth.${NC}            ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}                                                 ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}Models: claude-sonnet-4-5-thinking,${NC}          ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}gemini-3-pro, gemini-2.5-flash, and more${NC}     ${CYAN}│${NC}"
+    echo -e "${CYAN}└─────────────────────────────────────────────────┘${NC}"
+    echo ""
+    
+    ENABLE_ANTIGRAVITY=false
+    read -p "Enable Antigravity (free models)? [Y/n] " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        ENABLE_ANTIGRAVITY=true
+        success "Antigravity will be enabled"
+    else
+        info "Skipping Antigravity"
+    fi
+    echo ""
+    
+    # ─────────────────────────────────────────────────────────────
+    # Default Skills
+    # ─────────────────────────────────────────────────────────────
+    echo -e "${MAGENTA}┌─────────────────────────────────────────────────┐${NC}"
+    echo -e "${MAGENTA}│${NC}  ${BOLD}📚 Default Skills${NC}                            ${MAGENTA}│${NC}"
+    echo -e "${MAGENTA}├─────────────────────────────────────────────────┤${NC}"
+    echo -e "${MAGENTA}│${NC}  ${DIM}Pre-configured skills for common tasks:${NC}      ${MAGENTA}│${NC}"
+    echo -e "${MAGENTA}│${NC}  ${DIM}• Ralph - AI assistant personality${NC}           ${MAGENTA}│${NC}"
+    echo -e "${MAGENTA}│${NC}  ${DIM}• Code Review - automatic code analysis${NC}      ${MAGENTA}│${NC}"
+    echo -e "${MAGENTA}│${NC}  ${DIM}• Git Commit - smart commit messages${NC}         ${MAGENTA}│${NC}"
+    echo -e "${MAGENTA}└─────────────────────────────────────────────────┘${NC}"
+    echo ""
+    
+    INSTALL_SKILLS=false
+    read -p "Install default skills? [Y/n] " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        INSTALL_SKILLS=true
+        success "Default skills will be installed"
+    else
+        info "Skipping default skills"
+    fi
+    echo ""
+    
+    # ─────────────────────────────────────────────────────────────
+    # MCP Servers
+    # ─────────────────────────────────────────────────────────────
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│${NC}  ${BOLD}🔧 MCP Servers (Model Context Protocol)${NC}      ${YELLOW}│${NC}"
+    echo -e "${YELLOW}├─────────────────────────────────────────────────┤${NC}"
+    echo -e "${YELLOW}│${NC}  ${DIM}Extend AtomCLI with external tools:${NC}          ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${DIM}• Filesystem - file operations${NC}               ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${DIM}• Memory - persistent context${NC}                ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${DIM}• Sequential Thinking - complex reasoning${NC}    ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}                                                 ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${DIM}(Requires Node.js 18+)${NC}                       ${YELLOW}│${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────┘${NC}"
+    echo ""
+    
+    INSTALL_MCPS=false
+    if has node; then
+        local node_major=$(node --version | cut -c2- | cut -d. -f1)
+        if [ "$node_major" -ge 18 ]; then
+            read -p "Install default MCP servers? [Y/n] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                INSTALL_MCPS=true
+                success "MCP servers will be installed"
+            else
+                info "Skipping MCP servers"
+            fi
+        else
+            warn "Node.js 18+ required for MCP servers (you have v$(node --version | cut -c2-))"
+            info "Skipping MCP servers"
+        fi
+    else
+        warn "Node.js not found - MCP servers require Node.js 18+"
+        info "Skipping MCP servers"
+    fi
+    echo ""
+    
+    # ─────────────────────────────────────────────────────────────
+    # Apply selections
+    # ─────────────────────────────────────────────────────────────
+    echo -e "${BOLD}Applying selections...${NC}"
+    echo ""
+    
+    # Apply Antigravity
+    if [ "$ENABLE_ANTIGRAVITY" = true ]; then
+        step "Configuring Antigravity plugin..."
+        
+        # Update atomcli.json to include Antigravity plugin
+        cat > "$CONFIG_DIR/atomcli.json" << 'EOF'
+{
+  "plugin": ["opencode-antigravity-auth@beta"],
+  "provider": {
+    "google": {
+      "models": {
+        "antigravity-gemini-3-pro": {
+          "name": "Gemini 3 Pro (Antigravity)",
+          "limit": { "context": 1048576, "output": 65535 }
+        },
+        "antigravity-gemini-3-flash": {
+          "name": "Gemini 3 Flash (Antigravity)",
+          "limit": { "context": 1048576, "output": 65536 }
+        },
+        "antigravity-claude-sonnet-4-5-thinking": {
+          "name": "Claude Sonnet 4.5 Thinking (Antigravity)",
+          "limit": { "context": 200000, "output": 64000 }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 2.5 Flash",
+          "limit": { "context": 1048576, "output": 65536 }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro",
+          "limit": { "context": 1048576, "output": 65536 }
+        }
+      }
+    }
+  },
+  "mcp": {}
+}
+EOF
+        success "Antigravity plugin configured"
+        info "Run 'atomcli auth login' → Google → Antigravity OAuth to authenticate"
+    fi
+    
+    # Apply Skills
+    if [ "$INSTALL_SKILLS" = true ]; then
+        step "Installing default skills..."
+        
+        # Create Ralph skill
+        cat > "$CONFIG_DIR/skills/ralph.md" << 'EOF'
+---
+name: Ralph
+description: Friendly AI coding assistant with personality
+---
+
+You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
+
+Your traits:
+- Encouraging and supportive
+- Uses casual, friendly language
+- Celebrates wins with the user
+- Explains concepts clearly
+- Occasionally uses emoji to express enthusiasm 🎉
+EOF
+        
+        # Create Code Review skill
+        cat > "$CONFIG_DIR/skills/code-review.md" << 'EOF'
+---
+name: Code Review
+description: Automated code review with best practices
+---
+
+When reviewing code, analyze for:
+1. **Security** - vulnerabilities, injection risks
+2. **Performance** - inefficiencies, memory leaks
+3. **Readability** - naming, structure, comments
+4. **Best Practices** - patterns, error handling
+5. **Tests** - coverage, edge cases
+
+Provide specific, actionable feedback with line references.
+EOF
+        
+        # Create Git Commit skill
+        cat > "$CONFIG_DIR/skills/git-commit.md" << 'EOF'
+---
+name: Git Commit
+description: Generate conventional commit messages
+---
+
+Generate commit messages following Conventional Commits format:
+
+<type>(<scope>): <description>
+
+[optional body]
+
+Types: feat, fix, docs, style, refactor, test, chore
+Keep first line under 72 characters.
+EOF
+        
+        success "Installed 3 default skills"
+    fi
+    
+    # Apply MCPs
+    if [ "$INSTALL_MCPS" = true ]; then
+        step "Installing MCP servers..."
+        
+        # Add MCPs to config
+        local config_file="$CONFIG_DIR/atomcli.json"
+        local tmp_config=$(mktemp)
+        
+        # Read existing config and add MCPs
+        if [ -f "$config_file" ]; then
+            # Use node to merge JSON (more reliable than sed)
+            node -e "
+                const fs = require('fs');
+                const config = JSON.parse(fs.readFileSync('$config_file', 'utf8'));
+                config.mcp = config.mcp || {};
+                config.mcp['@anthropic/mcp-server-filesystem'] = {
+                    command: 'npx',
+                    args: ['-y', '@anthropic/mcp-server-filesystem', process.env.HOME]
+                };
+                config.mcp['@anthropic/mcp-server-memory'] = {
+                    command: 'npx',
+                    args: ['-y', '@anthropic/mcp-server-memory']
+                };
+                config.mcp['@anthropic/mcp-server-sequential-thinking'] = {
+                    command: 'npx',
+                    args: ['-y', '@anthropic/mcp-server-sequential-thinking']
+                };
+                fs.writeFileSync('$config_file', JSON.stringify(config, null, 2));
+            " 2>/dev/null && success "Installed 3 MCP servers" || warn "Could not configure MCPs automatically"
+        fi
+        
+        info "MCP servers: filesystem, memory, sequential-thinking"
+    fi
 }
 
 # Verify installation
@@ -408,10 +648,22 @@ print_complete() {
     echo ""
     echo -e "  ${GREEN}${CHECK}${NC} ${BOLD}AtomCLI installed successfully!${NC}"
     echo ""
-    echo -e "  ${DIM}To get started, run:${NC}"
+    echo -e "  ${DIM}Next steps:${NC}"
     echo ""
-    echo -e "    ${CYAN}atomcli${NC}"
-    echo ""
+    
+    if [ "$ENABLE_ANTIGRAVITY" = true ]; then
+        echo -e "    ${CYAN}1.${NC} Authenticate for free models:"
+        echo -e "       ${CYAN}atomcli auth login${NC}"
+        echo -e "       ${DIM}→ Select Google → Antigravity OAuth${NC}"
+        echo ""
+        echo -e "    ${CYAN}2.${NC} Start coding:"
+        echo -e "       ${CYAN}atomcli${NC}"
+        echo ""
+    else
+        echo -e "    ${CYAN}atomcli${NC}"
+        echo ""
+    fi
+    
     echo -e "  ${DIM}Or restart your terminal first if atomcli is not found.${NC}"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -430,6 +682,7 @@ main_install() {
     install_binary
     setup_path
     setup_config
+    setup_optional_features
     verify_installation
     print_complete
 }
