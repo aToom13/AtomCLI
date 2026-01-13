@@ -394,8 +394,8 @@ setup_optional_features() {
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    # Check if running interactively
-    if [ ! -t 0 ]; then
+    # Check if /dev/tty is available for interactive input
+    if [ ! -e /dev/tty ]; then
         info "Non-interactive mode: skipping optional features"
         info "Run 'atomcli auth login' to set up manually"
         return 0
@@ -416,7 +416,7 @@ setup_optional_features() {
     echo ""
     
     ENABLE_ANTIGRAVITY=false
-    read -p "Enable Antigravity (free models)? [Y/n] " -n 1 -r
+    read -p "Enable Antigravity (free models)? [Y/n] " -n 1 -r REPLY < /dev/tty
     echo ""
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         ENABLE_ANTIGRAVITY=true
@@ -440,7 +440,7 @@ setup_optional_features() {
     echo ""
     
     INSTALL_SKILLS=false
-    read -p "Install default skills? [Y/n] " -n 1 -r
+    read -p "Install default skills? [Y/n] " -n 1 -r REPLY < /dev/tty
     echo ""
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         INSTALL_SKILLS=true
@@ -469,7 +469,7 @@ setup_optional_features() {
     if has node; then
         local node_major=$(node --version | cut -c2- | cut -d. -f1)
         if [ "$node_major" -ge 18 ]; then
-            read -p "Install default MCP servers? [Y/n] " -n 1 -r
+            read -p "Install default MCP servers? [Y/n] " -n 1 -r REPLY < /dev/tty
             echo ""
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 INSTALL_MCPS=true
@@ -715,7 +715,7 @@ uninstall() {
     
     # Check if running interactively
     if [ -t 0 ]; then
-        read -p "Remove config? [y/N] " -n 1 -r
+        read -p "Remove config? [y/N] " -n 1 -r REPLY < /dev/tty
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             if [ -d "$CONFIG_DIR" ]; then
