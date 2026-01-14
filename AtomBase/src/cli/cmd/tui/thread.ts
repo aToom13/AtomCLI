@@ -40,7 +40,7 @@ function createEventSource(client: RpcClient, directory: string): EventSource {
       client.on<Event>("event", (event) => {
         handler(event)
         if (event.type === "server.instance.disposed") {
-          client.call("subscribe", { directory }).catch(() => {})
+          client.call("subscribe", { directory }).catch(() => { })
         }
       }),
   }
@@ -77,6 +77,12 @@ export const TuiThreadCommand = cmd({
       .option("agent", {
         type: "string",
         describe: "agent to use",
+      })
+      .option("autonomous", {
+        type: "boolean",
+        alias: ["yolo", "a"],
+        describe: "run in autonomous mode (auto-approve safe tools within workspace)",
+        default: false,
       }),
   handler: async (args) => {
     // Resolve relative paths against PWD to preserve behavior when using --cwd flag
@@ -97,9 +103,12 @@ export const TuiThreadCommand = cmd({
     }
 
     const worker = new Worker(workerPath, {
-      env: Object.fromEntries(
-        Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-      ),
+      env: {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+        ),
+        ...(args.autonomous ? { ATOMCLI_AUTONOMOUS: "1" } : {}),
+      },
     })
     worker.onerror = (e) => {
       Log.Default.error(e)
@@ -166,7 +175,7 @@ export const TuiThreadCommand = cmd({
     })
 
     setTimeout(() => {
-      client.call("checkUpgrade", { directory: cwd }).catch(() => {})
+      client.call("checkUpgrade", { directory: cwd }).catch(() => { })
     }, 1000)
 
     await tuiPromise

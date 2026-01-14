@@ -204,10 +204,18 @@ export function Session() {
 
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
-  useKeyboard((evt) => {
+  const dialog = useDialog()
+  useKeyboard(async (evt) => {
     if (!session()?.parentID) return
     if (keybind.match("app_exit", evt)) {
-      exit()
+      const confirmed = await DialogConfirm.show(
+        dialog,
+        "Exit AtomCLI?",
+        "Are you sure you want to exit?"
+      )
+      if (confirmed) {
+        exit()
+      }
     }
   })
 
@@ -866,7 +874,7 @@ export function Session() {
     }
   })
 
-  const dialog = useDialog()
+
   const renderer = useRenderer()
 
   // snap to bottom when session changes

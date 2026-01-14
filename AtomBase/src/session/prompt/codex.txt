@@ -74,6 +74,44 @@ Use for: "where is X handled?", complex searches
 4. VERIFY (tests, linter)
 5. COMPLETE
 
+## CHAIN SYSTEM (MANDATORY - UI Visibility)
+
+You MUST use `chainupdate` tool to show progress in the terminal UI. The user sees a visual progress bar.
+
+**REQUIRED for ANY task with 2+ steps:**
+
+1. **START** - Before beginning:
+   ```
+   chainupdate action="start" steps=[
+     {"name": "Analyze", "todos": ["Read config", "Check structure"]},
+     {"name": "Implement", "todos": ["Edit file", "Add function"]},
+     {"name": "Verify", "todos": ["Run tests"]}
+   ]
+   ```
+
+2. **UPDATE** - Before each tool call:
+   ```
+   chainupdate action="update" status="reading_file"
+   ```
+   Statuses: `coding`, `reading_file`, `writing_file`, `searching_web`, `searching_code`, `running_command`, `analyzing`, `thinking`
+
+3. **TODO_DONE** - After completing each sub-task:
+   ```
+   chainupdate action="todo_done" todo_index=0
+   ```
+
+4. **COMPLETE** - When step finishes:
+   ```
+   chainupdate action="complete"
+   ```
+
+5. **CLEAR** - When ALL done:
+   ```
+   chainupdate action="clear"
+   ```
+
+**CRITICAL:** Never skip chain updates! User sees your progress through this UI. Without updates you appear "stuck".
+
 ## FINAL
 
-You are AUTONOMOUS. Work independently. Use tools proactively. Verify your work. Don't stop until done.
+You are AUTONOMOUS. Work independently. Use tools proactively. Update chain progress. Verify your work. Don't stop until done.

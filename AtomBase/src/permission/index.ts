@@ -6,6 +6,7 @@ import { Identifier } from "../id/id"
 import { Plugin } from "../plugin"
 import { Instance } from "../project/instance"
 import { Wildcard } from "../util/wildcard"
+import { Config } from "../config"
 
 export namespace Permission {
   const log = Log.create({ service: "permission" })
@@ -116,6 +117,22 @@ export namespace Permission {
     const approvedForSession = approved[input.sessionID] || {}
     const keys = toKeys(input.pattern, input.type)
     if (covered(keys, approvedForSession)) return
+
+    // Autonomous mode: auto-allow most operations within workspace
+    // Can be set via config or CLI flag (--autonomous / --yolo)
+    const config = await Config.get()
+    const agentMode = process.env.ATOMCLI_AUTONOMOUS === "1" ? "autonomous" : (config.agent_mode ?? "safe")
+
+    if (agentMode === "autonomous") {
+      // Only require permission for operations outside workspace
+      const isOutsideWorkspace = input.type === "external_directory"
+
+      if (!isOutsideWorkspace) {
+        log.info("autonomous mode: auto-allowing", { type: input.type, keys })
+        return
+      }
+      log.info("autonomous mode: requiring permission for external operation", { type: input.type })
+    }
     const info: Info = {
       id: Identifier.ascending("permission"),
       type: input.type,
@@ -131,9 +148,9 @@ export namespace Permission {
     }
 
     switch (
-      await Plugin.trigger("permission.ask", info, {
-        status: "ask",
-      }).then((x) => x.status)
+    await Plugin.trigger("permission.ask", info, {
+      status: "ask",
+    }).then((x) => x.status)
     ) {
       case "deny":
         throw new RejectedError(info.sessionID, info.id, info.callID, info.metadata)

@@ -498,6 +498,27 @@ export function Autocomplete(props: {
         onSelect: () => command.show(),
       },
       {
+        display: "/yolo",
+        aliases: ["/autonomous", "/safe"],
+        description: "toggle autonomous mode (auto-approve tools)",
+        onSelect: async () => {
+          // Toggle autonomous mode
+          const isCurrentlyAutonomous = process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
+          const newMode = isCurrentlyAutonomous ? "safe" : "autonomous"
+          try {
+            await sdk.client.config.update({ agent_mode: newMode } as any)
+            sync.set("config", "agent_mode" as any, newMode)
+            if (newMode === "autonomous") {
+              process.env.ATOMCLI_AUTONOMOUS = "1"
+            } else {
+              delete process.env.ATOMCLI_AUTONOMOUS
+            }
+          } catch (e) {
+            // Silently fail
+          }
+        },
+      },
+      {
         display: "/exit",
         aliases: ["/quit", "/q"],
         description: "exit the app",

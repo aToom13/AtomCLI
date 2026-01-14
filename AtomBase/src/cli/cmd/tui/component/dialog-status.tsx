@@ -9,7 +9,13 @@ export function DialogStatus() {
   const sync = useSync()
   const { theme } = useTheme()
 
+  // Autonomous mode state (cast to any since SDK types don't include agent_mode yet)
+  const isAutonomous = createMemo(() =>
+    process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
+  )
+
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
+
 
   const plugins = createMemo(() => {
     const list = sync.data.config.plugin ?? []
@@ -44,6 +50,26 @@ export function DialogStatus() {
         </text>
         <text fg={theme.textMuted}>esc</text>
       </box>
+
+      {/* Autonomous Mode Toggle */}
+      <box flexDirection="row" gap={1} alignItems="center">
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>Mode:</text>
+        <text
+          fg={isAutonomous() ? theme.warning : theme.success}
+          attributes={TextAttributes.BOLD}
+        >
+          {isAutonomous() ? "🚀 AUTONOMOUS" : "🛡️ SAFE"}
+        </text>
+        <text fg={theme.textMuted}>
+          (type /yolo to toggle)
+        </text>
+      </box>
+      <text fg={theme.textMuted} wrapMode="word">
+        {isAutonomous()
+          ? "Auto-approves tools within workspace. Only asks for external operations."
+          : "Asks permission for each tool call."}
+      </text>
+
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>
         <box>
           <text fg={theme.text}>{Object.keys(sync.data.mcp).length} MCP Servers</text>

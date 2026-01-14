@@ -41,14 +41,35 @@ export namespace SystemPrompt {
 
   export async function environment() {
     const project = Instance.project
+    const now = new Date()
+    const year = now.getFullYear()
+    const dateStr = now.toLocaleString("tr-TR", {
+      dateStyle: "full",
+      timeStyle: "long",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    })
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
     return [
       [
+        `## CURRENT DATE AND TIME (IMPORTANT!)`,
+        ``,
+        `**TODAY IS: ${year} - ${dateStr} (${timezone})**`,
+        ``,
+        `⚠️ CRITICAL: The current year is ${year}. When searching the web or providing information,`,
+        `always use ${year} as your reference year. Do NOT confuse dates from search results`,
+        `with the actual current date. The authoritative current date is: ${now.toISOString()}`,
+        ``,
+        `---`,
+        ``,
         `Here is some useful information about the environment you are running in:`,
         `<env>`,
         `  Working directory: ${Instance.directory}`,
         `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
         `  Platform: ${process.platform}`,
-        `  Today's date: ${new Date().toDateString()}`,
+        `  Current year: ${year}`,
+        `  Current datetime: ${dateStr} (${timezone})`,
+        `  ISO timestamp: ${now.toISOString()}`,
         `</env>`,
         `<files>`,
         `  ${project.vcs === "git" && false
@@ -63,10 +84,54 @@ export namespace SystemPrompt {
       (() => {
         return Promise.all([Skill.state(), MCP.status()]).then(([skills, mcpStatus]) => {
           const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
-          const mcpList = Object.entries(mcpStatus)
+          const connectedMcps = Object.entries(mcpStatus)
             .filter(([_, status]) => status.status === "connected")
-            .map(([name, _]) => `  - ${name}`)
-            .join("\n")
+            .map(([name, _]) => name)
+          const mcpList = connectedMcps.map(name => `  - ${name}`).join("\n")
+
+          // Build MCP usage instructions based on connected servers
+          const mcpInstructions: string[] = []
+
+          if (connectedMcps.includes("memory")) {
+            mcpInstructions.push(`
+## 🧠 Memory MCP (PROACTIVE USE REQUIRED)
+
+You have access to a persistent memory system. USE IT PROACTIVELY:
+
+**SAVE to memory when:**
+- User shares a preference ("I prefer X over Y")
+- You learn something important about the project
+- User corrects a mistake you made
+- A decision is made that should be remembered
+- You discover project-specific patterns or conventions
+
+**READ from memory when:**
+- Starting a new session (check for relevant past context)
+- Working on a topic you might have notes about
+- Before making assumptions about user preferences
+
+Example usage:
+- mcp_memory_save: key="user_preference_typescript", value="User prefers explicit type annotations"
+- mcp_memory_search: query="project conventions"
+`)
+          }
+
+          if (connectedMcps.includes("sequential-thinking")) {
+            mcpInstructions.push(`
+## 🔗 Sequential Thinking MCP
+
+Use this for complex multi-step reasoning:
+
+**USE when:**
+- Debugging a tricky issue with multiple possible causes
+- Planning a complex refactoring
+- Analyzing a problem that requires step-by-step logic
+- Making architectural decisions
+
+This helps you think through problems systematically before acting.
+`)
+          }
+
           return [
             `<skills_available>`,
             `  <!-- STRATEGY: Load these skills using 'skill' tool if your task matches the description -->`,
@@ -74,7 +139,8 @@ export namespace SystemPrompt {
             `</skills_available>`,
             `<mcp_servers>`,
             mcpList || "  (No MCP servers connected)",
-            `</mcp_servers>`
+            `</mcp_servers>`,
+            ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : [])
           ].join("\n")
         })
       })()
