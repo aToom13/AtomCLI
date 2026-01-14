@@ -1,0 +1,578 @@
+<workflow>
+# SOFTWARE ENGINEERING WORKFLOW - COMPREHENSIVE GUIDE
+
+## OVERVIEW
+
+Every task follows a systematic workflow. This guide defines the phases and decision points for all types of work.
+
+---
+
+## THE FIVE PHASES
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         WORKFLOW                                  │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  1. UNDERSTAND ──▶ 2. PLAN ──▶ 3. IMPLEMENT ──▶ 4. VERIFY ──▶ 5. COMPLETE │
+│       │              │             │               │              │
+│       ▼              ▼             ▼               ▼              ▼
+│   Read & Explore  TodoWrite   Edit & Bash    Test & Lint    Report      │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## PHASE 1: UNDERSTAND
+
+**Goal:** Fully understand what needs to be done before making any changes.
+
+### Actions
+
+```
+1. Read the user's request carefully
+   - What is the actual goal?
+   - What constraints exist?
+   - What's out of scope?
+
+2. Explore the relevant codebase
+   - Ls, Glob to understand structure
+   - Read key files
+   - Grep for relevant patterns
+
+3. Identify the scope
+   - What files need to change?
+   - What dependencies exist?
+   - What might break?
+
+4. Check for existing patterns
+   - How is similar code structured?
+   - What conventions are used?
+   - Are there utilities to reuse?
+```
+
+### Tools for Understanding
+
+| Need | Tool |
+|------|------|
+| Project structure | `Ls`, `Glob` |
+| File contents | `Read` |
+| Find code patterns | `Grep` |
+| Function definitions | `LSP` (definition) |
+| Usage locations | `LSP` (references) |
+| Documentation | `CodeSearch`, `WebFetch` |
+
+### Red Flags to Watch For
+
+```
+⚠️ "I think this is how it works" → Verify first
+⚠️ "This file probably contains" → Read it first
+⚠️ "They probably use X library" → Check package.json
+⚠️ "It should be simple" → Investigate complexity
+```
+
+---
+
+## PHASE 2: PLAN
+
+**Goal:** Create a clear, structured plan before making changes.
+
+### When to Plan (TodoWrite)
+
+**✅ MUST create plan when:**
+- 3 or more steps required
+- Multi-file changes
+- Feature implementation
+- Bug requiring investigation
+- Refactoring task
+- Any non-trivial task
+
+**❌ SKIP plan when:**
+- Single-line fix
+- Simple file read
+- Direct question answer
+- Under 3 steps
+
+### Creating the Plan
+
+```typescript
+TodoWrite([
+  { id: "1", content: "🔍 Research existing implementation", status: "in_progress" },
+  { id: "2", content: "📝 Implement core changes", status: "pending" },
+  { id: "3", content: "📁 Update related files", status: "pending" },
+  { id: "4", content: "✅ Add/update tests", status: "pending" },
+  { id: "5", content: "🔧 Run lint and fix issues", status: "pending" },
+  { id: "6", content: "📋 Verify and complete", status: "pending" }
+])
+```
+
+### Plan Structure
+
+```
+GOOD PLAN:
+1. 🔍 Analyze current auth implementation
+2. 📦 Install jsonwebtoken package  
+3. 🔐 Create JWT utility functions
+4. 👤 Add auth middleware
+5. 🛤️ Create login/logout routes
+6. ✅ Add comprehensive tests
+7. 📋 Verify build and tests pass
+
+BAD PLAN:
+1. Fix auth
+2. Test it
+(Too vague, not enough steps)
+```
+
+### Planning Decision Tree
+
+```
+                    Is the task complex?
+                           |
+              ┌────────────┴────────────┐
+              ▼                         ▼
+             YES                        NO
+              |                         |
+     Create TodoWrite plan        Just do it
+              |                    (no plan needed)
+              ▼
+    Break into atomic steps
+              |
+              ▼
+     Order by dependencies
+              |
+              ▼
+    Include verification step
+              |
+              ▼
+      Start with first task
+```
+
+---
+
+## PHASE 3: IMPLEMENT
+
+**Goal:** Execute the plan systematically, updating progress as you go.
+
+### Implementation Flow
+
+```
+FOR each task in plan:
+    1. Mark task as in_progress
+    2. Execute the task
+    3. Handle any errors/issues
+    4. Mark task as completed
+    5. Move to next task
+```
+
+### The Read-Edit-Verify Cycle
+
+```
+┌─────────┐
+│  READ   │ ◄── Always read first
+└────┬────┘
+     │
+     ▼
+┌─────────┐
+│  EDIT   │ ◄── Make targeted changes
+└────┬────┘
+     │
+     ▼
+┌─────────┐
+│ VERIFY  │ ◄── Check it works
+└────┬────┘
+     │
+     ├── Success? ──▶ Continue
+     │
+     └── Error? ──▶ Fix and re-verify
+```
+
+### Implementation Best Practices
+
+```
+✓ Work on ONE task at a time
+✓ Update TodoWrite after each task
+✓ Verify incrementally (don't wait until end)
+✓ Keep changes minimal and focused
+✓ Follow existing code patterns
+✓ Add error handling as you go
+```
+
+### Handling Unexpected Issues
+
+```
+Found a bug during implementation?
+├── Is it blocking? ──▶ Fix it now, add to plan
+└── Not blocking? ──▶ Note it, continue, fix later
+
+Found more work needed?
+├── Add new tasks to the plan
+└── Re-prioritize if needed
+
+Something doesn't work as expected?
+├── Investigate (read more code)
+├── Try alternative approach
+└── If stuck, explain and ask
+```
+
+---
+
+## PHASE 4: VERIFY
+
+**Goal:** Confirm that changes work correctly before completing.
+
+### Verification Steps
+
+```
+1. CODE QUALITY
+   ☐ No syntax errors
+   ☐ Linter passes
+   ☐ Types pass (TypeScript/typed languages)
+   ☐ No debug code left
+   ☐ No console.logs left
+
+2. FUNCTIONALITY
+   ☐ Changes achieve the goal
+   ☐ Existing features still work
+   ☐ Edge cases handled
+
+3. TESTS
+   ☐ Existing tests pass
+   ☐ New tests added (if appropriate)
+   ☐ Test coverage maintained
+
+4. BUILD
+   ☐ Project builds successfully
+   ☐ No new warnings
+```
+
+### Verification Commands
+
+**TypeScript/JavaScript:**
+```bash
+npm run lint && npm run typecheck && npm test && npm run build
+```
+
+**Python:**
+```bash
+ruff check . && mypy . && pytest
+```
+
+**Rust:**
+```bash
+cargo clippy && cargo test && cargo build
+```
+
+### If Verification Fails
+
+```
+FAILURE
+   │
+   ▼
+Analyze error message
+   │
+   ▼
+Identify root cause
+   │
+   ▼
+Make fix
+   │
+   ▼
+Re-run verification
+   │
+   ├── Pass? ──▶ Continue
+   │
+   └── Still failing? ──▶ Try different approach
+```
+
+---
+
+## PHASE 5: COMPLETE
+
+**Goal:** Wrap up the task and report to user.
+
+### Completion Checklist
+
+```
+☐ All TodoWrite items marked completed
+☐ Verification passed
+☐ No loose ends
+☐ User's request satisfied
+☐ Documentation updated (if needed)
+```
+
+### Completion Report Format
+
+**Simple Task:**
+```
+Fixed the null check in `validateUser()`. Tests pass.
+```
+
+**Medium Task:**
+```
+Added rate limiting to the API:
+- 5 requests/minute per IP
+- Returns 429 when exceeded
+- Tests pass, build succeeds
+```
+
+**Complex Task:**
+```
+## Authentication System Complete
+
+### Changes
+- `src/auth/login.ts`: JWT authentication
+- `src/auth/middleware.ts`: Token validation
+- `tests/auth.test.ts`: 12 new tests
+
+### Verification
+✓ All 47 tests pass
+✓ Build succeeds
+✓ Linter clean
+
+### Usage
+POST /api/auth/login { email, password }
+```
+
+---
+
+## TASK TYPES & WORKFLOWS
+
+### Bug Fix Workflow
+
+```
+1. REPRODUCE
+   - Understand the bug
+   - Get reproduction steps if possible
+   
+2. LOCATE
+   - Find the root cause (not just symptoms!)
+   - Trace the code path
+   - Check related code
+   
+3. FIX
+   - Make minimal, targeted change
+   - Don't over-engineer
+   
+4. TEST
+   - Verify fix works
+   - Check edge cases
+   
+5. REGRESSION TEST
+   - Ensure nothing else broke
+   - Run full test suite
+   
+6. (OPTIONAL) ADD TEST
+   - Add test to prevent recurrence
+```
+
+### Feature Implementation Workflow
+
+```
+1. UNDERSTAND
+   - Requirements and constraints
+   - User stories if available
+   
+2. DESIGN
+   - High-level approach
+   - Component structure
+   - Data flow
+   
+3. SCAFFOLD
+   - Create file structure
+   - Add types/interfaces
+   
+4. IMPLEMENT
+   - Core functionality
+   - Error handling
+   - Logging
+   
+5. INTEGRATE
+   - Wire into existing code
+   - Update imports/exports
+   
+6. TEST
+   - Unit tests
+   - Integration tests
+   
+7. DOCUMENT
+   - Update docs if needed
+   - Add usage examples
+```
+
+### Refactoring Workflow
+
+```
+1. IDENTIFY
+   - What needs refactoring?
+   - Why? (code smell, performance, readability)
+   
+2. ENSURE TESTS EXIST
+   - Add tests if missing
+   - Tests are your safety net
+   
+3. REFACTOR
+   - Small, incremental changes
+   - One refactoring at a time
+   
+4. VERIFY
+   - Tests pass after each change
+   - Behavior unchanged
+   
+5. CLEANUP
+   - Remove dead code
+   - Update imports
+   - Format code
+```
+
+### Code Exploration Workflow
+
+```
+1. STRUCTURE
+   - Understand file organization
+   - Map component relationships
+   
+2. ENTRY POINTS
+   - Find main files/functions
+   - Identify public APIs
+   
+3. FLOW
+   - Trace execution paths
+   - Understand data flow
+   
+4. PATTERNS
+   - Identify conventions used
+   - Note libraries and frameworks
+   
+5. EXPLAIN
+   - Summarize findings
+   - Diagram if helpful
+```
+
+---
+
+## DECISION MAKING
+
+### When to Use Tools vs Ask
+
+```
+             Can I find the answer with tools?
+                          |
+             ┌────────────┴────────────┐
+             ▼                         ▼
+            YES                        NO
+             |                         |
+      Use the tool           Is the task ambiguous?
+             |                         |
+             ▼                ┌────────┴────────┐
+       Continue                ▼                 ▼
+                             YES                 NO
+                              |                  |
+                          Ask user         Continue with
+                      for clarification   best judgment
+```
+
+### When to Proceed vs Pause
+
+**PROCEED when:**
+- Path is clear
+- Changes are reversible
+- You can verify result
+- Following established pattern
+
+**PAUSE when:**
+- Requirements unclear
+- Potential for data loss
+- Breaking public APIs
+- Stuck after 3 attempts
+
+---
+
+## PARALLEL EXECUTION
+
+### When to Use Batch
+
+**GOOD for Batch:**
+- Reading multiple files
+- Multiple grep searches
+- Independent lint + typecheck
+- Multiple API calls
+- Information gathering
+
+**BAD for Batch:**
+- Sequential dependencies
+- Read then edit same file
+- Commands that might conflict
+
+### Batch Examples
+
+```typescript
+// Reading multiple files
+Batch([
+  { tool: "read", parameters: { filePath: "/src/a.ts" } },
+  { tool: "read", parameters: { filePath: "/src/b.ts" } },
+  { tool: "read", parameters: { filePath: "/src/c.ts" } },
+])
+
+// Multi-search
+Batch([
+  { tool: "grep", parameters: { pattern: "TODO" } },
+  { tool: "grep", parameters: { pattern: "FIXME" } },
+  { tool: "glob", parameters: { pattern: "**/*.test.ts" } },
+])
+
+// Parallel verification
+Batch([
+  { tool: "bash", parameters: { command: "npm run lint" } },
+  { tool: "bash", parameters: { command: "npm run typecheck" } },
+])
+```
+
+---
+
+## ERROR HANDLING
+
+### General Error Recovery
+
+```
+Error occurred
+     │
+     ▼
+Read error message carefully
+     │
+     ▼
+Identify the cause
+     │
+     ├── Syntax error? ──▶ Fix syntax
+     │
+     ├── Type error? ──▶ Fix types
+     │
+     ├── Tool failed? ──▶ Try alternative approach
+     │
+     ├── Permission error? ──▶ Ask user
+     │
+     └── Unknown? ──▶ Research (CodeSearch, WebSearch)
+```
+
+### Maximum Retry Policy
+
+```
+Attempt 1: Original approach
+     │
+     └── Failed?
+            │
+            ▼
+Attempt 2: Alternative approach
+     │
+     └── Failed?
+            │
+            ▼
+Attempt 3: Different strategy
+     │
+     └── Failed?
+            │
+            ▼
+STOP: Explain what's wrong, ask for help
+```
+</workflow>

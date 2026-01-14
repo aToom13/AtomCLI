@@ -1,0 +1,504 @@
+    <git_safety>
+    # GIT SAFETY PROTOCOL - COMPREHENSIVE GUIDE
+
+## OVERVIEW
+
+Git operations can have significant, sometimes irreversible consequences. This guide defines safe practices for all Git operations.
+
+---
+
+## DANGEROUS OPERATIONS - ALWAYS ASK FIRST
+
+⚠️ **NEVER execute these without explicit user permission:**
+
+### Force Operations
+
+```bash
+❌ git push --force
+❌ git push --force-with-lease
+```
+**Risk:** Overwrites remote history. Can lose team members' work.
+
+**When user approves:**
+```bash
+# Prefer force-with-lease (slightly safer)
+git push --force-with-lease origin feature-branch
+```
+
+### Hard Resets
+
+```bash
+❌ git reset --hard
+❌ git reset --hard HEAD~n
+❌ git reset --hard <commit>
+```
+**Risk:** Permanently discards uncommitted changes.
+
+**Safe alternative:**
+```bash
+# Soft reset (keeps changes staged)
+git reset --soft HEAD~1
+
+# Mixed reset (keeps changes unstaged)
+git reset HEAD~1
+```
+
+### Destructive Cleans
+
+```bash
+❌ git clean -fd
+❌ git clean -fdx
+```
+**Risk:** Permanently deletes untracked files.
+
+**Safe alternative:**
+```bash
+# Dry run first
+git clean -fdn  # See what would be deleted
+
+# Interactive mode
+git clean -fdi  # Confirm each deletion
+```
+
+### History Rewriting
+
+```bash
+❌ git rebase (on shared branches)
+❌ git rebase -i
+❌ git commit --amend (if already pushed)
+❌ git filter-branch
+❌ git filter-repo
+```
+**Risk:** Rewrites history. Causes conflicts for all collaborators.
+
+### Branch Deletion
+
+```bash
+❌ git branch -D <branch>  # Force delete
+❌ git push origin --delete <branch>
+```
+**Risk:** Permanent deletion. May lose unmerged work.
+
+**Safe alternative:**
+```bash
+# Regular delete (fails if unmerged)
+git branch -d <branch>
+```
+
+### Skipping Safeguards
+
+```bash
+❌ git commit --no-verify
+❌ git push --no-verify
+```
+**Risk:** Bypasses pre-commit/pre-push hooks (which may check for secrets, run tests, etc.)
+
+---
+
+## SAFE OPERATIONS
+
+✓ These are generally safe to run without asking:
+
+### Read-Only Operations
+
+```bash
+✓ git status              # Current state
+✓ git diff                # Unstaged changes
+✓ git diff --cached       # Staged changes
+✓ git log                 # Commit history
+✓ git log --oneline -n 20 # Recent commits
+✓ git show <commit>       # Commit details
+✓ git branch              # List branches
+✓ git remote -v           # Remote URLs
+✓ git stash list          # Saved stashes
+```
+
+### Branch Operations
+
+```bash
+✓ git checkout <branch>       # Switch branches
+✓ git checkout -b <new>       # Create and switch
+✓ git switch <branch>         # Modern switch
+✓ git switch -c <new>         # Modern create and switch
+```
+
+### Staging Operations
+
+```bash
+✓ git add <specific-file>     # Stage specific file
+✓ git add -p                  # Interactive staging
+✓ git restore --staged <file> # Unstage file
+```
+
+### Commit Operations
+
+```bash
+✓ git commit -m "message"     # Commit staged changes
+✓ git commit --amend          # ONLY if not pushed yet
+```
+
+### Sync Operations
+
+```bash
+✓ git fetch                   # Download remote changes
+✓ git pull                    # Fetch and merge
+✓ git push                    # Push (non-force)
+```
+
+### Stash Operations
+
+```bash
+✓ git stash                   # Save changes temporarily
+✓ git stash pop               # Restore and remove
+✓ git stash apply             # Restore and keep
+✓ git stash drop              # Remove specific stash
+```
+
+---
+
+## COMMIT GUIDELINES
+
+### When to Commit
+
+**DO commit when:**
+- User explicitly asks
+- Completing a logical unit of work
+- Before switching to unrelated changes
+- Before risky operations (as savepoint)
+
+**DON'T commit when:**
+- Code doesn't work yet
+- Tests are failing
+- Debug code is present
+- User hasn't approved
+
+### Before Every Commit
+
+Run this verification sequence:
+
+```bash
+# 1. Check what's changed
+git status
+
+# 2. Review the diff
+git diff --cached
+
+# 3. Check for secrets
+git diff --cached | grep -E "(password|secret|api_key|token)"
+
+# 4. Review commit message style
+git log --oneline -5
+```
+
+### Commit Message Format
+
+```
+<type>(<scope>): <brief description>
+
+[Optional body with more details]
+
+[Optional footer with references]
+
+🤖 Generated with AtomCLI
+```
+
+**Types:**
+| Type | Description | Example |
+|------|-------------|---------|
+| `feat` | New feature | `feat(auth): add password reset flow` |
+| `fix` | Bug fix | `fix(api): handle null response` |
+| `refactor` | Code restructuring | `refactor(utils): extract validation` |
+| `docs` | Documentation | `docs(readme): add setup instructions` |
+| `test` | Adding tests | `test(auth): add login edge cases` |
+| `chore` | Maintenance | `chore(deps): update dependencies` |
+| `style` | Formatting | `style: fix indentation` |
+| `perf` | Performance | `perf(query): add database index` |
+
+**Good Examples:**
+```
+feat(auth): implement JWT token refresh
+
+- Add refresh endpoint at /api/auth/refresh
+- Token expires after 1 hour
+- Refresh token valid for 7 days
+
+Closes #123
+🤖 Generated with AtomCLI
+```
+
+```
+fix(payment): handle declined cards gracefully
+
+The checkout was crashing when cards were declined because
+we weren't catching the PaymentError exception.
+
+🤖 Generated with AtomCLI
+```
+
+**Bad Examples:**
+```
+❌ "Fixed stuff"
+❌ "WIP"
+❌ "changes"
+❌ "update code"
+❌ "fix bug"
+```
+
+---
+
+## STAGING FILES
+
+### Best Practice: Stage Specific Files
+
+```bash
+# GOOD: Stage specific files
+git add src/auth/handler.ts
+git add src/auth/middleware.ts
+git add tests/auth.test.ts
+```
+
+### Avoid: Stage Everything
+
+```bash
+# RISKY: May include unwanted files
+❌ git add .
+❌ git add -A
+❌ git add *
+```
+
+### Check What's Staged
+
+```bash
+# Before committing, always verify
+git status
+git diff --cached
+```
+
+---
+
+## THINGS TO NEVER COMMIT
+
+### Secrets and Credentials
+
+```
+❌ API keys
+❌ Passwords
+❌ Access tokens
+❌ Private keys (.pem, .key)
+❌ OAuth client secrets
+❌ Database connection strings with passwords
+❌ .env files (use .env.example instead)
+```
+
+**Check before commit:**
+```bash
+git diff --cached | grep -iE "(password|secret|key|token|auth)"
+```
+
+### Build Artifacts
+
+```
+❌ node_modules/
+❌ dist/
+❌ build/
+❌ .next/
+❌ __pycache__/
+❌ *.pyc
+❌ target/ (Rust)
+❌ vendor/ (unless intentional)
+```
+
+### IDE and System Files
+
+```
+❌ .idea/
+❌ .vscode/ (usually)
+❌ *.swp
+❌ .DS_Store
+❌ Thumbs.db
+```
+
+### Debug/Temp Files
+
+```
+❌ *.log
+❌ *.tmp
+❌ debug.*
+❌ test-output/
+```
+
+---
+
+## PULL REQUEST WORKFLOW
+
+### Creating a PR
+
+```bash
+# 1. Make sure you're on a feature branch
+git branch  # Should NOT be main/master
+
+# 2. Check your changes
+git status
+git log --oneline origin/main..HEAD
+
+# 3. Push your branch
+git push -u origin feature/my-feature
+
+# 4. Create PR (if gh CLI available)
+gh pr create \
+  --title "feat(auth): add password reset" \
+  --body "## Changes\n- Added reset endpoint\n- Added email service" \
+  --base main
+```
+
+### Before Submitting
+
+```
+☐ All tests pass
+☐ Linter passes
+☐ Build succeeds
+☐ PR description is clear
+☐ No debug code
+☐ No console.logs
+☐ No merge conflicts
+```
+
+---
+
+## MERGE CONFLICTS
+
+### When You Encounter Conflicts
+
+```
+1. DON'T PANIC
+   Conflicts are normal and fixable
+
+2. UNDERSTAND THE CONFLICT
+   Look at the conflict markers:
+   <<<<<<< HEAD
+   [Your changes]
+   =======
+   [Their changes]
+   >>>>>>> branch-name
+
+3. MAKE AN INFORMED DECISION
+   - Which version is correct?
+   - Should I merge both?
+   - Do I need context from the other developer?
+
+4. RESOLVE COMPLETELY
+   Remove ALL conflict markers
+
+5. TEST THE RESULT
+   npm test  # Ensure tests pass
+
+6. COMMIT THE MERGE
+   git add .
+   git commit -m "merge: resolve conflicts with main"
+```
+
+### Resolution Strategies
+
+```bash
+# Keep ours (current branch)
+git checkout --ours <file>
+
+# Keep theirs (incoming branch)
+git checkout --theirs <file>
+
+# Manual resolution
+# Edit the file, remove markers, save
+```
+
+---
+
+## BRANCH NAMING
+
+### Recommended Format
+
+```
+<type>/<brief-description>
+```
+
+### Examples
+
+```bash
+# Features
+feature/user-authentication
+feat/add-payment-processing
+feature/dark-mode
+
+# Bug fixes
+fix/null-pointer-login
+bugfix/cart-calculation
+fix/memory-leak
+
+# Refactoring
+refactor/extract-utils
+refactor/simplify-api
+
+# Documentation
+docs/api-reference
+docs/setup-guide
+
+# Chores/Maintenance
+chore/update-dependencies
+chore/ci-pipeline
+```
+
+---
+
+## GIT CONFIG SAFETY
+
+### Never Modify Without Permission
+
+```bash
+❌ git config user.name "..."
+❌ git config user.email "..."
+❌ git config core.*
+❌ git remote set-url origin ...
+```
+
+**These affect:**
+- How commits are attributed
+- How Git behaves
+- Where pushes go
+
+**Always ask first:** "Can I update your git config to...?"
+
+---
+
+## RECOVERY PROCEDURES
+
+### Accidentally Deleted Uncommitted Changes
+
+```bash
+# If you just ran git checkout or reset
+# Check if changes are in stash
+git stash list
+
+# Or check reflog for recent commits
+git reflog
+```
+
+### Accidentally Committed to Wrong Branch
+
+```bash
+# If not pushed yet:
+git reset HEAD~1  # Undo commit, keep changes
+git stash         # Stash changes
+git checkout correct-branch
+git stash pop     # Apply changes
+git commit        # Commit on correct branch
+```
+
+### Need to Undo a Pushed Commit
+
+```bash
+# Create a revert commit (safe, doesn't rewrite history)
+git revert <commit-hash>
+git push
+
+# DON'T use reset/force-push unless absolutely necessary
+```
+</git_safety>

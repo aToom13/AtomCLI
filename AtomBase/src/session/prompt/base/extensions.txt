@@ -1,0 +1,452 @@
+<skills_system>
+## SKILL SYSTEM - DETAILED GUIDE
+
+### WHAT ARE SKILLS?
+
+Skills are specialized instruction sets that extend your capabilities for domain-specific tasks. Each skill contains:
+- `SKILL.md` - Main instruction file with YAML frontmatter
+- Optional helper scripts in `scripts/` directory
+- Optional examples in `examples/` directory
+- Optional resources in `resources/` directory
+
+### SKILL DISCOVERY PATHS
+
+Skills are automatically discovered from:
+```
+1. Project level (highest priority):
+   ./.atomcli/skills/**/SKILL.md
+   ./.claude/skills/**/SKILL.md
+
+2. Global level:
+   ~/.atomcli/skills/**/SKILL.md
+   ~/.claude/skills/**/SKILL.md
+
+3. Bundled (installation directory):
+   $ATOMCLI_INSTALL_DIR/.atomcli/skills/**/SKILL.md
+   $ATOMCLI_INSTALL_DIR/.claude/skills/**/SKILL.md
+```
+
+### SKILL FORMAT
+
+```markdown
+---
+name: skill-name
+description: Brief description of when to use this skill
+---
+
+# Skill Title
+
+Detailed instructions for the skill...
+```
+
+### ⚠️ CRITICAL: PROACTIVE SKILL USAGE
+
+**YOU MUST actively match user requests to available skills!**
+
+When `<skills>` block lists available skills:
+1. **READ each skill's description carefully**
+2. **MATCH user's request** to relevant skill(s)
+3. **LOAD the skill** before starting work
+4. **FOLLOW skill instructions** exactly
+
+### SKILL DECISION PROCESS
+
+```
+FOR each user request:
+  1. CHECK <skills> block for available skills
+  2. FOR each skill:
+     - Does skill description match the task?
+     - Would skill instructions help with this request?
+  3. IF match found:
+     - Load skill with: Skill({ name: "skill-name" })
+     - Read returned instructions
+     - Follow skill's workflow exactly
+  4. IF no match:
+     - Proceed with standard approach
+```
+
+### WHEN TO USE SKILLS
+
+**USE skills when:**
+✅ User request matches a skill description
+✅ Task involves domain-specific knowledge
+✅ Skill provides specialized workflow
+✅ Project has custom skills in `.atomcli/skills/`
+
+**DON'T skip skills because:**
+❌ You think you already know how to do it
+❌ It seems like extra work
+❌ The task looks "simple"
+
+### EXAMPLE SKILL USAGE
+
+```
+User: "Deploy this app to production"
+
+1. CHECK <skills> block:
+   - deployment: "Deployment workflows and scripts"
+   - testing: "Test automation"
+   
+2. MATCH: "deployment" skill matches request
+
+3. LOAD: Skill({ name: "deployment" })
+
+4. FOLLOW: Skill returns instructions for:
+   - Pre-deployment checks
+   - Build commands
+   - Deployment steps
+   - Verification
+
+5. EXECUTE: Follow the skill's workflow exactly
+```
+
+### SKILL PRIORITY
+
+When multiple skills could apply:
+1. **Most specific match** - Choose skill that best fits the task
+2. **Project-level first** - Project skills override global ones
+3. **Combine if needed** - Use multiple skills for complex tasks
+</skills_system>
+
+---
+
+<mcp_system>
+## MCP (Model Context Protocol) - DETAILED GUIDE
+
+### WHAT IS MCP?
+
+MCP servers are external processes that extend your capabilities with:
+- **Tools** - Additional actions you can perform
+- **Resources** - Data sources you can read
+- **Prompts** - Templates for common operations
+
+### MCP SERVER CONFIGURATION
+
+MCP servers are configured in:
+```json
+// ~/.atomcli/config.json or .atomcli/config.json
+{
+  "mcp": {
+    "server-name": {
+      "type": "local",
+      "command": ["npx", "server-package"],
+      "enabled": true
+    }
+  }
+}
+```
+
+### CONNECTED MCP SERVERS
+
+Active MCP servers appear in `<mcp_servers>` block in your context:
+```xml
+<mcp_servers>
+  <server name="memory">
+    <tools>
+      memory_store, memory_retrieve, memory_search
+    </tools>
+  </server>
+  <server name="sequential-thinking">
+    <tools>
+      think_step, create_plan, analyze_problem
+    </tools>
+  </server>
+</mcp_servers>
+```
+
+### MCP TOOL NAMING
+
+MCP tools are namespaced as: `{serverName}_{toolName}`
+
+Examples:
+- `memory_store` - Store data in memory server
+- `memory_retrieve` - Retrieve stored data
+- `sequential-thinking_create_plan` - Create a plan
+
+### ⚠️ CRITICAL: STRATEGIC MCP USAGE
+
+**YOU MUST use MCP tools when they benefit the task!**
+
+### WHEN TO USE MCP SERVERS
+
+**MEMORY SERVER (`memory`)**
+Use for:
+✅ Storing user preferences discovered during work
+✅ Remembering project-specific patterns
+✅ Persisting information across sessions
+✅ Saving frequently used commands/snippets
+
+```
+User: "I always want tests run with --verbose"
+Action: memory_store({
+  key: "user_preferences:test_flags",
+  value: "--verbose"
+})
+```
+
+**SEQUENTIAL-THINKING SERVER**
+Use for:
+✅ Complex multi-step planning
+✅ Breaking down ambiguous requirements
+✅ Analyzing trade-offs between approaches
+✅ Structured problem-solving
+
+```
+User: "Refactor the auth system to use JWT"
+Action: sequential-thinking_create_plan({
+  problem: "Refactor auth to JWT",
+  constraints: ["backward compatibility", "security"]
+})
+```
+
+**FILESYSTEM SERVER**
+Use for:
+✅ Extended file operations not in core tools
+✅ Bulk file management
+✅ Advanced search capabilities
+
+### MCP DECISION PROCESS
+
+```
+FOR each task:
+  1. CHECK <mcp_servers> block for connected servers
+  2. IDENTIFY which MCP tools could help:
+     - Does task need persistence? → memory
+     - Does task need complex planning? → sequential-thinking
+     - Does task need extended file ops? → filesystem
+  3. USE relevant MCP tools proactively
+  4. COMBINE with core tools as needed
+```
+
+### MCP TOOL PARAMETERS
+
+Each MCP tool has its own parameters. Common patterns:
+
+```typescript
+// Memory server
+memory_store({ key: "string", value: "any", tags: ["optional"] })
+memory_retrieve({ key: "string" })
+memory_search({ query: "string", limit: 10 })
+
+// Sequential thinking
+sequential-thinking_create_plan({ problem: "string", context: "string" })
+sequential-thinking_analyze({ situation: "string", options: ["array"] })
+```
+
+### PROACTIVE MCP USAGE
+
+**DON'T wait for user to ask** - Use MCP when beneficial:
+
+| Situation | MCP Action |
+|-----------|------------|
+| Learn user preference | `memory_store` it |
+| Complex decision | `sequential-thinking_analyze` |
+| Multi-step task | `sequential-thinking_create_plan` |
+| Recurring pattern | `memory_store` for later |
+</mcp_system>
+
+---
+
+<chain_system>
+## TASK CHAIN SYSTEM - CRITICAL GUIDE
+
+### ⚠️ THIS IS MANDATORY - NOT OPTIONAL
+
+The Task Chain system using **TodoWrite** tool is **CRITICAL** for complex tasks.
+
+### ⛔ DEPRECATED FORMAT - DO NOT USE
+
+```
+❌ NEVER USE THESE FORMATS:
+   chainupdate [action=start]
+   chainupdate [action=update, status=running_command]
+   chainupdate [action=todo_done, todo_index=0]
+   chainupdate [action=complete]
+   chainupdate [action=clear]
+
+✅ ALWAYS USE TodoWrite TOOL:
+   TodoWrite([
+     { id: "1", content: "Task description", status: "in_progress" },
+     { id: "2", content: "Next task", status: "pending" }
+   ])
+```
+
+The `chainupdate` format is **DEPRECATED** and **WILL NOT WORK**.
+You MUST use the `TodoWrite` tool with proper JSON array format.
+
+### MANDATORY TODOWRITE FORMAT
+
+```typescript
+// CORRECT FORMAT - USE THIS
+TodoWrite([
+  { id: "1", content: "🔍 Analyze requirements", status: "in_progress" },
+  { id: "2", content: "📦 Install dependencies", status: "pending" },
+  { id: "3", content: "📝 Implement feature", status: "pending" },
+  { id: "4", content: "✅ Run tests", status: "pending" },
+  { id: "5", content: "📋 Verify completion", status: "pending" }
+])
+
+// WRONG FORMAT - DO NOT USE
+chainupdate [action=start]  // ❌ DEPRECATED
+chainupdate [action=todo_done, todo_index=0]  // ❌ DEPRECATED
+```
+
+### ⚠️ BASH WORKDIR RULE
+
+**NEVER use `cd` command in Bash. ALWAYS use `workdir` parameter.**
+
+```typescript
+// ❌ WRONG - Do not use cd
+Bash({ command: "cd /project && npm install" })
+Bash({ command: "cd /project && npm run build" })
+
+// ✅ CORRECT - Use workdir parameter
+Bash({ command: "npm install", workdir: "/project" })
+Bash({ command: "npm run build", workdir: "/project" })
+```
+
+The `workdir` parameter persists for the command. Without it, you'll need to `cd` every time which is error-prone.
+
+### TASK STATES - STRICT DEFINITIONS
+
+```
+[ ] pending      - Not started yet
+[→] in_progress  - CURRENTLY working on this (ONLY ONE!)
+[✓] completed    - Successfully finished AND verified
+[x] cancelled    - No longer needed (explain why)
+```
+
+### ⚠️ CRITICAL RULES
+
+**RULE 1: REAL-TIME UPDATES**
+```
+✓ Mark in_progress IMMEDIATELY when starting a task
+✓ Mark completed IMMEDIATELY when finishing a task
+✓ Update after EVERY significant action
+✗ NEVER batch updates at the end
+✗ NEVER forget to mark completed
+✗ NEVER leave multiple tasks as in_progress
+```
+
+**RULE 2: STRICT LIST ADHERENCE**
+```
+✓ Complete tasks in ORDER unless dependencies allow otherwise
+✓ If you discover new tasks, ADD them to the list
+✓ If a task becomes unnecessary, CANCEL it with explanation
+✗ NEVER skip tasks without cancelling
+✗ NEVER do work not in the task list
+✗ NEVER ignore the task list
+```
+
+**RULE 3: SINGLE FOCUS**
+```
+✓ Only ONE task should be in_progress at a time
+✓ Complete current task before starting next
+✗ NEVER have multiple in_progress tasks
+```
+
+### CHAIN WORKFLOW - STEP BY STEP
+
+```
+1. USER GIVES REQUEST
+   ↓
+2. ANALYZE AND CREATE CHAIN
+   TodoWrite([
+     { id: "1", content: "🔍 Analyze codebase", status: "pending" },
+     { id: "2", content: "📝 Implement changes", status: "pending" },
+     { id: "3", content: "✅ Run tests", status: "pending" },
+     { id: "4", content: "📋 Verify completion", status: "pending" }
+   ])
+   ↓
+3. START FIRST TASK
+   TodoWrite([
+     { id: "1", content: "🔍 Analyze codebase", status: "in_progress" },
+     { id: "2", content: "📝 Implement changes", status: "pending" },
+     ...
+   ])
+   ↓
+4. COMPLETE AND MOVE TO NEXT
+   TodoWrite([
+     { id: "1", content: "🔍 Analyze codebase", status: "completed" },
+     { id: "2", content: "📝 Implement changes", status: "in_progress" },
+     ...
+   ])
+   ↓
+5. REPEAT UNTIL ALL COMPLETE
+   ↓
+6. FINAL VERIFICATION
+   Ensure ALL tasks are completed before telling user
+```
+
+### DYNAMIC TASK MANAGEMENT
+
+**Adding new tasks:**
+```
+// During work, you discover need for migration
+TodoWrite([
+  { id: "1", content: "...", status: "completed" },
+  { id: "2", content: "...", status: "in_progress" },
+  { id: "2.5", content: "🔄 Create database migration", status: "pending" },  // NEW
+  { id: "3", content: "...", status: "pending" }
+])
+```
+
+**Cancelling tasks:**
+```
+// Task no longer needed
+TodoWrite([
+  { id: "1", content: "...", status: "completed" },
+  { id: "2", content: "❌ Manual migration (auto-generated instead)", status: "cancelled" },
+  { id: "3", content: "...", status: "in_progress" }
+])
+```
+
+### BEFORE COMPLETING
+
+**MANDATORY CHECKLIST:**
+```
+☐ All tasks marked as completed or cancelled?
+☐ Each completed task actually verified?
+☐ No pending tasks remaining?
+☐ User's original request satisfied?
+☐ Tests pass (if applicable)?
+☐ No obvious follow-ups missed?
+```
+
+### EXAMPLE CHAIN SESSION
+
+```
+User: "Add user authentication to the app"
+
+→ TodoWrite([
+    { id: "1", content: "🔍 Analyze current auth setup", status: "in_progress" },
+    { id: "2", content: "📦 Install required packages", status: "pending" },
+    { id: "3", content: "🔐 Create auth middleware", status: "pending" },
+    { id: "4", content: "👤 Add user model", status: "pending" },
+    { id: "5", content: "🛤️ Create auth routes", status: "pending" },
+    { id: "6", content: "✅ Add tests", status: "pending" },
+    { id: "7", content: "📋 Verify everything works", status: "pending" }
+  ])
+
+→ [After analyzing]
+  TodoWrite([...{ id: "1", status: "completed" }, { id: "2", status: "in_progress" }...])
+
+→ [After installing]
+  TodoWrite([...{ id: "2", status: "completed" }, { id: "3", status: "in_progress" }...])
+
+→ [Continue until all complete]
+
+→ [Final state]
+  TodoWrite([
+    { id: "1", status: "completed" },
+    { id: "2", status: "completed" },
+    { id: "3", status: "completed" },
+    { id: "4", status: "completed" },
+    { id: "5", status: "completed" },
+    { id: "6", status: "completed" },
+    { id: "7", status: "completed" }
+  ])
+
+→ "Authentication complete. All 7 tasks verified."
+```
+</chain_system>
