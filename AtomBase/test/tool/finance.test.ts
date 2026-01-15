@@ -177,31 +177,31 @@ describe("finance.technical", () => {
 
 describe("finance.logic", () => {
     describe("applySeniorLogic", () => {
-        const mockTechnical: TechnicalAnalysis = {
+        const mockTechnical = {
             rsi: 50,
-            rsiSignal: "Neutral",
-            rsiDivergence: null,
+            rsiSignal: "NEUTRAL" as const,
+            rsiDivergence: "none",
             macd: 0,
             macdSignal: 0,
             macdHistogram: 0,
-            macdTrend: "Neutral",
+            macdTrend: "BULLISH" as const,
             bbUpper: 110,
             bbMiddle: 100,
             bbLower: 90,
-            bbSignal: "Middle",
+            bbSignal: "NEUTRAL" as const,
             sma20: 100,
             sma50: 98,
             sma200: 95,
+            ema12: 101,
+            ema26: 99,
             vwap: 99,
-            vwapSignal: "Above",
-            atr: 5,
-            trend: "SIDEWAYS",
-            volumeTrend: "STABLE",
-            price: 100
+            vwapSignal: "BULLISH" as const,
+            trend: "SIDEWAYS" as const,
+            volumeTrend: "NORMAL" as const
         }
 
         test("calculates risk score correctly", () => {
-            const result = applySeniorLogic(mockTechnical, null, 0)
+            const result = applySeniorLogic(mockTechnical as any, undefined, 0)
 
             expect(result).toBeDefined()
             expect(typeof result.riskScore).toBe("number")
@@ -213,10 +213,10 @@ describe("finance.logic", () => {
             const highRiskTechnical = {
                 ...mockTechnical,
                 rsi: 85, // Overbought
-                rsiSignal: "Overbought"
+                rsiSignal: "OVERBOUGHT" as const
             }
 
-            const result = applySeniorLogic(highRiskTechnical, null, 0)
+            const result = applySeniorLogic(highRiskTechnical as any, undefined, 0)
             // Risk score should increase with overbought RSI
             expect(result.riskScore).toBeGreaterThanOrEqual(0)
         })
@@ -285,7 +285,7 @@ describe("finance.logic", () => {
             expect(negativeFunding.signal).toBeDefined()
 
             // Neutral funding
-            const neutralFunding = analyzeFunding(0.001, "SIDEWAYS", "NORMAL")
+            const neutralFunding = analyzeFunding(0.001, "UP", "NORMAL")
             expect(neutralFunding.signal).toBeDefined()
         })
     })
@@ -330,12 +330,138 @@ describe("symbol normalization", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// INTEGRATION TEST PLACEHOLDER
+// API CONNECTIVITY TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe("finance integration", () => {
-    test.skip("full analysis flow (requires API)", async () => {
-        // This test would require mocking the entire Provider and fetch system
-        // Skipped for unit tests, can be run in integration test suite
+const API_ENDPOINTS = {
+    binanceSpot: "https://api.binance.com/api/v3/ping",
+    binanceFutures: "https://fapi.binance.com/fapi/v1/ping",
+    yahooFinance: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=1d",
+    coinGecko: "https://api.coingecko.com/api/v3/ping",
+    fearGreed: "https://api.alternative.me/fng/?limit=1",
+}
+
+describe("finance.api.connectivity", () => {
+    test("Binance Spot API is accessible", async () => {
+        try {
+            const response = await fetch(API_ENDPOINTS.binanceSpot)
+            expect(response.ok).toBe(true)
+            const data = await response.json()
+            expect(data).toBeDefined()
+            console.log("✓ Binance Spot API: OK")
+        } catch (error) {
+            console.error("✗ Binance Spot API: FAILED", error)
+            throw error
+        }
+    })
+
+    test("Binance Futures API is accessible", async () => {
+        try {
+            const response = await fetch(API_ENDPOINTS.binanceFutures)
+            expect(response.ok).toBe(true)
+            const data = await response.json()
+            expect(data).toBeDefined()
+            console.log("✓ Binance Futures API: OK")
+        } catch (error) {
+            console.error("✗ Binance Futures API: FAILED", error)
+            throw error
+        }
+    })
+
+    test("Yahoo Finance API is accessible", async () => {
+        try {
+            const response = await fetch(API_ENDPOINTS.yahooFinance, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json"
+                }
+            })
+            expect(response.ok).toBe(true)
+            const data = await response.json()
+            expect(data?.chart?.result).toBeDefined()
+            console.log("✓ Yahoo Finance API: OK")
+        } catch (error) {
+            console.error("✗ Yahoo Finance API: FAILED", error)
+            throw error
+        }
+    })
+
+    test("CoinGecko API is accessible", async () => {
+        try {
+            const response = await fetch(API_ENDPOINTS.coinGecko)
+            expect(response.ok).toBe(true)
+            const data = await response.json()
+            expect(data?.gecko_says).toBeDefined()
+            console.log("✓ CoinGecko API: OK")
+        } catch (error) {
+            console.error("✗ CoinGecko API: FAILED", error)
+            throw error
+        }
+    })
+
+    test("Fear & Greed Index API is accessible", async () => {
+        try {
+            const response = await fetch(API_ENDPOINTS.fearGreed)
+            expect(response.ok).toBe(true)
+            const data = await response.json()
+            expect(data?.data).toBeDefined()
+            console.log("✓ Fear & Greed API: OK")
+        } catch (error) {
+            console.error("✗ Fear & Greed API: FAILED", error)
+            throw error
+        }
     })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// API DATA FETCH TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("finance.api.data", () => {
+    test("can fetch BTC price from Binance", async () => {
+        const response = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        expect(response.ok).toBe(true)
+        const data = await response.json()
+        expect(data?.symbol).toBe("BTCUSDT")
+        expect(parseFloat(data?.price)).toBeGreaterThan(0)
+        console.log(`✓ BTC Price: $${parseFloat(data.price).toLocaleString()}`)
+    })
+
+    test("can fetch ETH price from Binance", async () => {
+        const response = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
+        expect(response.ok).toBe(true)
+        const data = await response.json()
+        expect(data?.symbol).toBe("ETHUSDT")
+        expect(parseFloat(data?.price)).toBeGreaterThan(0)
+        console.log(`✓ ETH Price: $${parseFloat(data.price).toLocaleString()}`)
+    })
+
+    test("can fetch AAPL data from Yahoo Finance", async () => {
+        const response = await fetch(
+            "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=5d",
+            {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json"
+                }
+            }
+        )
+        expect(response.ok).toBe(true)
+        const data = await response.json()
+        expect(data?.chart?.result?.[0]?.meta?.symbol).toBe("AAPL")
+        console.log(`✓ AAPL Currency: ${data.chart.result[0].meta.currency}`)
+    })
+
+    test("can fetch current Fear & Greed value", async () => {
+        const response = await fetch("https://api.alternative.me/fng/?limit=1")
+        expect(response.ok).toBe(true)
+        const data = await response.json()
+        expect(data?.data?.[0]?.value).toBeDefined()
+        const value = parseInt(data.data[0].value)
+        const classification = data.data[0].value_classification
+        expect(value).toBeGreaterThanOrEqual(0)
+        expect(value).toBeLessThanOrEqual(100)
+        console.log(`✓ Fear & Greed: ${value} (${classification})`)
+    })
+})
+
