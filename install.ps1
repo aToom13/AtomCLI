@@ -109,23 +109,38 @@ function Install-Bun {
         Write-Step "Installing Bun..."
         
         try {
-            # Use official Bun installer for Windows
-            irm bun.sh/install.ps1 | iex
-            
-            # Refresh PATH
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-            
-            if (Test-Command "bun") {
-                Write-Success "Bun $(bun --version) installed"
+            # Detect if we're on Windows or Unix-like system
+            if ($IsWindows -or $env:OS -eq "Windows_NT") {
+                # Windows: Use official PowerShell installer
+                powershell -c "irm bun.sh/install.ps1 | iex" 2>&1 | Out-Null
             } else {
-                # Try adding common bun paths
+                # Linux/macOS: Use bash installer
+                bash -c "curl -fsSL https://bun.sh/install | bash" 2>&1 | Out-Null
+                
+                # Add bun to current PATH
+                $bunPath = "$env:HOME/.bun/bin"
+                if (Test-Path $bunPath) {
+                    $env:Path = "$bunPath`:$env:Path"
+                }
+            }
+            
+            # Refresh PATH for Windows
+            if ($IsWindows -or $env:OS -eq "Windows_NT") {
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "User") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "Machine")
                 $bunPath = "$env:USERPROFILE\.bun\bin"
                 if (Test-Path $bunPath) {
                     $env:Path += ";$bunPath"
                 }
             }
+            
+            if (Test-Command "bun") {
+                Write-Success "Bun $(bun --version) installed"
+            } else {
+                Write-Warning "Bun installed but not in PATH. Please restart your terminal."
+            }
         } catch {
             Write-Error "Failed to install Bun: $_"
+            Write-Info "Please install Bun manually: https://bun.sh"
             exit 1
         }
     }
