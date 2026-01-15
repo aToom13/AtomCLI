@@ -29,6 +29,9 @@
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
 ```
 
+<img src="docs/assets/Instalination.png" alt="Install Script" width="600"/>
+
+
 That's it! Run `atomcli` to start.
 
 ## ✨ Features
