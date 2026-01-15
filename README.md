@@ -28,10 +28,6 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
 ```
-
-<img src="docs/assets/Instalination.png" alt="Install Script" width="600"/>
-
-
 That's it! Run `atomcli` to start.
 
 ## ✨ Features
@@ -88,7 +84,8 @@ atomcli skill list      # List available skills
 <details>
 <summary>📸 See it in action</summary>
 <br>
-<img src="docs/assets/WorkUI.png" alt="Working Session" width="600"/>
+
+<img src="docs/assets/WorkUI.png" alt="Install Script" width="600"/>
 
 *Multi-panel layout with file tree, ralph task list, and live coding*
 </details>
