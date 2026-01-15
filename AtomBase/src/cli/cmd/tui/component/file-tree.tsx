@@ -1,7 +1,7 @@
 import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js"
 import { useTheme } from "@tui/context/theme"
 import { useFileTree } from "@tui/context/file-tree"
-import { useDirectory } from "@tui/context/directory"
+import { useSync } from "@tui/context/sync"
 import path from "path"
 import fs from "fs"
 
@@ -142,7 +142,10 @@ function FileTreeNode(props: { dirPath: string; depth: number }) {
 export function FileTree() {
     const { theme } = useTheme()
     const fileTree = useFileTree()
-    const directory = useDirectory()
+    const sync = useSync()
+
+    // Get raw directory path (not the formatted one with ~)
+    const directory = createMemo(() => sync.data.path.directory || process.cwd())
 
     // Local refresh key for manual refresh
     const [refreshKey, setRefreshKey] = createSignal(0)

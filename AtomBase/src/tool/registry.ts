@@ -24,6 +24,7 @@ import z from "zod"
 import { Plugin } from "../plugin"
 import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
+import { FinanceAnalyzeTool } from "./finance"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
@@ -110,6 +111,7 @@ export namespace ToolRegistry {
       ChainUpdateTool,
       WebSearchTool,
       CodeSearchTool,
+      FinanceAnalyzeTool,
       SkillTool,
       SkillAddTool,
       McpAddTool,

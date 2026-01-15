@@ -17,13 +17,11 @@
 [![GitHub Stars](https://img.shields.io/github/stars/aToom13/AtomCLI)](https://github.com/aToom13/AtomCLI/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/aToom13/AtomCLI)](https://github.com/aToom13/AtomCLI/issues)
 
-[English](#english) • [Türkçe](#türkçe)
+<img src="docs/assets/StartPage.png" alt="AtomCLI" width="600"/>
 
 </div>
 
 ---
-
-<a name="english"></a>
 
 ## 🚀 Quick Install
 
@@ -43,11 +41,23 @@ That's it! Run `atomcli` to start.
 
 ## 📦 Installation
 
-### One-Line Install (Recommended)
+### Linux / macOS (Recommended)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
 ```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex
+```
+
+<details>
+<summary>📸 See installation in action</summary>
+<br>
+<img src="docs/assets/Instalination.png" alt="Installation Process" width="600"/>
+</details>
 
 ### Manual Install
 
@@ -72,9 +82,15 @@ atomcli mcp list        # List MCP servers
 atomcli skill list      # List available skills
 ```
 
-### Adding MCP Servers
+<details>
+<summary>📸 See it in action</summary>
+<br>
+<img src="docs/assets/WorkUI.png" alt="Working Session" width="600"/>
 
-Add capabilities via chat:
+*Multi-panel layout with file tree, ralph task list, and live coding*
+</details>
+
+### Adding MCP Servers
 
 ```
 > Add memory-bank MCP
@@ -83,10 +99,8 @@ Add capabilities via chat:
 
 ### Adding Skills
 
-Skills provide specialized instructions:
-
 ```
-> Add this skill: https://github.com/davila7/claude-code-templates/blob/main/.../code-reviewer.md
+> Add this skill: https://github.com/.../code-reviewer.md
 ```
 
 ## 🔧 Configuration
@@ -115,48 +129,16 @@ Config file: `~/.atomcli/atomcli.json`
 | macOS ARM64 (M1/M2) | ✅      |
 | Windows (WSL)       | ✅      |
 
+## 📚 Documentation
+
+- **[Development Guide](docs/DEVELOPMENT.md)** - Build, test, contribute
+
 ---
-
-<a name="türkçe"></a>
-
-## 🇹🇷 Türkçe
-
-### Hızlı Kurulum
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
-```
-
-### Özellikler
-
-- **TUI Arayüzü** - Fare destekli etkileşimli terminal
-- **Ücretsiz Modeller** - API anahtarı olmadan kullanın (MiniMax, GLM vb.)
-- **MCP Desteği** - Model Context Protocol ile yetenekleri genişletin
-- **Skill Sistemi** - GitHub'dan veya yerel olarak özel davranışlar ekleyin
-- **Gizlilik** - Tüm veriler yerel olarak saklanır
-
-### Kaldırma
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --uninstall
-```
-
-### MCP Ekleme
-
-```
-> Memory-bank MCP'sini ekle
-> Filesystem MCP'sini ekle
-```
-
-### Skill Ekleme
-
-```
-> Bu skill'i ekle: https://github.com/.../code-reviewer.md
-```
-
 
 <div align="center">
 
-Developed by **[Atom13](https://github.com/aToom13)**
+**[⭐ Star on GitHub](https://github.com/aToom13/AtomCLI)** • **[Report Bug](https://github.com/aToom13/AtomCLI/issues)** • **[Request Feature](https://github.com/aToom13/AtomCLI/issues)**
+
+Made by [Atom13](https://github.com/aToom13)
 
 </div>
