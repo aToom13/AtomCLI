@@ -16,10 +16,11 @@ import { useToast } from "../ui/toast"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   atomcli: 0,
-  anthropic: 1,
-  "github-copilot": 2,
-  openai: 3,
-  google: 4,
+  ollama: 1,
+  anthropic: 2,
+  "github-copilot": 3,
+  openai: 4,
+  google: 5,
 }
 
 export function createDialogProviderOptions() {
@@ -35,6 +36,7 @@ export function createDialogProviderOptions() {
         value: provider.id,
         description: {
           atomcli: "(Recommended)",
+          ollama: "(Local models - No API key)",
           anthropic: "(Claude Max or API key)",
           openai: "(ChatGPT Plus/Pro or API key)",
         }[provider.id],
@@ -44,6 +46,18 @@ export function createDialogProviderOptions() {
             await sdk.client.auth.set({
               providerID: provider.id,
               auth: { type: "api", key: "public" },
+            })
+            await sdk.client.instance.dispose()
+            await sync.bootstrap()
+            dialog.replace(() => <DialogModel providerID={provider.id} />)
+            return
+          }
+
+          // Ollama - local provider, no API key needed
+          if (provider.id === "ollama") {
+            await sdk.client.auth.set({
+              providerID: provider.id,
+              auth: { type: "api", key: "ollama" },
             })
             await sdk.client.instance.dispose()
             await sync.bootstrap()

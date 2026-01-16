@@ -1784,6 +1784,18 @@ export namespace Server {
               }
             }
 
+            // Always include Ollama as a local LLM option
+            if (!disabled.has("ollama") && !filteredProviders["ollama"]) {
+              filteredProviders["ollama"] = {
+                id: "ollama",
+                name: "Ollama",
+                api: "http://localhost:11434/v1",
+                npm: "@atomcli/ollama",
+                env: ["OLLAMA_HOST"],
+                models: {},
+              }
+            }
+
             const connected = await Provider.list()
             const providers = Object.assign(
               mapValues(filteredProviders, (x) => Provider.fromModelsDevProvider(x)),
@@ -1791,7 +1803,7 @@ export namespace Server {
             )
             return c.json({
               all: Object.values(providers),
-              default: mapValues(providers, (item) => Provider.sort(Object.values(item.models))[0].id),
+              default: mapValues(providers, (item) => Provider.sort(Object.values(item.models))[0]?.id ?? ""),
               connected: Object.keys(connected),
             })
           },

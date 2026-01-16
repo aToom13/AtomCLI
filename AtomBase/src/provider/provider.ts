@@ -37,6 +37,7 @@ import { createPerplexity } from "@ai-sdk/perplexity"
 import { createVercel } from "@ai-sdk/vercel"
 import { ProviderTransform } from "./transform"
 import { createAntigravity } from "./antigravity"
+import { createOllama, detectOllama, toProviderModels } from "./ollama"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -65,6 +66,8 @@ export namespace Provider {
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
     // @ts-ignore - Antigravity provider for Claude/Gemini via Google OAuth
     "@atomcli/antigravity": createAntigravity,
+    // Ollama - Local LLM provider
+    "@atomcli/ollama": createOllama,
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
@@ -72,6 +75,7 @@ export namespace Provider {
     autoload: boolean
     getModel?: CustomModelLoader
     options?: Record<string, any>
+    models?: Record<string, Model>
   }>
 
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
@@ -114,6 +118,26 @@ export namespace Provider {
         autoload: input.models ? Object.keys(input.models).length > 0 : false,
         options: hasKey ? {} : { apiKey: "public" },
 
+      }
+    },
+    // Ollama - Auto-detect running instances and available models
+    ollama: async () => {
+      const baseURL = Env.get("OLLAMA_HOST") ?? "http://localhost:11434"
+      const { running, models } = await detectOllama(baseURL)
+
+      if (!running) {
+        return {
+          autoload: false,
+          options: {},
+        }
+      }
+
+      return {
+        autoload: models.length > 0,
+        options: {
+          baseURL: `${baseURL}/v1`,
+        },
+        models: toProviderModels(models),
       }
     },
     openai: async () => {
@@ -684,9 +708,22 @@ export namespace Provider {
         return
       }
       const match = database[providerID]
-      if (!match) return
-      // @ts-expect-error
-      providers[providerID] = mergeDeep(match, provider)
+      if (match) {
+        // @ts-expect-error
+        providers[providerID] = mergeDeep(match, provider)
+        return
+      }
+      // Provider not in database (e.g., local Ollama) - create from scratch
+      if (provider.models && Object.keys(provider.models).length > 0) {
+        providers[providerID] = {
+          id: providerID,
+          name: provider.name ?? providerID,
+          env: provider.env ?? [],
+          options: provider.options ?? {},
+          source: provider.source ?? "custom",
+          models: provider.models,
+        } as Info
+      }
     }
 
     // extend database from config
@@ -850,6 +887,7 @@ export namespace Provider {
         mergeProvider(providerID, {
           source: "custom",
           options: result.options,
+          ...(result.models ? { models: result.models } : {}),
         })
       }
     }
