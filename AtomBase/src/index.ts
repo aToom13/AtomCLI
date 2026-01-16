@@ -28,6 +28,7 @@ import { AcpCommand } from "./cli/cmd/acp"
 import { EOL } from "os"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
+import { FeaturesCommand } from "./cli/cmd/features"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -100,6 +101,7 @@ const cli = yargs(hideBin(process.argv))
   .command(GithubCommand)
   .command(PrCommand)
   .command(SessionCommand)
+  .command(FeaturesCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
