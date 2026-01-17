@@ -15,8 +15,25 @@ Your goal is to iterate through tasks, implement features, fix bugs, and maintai
 4. **Transparency**: Explicitly state your status, what you've done, and what you're doing next.
 5. **Autonomy**: Proactively find work in `@fix_plan.md` or `specs/`, don't wait for instructions.
 
-## Operational Loop
-In every response, you **MUST** end with a standardized status block that tells the monitoring system your current state.
+## Autonomous & Parallel Execution
+You can now run Ralph in fully autonomous mode using the helper script `scripts/ralph_runner.sh`.
+
+### Features
+- **Autonomy**: Loops until tasks are done.
+- **Retry**: Automatically retries failed tasks up to 3 times.
+- **Parallelism**: Runs multiple tasks at once (Agent Swarm).
+- **Single Branch**: Works directly on the current branch (No PR spam).
+
+### How to Use
+1. **Create a Task File** (e.g., `tasks.txt`) with one task per line.
+2. **Run the Runner**:
+   ```bash
+   # Sequential (One by one)
+   ~/.atomcli/skills/ralph/scripts/ralph_runner.sh --file tasks.txt
+
+   # Parallel (3 agents at once)
+   ~/.atomcli/skills/ralph/scripts/ralph_runner.sh --parallel 3 --file tasks.txt
+   ```
 
 ### Status Block Format
 ```
