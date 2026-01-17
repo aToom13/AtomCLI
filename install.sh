@@ -218,7 +218,10 @@ install_binary() {
     fi
     
     # Fallback: build from source
+    warn "No prebuilt binary available for ${OS_TYPE}-${ARCH_TYPE}"
     step "Building from source..."
+    echo -e "${DIM}    (First-time install can take 10-20 minutes on slow connections)${NC}"
+    echo ""
     
     local tmp_dir=$(mktemp -d)
     cd "$tmp_dir"
@@ -242,7 +245,7 @@ install_binary() {
     (bun install > "$deps_log" 2>&1) &
     local pid=$!
     local elapsed=0
-    local timeout_secs=300  # 5 minute timeout
+    local timeout_secs=900  # 15 minute timeout for slow connections
     
     while kill -0 $pid 2>/dev/null; do
         elapsed=$((elapsed + 1))
@@ -287,7 +290,7 @@ install_binary() {
     (bun run build --single > "$build_log" 2>&1) &
     local build_pid=$!
     local build_elapsed=0
-    local build_timeout=600  # 10 minute timeout for build
+    local build_timeout=1200  # 20 minute timeout for build
     
     while kill -0 $build_pid 2>/dev/null; do
         build_elapsed=$((build_elapsed + 1))
