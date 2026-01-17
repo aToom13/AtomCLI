@@ -67,6 +67,12 @@ cd AtomBase && bun run build
 cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
 ```
 
+### Update
+To update to the latest version:
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update
+```
+
 ### Uninstall
 
 ```bash

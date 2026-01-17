@@ -758,6 +758,45 @@ uninstall() {
     echo ""
 }
 
+# Update function
+update() {
+    print_banner
+    
+    echo -e "${CYAN}${BOLD}Updating AtomCLI...${NC}"
+    echo ""
+    
+    # Just run main install, but without re-checking basic dependencies essentially 
+    # (though re-checking is fast and safe).
+    # The key is checking if we have an existing install.
+    
+    if [ ! -x "$INSTALL_DIR/atomcli" ]; then
+        warn "AtomCLI not found. Performing fresh installation."
+    else
+        info "Found existing installation at $INSTALL_DIR/atomcli"
+    fi
+    
+    # Run main install flow
+    detect_os
+    echo -e "${DIM}  OS: ${OS_TYPE} | Arch: ${ARCH_TYPE}${NC}"
+    check_dependencies
+    
+    # Force reinstall of binary
+    install_binary
+    
+    # Setup path/config again to ensure they are correct (idempotent)
+    setup_path
+    setup_config
+    
+    verify_installation
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${GREEN}${CHECK}${NC} ${BOLD}AtomCLI updated successfully!${NC}"
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+}
+
 # Show help
 show_help() {
     echo "AtomCLI Installer"
@@ -766,16 +805,21 @@ show_help() {
     echo "  install.sh [OPTIONS]"
     echo ""
     echo "Options:"
+    echo "  --update       Update AtomCLI to the latest version"
     echo "  --uninstall    Remove AtomCLI from the system"
     echo "  --help         Show this help message"
     echo ""
     echo "Examples:"
     echo "  curl -fsSL .../install.sh | bash                      # Install"
+    echo "  curl -fsSL .../install.sh | bash -s -- --update       # Update"
     echo "  curl -fsSL .../install.sh | bash -s -- --uninstall    # Uninstall"
 }
 
 # Parse arguments and run
 case "${1:-}" in
+    --update)
+        update
+        ;;
     --uninstall|-u)
         uninstall
         ;;
