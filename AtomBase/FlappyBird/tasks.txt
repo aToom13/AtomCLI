@@ -1,0 +1,20 @@
+Create a beautiful Flappy Bird game with:
+1. Advanced HTML5 Canvas graphics with smooth animations
+2. Beautiful UI with a nice main menu
+3. Sound effects (jump, score, hit, game over)
+4. Realistic bird physics with smooth animations
+5. Animated pipes with gaps
+6. Particle effects when bird flaps
+7. Background parallax scrolling
+8. Score display with animations
+9. Game over screen with restart option
+10. Mobile touch support
+
+Create index.html with embedded CSS and JavaScript
+Create sound effects using Web Audio API (synthetic sounds)
+Use nice colors and gradients
+Add smooth animations and transitions
+Include bird wing flapping animation
+Make it self-contained in FlappyBird folder
+
+After creation, verify the game works by checking the HTML file structure.
