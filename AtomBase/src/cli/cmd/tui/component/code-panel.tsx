@@ -2,7 +2,8 @@ import { For, Show, createMemo, createSignal, createEffect, on, onCleanup } from
 import { useTheme } from "@tui/context/theme"
 import { useFileTree, type OpenFile } from "@tui/context/file-tree"
 import { useKeyboard } from "@opentui/solid"
-import { TextareaRenderable, KeyBinding, TextareaAction } from "@opentui/core"
+import { TextareaRenderable } from "@opentui/core"
+import type { KeyBinding, TextareaAction } from "@opentui/core"
 import path from "path"
 
 /**
@@ -18,7 +19,7 @@ import path from "path"
  */
 
 // Custom keybindings for code editor - Enter creates newline, not submit
-const CODE_EDITOR_KEYBINDINGS: KeyBinding<TextareaAction>[] = [
+const CODE_EDITOR_KEYBINDINGS: KeyBinding[] = [
     // Shift+Enter = newline
     { name: "return", shift: true, action: "newline" },
     // Standard navigation
@@ -175,7 +176,7 @@ export function CodePanel() {
     return (
         <Show when={shouldShow()}>
             <box
-                flexBasis="40%"
+                flexGrow={2}
                 minWidth={40}
                 backgroundColor={theme.backgroundPanel}
                 borderColor={theme.border}
@@ -253,13 +254,8 @@ export function CodePanel() {
                         textColor={theme.text}
                         focusedTextColor={theme.text}
                         cursorColor={theme.accent}
-                        lineNumbers={true}
-                        lineNumberColor={theme.textMuted}
+                        // Note: lineNumbers and onCursor props removed - not supported in current opentui version
                         keyBindings={CODE_EDITOR_KEYBINDINGS}
-                        onCursor={(e: any) => {
-                            setCursorLine(e.line ?? 1)
-                            setCursorCol(e.column ?? 1)
-                        }}
                     />
                 </Show>
 

@@ -234,9 +234,40 @@ install_binary() {
     cd AtomCLI
     
     step "Installing dependencies..."
-    bun install >/dev/null 2>&1
-    if [ $? -ne 0 ]; then
+    echo -e "${DIM}    (This may take 1-3 minutes on first install)${NC}"
+    
+    local deps_log="/tmp/atomcli_deps_$$.log"
+    
+    # Run bun install with timeout and progress indicator
+    (bun install > "$deps_log" 2>&1) &
+    local pid=$!
+    local elapsed=0
+    local timeout_secs=300  # 5 minute timeout
+    
+    while kill -0 $pid 2>/dev/null; do
+        elapsed=$((elapsed + 1))
+        if [ $elapsed -ge $timeout_secs ]; then
+            kill $pid 2>/dev/null
+            error "Dependency installation timed out after ${timeout_secs}s"
+            echo -e "${DIM}Last 10 lines of log:${NC}"
+            tail -10 "$deps_log" 2>/dev/null || echo "(no log)"
+            exit 1
+        fi
+        # Show progress every 5 seconds
+        if [ $((elapsed % 5)) -eq 0 ]; then
+            printf "\r${BLUE}◐${NC} Installing dependencies... ${DIM}(${elapsed}s)${NC}  "
+        fi
+        sleep 1
+    done
+    
+    wait $pid
+    local exit_code=$?
+    printf "\r"  # Clear progress line
+    
+    if [ $exit_code -ne 0 ]; then
         error "Failed to install dependencies"
+        echo -e "${DIM}Last 20 lines of log:${NC}"
+        tail -20 "$deps_log" 2>/dev/null || echo "(no log)"
         exit 1
     fi
     success "Installed dependencies"
@@ -252,13 +283,37 @@ install_binary() {
     echo -e "${DIM}    (This may take 2-5 minutes depending on your system)${NC}"
     echo -e "${DIM}    Build log: $build_log${NC}"
     
-    # Run build with timeout and capture output
-    if timeout 300 bun run build --single > "$build_log" 2>&1; then
+    # Run build with progress indicator (timeout command not available on macOS)
+    (bun run build --single > "$build_log" 2>&1) &
+    local build_pid=$!
+    local build_elapsed=0
+    local build_timeout=600  # 10 minute timeout for build
+    
+    while kill -0 $build_pid 2>/dev/null; do
+        build_elapsed=$((build_elapsed + 1))
+        if [ $build_elapsed -ge $build_timeout ]; then
+            kill $build_pid 2>/dev/null
+            error "Build timed out after ${build_timeout}s"
+            echo -e "${DIM}Last 20 lines of build log:${NC}"
+            tail -20 "$build_log" 2>/dev/null || echo "(no log)"
+            exit 1
+        fi
+        # Show progress every 10 seconds
+        if [ $((build_elapsed % 10)) -eq 0 ]; then
+            printf "\r${BLUE}◐${NC} Building... ${DIM}(${build_elapsed}s)${NC}  "
+        fi
+        sleep 1
+    done
+    
+    wait $build_pid
+    local build_exit=$?
+    printf "\r"  # Clear progress line
+    
+    if [ $build_exit -eq 0 ]; then
         echo -e "${YELLOW}[3/4]${NC} Build completed"
         success "Built AtomCLI"
     else
-        local exit_code=$?
-        error "Build failed (exit code: $exit_code)"
+        error "Build failed (exit code: $build_exit)"
         echo ""
         echo -e "${DIM}Last 20 lines of build log:${NC}"
         tail -20 "$build_log" 2>/dev/null || echo "(no log available)"

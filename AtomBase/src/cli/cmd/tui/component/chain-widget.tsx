@@ -98,7 +98,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             paddingRight={2}
                             paddingTop={1}
                             paddingBottom={1}
-                            flexBasis="50%"
+                            flexGrow={1}
                         >
                             <For each={props.chain!.steps}>
                                 {(step, i) => (
@@ -121,11 +121,11 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                                 paddingRight={2}
                                 paddingTop={1}
                                 paddingBottom={1}
-                                flexBasis="50%"
+                                flexGrow={1}
                                 border={["left"]}
                                 borderColor={theme.border}
                             >
-                                <text fg={theme.accent} style={{ bold: true }}>
+                                <text fg={theme.accent}>
                                     📝 Todos: {props.chain!.steps[selectedStep()!]?.name}
                                 </text>
                                 <For each={selectedStepTodos()}>
@@ -139,7 +139,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             <box
                                 paddingLeft={2}
                                 paddingTop={1}
-                                flexBasis="50%"
+                                flexGrow={1}
                             >
                                 <text fg={theme.textMuted}>
                                     ← Adıma tıkla todo görmek için

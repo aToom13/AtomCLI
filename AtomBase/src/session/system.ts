@@ -38,7 +38,7 @@ export namespace SystemPrompt {
     return [prompt]
   }
 
-  export async function environment() {
+  export async function environment(): Promise<string[]> {
     const project = Instance.project
     const now = new Date()
     const year = now.getFullYear()
@@ -49,50 +49,49 @@ export namespace SystemPrompt {
     })
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
-    return [
-      [
-        `## CURRENT DATE AND TIME (IMPORTANT!)`,
-        ``,
-        `**TODAY IS: ${year} - ${dateStr} (${timezone})**`,
-        ``,
-        `⚠️ CRITICAL: The current year is ${year}. When searching the web or providing information,`,
-        `always use ${year} as your reference year. Do NOT confuse dates from search results`,
-        `with the actual current date. The authoritative current date is: ${now.toISOString()}`,
-        ``,
-        `---`,
-        ``,
-        `Here is some useful information about the environment you are running in:`,
-        `<env>`,
-        `  Working directory: ${Instance.directory}`,
-        `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
-        `  Platform: ${process.platform}`,
-        `  Current year: ${year}`,
-        `  Current datetime: ${dateStr} (${timezone})`,
-        `  ISO timestamp: ${now.toISOString()}`,
-        `</env>`,
-        `<files>`,
-        `  ${project.vcs === "git" && false
-          ? await Ripgrep.tree({
-            cwd: Instance.directory,
-            limit: 200,
-          })
-          : ""
-        }`,
-        `</files>`,
-      ].join("\n"),
-      (() => {
-        return Promise.all([Skill.state(), MCP.status()]).then(([skills, mcpStatus]) => {
-          const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
-          const connectedMcps = Object.entries(mcpStatus)
-            .filter(([_, status]) => status.status === "connected")
-            .map(([name, _]) => name)
-          const mcpList = connectedMcps.map(name => `  - ${name}`).join("\n")
+    const envBlock = [
+      `## CURRENT DATE AND TIME (IMPORTANT!)`,
+      ``,
+      `**TODAY IS: ${year} - ${dateStr} (${timezone})**`,
+      ``,
+      `⚠️ CRITICAL: The current year is ${year}. When searching the web or providing information,`,
+      `always use ${year} as your reference year. Do NOT confuse dates from search results`,
+      `with the actual current date. The authoritative current date is: ${now.toISOString()}`,
+      ``,
+      `---`,
+      ``,
+      `Here is some useful information about the environment you are running in:`,
+      `<env>`,
+      `  Working directory: ${Instance.directory}`,
+      `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
+      `  Platform: ${process.platform}`,
+      `  Current year: ${year}`,
+      `  Current datetime: ${dateStr} (${timezone})`,
+      `  ISO timestamp: ${now.toISOString()}`,
+      `</env>`,
+      `<files>`,
+      `  ${project.vcs === "git" && false
+        ? await Ripgrep.tree({
+          cwd: Instance.directory,
+          limit: 200,
+        })
+        : ""
+      }`,
+      `</files>`,
+    ].join("\n")
 
-          // Build MCP usage instructions based on connected servers
-          const mcpInstructions: string[] = []
+    const [skills, mcpStatus] = await Promise.all([Skill.state(), MCP.status()])
+    const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
+    const connectedMcps = Object.entries(mcpStatus)
+      .filter(([_, status]) => status.status === "connected")
+      .map(([name, _]) => name)
+    const mcpList = connectedMcps.map(name => `  - ${name}`).join("\n")
 
-          if (connectedMcps.includes("memory")) {
-            mcpInstructions.push(`
+    // Build MCP usage instructions based on connected servers
+    const mcpInstructions: string[] = []
+
+    if (connectedMcps.includes("memory")) {
+      mcpInstructions.push(`
 ## 🧠 Memory MCP (PROACTIVE USE REQUIRED)
 
 You have access to a persistent memory system. USE IT PROACTIVELY:
@@ -113,10 +112,10 @@ Example usage:
 - mcp_memory_save: key="user_preference_typescript", value="User prefers explicit type annotations"
 - mcp_memory_search: query="project conventions"
 `)
-          }
+    }
 
-          if (connectedMcps.includes("sequential-thinking")) {
-            mcpInstructions.push(`
+    if (connectedMcps.includes("sequential-thinking")) {
+      mcpInstructions.push(`
 ## 🔗 Sequential Thinking MCP
 
 Use this for complex multi-step reasoning:
@@ -129,21 +128,20 @@ Use this for complex multi-step reasoning:
 
 This helps you think through problems systematically before acting.
 `)
-          }
+    }
 
-          return [
-            `<skills_available>`,
-            `  <!-- STRATEGY: Load these skills using 'skill' tool if your task matches the description -->`,
-            skillList || "  (No skills found)",
-            `</skills_available>`,
-            `<mcp_servers>`,
-            mcpList || "  (No MCP servers connected)",
-            `</mcp_servers>`,
-            ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : [])
-          ].join("\n")
-        })
-      })()
-    ]
+    const skillsMcpBlock = [
+      `<skills_available>`,
+      `  <!-- STRATEGY: Load these skills using 'skill' tool if your task matches the description -->`,
+      skillList || "  (No skills found)",
+      `</skills_available>`,
+      `<mcp_servers>`,
+      mcpList || "  (No MCP servers connected)",
+      `</mcp_servers>`,
+      ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : [])
+    ].join("\n")
+
+    return [envBlock, skillsMcpBlock]
   }
 
   const LOCAL_RULE_FILES = [

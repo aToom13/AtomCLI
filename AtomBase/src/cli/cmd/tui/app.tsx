@@ -555,7 +555,7 @@ function App() {
     {
       title: "Toggle file tree",
       value: "filetree.toggle",
-      keybind: "filetree_toggle",
+      keybind: "filetree_toggle" as any, // TODO: Update SDK type to include this keybind
       category: "View",
       onSelect: (dialog) => {
         fileTreeCtx.toggleFileTree()
@@ -565,7 +565,7 @@ function App() {
     {
       title: "Toggle code panel",
       value: "codepanel.toggle",
-      keybind: "codepanel_toggle",
+      keybind: "codepanel_toggle" as any, // TODO: Update SDK type to include this keybind
       category: "View",
       onSelect: (dialog) => {
         fileTreeCtx.toggleCodePanel()

@@ -42,6 +42,9 @@ import { createOllama, detectOllama, toProviderModels } from "./ollama"
 export namespace Provider {
   const log = Log.create({ service: "provider" })
 
+  // TODO: Ideally, each provider would have typed options, but AI SDK providers have
+  // incompatible option types (some require baseURL, some require name, etc.)
+  // Using 'any' here is intentional to avoid complex union types
   const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
     "@ai-sdk/amazon-bedrock": createAmazonBedrock,
     "@ai-sdk/anthropic": createAnthropic,

@@ -2,9 +2,26 @@ import { createAtomcliClient, type Event } from "@atomcli/sdk/v2"
 import { createSimpleContext } from "./helper"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { batch, onCleanup, onMount } from "solid-js"
+import { TuiEvent } from "../event"
 
 export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
+}
+
+// Extract TuiEvent types for emitter typing
+type TuiEventTypes = {
+  [K in keyof typeof TuiEvent as (typeof TuiEvent)[K] extends { type: string } ? (typeof TuiEvent)[K]["type"] : never]:
+  (typeof TuiEvent)[K] extends { type: string; properties: infer P }
+  ? { type: (typeof TuiEvent)[K]["type"]; properties: import("zod").infer<P & import("zod").ZodType> }
+  : never
+}
+
+// Combined event types: SDK events + TuiEvents
+type AllEventTypes = {
+  [key in Event["type"]]: Extract<Event, { type: key }>
+} & {
+  // TuiEvent types - use 'any' to allow proper type inference in sync.tsx
+  [key: string]: { type: string; properties: any }
 }
 
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
@@ -18,9 +35,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       fetch: props.fetch,
     })
 
-    const emitter = createGlobalEmitter<{
-      [key in Event["type"]]: Extract<Event, { type: key }>
-    }>()
+    const emitter = createGlobalEmitter<AllEventTypes>()
 
     let queue: Event[] = []
     let timer: Timer | undefined

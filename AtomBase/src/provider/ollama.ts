@@ -60,7 +60,7 @@ export async function detectOllama(
         // Filter out cloud/remote models - only keep truly local models
         const localModels = (data.models ?? []).filter((m) => {
             // Skip models with remote_host (cloud models)
-            if ((m as any).remote_host) return false
+            if (m.remote_host) return false
             // Skip models with tiny size (remote references)
             if (m.size < 1000000) return false // Less than 1MB = not a real model
             return true
@@ -90,6 +90,8 @@ interface OllamaModelInfo {
         parameter_size?: string
         quantization_level?: string
     }
+    // Some Ollama installations have cloud/remote models
+    remote_host?: string
 }
 
 export interface OllamaModel {
@@ -99,6 +101,41 @@ export interface OllamaModel {
     parameterSize: string
     quantization: string
     contextLength: number
+}
+
+/** Provider model format returned by toProviderModels */
+export interface OllamaProviderModel {
+    id: string
+    name: string
+    providerID: string
+    family: string
+    status: "active" | "alpha" | "beta" | "deprecated"
+    api: {
+        id: string
+        npm: string
+        url: string
+    }
+    cost: {
+        input: number
+        output: number
+        cache: { read: number; write: number }
+    }
+    limit: {
+        context: number
+        output: number
+    }
+    capabilities: {
+        temperature: boolean
+        reasoning: boolean
+        attachment: boolean
+        toolcall: boolean
+        input: { text: boolean; audio: boolean; image: boolean; video: boolean; pdf: boolean }
+        output: { text: boolean; audio: boolean; image: boolean; video: boolean; pdf: boolean }
+        interleaved: boolean
+    }
+    headers: Record<string, string>
+    options: Record<string, unknown>
+    release_date: string
 }
 
 function parseOllamaModel(info: OllamaModelInfo): OllamaModel {
@@ -160,8 +197,8 @@ function estimateContextLength(modelName: string, paramSize?: string): number {
 /**
  * Convert detected Ollama models to AtomCLI provider format
  */
-export function toProviderModels(models: OllamaModel[]): Record<string, any> {
-    const result: Record<string, any> = {}
+export function toProviderModels(models: OllamaModel[]): Record<string, OllamaProviderModel> {
+    const result: Record<string, OllamaProviderModel> = {}
 
     for (const model of models) {
         result[model.id] = {
