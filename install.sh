@@ -262,7 +262,7 @@ if [ -f /etc/NIXOS ]; then
         for arg in "\$@"; do
             CMD="\$CMD \"\$arg\""
         done
-        exec nix-shell -p steam-run --run "\$CMD"
+        exec nix-shell -p steam-run nodejs_22 --run "\$CMD"
     fi
 else
     exec bun run src/index.ts "\$@"
