@@ -23,22 +23,22 @@
 
 ---
 
-## 🚀 Quick Install
+## Quick Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
 ```
 That's it! Run `atomcli` to start.
 
-## ✨ Features
+## Features
 
-- **🖥️ Beautiful TUI** - Interactive terminal interface with mouse support
-- **🤖 Free Models** - Use without API keys via built-in free providers (MiniMax, GLM, etc.)
-- **🔧 MCP Support** - Extend capabilities with Model Context Protocol servers
-- **📚 Skills System** - Add specialized behaviors from GitHub or locally
-- **🔒 Privacy First** - All data stored locally, no telemetry
+- ** Beautiful TUI** - Interactive terminal interface with mouse support
+- ** Free Models** - Use without API keys via built-in free providers (MiniMax, GLM, etc.)
+- ** MCP Support** - Extend capabilities with Model Context Protocol servers
+- ** Skills System** - Add specialized behaviors from GitHub or locally
+- ** Privacy First** - All data stored locally, no telemetry
 
-## 📦 Installation
+##  Installation
 
 ### Linux / macOS (Recommended)
 
@@ -53,7 +53,7 @@ irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex
 ```
 
 <details>
-<summary>📸 See installation in action</summary>
+<summary> See installation in action</summary>
 <br>
 <img src="docs/assets/Instalination.png" alt="Installation Process" width="600"/>
 </details>
@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | b
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --uninstall
 ```
 
-## 🛠️ Usage
+## Usage
 
 ```bash
 atomcli                 # Start interactive session
@@ -88,7 +88,7 @@ atomcli skill list      # List available skills
 ```
 
 <details>
-<summary>📸 See it in action</summary>
+<summary> See it in action</summary>
 <br>
 
 <img src="docs/assets/WorkUI.png" alt="Install Script" width="600"/>
@@ -109,7 +109,7 @@ atomcli skill list      # List available skills
 > Add this skill: https://github.com/.../code-reviewer.md
 ```
 
-## 🔧 Configuration
+## Configuration
 
 Config file: `~/.atomcli/atomcli.json`
 
@@ -125,7 +125,7 @@ Config file: `~/.atomcli/atomcli.json`
 }
 ```
 
-## 🌍 Supported Platforms
+## Supported Platforms
 
 | Platform            | Status |
 | ------------------- | ------ |
@@ -135,7 +135,7 @@ Config file: `~/.atomcli/atomcli.json`
 | macOS ARM64 (M1/M2) | ✅      |
 | Windows (WSL)       | ✅      |
 
-## 📚 Documentation
+## Documentation
 
 - **[Development Guide](docs/DEVELOPMENT.md)** - Build, test, contribute
 
@@ -143,7 +143,7 @@ Config file: `~/.atomcli/atomcli.json`
 
 <div align="center">
 
-**[⭐ Star on GitHub](https://github.com/aToom13/AtomCLI)** • **[Report Bug](https://github.com/aToom13/AtomCLI/issues)** • **[Request Feature](https://github.com/aToom13/AtomCLI/issues)**
+**[ Star on GitHub](https://github.com/aToom13/AtomCLI)** • **[Report Bug](https://github.com/aToom13/AtomCLI/issues)** • **[Request Feature](https://github.com/aToom13/AtomCLI/issues)**
 
 Made by [Atom13](https://github.com/aToom13)
 
