@@ -245,8 +245,8 @@ install_binary() {
         step "Creating wrapper script..."
         cat > "$INSTALL_DIR/atomcli" << EOF
 #!/bin/sh
-cd "$SOURCE_DIR/AtomBase" || exit 1
-exec bun run src/index.ts "\$@"
+export ATOMCLI_INSTALL_DIR="$SOURCE_DIR"
+exec bun run "$SOURCE_DIR/AtomBase/src/index.ts" "\$@"
 EOF
         chmod +x "$INSTALL_DIR/atomcli"
         success "Installed wrapper to $INSTALL_DIR/atomcli"
