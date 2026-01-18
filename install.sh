@@ -87,7 +87,13 @@ detect_os() {
     ARCH="$(uname -m)"
     
     case "$OS" in
-        Linux*)     OS_TYPE="linux" ;;
+        Linux*)     
+            if [ -f /etc/NIXOS ] || grep -q "ID=nixos" /etc/os-release 2>/dev/null; then
+                OS_TYPE="nixos"
+            else
+                OS_TYPE="linux" 
+            fi
+            ;;
         Darwin*)    OS_TYPE="darwin" ;;
         MINGW*|MSYS*|CYGWIN*) OS_TYPE="windows" ;;
         *)          OS_TYPE="unknown" ;;
@@ -144,13 +150,20 @@ check_dependencies() {
         warn "node not found (optional, needed for MCP servers)"
     fi
     
-    # Check Bun (will install if missing)
+    # Check Bun (will install if missing, except on NixOS)
     if has bun; then
         success "bun $(bun --version)"
         BUN_INSTALLED=true
     else
-        warn "bun not found (will be installed)"
-        BUN_INSTALLED=false
+        if [ "$OS_TYPE" = "nixos" ]; then
+            error "bun not found. On NixOS, please install bun manually."
+            info "  Example: environment.systemPackages = [ pkgs.bun ];"
+            info "  Or run inside a shell: nix-shell -p bun"
+            exit 1
+        else
+            warn "bun not found (will be installed)"
+            BUN_INSTALLED=false
+        fi
     fi
     
     echo ""
@@ -194,6 +207,51 @@ get_latest_release() {
 install_binary() {
     step "Downloading AtomCLI..."
     
+    # NixOS Special Logic: Source Install
+    if [ "$OS_TYPE" = "nixos" ]; then
+        info "NixOS detected: Performing source installation..."
+        
+        local SOURCE_DIR="$HOME/.local/share/atomcli/source"
+        mkdir -p "$SOURCE_DIR"
+        mkdir -p "$INSTALL_DIR"
+        mkdir -p "$CONFIG_DIR"
+        
+        # Clone or update repo
+        if [ -d "$SOURCE_DIR/.git" ]; then
+            step "Updating source..."
+            cd "$SOURCE_DIR"
+            git pull >/dev/null 2>&1
+        else
+            step "Cloning repository..."
+            rm -rf "$SOURCE_DIR"
+            git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$SOURCE_DIR" >/dev/null 2>&1
+        fi
+        
+        if [ $? -ne 0 ]; then
+            error "Failed to obtain source code"
+            exit 1
+        fi
+        success "Source code ready"
+        
+        step "Installing dependencies..."
+        cd "$SOURCE_DIR/AtomCLI/AtomBase"
+        bun install >/dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            error "Failed to install dependencies"
+            exit 1
+        fi
+        success "Dependencies installed"
+        
+        step "Creating wrapper script..."
+        cat > "$INSTALL_DIR/atomcli" << EOF
+#!/bin/sh
+exec bun run "$SOURCE_DIR/AtomCLI/AtomBase/src/index.ts" "\$@"
+EOF
+        chmod +x "$INSTALL_DIR/atomcli"
+        success "Installed wrapper to $INSTALL_DIR/atomcli"
+        return 0
+    fi
+
     # Try to get from releases first
     local version=$(get_latest_release)
     local binary_name="atomcli-${OS_TYPE}-${ARCH_TYPE}"
@@ -768,8 +826,11 @@ uninstall() {
     
     # Ask about config
     echo ""
-    echo -e "${YELLOW}Do you want to remove configuration and data?${NC}"
+    echo -e "${YELLOW}Do you want to remove configuration, data, and source?${NC}"
     echo -e "${DIM}  This will delete: $CONFIG_DIR${NC}"
+    if [ -d "$HOME/.local/share/atomcli/source" ]; then
+        echo -e "${DIM}  And source: $HOME/.local/share/atomcli/source${NC}"
+    fi
     echo -e "${DIM}  (includes skills, sessions, and settings)${NC}"
     echo ""
     
@@ -784,8 +845,15 @@ uninstall() {
                 success "Removed $CONFIG_DIR"
                 removed=true
             fi
+            
+            # Remove source if it exists (NixOS install)
+            if [ -d "$HOME/.local/share/atomcli/source" ]; then
+                step "Removing source code..."
+                rm -rf "$HOME/.local/share/atomcli/source"
+                success "Removed source code"
+            fi
         else
-            info "Keeping configuration at $CONFIG_DIR"
+            info "Keeping configuration and source"
         fi
     else
         # Non-interactive: keep config by default
