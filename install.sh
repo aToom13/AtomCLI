@@ -506,9 +506,7 @@ setup_config() {
        }
     }
   },
-  "defaults": {
-     "model": "atomcli/minimax-m2.1-free"
-  },
+  "model": "atomcli/minimax-m2.1-free",
   "mcp": {}
 }
 EOF
