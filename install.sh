@@ -234,7 +234,7 @@ install_binary() {
         success "Source code ready"
         
         step "Installing dependencies..."
-        cd "$SOURCE_DIR/AtomCLI/AtomBase"
+        cd "$SOURCE_DIR/AtomBase"
         bun install >/dev/null 2>&1
         if [ $? -ne 0 ]; then
             error "Failed to install dependencies"
@@ -245,7 +245,7 @@ install_binary() {
         step "Creating wrapper script..."
         cat > "$INSTALL_DIR/atomcli" << EOF
 #!/bin/sh
-exec bun run "$SOURCE_DIR/AtomCLI/AtomBase/src/index.ts" "\$@"
+exec bun run "$SOURCE_DIR/AtomBase/src/index.ts" "\$@"
 EOF
         chmod +x "$INSTALL_DIR/atomcli"
         success "Installed wrapper to $INSTALL_DIR/atomcli"
