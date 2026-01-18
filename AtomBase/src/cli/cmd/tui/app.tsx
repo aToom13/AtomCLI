@@ -111,7 +111,8 @@ export function tui(input: {
 }) {
   // promise to prevent immediate exit
   return new Promise<void>(async (resolve) => {
-    const mode = await getTerminalBackgroundColor()
+    // const mode = await getTerminalBackgroundColor()
+    const mode = "dark"
     const onExit = async () => {
       await input.onExit?.()
       resolve()
