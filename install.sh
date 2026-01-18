@@ -246,7 +246,9 @@ install_binary() {
         cat > "$INSTALL_DIR/atomcli" << EOF
 #!/bin/sh
 export ATOMCLI_INSTALL_DIR="$SOURCE_DIR"
-exec bun run "$SOURCE_DIR/AtomBase/src/index.ts" "\$@"
+export ATOMCLI_CWD="\$PWD"
+cd "$SOURCE_DIR/AtomBase" || exit 1
+exec bun run src/index.ts "\$@"
 EOF
         chmod +x "$INSTALL_DIR/atomcli"
         success "Installed wrapper to $INSTALL_DIR/atomcli"
