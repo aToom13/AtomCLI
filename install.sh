@@ -247,8 +247,26 @@ install_binary() {
 #!/bin/sh
 export ATOMCLI_INSTALL_DIR="$SOURCE_DIR"
 export ATOMCLI_CWD="\$PWD"
+export NIXPKGS_ALLOW_UNFREE=1
+
 cd "$SOURCE_DIR/AtomBase" || exit 1
-exec bun run src/index.ts "\$@"
+
+if [ -f /etc/NIXOS ]; then
+    # On NixOS, try using steam-run for native module compatibility
+    if command -v steam-run >/dev/null 2>&1; then
+        exec steam-run bun run src/index.ts "\$@"
+    else
+        # If steam-run is not in PATH, try via nix-shell (cached)
+        # We construct the command string carefully to preserve arguments
+        CMD="steam-run bun run src/index.ts"
+        for arg in "\$@"; do
+            CMD="\$CMD \"\$arg\""
+        done
+        exec nix-shell -p steam-run --run "\$CMD"
+    fi
+else
+    exec bun run src/index.ts "\$@"
+fi
 EOF
         chmod +x "$INSTALL_DIR/atomcli"
         success "Installed wrapper to $INSTALL_DIR/atomcli"
