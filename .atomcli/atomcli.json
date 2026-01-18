@@ -2,7 +2,7 @@
   "provider": {
     "atomcli": {
       "models": {
-        "minimax-m2.1": {
+        "minimax-m2.1-free": {
           "name": "Minimax-M2.1-Custom",
           "limit": {
             "context": 100000,
@@ -137,7 +137,7 @@
     }
   },
   "defaults": {
-    "model": "atomcli/minimax-m2.1"
+    "model": "atomcli/minimax-m2.1-free"
   },
   "mcp": {
     "memory-bank": {

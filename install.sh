@@ -493,6 +493,22 @@ setup_config() {
     if [ ! -f "$CONFIG_DIR/atomcli.json" ]; then
         cat > "$CONFIG_DIR/atomcli.json" << 'EOF'
 {
+  "provider": {
+    "atomcli": {
+       "models": {
+         "minimax-m2.1-free": {
+           "name": "Minimax-M2.1-Custom",
+           "limit": {
+             "context": 100000,
+             "output": 4096
+           }
+         }
+       }
+    }
+  },
+  "defaults": {
+     "model": "atomcli/minimax-m2.1-free"
+  },
   "mcp": {}
 }
 EOF
