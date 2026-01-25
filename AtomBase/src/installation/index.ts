@@ -138,7 +138,7 @@ export namespace Installation {
         const appRoot = path.resolve(import.meta.dir, "../../..")
         // Just pull and let dev server restart or user restart.
         // We might want to install dependencies too.
-        cmd = $`git pull && bun install`.cwd(appRoot)
+        cmd = $`git pull && bun install && bun run build`.cwd(appRoot)
         break
       }
       case "curl":
