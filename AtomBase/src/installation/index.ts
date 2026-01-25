@@ -79,10 +79,7 @@ export namespace Installation {
         }
       }
 
-      if (
-        isGit &&
-        (await Bun.file(path.join(appRoot, ".git", "config")).exists())
-      ) {
+      if (isGit) {
         return "git"
       }
     } catch { }
