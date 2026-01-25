@@ -12,7 +12,7 @@ export const Vue: Info = {
     extensions: [".vue"],
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     async spawn(root) {
-        const vls = BunProc.which("vls")
+        const vls = Bun.which("vls")
         if (vls) {
             return {
                 process: spawn(vls, ["--stdio"], {
@@ -21,7 +21,7 @@ export const Vue: Info = {
             }
         }
 
-        const vueLanguageServer = BunProc.which("vue-language-server")
+        const vueLanguageServer = Bun.which("vue-language-server")
         if (vueLanguageServer) {
             return {
                 process: spawn(vueLanguageServer, ["--stdio"], {

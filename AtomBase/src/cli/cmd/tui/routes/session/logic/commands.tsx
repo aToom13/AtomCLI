@@ -7,7 +7,7 @@ import { Clipboard } from "../../../util/clipboard"
 import { formatTranscript } from "../../../util/transcript"
 import { Editor } from "../../../util/editor"
 import path from "path"
-import type { PromptInfo } from "../../component/prompt/history"
+import type { PromptInfo } from "../../../component/prompt/history"
 import type { SessionState } from "../hooks/useSessionState"
 import type { PromptRef } from "@tui/component/prompt"
 import type { ScrollBoxRenderable } from "@opentui/core"
@@ -224,7 +224,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             keybind: "messages_toggle_conceal" as any,
             category: "Session",
             onSelect: (d: any) => {
-                state.setConceal((prev) => !prev)
+                state.setConceal(!state.conceal())
                 d.clear()
             },
         },
@@ -233,7 +233,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             value: "session.toggle.timestamps",
             category: "Session",
             onSelect: (d: any) => {
-                state.setTimestamps((prev) => (prev === "show" ? "hide" : "show"))
+                state.setTimestamps((state.timestamps() === "show" ? "hide" : "show") as any)
                 d.clear()
             },
         },
@@ -242,7 +242,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             value: "session.toggle.thinking",
             category: "Session",
             onSelect: (d: any) => {
-                state.setShowThinking((prev: boolean) => !prev)
+                state.setShowThinking((!state.showThinking()) as any)
                 d.clear()
             },
         },
@@ -251,7 +251,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             value: "session.toggle.diffwrap",
             category: "Session",
             onSelect: (d: any) => {
-                state.setDiffWrapMode((prev) => (prev === "word" ? "none" : "word"))
+                state.setDiffWrapMode((state.diffWrapMode() === "word" ? "none" : "word") as any)
                 d.clear()
             },
         },
@@ -261,7 +261,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             keybind: "tool_details",
             category: "Session",
             onSelect: (d: any) => {
-                state.setShowDetails((prev: boolean) => !prev)
+                state.setShowDetails((!state.showDetails()) as any)
                 d.clear()
             },
         },
@@ -271,7 +271,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             keybind: "scrollbar_toggle",
             category: "Session",
             onSelect: (d: any) => {
-                state.setShowScrollbar((prev: boolean) => !prev)
+                state.setShowScrollbar((!state.showScrollbar()) as any)
                 d.clear()
             },
         },
@@ -280,7 +280,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             value: "session.toggle.animations",
             category: "Session",
             onSelect: (d: any) => {
-                state.setAnimationsEnabled((prev: boolean) => !prev)
+                state.setAnimationsEnabled((!state.animationsEnabled()) as any)
                 d.clear()
             },
         },
@@ -322,7 +322,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
                     return
                 }
 
-                // @ts-expect-error
+
                 Clipboard.copy(text)
                     .then(() => toast.show({ message: "Message copied to clipboard!", variant: "success" }))
                     .catch(() => toast.show({ message: "Failed to copy to clipboard", variant: "error" }))

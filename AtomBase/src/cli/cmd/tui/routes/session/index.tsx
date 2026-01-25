@@ -157,7 +157,8 @@ export function Session() {
     }),
   )
 
-  useCommandDialog(commands)
+  const commandDialog = useCommandDialog()
+  commandDialog.register(() => commands() as any)
 
   const permissions = createMemo(() => {
     if (session()?.parentID) return []
