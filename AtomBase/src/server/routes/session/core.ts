@@ -19,7 +19,7 @@ export const SessionCoreRoute = new Hono()
                     description: "List of sessions",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info.array()),
+                            schema: resolver(z.lazy(() => Session.Info.array())),
                         },
                     },
                 },
@@ -84,7 +84,7 @@ export const SessionCoreRoute = new Hono()
                     description: "Get session",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info),
+                            schema: resolver(z.lazy(() => Session.Info)),
                         },
                     },
                 },
@@ -94,7 +94,7 @@ export const SessionCoreRoute = new Hono()
         validator(
             "param",
             z.object({
-                sessionID: Session.get.schema,
+                sessionID: z.lazy(() => Session.get.schema),
             }),
         ),
         async (c) => {
@@ -115,7 +115,7 @@ export const SessionCoreRoute = new Hono()
                     description: "List of children",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info.array()),
+                            schema: resolver(z.lazy(() => Session.Info.array())),
                         },
                     },
                 },
@@ -125,7 +125,7 @@ export const SessionCoreRoute = new Hono()
         validator(
             "param",
             z.object({
-                sessionID: Session.children.schema,
+                sessionID: z.lazy(() => Session.children.schema),
             }),
         ),
         async (c) => {
@@ -176,13 +176,13 @@ export const SessionCoreRoute = new Hono()
                     description: "Successfully created session",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info),
+                            schema: resolver(z.lazy(() => Session.Info)),
                         },
                     },
                 },
             },
         }),
-        validator("json", Session.create.schema.optional()),
+        validator("json", z.lazy(() => Session.create.schema.optional())),
         async (c) => {
             const body = c.req.valid("json") ?? {}
             const session = await Session.create(body)
@@ -210,7 +210,7 @@ export const SessionCoreRoute = new Hono()
         validator(
             "param",
             z.object({
-                sessionID: Session.remove.schema,
+                sessionID: z.lazy(() => Session.remove.schema),
             }),
         ),
         async (c) => {
@@ -230,7 +230,7 @@ export const SessionCoreRoute = new Hono()
                     description: "Successfully updated session",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info),
+                            schema: resolver(z.lazy(() => Session.Info)),
                         },
                     },
                 },
@@ -293,7 +293,7 @@ export const SessionCoreRoute = new Hono()
                 sessionID: z.string().meta({ description: "Session ID" }),
             }),
         ),
-        validator("json", Session.initialize.schema.omit({ sessionID: true })),
+        validator("json", z.lazy(() => Session.initialize.schema.omit({ sessionID: true }))),
         async (c) => {
             const sessionID = c.req.valid("param").sessionID
             const body = c.req.valid("json")
@@ -312,7 +312,7 @@ export const SessionCoreRoute = new Hono()
                     description: "200",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info),
+                            schema: resolver(z.lazy(() => Session.Info)),
                         },
                     },
                 },
@@ -321,10 +321,10 @@ export const SessionCoreRoute = new Hono()
         validator(
             "param",
             z.object({
-                sessionID: Session.fork.schema.shape.sessionID,
+                sessionID: z.lazy(() => Session.fork.schema.shape.sessionID),
             }),
         ),
-        validator("json", Session.fork.schema.omit({ sessionID: true })),
+        validator("json", z.lazy(() => Session.fork.schema.omit({ sessionID: true }))),
         async (c) => {
             const sessionID = c.req.valid("param").sessionID
             const body = c.req.valid("json")
@@ -372,7 +372,7 @@ export const SessionCoreRoute = new Hono()
                     description: "Successfully shared session",
                     content: {
                         "application/json": {
-                            schema: resolver(Session.Info),
+                            schema: resolver(z.lazy(() => Session.Info)),
                         },
                     },
                 },

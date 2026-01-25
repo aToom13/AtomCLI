@@ -179,28 +179,39 @@ describe("tool.websearch permissions", () => {
     })
 })
 
-// Integration tests that actually search (requires network)
-// These are skipped by default - run with WEBSEARCH_INTEGRATION=1
-const runIntegration = process.env.WEBSEARCH_INTEGRATION === "1"
+import { mock } from "bun:test"
 
-describe.skipIf(!runIntegration)("tool.websearch integration", () => {
+describe("tool.websearch integration", () => {
     test("basic search returns results", async () => {
         await using tmp = await tmpdir({ git: true })
         await Instance.provide({
             directory: tmp.path,
             fn: async () => {
                 const websearch = await WebSearchTool.init()
-                const result = await websearch.execute(
-                    {
-                        query: "Node.js",
-                        numResults: 3,
-                    },
-                    ctx,
-                )
 
-                expect(result.output).toBeDefined()
-                expect(result.output.length).toBeGreaterThan(0)
-                expect(result.title).toContain("Node.js")
+                // Mock fetch
+                const originalFetch = global.fetch
+                global.fetch = mock(async () => {
+                    return new Response("data: {\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Node.js is a JavaScript runtime built on Chrome's V8 JavaScript engine.\"}]}}\n\n", {
+                        status: 200,
+                    })
+                }) as any
+
+                try {
+                    const result = await websearch.execute(
+                        {
+                            query: "Node.js",
+                            numResults: 3,
+                        },
+                        ctx,
+                    )
+
+                    expect(result.output).toBeDefined()
+                    expect(result.output.length).toBeGreaterThan(0)
+                    expect(result.title).toContain("Node.js")
+                } finally {
+                    global.fetch = originalFetch
+                }
             },
         })
     })

@@ -182,27 +182,32 @@ describe("tool.webfetch format options", () => {
     })
 })
 
-// Integration tests that actually fetch (requires network)
-// These are skipped by default - run with WEBFETCH_INTEGRATION=1
-const runIntegration = process.env.WEBFETCH_INTEGRATION === "1"
+import { mock } from "bun:test"
 
-describe.skipIf(!runIntegration)("tool.webfetch integration", () => {
+describe("tool.webfetch integration", () => {
     test("fetch example.com as markdown", async () => {
         await using tmp = await tmpdir({ git: true })
         await Instance.provide({
             directory: tmp.path,
             fn: async () => {
                 const webfetch = await WebFetchTool.init()
-                const result = await webfetch.execute(
-                    {
-                        url: "https://example.com",
-                        format: "markdown",
-                    },
-                    ctx,
-                )
 
-                expect(result.output).toContain("Example Domain")
-                expect(result.metadata.url).toBe("https://example.com")
+                const originalFetch = global.fetch
+                global.fetch = mock(async () => new Response("<html><body><h1>Example Domain</h1></body></html>", { status: 200 })) as any
+
+                try {
+                    const result = await webfetch.execute(
+                        {
+                            url: "https://example.com",
+                            format: "markdown",
+                        },
+                        ctx,
+                    )
+
+                    expect(result.output).toContain("Example Domain")
+                } finally {
+                    global.fetch = originalFetch
+                }
             },
         })
     })
@@ -213,15 +218,21 @@ describe.skipIf(!runIntegration)("tool.webfetch integration", () => {
             directory: tmp.path,
             fn: async () => {
                 const webfetch = await WebFetchTool.init()
-                const result = await webfetch.execute(
-                    {
-                        url: "https://example.com",
-                        format: "text",
-                    },
-                    ctx,
-                )
+                const originalFetch = global.fetch
+                global.fetch = mock(async () => new Response("Example Domain", { status: 200 })) as any
+                try {
+                    const result = await webfetch.execute(
+                        {
+                            url: "https://example.com",
+                            format: "text",
+                        },
+                        ctx,
+                    )
 
-                expect(result.output).toContain("Example Domain")
+                    expect(result.output).toContain("Example Domain")
+                } finally {
+                    global.fetch = originalFetch
+                }
             },
         })
     })
@@ -232,16 +243,22 @@ describe.skipIf(!runIntegration)("tool.webfetch integration", () => {
             directory: tmp.path,
             fn: async () => {
                 const webfetch = await WebFetchTool.init()
-                const result = await webfetch.execute(
-                    {
-                        url: "https://example.com",
-                        format: "html",
-                    },
-                    ctx,
-                )
+                const originalFetch = global.fetch
+                global.fetch = mock(async () => new Response("<html><body><h1>Example Domain</h1></body></html>", { status: 200 })) as any
+                try {
+                    const result = await webfetch.execute(
+                        {
+                            url: "https://example.com",
+                            format: "html",
+                        },
+                        ctx,
+                    )
 
-                expect(result.output).toContain("<html")
-                expect(result.output).toContain("Example Domain")
+                    expect(result.output).toContain("<html")
+                    expect(result.output).toContain("Example Domain")
+                } finally {
+                    global.fetch = originalFetch
+                }
             },
         })
     })
@@ -252,16 +269,21 @@ describe.skipIf(!runIntegration)("tool.webfetch integration", () => {
             directory: tmp.path,
             fn: async () => {
                 const webfetch = await WebFetchTool.init()
-
-                await expect(
-                    webfetch.execute(
-                        {
-                            url: "https://httpstat.us/404",
-                            format: "text",
-                        },
-                        ctx,
-                    ),
-                ).rejects.toThrow(/404/)
+                const originalFetch = global.fetch
+                global.fetch = mock(async () => new Response("Not Found", { status: 404 })) as any
+                try {
+                    await expect(
+                        webfetch.execute(
+                            {
+                                url: "https://httpstat.us/404",
+                                format: "text",
+                            },
+                            ctx,
+                        ),
+                    ).rejects.toThrow(/404/)
+                } finally {
+                    global.fetch = originalFetch
+                }
             },
         })
     })

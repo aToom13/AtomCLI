@@ -12,8 +12,8 @@ const ctx = {
   callID: "",
   agent: "build",
   abort: AbortSignal.any([]),
-  metadata: () => {},
-  ask: async () => {},
+  metadata: () => { },
+  ask: async () => { },
 }
 
 const patchTool = await PatchTool.init()
@@ -49,19 +49,31 @@ describe("tool.patch", () => {
     })
   })
 
-  test.skip("should ask permission for files outside working directory", async () => {
+  test("should ask permission for files outside working directory", async () => {
     await Instance.provide({
       directory: "/tmp",
       fn: async () => {
+        const requests: any[] = []
+        const testCtx = {
+          ...ctx,
+          ask: async (req: any) => {
+            requests.push(req)
+            throw new Error("permission recorded")
+          }
+        }
+
         const maliciousPatch = `*** Begin Patch
-*** Add File: /etc/passwd
+*** Add File: /private/etc/passwd
 +malicious content
 *** End Patch`
-        patchTool.execute({ patchText: maliciousPatch }, ctx)
-        // TODO: this sucks
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-        const pending = await PermissionNext.list()
-        expect(pending.find((p) => p.sessionID === ctx.sessionID)).toBeDefined()
+
+        try {
+          await patchTool.execute({ patchText: maliciousPatch }, testCtx)
+        } catch (e) {
+          if ((e as Error).message !== "permission recorded") throw e
+        }
+
+        expect(requests.length).toBeGreaterThan(0)
       },
     })
   })

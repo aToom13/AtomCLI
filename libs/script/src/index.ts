@@ -13,33 +13,40 @@ if (process.versions.bun !== expectedBunVersion) {
   throw new Error(`This script requires bun@${expectedBunVersion}, but you are using bun@${process.versions.bun}`)
 }
 
+// Read AtomBase version as the source of truth
+const atomBasePath = path.resolve(import.meta.dir, "../../../AtomBase/package.json")
+const atomBasePkg = await Bun.file(atomBasePath).json()
+const BASE_VERSION = atomBasePkg.version as string
+
 const env = {
   ATOMCLI_CHANNEL: process.env["ATOMCLI_CHANNEL"],
   ATOMCLI_BUMP: process.env["ATOMCLI_BUMP"],
   ATOMCLI_VERSION: process.env["ATOMCLI_VERSION"],
 }
+
+// Get short commit hash
+const COMMIT_HASH = await $`git rev-parse --short HEAD`.text().then(x => x.trim()).catch(() => "unknown")
+
 const CHANNEL = await (async () => {
   if (env.ATOMCLI_CHANNEL) return env.ATOMCLI_CHANNEL
   if (env.ATOMCLI_BUMP) return "latest"
   if (env.ATOMCLI_VERSION && !env.ATOMCLI_VERSION.startsWith("0.0.0-")) return "latest"
   return await $`git branch --show-current`.text().then((x) => x.trim())
 })()
+
 const IS_PREVIEW = CHANNEL !== "latest"
 
 const VERSION = await (async () => {
   if (env.ATOMCLI_VERSION) return env.ATOMCLI_VERSION
-  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
-  const version = await fetch("https://registry.npmjs.org/atomcli-ai/latest")
-    .then((res) => {
-      if (!res.ok) throw new Error(res.statusText)
-      return res.json()
-    })
-    .then((data: any) => data.version)
-  const [major, minor, patch] = version.split(".").map((x: string) => Number(x) || 0)
-  const t = env.ATOMCLI_BUMP?.toLowerCase()
-  if (t === "major") return `${major + 1}.0.0`
-  if (t === "minor") return `${major}.${minor + 1}.0`
-  return `${major}.${minor}.${patch + 1}`
+
+  // If preview (non-latest channel), append channel and hash
+  // e.g. 2.0.0-main.a1b2c3d
+  if (IS_PREVIEW) {
+    return `${BASE_VERSION}-${CHANNEL}.${COMMIT_HASH}`
+  }
+
+  // If latest, usage base version directly
+  return BASE_VERSION
 })()
 
 export const Script = {

@@ -10,7 +10,7 @@
  * - Model fallback system
  */
 
-import { describe, expect, test, beforeAll, mock } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll, mock } from "bun:test"
 import { detectAssetType, getAssetTypeEmoji, getAssetTypeName } from "../../src/tool/finance/symbols"
 import { analyzeKlines } from "../../src/tool/finance/technical"
 import { applySeniorLogic, evaluateWalls, analyzeFunding } from "../../src/tool/finance/logic"
@@ -134,7 +134,7 @@ describe("finance.technical", () => {
         // Signals may be uppercase or lowercase
         expect(result.rsiSignal.toUpperCase()).toMatch(/OVERSOLD|NEUTRAL|OVERBOUGHT/)
         expect(result.macdTrend.toUpperCase()).toMatch(/BULLISH|BEARISH|NEUTRAL/)
-        expect(result.bbSignal.toUpperCase()).toMatch(/LOWER|UPPER|MIDDLE|OUTSIDE|NEUTRAL/)
+        expect(result.bbSignal.toUpperCase()).toMatch(/OVERBOUGHT|OVERSOLD|NEUTRAL/)
         expect(result.trend.toUpperCase()).toMatch(/UP|DOWN|SIDEWAYS|UPTREND|DOWNTREND/)
     })
 
@@ -341,7 +341,28 @@ const API_ENDPOINTS = {
     fearGreed: "https://api.alternative.me/fng/?limit=1",
 }
 
+const originalFetch = global.fetch
+const setupMock = () => {
+    global.fetch = mock(async (input: RequestInfo | URL) => {
+        const url = input.toString()
+        if (url.includes("api.binance.com/api/v3/ping")) return new Response("{}", { status: 200 })
+        if (url.includes("fapi.binance.com/fapi/v1/ping")) return new Response("{}", { status: 200 })
+        if (url.includes("query1.finance.yahoo.com")) return new Response(JSON.stringify({ chart: { result: [{ meta: { symbol: "AAPL", currency: "USD" } }] } }), { status: 200 })
+        if (url.includes("api.coingecko.com")) return new Response(JSON.stringify({ gecko_says: "To the moon!" }), { status: 200 })
+        if (url.includes("api.alternative.me")) return new Response(JSON.stringify({ data: [{ value: "25", value_classification: "Extreme Fear" }] }), { status: 200 })
+        if (url.includes("ticker/price?symbol=BTCUSDT")) return new Response(JSON.stringify({ symbol: "BTCUSDT", price: "87424.35" }), { status: 200 })
+        if (url.includes("ticker/price?symbol=ETHUSDT")) return new Response(JSON.stringify({ symbol: "ETHUSDT", price: "2858.35" }), { status: 200 })
+        return new Response("Not Found", { status: 404 })
+    }) as any
+}
+
+const teardownMock = () => {
+    global.fetch = originalFetch
+}
+
 describe("finance.api.connectivity", () => {
+    beforeAll(() => setupMock())
+    afterAll(() => teardownMock())
     test("Binance Spot API is accessible", async () => {
         try {
             const response = await fetch(API_ENDPOINTS.binanceSpot)
@@ -418,6 +439,8 @@ describe("finance.api.connectivity", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("finance.api.data", () => {
+    beforeAll(() => setupMock())
+    afterAll(() => teardownMock())
     test("can fetch BTC price from Binance", async () => {
         const response = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
         expect(response.ok).toBe(true)

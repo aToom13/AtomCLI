@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Canvas Table</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    canvas { border: 1px solid #ccc; display: block; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <h1>Canvas ile Tablo</h1>
+  <canvas id="tbl" width="700" height="260"></canvas>
+  <script>
+    // Skeleton: basic setup for drawing table later
+    function drawTable(ctx, headers, rows, x=20, y=60, cellW=180, cellH=40){
+      const cols = headers.length;
+      // header background
+      ctx.fillStyle = '#eee';
+      ctx.fillRect(x, y, cellW*cols, cellH);
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      // header text
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 14px Arial';
+      headers.forEach((h, i) => {
+        ctx.fillText(h, x + i*cellW + 8, y + 26);
+      });
+      // rows
+      for(let r=0; r<rows.length; r++){
+        const rowY = y + cellH*(r+1);
+        ctx.fillStyle = (r%2===0) ? '#fff' : '#f7f7f7';
+        ctx.fillRect(x, rowY, cellW*cols, cellH);
+        ctx.strokeRect(x, rowY, cellW*cols, cellH);
+        rows[r].forEach((cell, cidx) => {
+          ctx.fillStyle = '#000';
+          ctx.fillText(String(cell), x + cidx*cellW + 8, rowY + 26);
+        });
+      }
+      // grid vertical lines
+      ctx.strokeStyle = '#000';
+      for(let c=1; c<cols; c++){
+        ctx.beginPath();
+        ctx.moveTo(x + c*cellW, y);
+        ctx.lineTo(x + c*cellW, y + cellH*(rows.length+1));
+        ctx.stroke();
+      }
+      // bottom border
+      ctx.beginPath();
+      ctx.moveTo(x, y + cellH*(rows.length+1));
+      ctx.lineTo(x + cellW*cols, y + cellH*(rows.length+1));
+      ctx.stroke();
+    }
+
+    const canvas = document.getElementById('tbl');
+    const ctx = canvas.getContext('2d');
+    const headers = ['İsim','Yaş','Ülke'];
+    const rows = [
+      ['Ali','28','Türkiye'],
+      ['Ayşe','32','İtalya'],
+      ['Mehmet','41','İspanya']
+    ];
+    // draw after DOM load
+    window.onload = () => {
+      drawTable(ctx, headers, rows);
+    };
+  </script>
+</body>
+</html>

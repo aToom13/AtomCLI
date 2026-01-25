@@ -243,20 +243,29 @@ export function CodePanel() {
                 <Show when={activeFile()} fallback={
                     <text fg={theme.textMuted} paddingLeft={1}>No file selected</text>
                 }>
-                    <textarea
-                        ref={(val: TextareaRenderable) => {
-                            textarea = val
-                            // Auto-focus when mounted
-                            setTimeout(() => val.focus(), 10)
+                    <For each={[activeFile()!]}>
+                        {(file) => {
+                            onCleanup(() => {
+                                textarea = undefined
+                            })
+                            return (
+                                <textarea
+                                    ref={(val: TextareaRenderable) => {
+                                        textarea = val
+                                        // Auto-focus when mounted
+                                        setTimeout(() => val.focus(), 10)
+                                    }}
+                                    flexGrow={1}
+                                    initialValue={file.content}
+                                    textColor={theme.text}
+                                    focusedTextColor={theme.text}
+                                    cursorColor={theme.accent}
+                                    // Note: lineNumbers and onCursor props removed - not supported in current opentui version
+                                    keyBindings={CODE_EDITOR_KEYBINDINGS}
+                                />
+                            )
                         }}
-                        flexGrow={1}
-                        initialValue={activeFile()!.content}
-                        textColor={theme.text}
-                        focusedTextColor={theme.text}
-                        cursorColor={theme.accent}
-                        // Note: lineNumbers and onCursor props removed - not supported in current opentui version
-                        keyBindings={CODE_EDITOR_KEYBINDINGS}
-                    />
+                    </For>
                 </Show>
 
                 {/* Status Bar */}

@@ -14,7 +14,7 @@ export function DialogStatus() {
     process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
   )
 
-  const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
+  const enabledFormatters = createMemo(() => (sync.data.formatter ?? []).filter((f) => f.enabled))
 
 
   const plugins = createMemo(() => {
@@ -113,7 +113,7 @@ export function DialogStatus() {
           </For>
         </box>
       </Show>
-      {sync.data.lsp.length > 0 && (
+      {(sync.data.lsp?.length ?? 0) > 0 && (
         <box>
           <text fg={theme.text}>{sync.data.lsp.length} LSP Servers</text>
           <For each={sync.data.lsp}>
