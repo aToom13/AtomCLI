@@ -62,6 +62,19 @@ export namespace Installation {
     if (process.execPath.includes(path.join(".local", "bin"))) return "curl"
     const exec = process.execPath.toLowerCase()
 
+    try {
+      // Check if we are running from source in a git repo
+      // import.meta.dir is src/installation
+      // ../../.. goes to project root (AtomCLI) provided structure is standard
+      const appRoot = path.resolve(import.meta.dir, "../../..")
+      if (
+        (await $`git rev-parse --is-inside-work-tree`.cwd(appRoot).quiet().nothrow()).exitCode === 0 &&
+        (await Bun.file(path.join(appRoot, ".git", "config")).exists())
+      ) {
+        return "git"
+      }
+    } catch { }
+
     const checks = [
       {
         name: "npm" as const,
@@ -121,6 +134,13 @@ export namespace Installation {
   export async function upgrade(method: Method, target: string) {
     let cmd
     switch (method) {
+      case "git": {
+        const appRoot = path.resolve(import.meta.dir, "../../..")
+        // Just pull and let dev server restart or user restart.
+        // We might want to install dependencies too.
+        cmd = $`git pull && bun install`.cwd(appRoot)
+        break
+      }
       case "curl":
         cmd = $`curl -fsSL https://atomcli.ai/install | bash`.env({
           ...process.env,
