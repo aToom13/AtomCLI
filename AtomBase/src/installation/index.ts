@@ -64,11 +64,23 @@ export namespace Installation {
 
     try {
       // Check if we are running from source in a git repo
-      // import.meta.dir is src/installation
-      // ../../.. goes to project root (AtomCLI) provided structure is standard
-      const appRoot = path.resolve(import.meta.dir, "../../..")
+      let appRoot = path.resolve(import.meta.dir, "../../..")
+      let isGit = (await $`git rev-parse --is-inside-work-tree`.cwd(appRoot).quiet().nothrow()).exitCode === 0
+
+      // If not found via import.meta (e.g. active binary), try process.execPath
+      // Binary is usually at dist/atomcli-linux-x64/bin/atomcli
+      // Root is 3 levels up from bin folder: bin -> platform -> dist -> root
+      if (!isGit) {
+        const execDir = path.dirname(process.execPath)
+        const candidate = path.resolve(execDir, "../../..")
+        if ((await $`git rev-parse --is-inside-work-tree`.cwd(candidate).quiet().nothrow()).exitCode === 0) {
+          appRoot = candidate
+          isGit = true
+        }
+      }
+
       if (
-        (await $`git rev-parse --is-inside-work-tree`.cwd(appRoot).quiet().nothrow()).exitCode === 0 &&
+        isGit &&
         (await Bun.file(path.join(appRoot, ".git", "config")).exists())
       ) {
         return "git"
@@ -135,7 +147,16 @@ export namespace Installation {
     let cmd
     switch (method) {
       case "git": {
-        const appRoot = path.resolve(import.meta.dir, "../../..")
+        let appRoot = path.resolve(import.meta.dir, "../../..")
+        // Re-resolve appRoot if necessary (same logic as detection)
+        if ((await $`git rev-parse --is-inside-work-tree`.cwd(appRoot).quiet().nothrow()).exitCode !== 0) {
+          const execDir = path.dirname(process.execPath)
+          const candidate = path.resolve(execDir, "../../..")
+          if ((await $`git rev-parse --is-inside-work-tree`.cwd(candidate).quiet().nothrow()).exitCode === 0) {
+            appRoot = candidate
+          }
+        }
+
         // Just pull and let dev server restart or user restart.
         // We might want to install dependencies too.
         cmd = $`git pull && bun install && bun run build`.cwd(appRoot)
