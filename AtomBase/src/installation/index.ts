@@ -206,6 +206,31 @@ export namespace Installation {
   export async function latest(installMethod?: Method) {
     const detectedMethod = installMethod || (await method())
 
+    if (detectedMethod === "git") {
+      try {
+        let appRoot = path.resolve(import.meta.dir, "../../..")
+        // Resolve correctly for binary
+        if ((await $`git rev-parse --is-inside-work-tree`.cwd(appRoot).quiet().nothrow()).exitCode !== 0) {
+          const execDir = path.dirname(process.execPath)
+          const candidate = path.resolve(execDir, "../../..")
+          if ((await $`git rev-parse --is-inside-work-tree`.cwd(candidate).quiet().nothrow()).exitCode === 0) {
+            appRoot = candidate
+          }
+        }
+
+        await $`git fetch`.cwd(appRoot).quiet().nothrow()
+        const remote = (await $`git rev-parse origin/main`.cwd(appRoot).quiet().nothrow()).text().trim()
+        const local = (await $`git rev-parse HEAD`.cwd(appRoot).quiet().nothrow()).text().trim()
+
+        if (remote && local && remote !== local) {
+          return remote // Triggers update
+        }
+        return VERSION
+      } catch {
+        return "unknown"
+      }
+    }
+
     if (detectedMethod === "brew") {
       const formula = await getBrewFormula()
       if (formula === "atomcli") {
@@ -233,7 +258,7 @@ export namespace Installation {
         .then((data: any) => data.version)
     }
 
-    return fetch("https://api.github.com/repos/anomalyco/atomcli/releases/latest")
+    return fetch("https://api.github.com/repos/aToom13/AtomCLI/releases/latest")
       .then((res) => {
         if (!res.ok) throw new Error(res.statusText)
         return res.json()
