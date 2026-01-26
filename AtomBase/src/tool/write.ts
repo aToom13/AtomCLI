@@ -6,6 +6,7 @@ import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { Bus } from "../bus"
 import { File } from "../file"
+import { FileEvent } from "../file/event"
 import { FileTime } from "../file/time"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
@@ -42,7 +43,7 @@ export const WriteTool = Tool.define("write", {
     })
 
     await Bun.write(filepath, params.content)
-    await Bus.publish(File.Event.Edited, {
+    await Bus.publish(FileEvent.Edited, {
       file: filepath,
     })
     FileTime.read(ctx.sessionID, filepath)

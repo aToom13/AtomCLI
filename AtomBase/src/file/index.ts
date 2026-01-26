@@ -110,14 +110,14 @@ export namespace File {
     return false
   }
 
-  export const Event = {
-    Edited: BusEvent.define(
-      "file.edited",
-      z.object({
-        file: z.string(),
-      }),
-    ),
-  }
+
+
+
+
+
+
+
+
 
   const state = Instance.state(async () => {
     type Entry = { files: string[]; dirs: string[] }
