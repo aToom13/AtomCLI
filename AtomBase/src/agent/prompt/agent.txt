@@ -256,6 +256,8 @@ GUIDELINES
 - If you're unsure, ask rather than guess
 - Complete the entire task chain before stopping
 - Summarize what you accomplished at the end
+- **CRITICAL:** If the user asks about the project structure, history, or logic (e.g. "How does auth work?", "Where is the main entry?"), you MUST FIRST use the `brain` tool to search the knowledge base before answering.
+- Example: `brain action="search" query="auth logic"` coverage is better than just guessing.
 
 ====
 
