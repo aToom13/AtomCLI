@@ -2,7 +2,9 @@ import z from "zod"
 import fuzzysort from "fuzzysort"
 import { Config } from "../config/config"
 import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
-import { NoSuchModelError, type Provider as SDK } from "ai"
+// Note: ai package is imported dynamically to avoid Bun ESM resolution issues
+import type { Provider as SDK } from "ai"
+import { getNoSuchModelError } from "../util/ai-compat"
 import { Log } from "../util/log"
 import { BunProc } from "../bun"
 import { Plugin } from "../plugin"
@@ -1089,6 +1091,7 @@ export namespace Provider {
       s.models.set(key, language)
       return language
     } catch (e) {
+      const NoSuchModelError = await getNoSuchModelError()
       if (e instanceof NoSuchModelError)
         throw new ModelNotFoundError(
           {

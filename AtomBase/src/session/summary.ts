@@ -134,7 +134,7 @@ export namespace SessionSummary {
             : small,
           small: true,
           messages: [
-            ...MessageV2.toModelMessage(messages),
+            ...(await MessageV2.toModelMessage(messages)),
             {
               role: "user" as const,
               content: `Summarize the above conversation according to your system prompts.`,

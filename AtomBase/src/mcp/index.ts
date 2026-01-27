@@ -1,4 +1,6 @@
-import { dynamicTool, type Tool, jsonSchema, type JSONSchema7 } from "ai"
+// Note: ai package functions are imported dynamically to avoid Bun ESM resolution issues
+import type { Tool, JSONSchema7 } from "ai"
+import { getDynamicTool, getJsonSchema } from "@/util/ai-compat"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
@@ -121,6 +123,8 @@ export namespace MCP {
     }
     const config = await Config.get()
 
+    const dynamicTool = await getDynamicTool()
+    const jsonSchema = await getJsonSchema()
     return dynamicTool({
       description: mcpTool.description ?? "",
       inputSchema: jsonSchema(schema),

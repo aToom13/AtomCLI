@@ -1,6 +1,7 @@
 
 import { Tool } from "./tool"
-import { embed, type EmbeddingModel } from "ai"
+import { getEmbed } from "@/util/ai-compat"
+// Note: ai package is imported dynamically to avoid Bun ESM resolution issues
 import { createOpenAI } from "@ai-sdk/openai"
 import { Config } from "../config/config"
 import { Global } from "../global"
@@ -122,8 +123,11 @@ export const BrainTool = Tool.define("brain", {
 
         const openai = createOpenAI({ apiKey })
 
+        // Dynamic import of ai package to avoid ESM resolution issues in tests
+        const embed = await getEmbed()
+
         // Default embedding model
-        const embeddingModel: EmbeddingModel<string> = openai.embedding("text-embedding-3-small")
+        const embeddingModel = openai.embedding("text-embedding-3-small")
 
         // Load persisted memory on first run
         if (!isLoaded) {

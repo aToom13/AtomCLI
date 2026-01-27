@@ -57,12 +57,13 @@ export async function detectOllama(
 
         const data = (await response.json()) as { models?: OllamaModelInfo[] }
 
-        // Filter out cloud/remote models - only keep truly local models
+        // Filter out invalid models, but allow cloud/remote models
         const localModels = (data.models ?? []).filter((m) => {
-            // Skip models with remote_host (cloud models)
-            if (m.remote_host) return false
-            // Skip models with tiny size (remote references)
-            if (m.size < 1000000) return false // Less than 1MB = not a real model
+            // Keep models even if they are remote/cloud proxies
+            // if (m.remote_host) return false
+
+            // Allow small models (like cloud pointers), just check if valid name exists
+            if (!m.name) return false
             return true
         })
 

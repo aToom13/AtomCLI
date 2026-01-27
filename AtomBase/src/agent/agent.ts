@@ -1,7 +1,9 @@
 import { Config } from "../config/config"
 import z from "zod"
 import { Provider } from "../provider/provider"
-import { generateObject, type ModelMessage } from "ai"
+// Note: ai package is imported dynamically to avoid Bun ESM resolution issues
+import type { ModelMessage } from "ai"
+import { getGenerateObject } from "../util/ai-compat"
 import { SystemPrompt } from "../session/system"
 import { Instance } from "../project/instance"
 import { Truncate } from "../tool/truncation"
@@ -268,6 +270,7 @@ export namespace Agent {
     const system = SystemPrompt.header(defaultModel.providerID)
     system.push(PROMPT_GENERATE)
     const existing = await list()
+    const generateObject = await getGenerateObject()
     const result = await generateObject({
       experimental_telemetry: {
         isEnabled: cfg.experimental?.openTelemetry,

@@ -9,7 +9,9 @@ import { SessionRevert } from "./revert"
 import { Session } from "."
 import { Agent } from "../agent/agent"
 import { Provider } from "../provider/provider"
-import { type Tool as AITool, tool, jsonSchema, type ToolCallOptions } from "ai"
+// Note: ai package functions are imported dynamically to avoid Bun ESM resolution issues
+import type { Tool as AITool, ToolCallOptions } from "ai"
+import { getTool, getJsonSchema } from "../util/ai-compat"
 import { SessionCompaction } from "./compaction"
 import { Instance } from "../project/instance"
 import { Bus } from "../bus"
@@ -609,7 +611,7 @@ export namespace SessionPrompt {
         sessionID,
         system: [...environment, ...custom],
         messages: [
-          ...MessageV2.toModelMessage(sessionMessages),
+          ...(await MessageV2.toModelMessage(sessionMessages)),
           ...(isLastStep
             ? [
               {
@@ -696,6 +698,9 @@ export namespace SessionPrompt {
         })
       },
     })
+
+    const tool = await getTool()
+    const jsonSchema = await getJsonSchema()
 
     for (const item of await ToolRegistry.tools(input.model.providerID, input.agent)) {
       const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
@@ -1688,7 +1693,7 @@ export namespace SessionPrompt {
         },
         ...(hasOnlySubtaskParts
           ? [{ role: "user" as const, content: subtaskParts.map((p) => p.prompt).join("\n") }]
-          : MessageV2.toModelMessage(contextMessages)),
+          : await MessageV2.toModelMessage(contextMessages)),
       ],
     })
     const text = await result.text.catch((err) => log.error("failed to generate title", { error: err }))

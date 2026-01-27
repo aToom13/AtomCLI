@@ -12,8 +12,10 @@ import { Instance } from "../project/instance"
 import { Ripgrep } from "./ripgrep"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
+import { FileEvent } from "./event"
 
 export namespace File {
+  export import Event = FileEvent
   const log = Log.create({ service: "file" })
 
   export const Info = z

@@ -28,8 +28,9 @@ import { MessageV2 } from "@/session/message-v2"
 import { Config } from "@/config/config"
 import { Todo } from "@/session/todo"
 import { z } from "zod"
-import { LoadAPIKeyError } from "ai"
+// Note: ai package is imported dynamically to avoid Bun ESM resolution issues
 import type { AtomcliClient, SessionMessageResponse } from "@atomcli/sdk/v2"
+import { getLoadAPIKeyError } from "@/util/ai-compat"
 import { applyPatch } from "diff"
 
 export namespace ACP {
@@ -421,6 +422,7 @@ export namespace ACP {
         const error = MessageV2.fromError(e, {
           providerID: this.config.defaultModel?.providerID ?? "unknown",
         })
+        const LoadAPIKeyError = await getLoadAPIKeyError()
         if (LoadAPIKeyError.isInstance(error)) {
           throw RequestError.authRequired()
         }
@@ -473,6 +475,7 @@ export namespace ACP {
         const error = MessageV2.fromError(e, {
           providerID: this.config.defaultModel?.providerID ?? "unknown",
         })
+        const LoadAPIKeyError = await getLoadAPIKeyError()
         if (LoadAPIKeyError.isInstance(error)) {
           throw RequestError.authRequired()
         }
