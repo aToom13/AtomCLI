@@ -73,6 +73,18 @@ To update to the latest version:
 atomcli --update
 ```
 
+If the automatic update fails or your version is outdated, you can force an update using the install script:
+
+**Method 1: Using local script**
+```bash
+bash install.sh --update
+```
+
+**Method 2: Fetch and update (Recommended Fallback)**
+```bash
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update
+```
+
 ### Uninstall
 
 ```bash
