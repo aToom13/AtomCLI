@@ -16,8 +16,14 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   const keybind = useKeybind()
   const bindings = useTextareaKeybindings()
 
-  const questions = createMemo(() => props.request.questions)
-  const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
+  // Cast to any to access new fields until SDK is updated
+  const questions = createMemo(() => props.request.questions as any[])
+  const single = createMemo(() => {
+    const q = questions()[0]
+    if (!q) return false
+    if (q.type === "text" || q.type === "password") return true
+    return questions().length === 1 && q.multiple !== true
+  })
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [store, setStore] = createStore({
     tab: 0,
@@ -35,6 +41,11 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   const other = createMemo(() => store.selected === options().length)
   const input = createMemo(() => store.custom[store.tab] ?? "")
   const multi = createMemo(() => question()?.multiple === true)
+  const isText = createMemo(() => {
+    const type = question()?.type
+    return type === "text" || type === "password"
+  })
+  const isPassword = createMemo(() => question()?.type === "password")
   const customPicked = createMemo(() => {
     const value = input()
     if (!value) return false
@@ -89,8 +100,8 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   const dialog = useDialog()
 
   useKeyboard((evt) => {
-    // When editing "Other" textarea
-    if (store.editing && !confirm()) {
+    // When editing "Other" textarea or text/password input
+    if ((store.editing || isText()) && !confirm()) {
       if (evt.name === "escape") {
         evt.preventDefault()
         setStore("editing", false)
@@ -99,6 +110,26 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
       if (evt.name === "return") {
         evt.preventDefault()
         const text = textarea?.plainText?.trim() ?? ""
+
+        // For text input types, direct submission
+        if (isText()) {
+          if (!text) return // Don't submit empty
+
+          const answers = [...store.answers]
+          answers[store.tab] = [text]
+          setStore("answers", answers)
+
+          if (single()) {
+            sdk.client.question.reply({
+              requestID: props.request.id,
+              answers: [[text]],
+            })
+            return
+          }
+          setStore("tab", store.tab + 1)
+          return
+        }
+
         const prev = store.custom[store.tab]
 
         if (!text) {
@@ -258,58 +289,74 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
                 {multi() ? " (select all that apply)" : ""}
               </text>
             </box>
-            <box>
-              <For each={options()}>
-                {(opt, i) => {
-                  const active = () => i() === store.selected
-                  const picked = () => store.answers[store.tab]?.includes(opt.label) ?? false
-                  return (
-                    <box>
-                      <box flexDirection="row" gap={1}>
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined}>
-                          <text fg={active() ? theme.secondary : picked() ? theme.success : theme.text}>
-                            {i() + 1}. {opt.label}
-                          </text>
-                        </box>
-                        <text fg={theme.success}>{picked() ? "✓" : ""}</text>
-                      </box>
-                      <box paddingLeft={3}>
-                        <text fg={theme.textMuted}>{opt.description}</text>
-                      </box>
-                    </box>
-                  )
-                }}
-              </For>
-              <box>
-                <box flexDirection="row" gap={1}>
-                  <box backgroundColor={other() ? theme.backgroundElement : undefined}>
-                    <text fg={other() ? theme.secondary : customPicked() ? theme.success : theme.text}>
-                      {options().length + 1}. Type your own answer
-                    </text>
-                  </box>
-                  <text fg={theme.success}>{customPicked() ? "✓" : ""}</text>
-                </box>
-                <Show when={store.editing}>
-                  <box paddingLeft={3}>
-                    <textarea
-                      ref={(val: TextareaRenderable) => (textarea = val)}
-                      focused
-                      initialValue={input()}
-                      placeholder="Type your own answer"
-                      textColor={theme.text}
-                      focusedTextColor={theme.text}
-                      cursorColor={theme.primary}
-                      keyBindings={bindings()}
-                    />
-                  </box>
-                </Show>
-                <Show when={!store.editing && input()}>
-                  <box paddingLeft={3}>
-                    <text fg={theme.textMuted}>{input()}</text>
-                  </box>
-                </Show>
+            <Show when={isText()}>
+              <box paddingLeft={1} paddingTop={1}>
+                <textarea
+                  ref={(val: TextareaRenderable) => (textarea = val)}
+                  focused
+                  initialValue={store.answers[store.tab]?.[0] ?? ""}
+                  placeholder={question()?.placeholder ?? (isPassword() ? "Password" : "Type your answer")}
+                  textColor={theme.text}
+                  focusedTextColor={theme.text}
+                  cursorColor={theme.primary}
+                  keyBindings={bindings()}
+                />
               </box>
-            </box>
+            </Show>
+            <Show when={!isText()}>
+              <box>
+                <For each={options()}>
+                  {(opt, i) => {
+                    const active = () => i() === store.selected
+                    const picked = () => store.answers[store.tab]?.includes(opt.label) ?? false
+                    return (
+                      <box>
+                        <box flexDirection="row" gap={1}>
+                          <box backgroundColor={active() ? theme.backgroundElement : undefined}>
+                            <text fg={active() ? theme.secondary : picked() ? theme.success : theme.text}>
+                              {i() + 1}. {opt.label}
+                            </text>
+                          </box>
+                          <text fg={theme.success}>{picked() ? "✓" : ""}</text>
+                        </box>
+                        <box paddingLeft={3}>
+                          <text fg={theme.textMuted}>{opt.description}</text>
+                        </box>
+                      </box>
+                    )
+                  }}
+                </For>
+                <box>
+                  <box flexDirection="row" gap={1}>
+                    <box backgroundColor={other() ? theme.backgroundElement : undefined}>
+                      <text fg={other() ? theme.secondary : customPicked() ? theme.success : theme.text}>
+                        {options().length + 1}. Type your own answer
+                      </text>
+                    </box>
+                    <text fg={theme.success}>{customPicked() ? "✓" : ""}</text>
+                  </box>
+                  <Show when={store.editing}>
+                    <box paddingLeft={3}>
+                      <textarea
+                        ref={(val: TextareaRenderable) => (textarea = val)}
+                        focused
+                        initialValue={input()}
+                        placeholder="Type your own answer"
+                        textColor={theme.text}
+                        focusedTextColor={theme.text}
+                        cursorColor={theme.primary}
+                        keyBindings={bindings()}
+                      />
+                    </box>
+                  </Show>
+                  <Show when={!store.editing && input()}>
+                    <box paddingLeft={3}>
+                      <text fg={theme.textMuted}>{input()}</text>
+                    </box>
+                  </Show>
+                </box>
+              </box>
+            </Show>
           </box>
         </Show>
 

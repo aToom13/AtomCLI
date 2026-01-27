@@ -22,7 +22,9 @@ export namespace Question {
     .object({
       question: z.string().describe("Complete question"),
       header: z.string().max(12).describe("Very short label (max 12 chars)"),
-      options: z.array(Option).describe("Available choices"),
+      type: z.enum(["select", "text", "password"]).optional().default("select").describe("Input type"),
+      placeholder: z.string().optional().describe("Placeholder text for input"),
+      options: z.array(Option).optional().describe("Available choices (required for select type)"),
       multiple: z.boolean().optional().describe("Allow selecting multiple choices"),
     })
     .meta({

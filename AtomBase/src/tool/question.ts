@@ -6,7 +6,7 @@ import DESCRIPTION from "./question.txt"
 export const QuestionTool = Tool.define("question", {
   description: DESCRIPTION,
   parameters: z.object({
-    questions: z.array(Question.Info).describe("Questions to ask"),
+    questions: z.array(Question.Info).describe("Questions to ask (support text, password, and select types)"),
   }),
   async execute(params, ctx) {
     const answers = await Question.ask({

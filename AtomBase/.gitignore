@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Build outputs
+dist/
+out/
+build/
+
+# Temporary files
+.DS_Store
+*.log
+result.json
+tmp/
+
+# Turborepo
+.turbo/
+
+# Environment and Secrets
+.env
+.env.local
+.sysadmin_pass
+*.pem
+*.key
+
+# Editor
+.vscode/
+.idea/
+
+# Testing
+coverage/
+
+# Misc
+brain_test_doc*.txt

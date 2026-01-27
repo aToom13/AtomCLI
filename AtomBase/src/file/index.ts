@@ -13,6 +13,7 @@ import { Ripgrep } from "./ripgrep"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
 import { FileEvent } from "./event"
+import { PermissionNext } from "../permission/next"
 
 export namespace File {
   export import Event = FileEvent
@@ -274,15 +275,31 @@ export namespace File {
     }))
   }
 
-  export async function read(file: string): Promise<Content> {
+  export async function read(file: string, sessionID?: string): Promise<Content> {
     using _ = log.time("read", { file })
     const project = Instance.project
     const full = path.join(Instance.directory, file)
 
     // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
     // TODO: On Windows, cross-drive paths bypass this check. Consider realpath canonicalization.
+    // if (!Filesystem.contains(Instance.directory, full)) {
+    //   throw new Error(`Access denied: path escapes project directory`)
+    // }
+
     if (!Filesystem.contains(Instance.directory, full)) {
-      throw new Error(`Access denied: path escapes project directory`)
+      if (!sessionID) {
+        throw new Error(`Access denied: path escapes project directory`)
+      }
+      await PermissionNext.ask({
+        sessionID,
+        permission: "read",
+        patterns: [full],
+        always: [full, path.dirname(full) + "/*"],
+        ruleset: [],
+        metadata: {
+          path: full,
+        },
+      })
     }
 
     const bunFile = Bun.file(full)
@@ -321,7 +338,7 @@ export namespace File {
     return { type: "text", content }
   }
 
-  export async function list(dir?: string) {
+  export async function list(dir?: string, sessionID?: string) {
     const exclude = [".git", ".DS_Store"]
     const project = Instance.project
     let ignored = (_: string) => false
@@ -342,7 +359,18 @@ export namespace File {
     // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
     // TODO: On Windows, cross-drive paths bypass this check. Consider realpath canonicalization.
     if (!Filesystem.contains(Instance.directory, resolved)) {
-      throw new Error(`Access denied: path escapes project directory`)
+      if (!sessionID) throw new Error(`Access denied: path escapes project directory`)
+
+      await PermissionNext.ask({
+        sessionID,
+        permission: "list",
+        patterns: [resolved],
+        always: [resolved, path.dirname(resolved) + "/*"],
+        ruleset: [],
+        metadata: {
+          path: resolved,
+        },
+      })
     }
 
     const nodes: Node[] = []
