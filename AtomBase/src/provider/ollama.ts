@@ -48,7 +48,7 @@ export async function detectOllama(
 ): Promise<{ running: boolean; models: OllamaModel[] }> {
     try {
         const response = await fetch(`${baseURL}/api/tags`, {
-            signal: AbortSignal.timeout(3000),
+            signal: AbortSignal.timeout(10000),
         })
 
         if (!response.ok) {
