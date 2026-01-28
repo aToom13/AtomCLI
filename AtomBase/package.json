@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "name": "atomcli",
   "type": "module",
   "license": "MIT",
@@ -8,6 +8,7 @@
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "test": "bun test",
+    "release": "git tag v$(bun -e 'console.log(require(\"./package.json\").version)') && git push origin --tags",
     "build": "bun run script/build.ts",
     "dev": "bun run --conditions=browser ./src/index.ts",
     "random": "echo 'Random script updated at $(date)' && echo 'Change queued successfully' && echo 'Another change made' && echo 'Yet another change' && echo 'One more change' && echo 'Final change' && echo 'Another final change' && echo 'Yet another final change'",

@@ -20,6 +20,7 @@ atomcli.json
 a.out
 target
 .scripts
+.husky
 
 # Local dev files
 atomcli-dev
