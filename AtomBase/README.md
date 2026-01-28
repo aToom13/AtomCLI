@@ -17,7 +17,6 @@ This directory is located at `AtomBase`. It functions as a structural component 
 
 ### 3.1 Submodules
 - **[`src/`](src/README.md)**: Submodule directory.
-- **[`FlappyBird/`](FlappyBird/README.md)**: Submodule directory.
 - **[`script/`](script/README.md)**: Submodule directory.
 - **[`bin/`](bin/README.md)**: Submodule directory.
 - **[`test/`](test/README.md)**: Submodule directory.
