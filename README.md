@@ -70,7 +70,7 @@ cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
 ### Update
 To update to the latest version:
 ```bash
-atomcli --update
+atomcli upgrade
 ```
 
 If the automatic update fails or your version is outdated, you can force an update using the install script:

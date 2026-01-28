@@ -60,22 +60,14 @@ const cli = yargs(hideBin(process.argv))
     type: "string",
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
-  .option("update", {
-    describe: "upgrade atomcli",
-    type: "boolean",
-    hidden: true,
-  })
+
   .option("uninstall", {
     describe: "uninstall atomcli",
     type: "boolean",
     hidden: true,
   })
   .middleware(async (opts) => {
-    if (opts.update) {
-      // @ts-ignore
-      await UpgradeCommand.handler({})
-      process.exit(0)
-    }
+
     if (opts.uninstall) {
       // @ts-ignore
       await UninstallCommand.handler({})
