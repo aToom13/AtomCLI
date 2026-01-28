@@ -73,7 +73,7 @@ describe("session.retry.delay", () => {
 
     try {
       await promise
-    } catch {}
+    } catch { }
 
     process.emitWarning = originalWarn
     expect(warnings.some((w) => w.includes("TimeoutOverflowWarning"))).toBe(false)
@@ -106,7 +106,7 @@ describe("session.message-v2.fromError", () => {
         .then((res) => res.text())
         .catch((e) => e)
 
-      const result = MessageV2.fromError(error, { providerID: "test" })
+      const result = await MessageV2.fromError(error, { providerID: "test" })
 
       expect(MessageV2.APIError.isInstance(result)).toBe(true)
       expect((result as MessageV2.APIError).data.isRetryable).toBe(true)

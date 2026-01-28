@@ -11,6 +11,7 @@ import { createAtomcliClient, type AtomcliClient } from "@atomcli/sdk/v2"
 import { Server } from "../../server/server"
 import { Provider } from "../../provider/provider"
 import { Agent } from "../../agent/agent"
+import { FlowRunCommand } from "./flow"
 
 const TOOL: Record<string, [string, string]> = {
   todowrite: ["Todo", UI.Style.TEXT_WARNING_BOLD],
@@ -91,11 +92,22 @@ export const RunCommand = cmd({
         type: "string",
         describe: "model variant (provider-specific reasoning effort, e.g., high, max, minimal)",
       })
+      .option("loop", {
+        type: "boolean",
+        describe: "enable autonomous Ralph loop",
+      })
   },
   handler: async (args) => {
     let message = [...args.message, ...(args["--"] || [])]
       .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
       .join(" ")
+
+    // If message is provided and no specific command/agent overrides, default to Ralph Loop
+    if ((args.loop || (message.length > 0 && !args.command && !args.agent)) && args.loop !== false) {
+      // Redirect to FlowRunCommand
+      // @ts-ignore
+      return FlowRunCommand.handler({ ...args, name: "ralph", loop: message })
+    }
 
     const fileParts: any[] = []
     if (args.file) {
@@ -104,7 +116,7 @@ export const RunCommand = cmd({
       for (const filePath of files) {
         const resolvedPath = path.resolve(process.cwd(), filePath)
         const file = Bun.file(resolvedPath)
-        const stats = await file.stat().catch(() => {})
+        const stats = await file.stat().catch(() => { })
         if (!stats) {
           UI.error(`File not found: ${filePath}`)
           process.exit(1)
@@ -295,24 +307,24 @@ export const RunCommand = cmd({
         const result = await sdk.session.create(
           title
             ? {
-                title,
-                permission: [
-                  {
-                    permission: "question",
-                    action: "deny",
-                    pattern: "*",
-                  },
-                ],
-              }
+              title,
+              permission: [
+                {
+                  permission: "question",
+                  action: "deny",
+                  pattern: "*",
+                },
+              ],
+            }
             : {
-                permission: [
-                  {
-                    permission: "question",
-                    action: "deny",
-                    pattern: "*",
-                  },
-                ],
-              },
+              permission: [
+                {
+                  permission: "question",
+                  action: "deny",
+                  pattern: "*",
+                },
+              ],
+            },
         )
         return result.data?.id
       })()

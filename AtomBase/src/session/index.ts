@@ -12,7 +12,6 @@ import { Storage } from "../storage/storage"
 import { Log } from "../util/log"
 import { MessageV2 } from "./message-v2"
 import { Instance } from "../project/instance"
-import { SessionPrompt } from "./prompt"
 import { fn } from "@/util/fn"
 import { Command } from "../command"
 import { Snapshot } from "@/snapshot"
@@ -318,7 +317,7 @@ export namespace Session {
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
-      await unshare(sessionID).catch(() => {})
+      await unshare(sessionID).catch(() => { })
       for (const msg of await Storage.list(["message", sessionID])) {
         for (const part of await Storage.list(["part", msg.at(-1)!])) {
           await Storage.remove(part)
@@ -464,6 +463,7 @@ export namespace Session {
       messageID: Identifier.schema("message"),
     }),
     async (input) => {
+      const { SessionPrompt } = await import("./prompt")
       await SessionPrompt.command({
         sessionID: input.sessionID,
         messageID: input.messageID,

@@ -132,7 +132,7 @@ export namespace Skill {
     }
 
     // Scan .atomcli/skill/ directories
-    for (const dir of await Config.directories()) {
+    for (const dir of (await Config.state()).directories) {
       for await (const match of ATOMCLI_SKILL_GLOB.scan({
         cwd: dir,
         absolute: true,

@@ -607,37 +607,19 @@ export namespace MessageV2 {
   export async function fromError(e: unknown, ctx: { providerID: string }) {
     const LoadAPIKeyError = await getLoadAPIKeyError()
     const APICallError = await getAPICallError()
+    const sysError = e as SystemError
+    const code = sysError?.code || (e as any)?.cause?.code
+    const msg = (e as any)?.message || (e as any)?.cause?.message || ""
 
-    if (e instanceof DOMException && e.name === "AbortError") {
-      return new MessageV2.AbortedError(
-        { message: e.message },
-        { cause: e },
-      ).toObject()
-    }
-
-    if (MessageV2.OutputLengthError.isInstance(e)) {
-      return e
-    }
-
-    if (LoadAPIKeyError.isInstance(e)) {
-      return new MessageV2.AuthError(
-        {
-          providerID: ctx.providerID,
-          message: e.message,
-        },
-        { cause: e },
-      ).toObject()
-    }
-
-    if ((e as SystemError)?.code === "ECONNRESET") {
+    if (code === "ECONNRESET" || msg.includes("ECONNRESET") || msg.includes("Connection reset")) {
       return new MessageV2.APIError(
         {
           message: "Connection reset by server",
           isRetryable: true,
           metadata: {
-            code: (e as SystemError).code ?? "",
-            syscall: (e as SystemError).syscall ?? "",
-            message: (e as SystemError).message ?? "",
+            code: code ?? "ECONNRESET",
+            syscall: sysError?.syscall ?? "",
+            message: sysError?.message ?? msg,
           },
         },
         { cause: e },

@@ -3,18 +3,16 @@ import { Installation } from "@/installation"
 import { Provider } from "@/provider/provider"
 import { Log } from "@/util/log"
 import {
-  streamText,
-  wrapLanguageModel,
   type ModelMessage,
   type StreamTextResult,
   type Tool,
   type ToolSet,
-  extractReasoningMiddleware,
 } from "ai"
 import { clone, mergeDeep, pipe } from "remeda"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { Instance } from "@/project/instance"
+import { getExtractReasoningMiddleware, getStreamText, getWrapLanguageModel } from "@/util/ai-compat"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
@@ -126,13 +124,18 @@ export namespace LLM {
     const maxOutputTokens = isCodex
       ? undefined
       : ProviderTransform.maxOutputTokens(
-          input.model.api.npm,
-          params.options,
-          input.model.limit.output,
-          OUTPUT_TOKEN_MAX,
-        )
+        input.model.api.npm,
+        params.options,
+        input.model.limit.output,
+        OUTPUT_TOKEN_MAX,
+      )
 
     const tools = await resolveTools(input)
+
+
+    const extractReasoningMiddleware = await getExtractReasoningMiddleware()
+    const streamText = await getStreamText()
+    const wrapLanguageModel = await getWrapLanguageModel()
 
     return streamText({
       onError(error) {
@@ -172,18 +175,18 @@ export namespace LLM {
       headers: {
         ...(isCodex
           ? {
-              originator: "atomcli",
-              "User-Agent": `atomcli/${Installation.VERSION} (${os.platform()} ${os.release()}; ${os.arch()})`,
-              session_id: input.sessionID,
-            }
+            originator: "atomcli",
+            "User-Agent": `atomcli/${Installation.VERSION} (${os.platform()} ${os.release()}; ${os.arch()})`,
+            session_id: input.sessionID,
+          }
           : undefined),
         ...(input.model.providerID.startsWith("atomcli")
           ? {
-              "x-atomcli-project": Instance.project.id,
-              "x-atomcli-session": input.sessionID,
-              "x-atomcli-request": input.user.id,
-              "x-atomcli-client": Flag.ATOMCLI_CLIENT,
-            }
+            "x-atomcli-project": Instance.project.id,
+            "x-atomcli-session": input.sessionID,
+            "x-atomcli-request": input.user.id,
+            "x-atomcli-client": Flag.ATOMCLI_CLIENT,
+          }
           : undefined),
         ...input.model.headers,
       },
@@ -191,17 +194,17 @@ export namespace LLM {
       messages: [
         ...(isCodex
           ? [
-              {
-                role: "user",
-                content: system.join("\n\n"),
-              } as ModelMessage,
-            ]
+            {
+              role: "user",
+              content: system.join("\n\n"),
+            } as ModelMessage,
+          ]
           : system.map(
-              (x): ModelMessage => ({
-                role: "system",
-                content: x,
-              }),
-            )),
+            (x): ModelMessage => ({
+              role: "system",
+              content: x,
+            }),
+          )),
         ...input.messages,
       ],
       model: wrapLanguageModel({

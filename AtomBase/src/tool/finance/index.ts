@@ -18,7 +18,7 @@ import { applySeniorLogic } from "./logic"
 import { analyzeKlines } from "./technical"
 import { detectAssetType, getAssetTypeEmoji, getAssetTypeName } from "./symbols"
 import type { FinanceAnalysis, AssetType } from "./types"
-import { generateText } from "ai"
+import { getGenerateText } from "../../util/ai-compat"
 import { Provider } from "../../provider/provider"
 import { Log } from "../../util/log"
 import DESCRIPTION from "./finance.txt"
@@ -248,6 +248,7 @@ async function runAnalysis(role: string, preferredModels: string[], systemPrompt
 
         log.info(`Running ${role} analysis`, { model: model.id })
 
+        const generateText = await getGenerateText()
         const { text } = await generateText({
             model: languageModel,
             system: systemPrompt,

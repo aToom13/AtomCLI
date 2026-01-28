@@ -22,7 +22,7 @@ export const ConfigRoute = new Hono()
                     description: "Get config info",
                     content: {
                         "application/json": {
-                            schema: resolver(Config.Info),
+                            schema: resolver(z.lazy(() => Config.Info)),
                         },
                     },
                 },
@@ -43,7 +43,7 @@ export const ConfigRoute = new Hono()
                     description: "Successfully updated config",
                     content: {
                         "application/json": {
-                            schema: resolver(Config.Info),
+                            schema: resolver(z.lazy(() => Config.Info)),
                         },
                     },
                 },

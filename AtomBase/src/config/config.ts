@@ -111,6 +111,7 @@ export namespace Config {
       log.debug("loading config from ATOMCLI_CONFIG_DIR", { path: Flag.ATOMCLI_CONFIG_DIR })
     }
 
+    // Scan .atomcli/skill/ directories
     for (const dir of unique(directories)) {
       if (dir.endsWith(".atomcli") || dir === Flag.ATOMCLI_CONFIG_DIR) {
         for (const file of ["atomcli.jsonc", "atomcli.json"]) {

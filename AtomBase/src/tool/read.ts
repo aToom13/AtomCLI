@@ -27,7 +27,7 @@ export const ReadTool = Tool.define("read", {
     }
     const title = path.relative(Instance.worktree, filepath)
 
-
+    await assertExternalDirectory(ctx, filepath)
 
     await ctx.ask({
       permission: "read",

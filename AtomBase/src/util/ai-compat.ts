@@ -31,8 +31,6 @@ let aiModule: typeof import("ai") | null = null
 export async function getAI(): Promise<typeof import("ai")> {
     if (!aiModule) {
         aiModule = await import("ai")
-        // Workaround for Bun test environment issue where exports might be missing unless accessed
-        Object.keys(aiModule)
     }
     return aiModule
 }
@@ -107,4 +105,36 @@ export async function getConvertToModelMessages() {
 export async function getEmbed() {
     const ai = await getAI()
     return ai.embed
+}
+
+/**
+ * Get generateText function
+ */
+export async function getGenerateText() {
+    const ai = await getAI()
+    return ai.generateText
+}
+
+/**
+ * Get extractReasoningMiddleware function
+ */
+export async function getExtractReasoningMiddleware() {
+    const ai = await getAI()
+    return ai.extractReasoningMiddleware
+}
+
+/**
+ * Get wrapLanguageModel function
+ */
+export async function getWrapLanguageModel() {
+    const ai = await getAI()
+    return ai.wrapLanguageModel
+}
+
+/**
+ * Get streamText function
+ */
+export async function getStreamText() {
+    const ai = await getAI()
+    return ai.streamText
 }

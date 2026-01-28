@@ -28,6 +28,7 @@ import { AcpCommand } from "./cli/cmd/acp"
 import { EOL } from "os"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
+import { FlowCommand } from "./cli/cmd/flow"
 import { FeaturesCommand } from "./cli/cmd/features"
 
 process.on("unhandledRejection", (e) => {
@@ -122,6 +123,7 @@ const cli = yargs(hideBin(process.argv))
   .command(GithubCommand)
   .command(PrCommand)
   .command(SessionCommand)
+  .command(FlowCommand)
   .command(FeaturesCommand)
   .fail((msg, err) => {
     if (
