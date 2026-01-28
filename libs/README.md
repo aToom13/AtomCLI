@@ -2,7 +2,9 @@
 The `libs/` directory acts as a monorepo for shared code components.
 
 ## 1.0 Parent Navigation
-*   **[Return to Development Guide](../docs/DEVELOPMENT.md)**
+- **[Return to Development Guide](../docs/DEVELOPMENT.md)**
+- **[Main README](../README.md)** - Project overview
+- **[Documentation](../docs/README.md)** - All guides
 
 ---
 
