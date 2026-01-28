@@ -36,8 +36,8 @@ jobs:
         cp AtomBase/dist/atomcli-linux-x64/bin/atomcli release_assets/atomcli-linux-x64
         cp AtomBase/dist/atomcli-linux-arm64/bin/atomcli release_assets/atomcli-linux-arm64
         cp AtomBase/dist/atomcli-linux-x64-musl/bin/atomcli release_assets/atomcli-linux-x64-musl
-        cp AtomBase/dist/atomcli-macos-x64/bin/atomcli release_assets/atomcli-macos-x64
-        cp AtomBase/dist/atomcli-macos-arm64/bin/atomcli release_assets/atomcli-macos-arm64
+        cp AtomBase/dist/atomcli-darwin-x64/bin/atomcli release_assets/atomcli-darwin-x64
+        cp AtomBase/dist/atomcli-darwin-arm64/bin/atomcli release_assets/atomcli-darwin-arm64
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
@@ -46,8 +46,8 @@ jobs:
           release_assets/atomcli-linux-x64
           release_assets/atomcli-linux-arm64
           release_assets/atomcli-linux-x64-musl
-          release_assets/atomcli-macos-x64
-          release_assets/atomcli-macos-arm64
+          release_assets/atomcli-darwin-x64
+          release_assets/atomcli-darwin-arm64
         draft: false
         prerelease: false
         generate_release_notes: true
