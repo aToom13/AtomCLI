@@ -147,3 +147,25 @@ export const McpRoute = new Hono()
             return c.json(true)
         },
     )
+    .get(
+        "/resource",
+        describeRoute({
+            summary: "List MCP resources",
+            description: "Get a list of all available resources from connected MCP servers.",
+            operationId: "mcp.resource.list",
+            responses: {
+                200: {
+                    description: "List of resources",
+                    content: {
+                        "application/json": {
+                            schema: resolver(z.record(z.string(), MCP.Resource)),
+                        },
+                    },
+                },
+            },
+        }),
+        async (c) => {
+            return c.json(await MCP.resources())
+        },
+    )
+

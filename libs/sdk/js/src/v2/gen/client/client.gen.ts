@@ -109,10 +109,10 @@ export const createClient = (config: Config = {}): Client => {
       return opts.responseStyle === "data"
         ? undefined
         : {
-          error: finalError,
-          request,
-          response: undefined as any,
-        }
+            error: finalError,
+            request,
+            response: undefined as any,
+          }
     }
 
     for (const fn of interceptors.response.fns) {
@@ -152,9 +152,9 @@ export const createClient = (config: Config = {}): Client => {
         return opts.responseStyle === "data"
           ? emptyData
           : {
-            data: emptyData,
-            ...result,
-          }
+              data: emptyData,
+              ...result,
+            }
       }
 
       let data: any
@@ -164,22 +164,15 @@ export const createClient = (config: Config = {}): Client => {
         case "formData":
         case "json":
         case "text":
-          try {
-            data = await response[parseAs]()
-          } catch (error) {
-            if (request.signal.aborted) {
-              throw new DOMException("The operation was aborted.", "AbortError")
-            }
-            throw error
-          }
+          data = await response[parseAs]()
           break
         case "stream":
           return opts.responseStyle === "data"
             ? response.body
             : {
-              data: response.body,
-              ...result,
-            }
+                data: response.body,
+                ...result,
+              }
       }
 
       if (parseAs === "json") {
@@ -195,9 +188,9 @@ export const createClient = (config: Config = {}): Client => {
       return opts.responseStyle === "data"
         ? data
         : {
-          data,
-          ...result,
-        }
+            data,
+            ...result,
+          }
     }
 
     const textError = await response.text()
@@ -228,9 +221,9 @@ export const createClient = (config: Config = {}): Client => {
     return opts.responseStyle === "data"
       ? undefined
       : {
-        error: finalError,
-        ...result,
-      }
+          error: finalError,
+          ...result,
+        }
   }
 
   const makeMethodFn = (method: Uppercase<HttpMethod>) => (options: RequestOptions) => request({ ...options, method })

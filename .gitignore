@@ -26,3 +26,7 @@ atomcli-dev
 logs/
 *.bun-build
 *.heapsnapshot
+
+# Release artifacts
+release_bin/
+**/release_bin/

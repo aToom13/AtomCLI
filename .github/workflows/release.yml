@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+
+    - name: Install Dependencies
+      run: bun install
+
+    - name: Build
+      run: |
+        cd AtomBase
+        bun run build
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          AtomBase/dist/atomcli-linux-x64/bin/atomcli
+          AtomBase/dist/atomcli-macos-x64/bin/atomcli
+          AtomBase/dist/atomcli-macos-arm64/bin/atomcli
+        draft: false
+        prerelease: false
+        generate_release_notes: true

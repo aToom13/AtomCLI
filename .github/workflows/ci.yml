@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Lint, Typecheck & Test
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+
+    - name: Install Dependencies
+      run: bun install
+
+    - name: Typecheck
+      run: bun run typecheck
+
+    # Assuming there is a lint script, if not we might need to add one or skip this
+    # - name: Lint
+    #   run: bun run lint
+
+    - name: Test
+      run: bun run test

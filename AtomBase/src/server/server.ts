@@ -34,6 +34,8 @@ import { AgentRoute } from "./routes/agent"
 import { CommandRoute } from "./routes/command"
 import { SystemRoute } from "./routes/system"
 import { PermissionRoute } from "./routes/permission"
+import { LspRoute } from "./routes/lsp"
+import { FormatterRoute } from "./routes/formatter"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -161,6 +163,8 @@ export namespace Server {
         .route("/question", QuestionRoute)
         .route("/mcp", McpRoute)
         .route("/provider", ProviderRoute)
+        .route("/lsp", LspRoute)
+        .route("/formatter", FormatterRoute)
         .all("/*", async (c) => {
           const path = c.req.path
           const response = await proxy(`https://app.atomcli.ai${path}`, {

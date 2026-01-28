@@ -42,9 +42,7 @@ export class FlowRunner {
 
             const nextId = this.findNextNode(currentNode)
             if (!nextId) {
-                if (currentNode.kind !== "end") {
-                    this.log.warn("No outgoing edge found, ending flow implicitly")
-                }
+                this.log.warn("No outgoing edge found, ending flow implicitly")
                 return
             }
             this.currentNodeId = nextId
