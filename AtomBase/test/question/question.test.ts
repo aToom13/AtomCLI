@@ -14,6 +14,7 @@ test("ask - returns pending promise", async () => {
           {
             question: "What would you like to do?",
             header: "Action",
+            type: "select",
             options: [
               { label: "Option 1", description: "First option" },
               { label: "Option 2", description: "Second option" },
@@ -102,6 +103,7 @@ test("reply - removes from pending list", async () => {
           {
             question: "What would you like to do?",
             header: "Action",
+            type: "select",
             options: [
               { label: "Option 1", description: "First option" },
               { label: "Option 2", description: "Second option" },
@@ -151,6 +153,7 @@ test("reject - throws RejectedError", async () => {
           {
             question: "What would you like to do?",
             header: "Action",
+            type: "select",
             options: [
               { label: "Option 1", description: "First option" },
               { label: "Option 2", description: "Second option" },
@@ -178,6 +181,7 @@ test("reject - removes from pending list", async () => {
           {
             question: "What would you like to do?",
             header: "Action",
+            type: "select",
             options: [
               { label: "Option 1", description: "First option" },
               { label: "Option 2", description: "Second option" },
@@ -190,7 +194,7 @@ test("reject - removes from pending list", async () => {
       expect(pending.length).toBe(1)
 
       await Question.reject(pending[0].id)
-      askPromise.catch(() => {}) // Ignore rejection
+      askPromise.catch(() => { }) // Ignore rejection
 
       const pendingAfter = await Question.list()
       expect(pendingAfter.length).toBe(0)
@@ -228,6 +232,7 @@ test("ask - handles multiple questions", async () => {
         {
           question: "Which environment?",
           header: "Env",
+          type: "select",
           options: [
             { label: "Dev", description: "Development" },
             { label: "Prod", description: "Production" },
@@ -266,6 +271,7 @@ test("list - returns all pending requests", async () => {
           {
             question: "Question 1?",
             header: "Q1",
+            type: "select",
             options: [{ label: "A", description: "A" }],
           },
         ],
@@ -277,6 +283,7 @@ test("list - returns all pending requests", async () => {
           {
             question: "Question 2?",
             header: "Q2",
+            type: "select",
             options: [{ label: "B", description: "B" }],
           },
         ],
