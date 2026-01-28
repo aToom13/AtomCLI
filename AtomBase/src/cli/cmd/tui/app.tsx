@@ -654,7 +654,7 @@ function App() {
     toast.show({
       variant: "info",
       title: "Update Available",
-      message: `AtomCLI v${evt.properties.version} is available. Run 'atomcli upgrade' to update manually.`,
+      message: `AtomCLI v${evt.properties.version} is available. Run 'atomcli upgrade' to update`,
       duration: 10000,
     })
   })

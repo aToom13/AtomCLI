@@ -173,6 +173,7 @@ NODE_ENV=development`
 ```
 
 **Critical Rules:**
+- ✅ **MUST Read file first** if it exists (tool will error otherwise!)
 - ✅ Use Edit for modifying existing files
 - ✅ Include all necessary imports/headers
 - ✅ Follow project conventions

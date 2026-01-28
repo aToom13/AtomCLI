@@ -61,6 +61,10 @@ The browser stays open between calls, allowing sequential interactions.`,
         // Drag options
         targetSelector: z.string().optional().describe("Target element selector to drop onto (required for 'drag')"),
 
+        // new params
+        name: z.string().optional().describe("Custom name for the screenshot file (without extension)"),
+        workdir: z.string().optional().describe("Absolute path to the working directory where .screenshots should be created"),
+
         // Screenshot
         fullPage: z.boolean().optional().describe("Capture full page screenshot (default: false)"),
     }),
@@ -74,7 +78,7 @@ The browser stays open between calls, allowing sequential interactions.`,
             switch (params.action) {
                 case "navigate":
                     if (!params.url) throw new Error("URL is required for navigate")
-                    await page.goto(params.url, { waitUntil: "domcontentloaded" })
+                    await page.goto(params.url, { waitUntil: "domcontentloaded", timeout: 30000 })
                     result = `Navigated to ${params.url}`
                     break
 
@@ -83,87 +87,89 @@ The browser stays open between calls, allowing sequential interactions.`,
                     await page.click(params.selector, {
                         button: params.button || "left",
                         clickCount: params.clickCount || 1,
-                        delay: 50
+                        delay: params.delay,
                     })
-                    result = `Clicked ${params.selector} (button: ${params.button || "left"}, count: ${params.clickCount || 1})`
+                    result = `Clicked ${params.selector}`
                     break
 
                 case "type":
-                    if (!params.selector || params.text === undefined) throw new Error("Selector and text are required for type")
-                    await page.locator(params.selector).pressSequentially(params.text, {
-                        delay: params.delay || 50
-                    })
-                    result = `Typed '${params.text}' into ${params.selector} (human-like)`
+                    if (!params.selector) throw new Error("Selector is required for type")
+                    if (params.text === undefined) throw new Error("Text is required for type")
+                    await page.type(params.selector, params.text, { delay: params.delay || 50 })
+                    result = `Typed text into ${params.selector}`
                     break
 
                 case "press":
                     if (!params.key) throw new Error("Key is required for press")
                     if (params.selector) {
                         await page.press(params.selector, params.key)
-                        result = `Pressed '${params.key}' on ${params.selector}`
                     } else {
                         await page.keyboard.press(params.key)
-                        result = `Pressed '${params.key}' globally`
                     }
+                    result = `Pressed key ${params.key}`
                     break
 
                 case "clear":
                     if (!params.selector) throw new Error("Selector is required for clear")
                     await page.fill(params.selector, "")
-                    result = `Cleared content of ${params.selector}`
+                    result = `Cleared ${params.selector}`
+                    break
+
+                case "read":
+                    // If no selector, read full body
+                    const content = params.selector
+                        ? await page.textContent(params.selector)
+                        : await page.content()
+                    result = content || "No content found"
                     break
 
                 case "scroll":
+                    if (!params.direction) throw new Error("Direction is required for scroll")
                     const amount = params.amount || 500
-
-                    if (params.direction === "top") {
-                        await page.evaluate(() => window.scrollTo(0, 0))
-                        result = "Scrolled to top"
-                    } else if (params.direction === "bottom") {
-                        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-                        result = "Scrolled to bottom"
-                    } else if (params.selector) {
-                        await page.hover(params.selector)
-                        const x = params.direction === "right" ? amount : (params.direction === "left" ? -amount : 0)
-                        const y = params.direction === "down" ? amount : (params.direction === "up" ? -amount : 0)
-                        await page.mouse.wheel(x, y)
-                        result = `Scrolled element ${params.selector} ${params.direction}`
+                    if (params.selector) {
+                        const el = page.locator(params.selector)
+                        if (params.direction === "top") await el.evaluate(e => e.scrollTop = 0)
+                        else if (params.direction === "bottom") await el.evaluate(e => e.scrollTop = e.scrollHeight)
+                        else if (params.direction === "up") await el.evaluate((e, a) => e.scrollTop -= a, amount)
+                        else if (params.direction === "down") await el.evaluate((e, a) => e.scrollTop += a, amount)
+                        else if (params.direction === "left") await el.evaluate((e, a) => e.scrollLeft -= a, amount)
+                        else if (params.direction === "right") await el.evaluate((e, a) => e.scrollLeft += a, amount)
                     } else {
-                        let x = 0
-                        let y = 0
-                        switch (params.direction) {
-                            case "up": y = -amount; break;
-                            case "down": y = amount; break;
-                            case "left": x = -amount; break;
-                            case "right": x = amount; break;
-                        }
-                        await page.evaluate((args) => window.scrollBy(args.x, args.y), { x, y })
-                        result = `Scrolled page ${params.direction} by ${amount}px`
+                        if (params.direction === "top") await page.evaluate(() => window.scrollTo(0, 0))
+                        else if (params.direction === "bottom") await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+                        else if (params.direction === "up") await page.mouse.wheel(0, -amount)
+                        else if (params.direction === "down") await page.mouse.wheel(0, amount)
+                        // left/right scroll on window is rare but valid
                     }
+                    result = `Scrolled ${params.direction}`
                     break
 
                 case "drag":
-                    if (!params.selector || !params.targetSelector) throw new Error("Selector and targetSelector are required for drag")
+                    if (!params.selector || !params.targetSelector) throw new Error("Selector and TargetSelector required")
                     await page.dragAndDrop(params.selector, params.targetSelector)
                     result = `Dragged ${params.selector} to ${params.targetSelector}`
                     break
 
                 case "hover":
-                    if (!params.selector) throw new Error("Selector is required for hover")
+                    if (!params.selector) throw new Error("Selector required for hover")
                     await page.hover(params.selector)
                     result = `Hovered over ${params.selector}`
                     break
 
-                case "read":
-                    const content = await page.evaluate(() => document.body.innerText)
-                    result = content
-                    metadata.url = page.url()
-                    break
-
                 case "screenshot":
                     const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
-                    const filename = `screenshot-${timestamp}.png`
-                    const filepath = path.join(SCREENSHOT_DIR, filename)
+                    const name = params.name ? params.name.replace(/[^a-zA-Z0-9-_]/g, "_") : `screenshot-${timestamp}`
+                    const filename = `${name}.png`
+
+                    const screenshotsDir = params.workdir
+                        ? path.join(params.workdir, ".screenshots")
+                        : path.join(process.cwd(), ".screenshots")
+
+                    if (!existsSync(screenshotsDir)) {
+                        mkdirSync(screenshotsDir, { recursive: true })
+                    }
+
+                    const filepath = path.join(screenshotsDir, filename)
 
                     await page.screenshot({
                         path: filepath,

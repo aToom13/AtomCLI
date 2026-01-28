@@ -155,16 +155,6 @@
         "@modelcontextprotocol/server-sequential-thinking"
       ],
       "enabled": true
-    },
-    "filesystem": {
-      "type": "local",
-      "command": [
-        "npx",
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/media/atom13/d1af25b4-e9fd-4312-a7a2-556455554e27/AtomCLI"
-      ],
-      "enabled": true
     }
   },
   "$schema": "https://atomcli.ai/config.json"

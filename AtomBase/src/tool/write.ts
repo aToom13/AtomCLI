@@ -28,8 +28,11 @@ export const WriteTool = Tool.define("write", {
 
     const file = Bun.file(filepath)
     const exists = await file.exists()
-    const contentOld = exists ? await file.text() : ""
+
+    // Fail fast if file exists but hasn't been read
     if (exists) await FileTime.assert(ctx.sessionID, filepath)
+
+    const contentOld = exists ? await file.text() : ""
 
     const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, params.content))
     await ctx.ask({

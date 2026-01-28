@@ -26,7 +26,7 @@ SPINNER="◐◓◑◒"
 
 # Installation directory
 INSTALL_DIR="${ATOMCLI_INSTALL_DIR:-$HOME/.local/bin}"
-CONFIG_DIR="${ATOMCLI_CONFIG_DIR:-$HOME/.atomcli}"
+CONFIG_DIR="${ATOMCLI_CONFIG_DIR:-$HOME/.config/atomcli}"
 
 # Banner
 print_banner() {
@@ -748,33 +748,39 @@ EOF
         step "Installing MCP servers..."
         
         # Add MCPs to config
-        local config_file="$CONFIG_DIR/atomcli.json"
+        local config_file="$CONFIG_DIR/mcp.json"
         
         # Read existing config and add MCPs with correct format
-        if [ -f "$config_file" ]; then
-            # Use node to merge JSON (more reliable than sed)
-            node -e "
-                const fs = require('fs');
-                const config = JSON.parse(fs.readFileSync('$config_file', 'utf8'));
-                config.mcp = config.mcp || {};
-                config.mcp['filesystem'] = {
-                    type: 'local',
-                    command: ['npx', '-y', '@modelcontextprotocol/server-filesystem', process.env.HOME],
-                    enabled: true
-                };
-                config.mcp['memory'] = {
-                    type: 'local',
-                    command: ['npx', '-y', '@modelcontextprotocol/server-memory'],
-                    enabled: true
-                };
-                config.mcp['sequential-thinking'] = {
-                    type: 'local',
-                    command: ['npx', '-y', '@modelcontextprotocol/server-sequential-thinking'],
-                    enabled: true
-                };
-                fs.writeFileSync('$config_file', JSON.stringify(config, null, 2));
-            " 2>/dev/null && success "Installed 3 MCP servers" || warn "Could not configure MCPs automatically"
-        fi
+        # Use node to create/update JSON
+        node -e "
+            const fs = require('fs');
+            const configFile = '$config_file';
+            let config = {};
+            if (fs.existsSync(configFile)) {
+                try {
+                    config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+                } catch (e) {}
+            }
+            
+            config.mcp = config.mcp || {};
+            
+            config.mcp['filesystem'] = {
+                type: 'local',
+                command: ['npx', '-y', '@modelcontextprotocol/server-filesystem', process.env.HOME],
+                enabled: true
+            };
+            config.mcp['memory'] = {
+                type: 'local',
+                command: ['npx', '-y', '@modelcontextprotocol/server-memory'],
+                enabled: true
+            };
+            config.mcp['sequential-thinking'] = {
+                type: 'local',
+                command: ['npx', '-y', '@modelcontextprotocol/server-sequential-thinking'],
+                enabled: true
+            };
+            fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
+        " 2>/dev/null && success "Installed 3 MCP servers to mcp.json" || warn "Could not configure MCPs automatically"
         
         info "MCP servers: filesystem, memory, sequential-thinking"
     fi

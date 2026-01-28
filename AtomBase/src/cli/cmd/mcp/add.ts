@@ -96,27 +96,23 @@ export const McpAddCommand = cmd({
                     }
 
                     prompts.log.info(`Remote MCP server "${name}" configured with OAuth (client ID: ${clientId})`)
-                    prompts.log.info("Add this to your atomcli.json:")
+                    prompts.log.info("Add this to your mcp.json (in ~/.config/atomcli/mcp.json):")
                     prompts.log.info(`
-  "mcp": {
-    "${name}": {
-      "type": "remote",
-      "url": "${url}",
-      "oauth": {
-        "clientId": "${clientId}"${clientSecret ? `,\n        "clientSecret": "${clientSecret}"` : ""}
-      }
+  "${name}": {
+    "type": "remote",
+    "url": "${url}",
+    "oauth": {
+      "clientId": "${clientId}"${clientSecret ? `,\n        "clientSecret": "${clientSecret}"` : ""}
     }
   }`)
                 } else {
                     prompts.log.info(`Remote MCP server "${name}" configured with OAuth (dynamic registration)`)
-                    prompts.log.info("Add this to your atomcli.json:")
+                    prompts.log.info("Add this to your mcp.json (in ~/.config/atomcli/mcp.json):")
                     prompts.log.info(`
-  "mcp": {
-    "${name}": {
-      "type": "remote",
-      "url": "${url}",
-      "oauth": {}
-    }
+  "${name}": {
+    "type": "remote",
+    "url": "${url}",
+    "oauth": {}
   }`)
                 }
             } else {

@@ -36,13 +36,23 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
 
 function createEventSource(client: RpcClient, directory: string): EventSource {
   return {
-    on: (handler) =>
-      client.on<Event>("event", (event) => {
+    on: (handler) => {
+      // Listen for instance-scoped events
+      const unsub1 = client.on<Event>("event", (event) => {
         handler(event)
         if (event.type === "server.instance.disposed") {
           client.call("subscribe", { directory }).catch(() => { })
         }
-      }),
+      })
+      // Listen for global events (e.g., installation updates)
+      const unsub2 = client.on<{ directory: string; payload: Event }>("global.event", (event) => {
+        handler(event.payload)
+      })
+      return () => {
+        unsub1()
+        unsub2()
+      }
+    },
   }
 }
 

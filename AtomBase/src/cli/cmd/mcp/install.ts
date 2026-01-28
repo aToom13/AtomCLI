@@ -73,7 +73,7 @@ export const McpInstallCommand = cmd({
 
                     spinner.stop("Configuration ready!")
 
-                    prompts.log.info("Add this to your atomcli.json:")
+                    prompts.log.info("Add this to your mcp.json (in ~/.config/atomcli/mcp.json):")
                     prompts.log.info(`
   "mcp": {
     "${serverName}": {

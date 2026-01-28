@@ -1,4 +1,4 @@
-import { firefox, type Browser as PlaywrightBrowser, type BrowserContext, type Page } from "playwright"
+import { chromium, type Browser as PlaywrightBrowser, type BrowserContext, type Page } from "playwright"
 import { Log } from "../util/log"
 import fs from "fs"
 import path from "path"
@@ -44,39 +44,46 @@ export class BrowserManager {
     }
 
     private async init() {
-        if (this.browser) return
+        // if (this.browser) return
 
-        // Clean up old screenshots on new session start
-        this.cleanScreenshots()
-
-        try {
-            this.log.info("launching browser (headed)")
-            this.browser = await firefox.launch({
-                headless: false,
-                args: [],
-            })
-        } catch (e: any) {
-            this.log.warn("headed launch failed, falling back to headless", { error: e.message })
-            this.browser = await firefox.launch({
-                headless: true,
-                args: [],
-            })
+        if (this.browser && !this.browser.isConnected()) {
+            this.browser = null
+            this.context = null
+            this.page = null
         }
 
-        this.context = await this.browser.newContext({
-            viewport: { width: 1280, height: 720 },
-        })
+        if (!this.browser) {
+            try {
+                this.log.info("launching browser (headed)")
+                this.browser = await chromium.launch({
+                    headless: false,
+                    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+                })
+            } catch (e: any) {
+                this.log.warn("headed launch failed, falling back to headless", { error: e.message })
+                this.browser = await chromium.launch({
+                    headless: true,
+                    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+                })
+            }
+        }
 
-        // Inject click visualization script
-        await this.context.addInitScript(() => {
-            if (typeof document === "undefined") return
+        if (!this.context) {
+            this.context = await this.browser!.newContext({
+                viewport: { width: 1280, height: 720 },
+            })
 
-            // Visual click effect
-            document.addEventListener(
-                "click",
-                (e) => {
-                    const dot = document.createElement("div")
-                    dot.style.cssText = `
+
+            // Inject click visualization script
+            await this.context.addInitScript(() => {
+                if (typeof document === "undefined") return
+
+                // Visual click effect
+                document.addEventListener(
+                    "click",
+                    (e) => {
+                        const dot = document.createElement("div")
+                        dot.style.cssText = `
                 position: absolute;
                 width: 20px;
                 height: 20px;
@@ -90,40 +97,46 @@ export class BrowserManager {
                 transform: scale(0);
                 transition: transform 0.2s, opacity 0.5s;
             `
-                    document.body.appendChild(dot)
-                    requestAnimationFrame(() => {
-                        dot.style.transform = "scale(1)"
-                    })
-                    setTimeout(() => {
-                        dot.style.opacity = "0"
-                    }, 300)
-                    setTimeout(() => {
-                        dot.remove()
-                    }, 800)
-                },
-                true,
-            )
-        })
+                        document.body.appendChild(dot)
+                        requestAnimationFrame(() => {
+                            dot.style.transform = "scale(1)"
+                        })
+                        setTimeout(() => {
+                            dot.style.opacity = "0"
+                        }, 300)
+                        setTimeout(() => {
+                            dot.remove()
+                        }, 800)
+                    },
+                    true,
+                )
+            })
 
-        this.page = await this.context.newPage()
+        }
 
-        // Improved logging for debug
-        this.page.on("console", (msg) => {
-            const text = `[${msg.type()}] ${msg.text()}`;
-            this.consoleLogs.push(text);
-            this.log.debug(`console: ${text}`);
-        })
-        this.page.on("pageerror", (err) => {
-            const text = `[error] ${err.message}`;
-            this.consoleLogs.push(text);
-            this.log.error(`pageerror: ${text}`);
-        })
+        if (!this.page || this.page.isClosed()) {
+            this.page = await this.context!.newPage()
+
+            // Improved logging for debug
+            this.page.on("console", (msg) => {
+                const text = `[${msg.type()}] ${msg.text()}`;
+                this.consoleLogs.push(text);
+                this.log.debug(`console: ${text}`);
+            })
+            this.page.on("pageerror", (err) => {
+                const text = `[error] ${err.message}`;
+                this.consoleLogs.push(text);
+                this.log.error(`pageerror: ${text}`);
+            })
+        }
+
     }
 
     public async getPage(): Promise<Page> {
         if (!this.page || this.page.isClosed()) {
             await this.init()
         }
+        await this.page!.bringToFront()
         return this.page!
     }
 

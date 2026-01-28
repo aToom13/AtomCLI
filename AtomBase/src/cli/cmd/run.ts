@@ -274,7 +274,9 @@ export const RunCommand = cmd({
         })
       } else {
         const modelParam = args.model ? Provider.parseModel(args.model) : undefined
-        await sdk.session.prompt({
+        // Use promptAsync to avoid HTTP timeouts on long-running sessions
+        // The event stream handles the actual output
+        await sdk.session.promptAsync({
           sessionID,
           agent: resolvedAgent,
           model: modelParam,

@@ -16,6 +16,7 @@ export const SkillCommand = cmd({
             .command(SkillListCommand)
             .command(SkillShowCommand)
             .command(SkillAddCommand)
+            .command(SkillRemoveCommand)
             .demandCommand(),
     async handler() { },
 })
@@ -168,3 +169,49 @@ export const SkillAddCommand = cmd({
         }
     },
 })
+
+export const SkillRemoveCommand = cmd({
+    command: "remove <name>",
+    aliases: ["rm"],
+    describe: "remove a skill",
+    builder: (yargs) =>
+        yargs.positional("name", {
+            type: "string",
+            describe: "skill name to remove",
+            demandOption: true,
+        }),
+    async handler(args) {
+        await Instance.provide({
+            directory: process.cwd(),
+            async fn() {
+                UI.empty()
+                prompts.intro("Remove Skill")
+
+                const skill = await Skill.get(args.name)
+
+                if (!skill) {
+                    prompts.log.error(`Skill "${args.name}" not found`)
+                    const available = await Skill.all()
+                    if (available.length > 0) {
+                        prompts.log.info(`Available skills: ${available.map((s) => s.name).join(", ")}`)
+                    }
+                    prompts.outro("")
+                    return
+                }
+
+                const skillDir = path.dirname(skill.location)
+
+                try {
+                    await fs.rm(skillDir, { recursive: true, force: true })
+                    prompts.log.success(`Removed skill "${args.name}" from ${skillDir.replace(Global.Path.home, "~")}`)
+                    prompts.outro("Done")
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    prompts.log.error(`Failed to remove skill: ${message}`)
+                    prompts.outro("")
+                }
+            },
+        })
+    },
+})
+

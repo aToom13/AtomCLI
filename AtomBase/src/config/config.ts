@@ -71,10 +71,20 @@ export namespace Config {
     }
 
     // Project config has highest precedence (overrides global and remote)
-    for (const file of ["atomcli.jsonc", "atomcli.json"]) {
+    for (const file of ["atomcli.jsonc", "atomcli.json", "mcp.json"]) {
       const found = await Filesystem.findUp(file, Instance.directory, Instance.worktree)
       for (const resolved of found.toReversed()) {
-        result = mergeConfigConcatArrays(result, await loadFile(resolved))
+        const config = await loadFile(resolved)
+        if (file === "mcp.json") {
+          // If loading mcp.json, wrap it in an mcp object if it isn't already
+          if (!config.mcp && Object.keys(config).every(k => k !== "mcp" && k !== "provider")) {
+            result = mergeConfigConcatArrays(result, { mcp: config as any })
+          } else {
+            result = mergeConfigConcatArrays(result, config)
+          }
+        } else {
+          result = mergeConfigConcatArrays(result, config)
+        }
       }
     }
 
@@ -114,9 +124,21 @@ export namespace Config {
     // Scan .atomcli/skill/ directories
     for (const dir of unique(directories)) {
       if (dir.endsWith(".atomcli") || dir === Flag.ATOMCLI_CONFIG_DIR) {
-        for (const file of ["atomcli.jsonc", "atomcli.json"]) {
+        for (const file of ["atomcli.jsonc", "atomcli.json", "mcp.json"]) {
           log.debug(`loading config from ${path.join(dir, file)}`)
-          result = mergeConfigConcatArrays(result, await loadFile(path.join(dir, file)))
+          const config = await loadFile(path.join(dir, file))
+
+          if (file === "mcp.json") {
+            // If loading mcp.json, assume top-level keys are mcp servers if not structured otherwise
+            if (!config.mcp && Object.keys(config).every(k => k !== "mcp" && k !== "provider")) {
+              result = mergeConfigConcatArrays(result, { mcp: config as any })
+            } else {
+              result = mergeConfigConcatArrays(result, config)
+            }
+          } else {
+            result = mergeConfigConcatArrays(result, config)
+          }
+
           // to satisfy the type checker
           result.agent ??= {}
           result.mode ??= {}
@@ -1074,11 +1096,27 @@ export namespace Config {
   export type Info = z.output<typeof Info>
 
   export const global = lazy(async () => {
+    const configJson = await loadFile(path.join(Global.Path.config, "config.json"))
+    const atomcliJson = await loadFile(path.join(Global.Path.config, "atomcli.json"))
+    const atomcliJsonc = await loadFile(path.join(Global.Path.config, "atomcli.jsonc"))
+    const mcpJson = await loadMcpFile(path.join(Global.Path.config, "mcp.json"))
+
+    let mcpConfig: Info = {}
+    if (Object.keys(mcpJson).length > 0) {
+      // If mcp.json has a top-level 'mcp' key, use it directly; otherwise wrap the content
+      if (mcpJson.mcp) {
+        mcpConfig = { mcp: mcpJson.mcp }
+      } else {
+        mcpConfig = { mcp: mcpJson }
+      }
+    }
+
     let result: Info = pipe(
       {},
-      mergeDeep(await loadFile(path.join(Global.Path.config, "config.json"))),
-      mergeDeep(await loadFile(path.join(Global.Path.config, "atomcli.json"))),
-      mergeDeep(await loadFile(path.join(Global.Path.config, "atomcli.jsonc"))),
+      mergeDeep(configJson),
+      mergeDeep(atomcliJson),
+      mergeDeep(atomcliJsonc),
+      mergeDeep(mcpConfig),
     )
 
     await import(path.join(Global.Path.config, "config"), {
@@ -1109,6 +1147,26 @@ export namespace Config {
       })
     if (!text) return {}
     return load(text, filepath)
+  }
+
+  // Load mcp.json without strict schema validation
+  async function loadMcpFile(filepath: string): Promise<Record<string, any>> {
+    log.info("loading mcp config", { path: filepath })
+    let text = await Bun.file(filepath)
+      .text()
+      .catch((err) => {
+        if (err.code === "ENOENT") return
+        throw new JsonError({ path: filepath }, { cause: err })
+      })
+    if (!text) return {}
+
+    const errors: JsoncParseError[] = []
+    const data = parseJsonc(text, errors, { allowTrailingComma: true })
+    if (errors.length) {
+      log.warn("failed to parse mcp.json", { path: filepath })
+      return {}
+    }
+    return data as Record<string, any>
   }
 
   async function load(text: string, configFilepath: string) {
