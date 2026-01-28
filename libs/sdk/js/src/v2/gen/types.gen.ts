@@ -47,6 +47,13 @@ export type EventServerInstanceDisposed = {
   }
 }
 
+export type EventGlobalDisposed = {
+  type: "global.disposed"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
 export type QuestionOption = {
   /**
    * Display text (1-5 words, concise)
@@ -883,6 +890,7 @@ export type Event =
   | EventInstallationUpdateAvailable
   | EventProjectUpdated
   | EventServerInstanceDisposed
+  | EventGlobalDisposed
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected

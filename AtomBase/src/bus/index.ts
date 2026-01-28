@@ -15,6 +15,11 @@ export namespace Bus {
     }),
   )
 
+  export const GlobalDisposed = BusEvent.define(
+    "global.disposed",
+    z.object({}),
+  )
+
   const state = Instance.state(
     () => {
       const subscriptions = new Map<any, Subscription[]>()
