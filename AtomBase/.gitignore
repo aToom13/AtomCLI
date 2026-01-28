@@ -12,6 +12,8 @@ build/
 *.log
 result.json
 tmp/
+.screenshots/
+.browser-profile/
 
 # Turborepo
 .turbo/

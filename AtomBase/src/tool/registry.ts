@@ -31,6 +31,7 @@ import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
 import { Truncate } from "./truncation"
 import { SysadminTool } from "./sysadmin"
+import { BrowserTool } from "./browser"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -119,6 +120,7 @@ export namespace ToolRegistry {
       McpAddTool,
       BrainTool,
       SysadminTool,
+      BrowserTool,
       ...(Flag.ATOMCLI_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
       ...custom,
