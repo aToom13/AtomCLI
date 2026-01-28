@@ -311,6 +311,16 @@ bun test
 
 For more details, see the [Development Guide](docs/DEVELOPMENT.md).
 
+---
+
+## Documentation
+
+- [Development Guide](docs/DEVELOPMENT.md) - Build, test, contribute
+- [Providers Guide](docs/PROVIDERS.md) - AI provider configuration and API keys
+- [MCP Guide](docs/MCP-GUIDE.md) - MCP server installation and development
+- [Skills Guide](docs/SKILLS-GUIDE.md) - Skill development and usage
+
+---
 
 ## License
 
