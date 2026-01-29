@@ -57,6 +57,18 @@ export const ProviderRoute = new Hono()
                 }
             }
 
+            // Include Kilocode as a cloud LLM gateway option
+            if (!disabled.has("kilocode") && !filteredProviders["kilocode"]) {
+                filteredProviders["kilocode"] = {
+                    id: "kilocode",
+                    name: "Kilocode",
+                    api: "https://api.kilo.ai/api/openrouter/",
+                    npm: "@atomcli/kilocode",
+                    env: ["KILOCODE_TOKEN"],
+                    models: {},
+                }
+            }
+
             const connected = await Provider.list()
             const providers = Object.assign(
                 mapValues(filteredProviders, (x) => Provider.fromModelsDevProvider(x)),

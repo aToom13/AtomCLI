@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "name": "atomcli",
   "type": "module",
   "license": "MIT",
@@ -75,6 +75,7 @@
     "@atomcli/sdk": "workspace:*",
     "@atomcli/util": "workspace:*",
     "@clack/prompts": "1.0.0-alpha.1",
+    "@google/genai": "1.38.0",
     "@hono/standard-validator": "0.1.5",
     "@hono/zod-validator": "catalog:",
     "@modelcontextprotocol/sdk": "1.25.2",

@@ -21,6 +21,10 @@ export function DialogModel(props: { providerID?: string }) {
   const dialog = useDialog()
   const [ref, setRef] = createSignal<DialogSelectRef<unknown>>()
   const [query, setQuery] = createSignal("")
+  const [showFreeOnly, setShowFreeOnly] = createSignal(false)
+
+  // Helper to check if a model is free (input cost = 0)
+  const isFree = (model: any) => model.cost?.input === 0
 
   const connected = useConnected()
   const providers = createDialogProviderOptions()
@@ -61,7 +65,7 @@ export function DialogModel(props: { providerID?: string }) {
             description: provider.name,
             category: "Favorites",
             disabled: false,
-            footer: model.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
+            footer: isFree(model) ? "Free" : undefined,
             onSelect: () => {
               dialog.clear()
               local.model.set(
@@ -94,7 +98,7 @@ export function DialogModel(props: { providerID?: string }) {
             description: provider.name,
             category: "Recent",
             disabled: false,
-            footer: model.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
+            footer: isFree(model) ? "Free" : undefined,
             onSelect: () => {
               dialog.clear()
               local.model.set(
@@ -137,7 +141,7 @@ export function DialogModel(props: { providerID?: string }) {
                 : undefined,
               category: connected() ? provider.name : undefined,
               disabled: false,
-              footer: info.cost?.input === 0 && provider.id === "atomcli" ? "Free" : undefined,
+              footer: isFree(info) ? "Free" : undefined,
               onSelect() {
                 dialog.clear()
                 local.model.set(
@@ -191,7 +195,13 @@ export function DialogModel(props: { providerID?: string }) {
       return [...filteredProviders, ...filteredPopular]
     }
 
-    return [...favoriteOptions, ...recentOptions, ...providerOptions, ...popularProviders]
+    // Apply free-only filter if active
+    const allOptions = [...favoriteOptions, ...recentOptions, ...providerOptions, ...popularProviders]
+    if (showFreeOnly()) {
+      return allOptions.filter((x) => "footer" in x && x.footer === "Free")
+    }
+
+    return allOptions
   })
 
   const provider = createMemo(() =>
@@ -219,6 +229,13 @@ export function DialogModel(props: { providerID?: string }) {
           disabled: !connected(),
           onTrigger: (option) => {
             local.model.toggleFavorite(option.value as { providerID: string; modelID: string })
+          },
+        },
+        {
+          keybind: Keybind.parse("ctrl+e")[0],
+          title: showFreeOnly() ? "Show all models" : "Show free only",
+          onTrigger: () => {
+            setShowFreeOnly((prev) => !prev)
           },
         },
       ]}

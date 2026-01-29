@@ -40,6 +40,8 @@ import { createVercel } from "@ai-sdk/vercel"
 import { ProviderTransform } from "./transform"
 import { createAntigravity } from "./antigravity"
 import { createOllama, detectOllama, toProviderModels } from "./ollama"
+import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
+import { detectGoogle, getGoogleModels } from "./google"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -73,6 +75,8 @@ export namespace Provider {
     "@atomcli/antigravity": createAntigravity,
     // Ollama - Local LLM provider
     "@atomcli/ollama": createOllama,
+    // Kilocode - Cloud LLM provider
+    "@atomcli/kilocode": createKilocode,
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
@@ -81,6 +85,7 @@ export namespace Provider {
     getModel?: CustomModelLoader
     options?: Record<string, any>
     models?: Record<string, Model>
+    replaceModels?: boolean
   }>
 
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
@@ -478,6 +483,127 @@ export namespace Provider {
         },
       }
     },
+    // Kilocode - Cloud provider with device auth
+    kilocode: async () => {
+      const { available, token, organizationId } = await detectKilocode()
+      if (!available || !token) {
+        return { autoload: false }
+      }
+
+      // Fetch models dynamically from Kilocode API
+      const kilocodeModels = await getKilocodeModels(token)
+      const models: Record<string, any> = {}
+
+      for (const [id, info] of Object.entries(kilocodeModels)) {
+        models[id] = {
+          id,
+          providerID: "kilocode",
+          api: {
+            id: id, // Use actual model ID (e.g. moonshotai/kimi-k2.5:free)
+            npm: "@atomcli/kilocode",
+            url: "https://api.kilo.ai/api/openrouter/",
+          },
+          name: (info as any).name || id,
+          family: id.split("/")[0],
+          capabilities: {
+            temperature: true,
+            reasoning: false,
+            attachment: (info as any).supportsImages || false,
+            toolcall: true,
+            input: {
+              text: true,
+              image: (info as any).supportsImages || false,
+              file: false,
+            },
+            output: {
+              text: true,
+              image: false,
+              file: false,
+              audio: false,
+              video: false,
+            },
+          },
+          limit: {
+            context: (info as any).contextWindow || 128000,
+            output: (info as any).maxTokens || 8192,
+          },
+          cost: {
+            input: (info as any).inputPrice || 0,
+            output: (info as any).outputPrice || 0,
+          },
+        }
+      }
+
+      return {
+        autoload: Object.keys(models).length > 0,
+        models,
+        options: {
+          apiKey: token,
+          organizationId,
+          headers: {
+            "Authorization": `Bearer ${token}`,
+          },
+        },
+      }
+    },
+    // Google - Dynamic model discovery from API
+    google: async (provider: any) => {
+      const { available, token } = await detectGoogle()
+      if (!available || !token) {
+        return { autoload: false }
+      }
+
+      // Fetch models dynamically from Google Gemini API
+      const googleModels = await getGoogleModels(token)
+
+      // Cleanup is handled by replaceModels flag in the loader loop
+
+      const models: Record<string, any> = {}
+
+      for (const [id, info] of Object.entries(googleModels)) {
+        models[id] = {
+          id,
+          providerID: "google",
+          api: {
+            id,
+            npm: "@ai-sdk/google",
+          },
+          name: info.name,
+          family: "gemini",
+          capabilities: {
+            temperature: true,
+            reasoning: false,
+            attachment: info.supportsImages || false,
+            toolcall: true,
+            input: {
+              text: true,
+              image: info.supportsImages || false,
+              file: false,
+            },
+            output: {
+              text: true,
+              image: false,
+              file: false,
+              audio: false,
+              video: false,
+            },
+          },
+          limit: {
+            context: info.contextWindow,
+            output: info.maxTokens || 8192,
+          },
+        }
+      }
+
+      return {
+        autoload: Object.keys(models).length > 0,
+        models,
+        replaceModels: Object.keys(models).length > 0,
+        options: {
+          apiKey: token,
+        },
+      }
+    },
   }
 
   export const Model = z
@@ -669,6 +795,17 @@ export namespace Provider {
       }
 
 
+    }
+
+    // Add Kilocode provider - Cloud LLM gateway with device auth
+    // Models are fetched dynamically from Kilocode API when authenticated
+    database["kilocode"] = {
+      id: "kilocode",
+      source: "custom",
+      name: "Kilocode",
+      env: ["KILOCODE_TOKEN"],
+      options: {},
+      models: {}, // Empty initially, will be populated dynamically when token is available
     }
 
     const disabled = new Set(config.disabled_providers ?? [])
@@ -889,6 +1026,13 @@ export namespace Provider {
       const result = await fn(database[providerID])
       if (result && (result.autoload || providers[providerID])) {
         if (result.getModel) modelLoaders[providerID] = result.getModel
+
+        // Allow loaders to enforce cleanup of existing models (e.g. static ones)
+        if (result.replaceModels) {
+          if (providers[providerID]) providers[providerID].models = {}
+          if (database[providerID]) database[providerID].models = {}
+        }
+
         mergeProvider(providerID, {
           source: "custom",
           options: result.options,

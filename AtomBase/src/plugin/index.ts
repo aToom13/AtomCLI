@@ -8,6 +8,7 @@ import { BunProc } from "../bun"
 import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
 import { CodexAuthPlugin } from "./codex"
+import { KilocodeAuthPlugin } from "./kilocode"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
@@ -15,7 +16,7 @@ export namespace Plugin {
   const BUILTIN = ["atomcli-copilot-auth@0.0.11", "atomcli-anthropic-auth@0.0.8"]
 
   // Built-in plugins that are directly imported (not installed from npm)
-  const INTERNAL_PLUGINS: PluginInstance[] = [CodexAuthPlugin]
+  const INTERNAL_PLUGINS: PluginInstance[] = [CodexAuthPlugin, KilocodeAuthPlugin]
 
   const state = Instance.state(async () => {
     const client = createAtomcliClient({
