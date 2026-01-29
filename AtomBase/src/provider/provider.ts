@@ -41,7 +41,6 @@ import { ProviderTransform } from "./transform"
 import { createAntigravity } from "./antigravity"
 import { createOllama, detectOllama, toProviderModels } from "./ollama"
 import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
-import { detectGoogle, getGoogleModels } from "./google"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -85,7 +84,6 @@ export namespace Provider {
     getModel?: CustomModelLoader
     options?: Record<string, any>
     models?: Record<string, Model>
-    replaceModels?: boolean
   }>
 
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
@@ -546,64 +544,6 @@ export namespace Provider {
         },
       }
     },
-    // Google - Dynamic model discovery from API
-    google: async (provider: any) => {
-      const { available, token } = await detectGoogle()
-      if (!available || !token) {
-        return { autoload: false }
-      }
-
-      // Fetch models dynamically from Google Gemini API
-      const googleModels = await getGoogleModels(token)
-
-      // Cleanup is handled by replaceModels flag in the loader loop
-
-      const models: Record<string, any> = {}
-
-      for (const [id, info] of Object.entries(googleModels)) {
-        models[id] = {
-          id,
-          providerID: "google",
-          api: {
-            id,
-            npm: "@ai-sdk/google",
-          },
-          name: info.name,
-          family: "gemini",
-          capabilities: {
-            temperature: true,
-            reasoning: false,
-            attachment: info.supportsImages || false,
-            toolcall: true,
-            input: {
-              text: true,
-              image: info.supportsImages || false,
-              file: false,
-            },
-            output: {
-              text: true,
-              image: false,
-              file: false,
-              audio: false,
-              video: false,
-            },
-          },
-          limit: {
-            context: info.contextWindow,
-            output: info.maxTokens || 8192,
-          },
-        }
-      }
-
-      return {
-        autoload: Object.keys(models).length > 0,
-        models,
-        replaceModels: Object.keys(models).length > 0,
-        options: {
-          apiKey: token,
-        },
-      }
-    },
   }
 
   export const Model = z
@@ -1026,13 +966,6 @@ export namespace Provider {
       const result = await fn(database[providerID])
       if (result && (result.autoload || providers[providerID])) {
         if (result.getModel) modelLoaders[providerID] = result.getModel
-
-        // Allow loaders to enforce cleanup of existing models (e.g. static ones)
-        if (result.replaceModels) {
-          if (providers[providerID]) providers[providerID].models = {}
-          if (database[providerID]) database[providerID].models = {}
-        }
-
         mergeProvider(providerID, {
           source: "custom",
           options: result.options,
