@@ -48,6 +48,18 @@ Run `atomcli` to start.
 - **Free Models Available** - Use built-in free providers (MiniMax, GLM, DeepSeek) without API keys
 - **Code Intelligence** - File editing, code generation, debugging, and refactoring capabilities
 - **Session Management** - Save and continue conversations, branch sessions, and manage history
+- **Streaming Interrupt** - Send amendments while AI is writing (Shift+Enter)
+- **Model Fallback** - Automatic failover when primary model fails
+
+### Developer Tools (v2.1.2+)
+
+- **`atomcli test-gen`** - Automatically generate unit tests for source files
+- **`atomcli docs`** - Generate JSDoc comments and API documentation
+- **`atomcli security`** - Scan code for vulnerabilities and secrets
+- **`atomcli perf`** - Analyze code for performance issues and Big-O complexity
+- **`atomcli refactor`** - Detect code smells and suggest automated refactorings
+- **`atomcli review`** - Review GitHub PRs automatically
+- **`atomcli workspace`** - Manage multi-project workspace
 
 ### Extensibility
 

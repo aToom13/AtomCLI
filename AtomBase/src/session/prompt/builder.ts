@@ -5,6 +5,7 @@
  * - Base prompts (identity, tools, workflow, communication, code-editing, git-safety)
  * - Provider-specific optimizations (anthropic, gemini, openai, generic)
  * - Agent-specific behaviors (agent, explore, plan, build)
+ * - Dynamic learning memory context
  */
 
 import fs from "fs/promises"
@@ -18,6 +19,10 @@ import PROMPT_COMMUNICATION from "./base/communication.txt"
 import PROMPT_CODE_EDITING from "./base/code-editing.txt"
 import PROMPT_GIT_SAFETY from "./base/git-safety.txt"
 import PROMPT_EXTENSIONS from "./base/extensions.txt"
+import PROMPT_SELF_LEARNING from "./base/self-learning.txt"
+
+// Import learning system
+import { Learning } from "../../learning"
 
 // Import provider-specific prompts
 import PROMPT_ANTHROPIC from "./provider/anthropic.txt"
@@ -72,6 +77,7 @@ const AGENT_PROMPTS: Record<AgentType, string> = {
  */
 const BASE_PROMPTS = [
     PROMPT_IDENTITY,
+    PROMPT_SELF_LEARNING,
     PROMPT_TOOLS,
     PROMPT_WORKFLOW,
     PROMPT_COMMUNICATION,
@@ -89,6 +95,8 @@ export interface BuildOptions {
     includeTodo?: boolean
     /** Custom sections to append */
     customSections?: string[]
+    /** Include learning memory summary at session start */
+    includeLearningMemory?: boolean
 }
 
 /**
@@ -102,6 +110,44 @@ export function build(options: BuildOptions): string {
     const sections: string[] = [
         // Core identity and capabilities
         ...BASE_PROMPTS,
+        // Provider-specific optimizations
+        PROVIDER_PROMPTS[provider],
+        // Agent-specific behavior
+        AGENT_PROMPTS[agent],
+        // Custom sections
+        ...customSections,
+    ]
+
+    return sections.filter(Boolean).join("\n\n---\n\n")
+}
+
+/**
+ * Builds a complete system prompt with async learning memory context
+ * This is the RECOMMENDED version - it includes your learning memory!
+ */
+export async function buildAsync(options: BuildOptions): Promise<string> {
+    const { modelId, agent = "agent", customSections = [], includeLearningMemory = true } = options
+
+    const provider = detectProvider(modelId)
+    
+    // ⭐ YENİ: Session başında hafıza özetini al
+    let memorySection = ""
+    if (includeLearningMemory) {
+        try {
+            const memorySummary = await Learning.buildMemorySummary()
+            if (memorySummary) {
+                memorySection = `<learning_memory>\n${memorySummary}\n</learning_memory>`
+            }
+        } catch (e) {
+            // Hafıza okunamazsa sessizce devam et
+        }
+    }
+
+    const sections: string[] = [
+        // Core identity and capabilities
+        ...BASE_PROMPTS,
+        // ⭐ YENİ: Learning memory (session başında otomatik)
+        ...(memorySection ? [memorySection] : []),
         // Provider-specific optimizations
         PROVIDER_PROMPTS[provider],
         // Agent-specific behavior
@@ -166,6 +212,7 @@ export function getStats(options: BuildOptions): {
 
 export const PromptBuilder = {
     build,
+    buildAsync,
     getProviderPrompt,
     getBasePrompts,
     getAgentPrompt,

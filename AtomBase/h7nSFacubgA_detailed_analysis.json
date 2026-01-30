@@ -1,0 +1,61 @@
+{
+  "video_id": "h7nSFacubgA",
+  "meta": {
+    "author_url": "https://www.youtube.com/@BilalJester",
+    "provider_name": "YouTube",
+    "height": 113,
+    "title": "Garip Bir Ghosting Anısı Arkadaş mıyız Görümce Miyiz ?",
+    "author_name": "Bilal JESTER",
+    "type": "video",
+    "width": 200,
+    "version": "1.0",
+    "url": "https://www.youtube.com/watch?v=h7nSFacubgA",
+    "html": "<iframe width=\"200\" height=\"113\" src=\"https://www.youtube.com/embed/h7nSFacubgA?feature=oembed\" frameborder=\"0\" allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share\" referrerpolicy=\"strict-origin-when-cross-origin\" allowfullscreen title=\"Garip Bir Ghosting Anısı Arkadaş mıyız Görümce Miyiz ?\"></iframe>",
+    "thumbnail_url": "https://i.ytimg.com/vi/h7nSFacubgA/hqdefault.jpg",
+    "provider_url": "https://www.youtube.com/",
+    "thumbnail_height": 360,
+    "thumbnail_width": 480
+  },
+  "title_analysis": {
+    "word_count": 9,
+    "char_count": 54,
+    "avg_word_length": 3.22,
+    "question_format": true,
+    "keywords": [
+      "ghosting",
+      "görümce",
+      "arkadaş",
+      "anısı",
+      "garip"
+    ],
+    "keyword_density": 55.6,
+    "emotional_score": {
+      "positive": 1,
+      "negative": 1,
+      "curiosity": 2
+    },
+    "predicted_ctr_score": 85,
+    "ctr_factors": {
+      "question_format": 30,
+      "personal_story": 25,
+      "controversial": 20,
+      "numbers": 0,
+      "emotional": 10
+    },
+    "tone": "bilgi_sorusturma"
+  },
+  "channel_analysis": {
+    "estimated_subscribers": "~50K-500K (tahmin)",
+    "content_focus": "Vlog / İlişki / Sohbet",
+    "target_audience": "Genç yetişkinler (18-30)",
+    "language": "İngilizce/Çoklu"
+  },
+  "categories": {
+    "İlişki & Danışmanlık": 0.95,
+    "Vlog & Kişisel": 0.8,
+    "Konuşma & Sohbet": 0.7,
+    "Komedi & Eğlence": 0.4,
+    "Yaşam Tarzı": 0.6
+  },
+  "analyzed_at": "2026-01-29T23:03:38.453258"
+}

@@ -28,6 +28,7 @@ mock.module("@aws-sdk/credential-providers", () => ({
 const mockPlugin = () => ({})
 mock.module("atomcli-copilot-auth", () => ({ default: mockPlugin }))
 mock.module("atomcli-anthropic-auth", () => ({ default: mockPlugin }))
+mock.module("opencode-antigravity-auth", () => ({ default: mockPlugin }))
 
 // Import after mocks are set up
 const { tmpdir } = await import("../fixture/fixture")

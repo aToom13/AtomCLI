@@ -1,0 +1,28 @@
+{
+  "video_id": "h7nSFacubgA",
+  "url": "https://www.youtube.com/watch?v=h7nSFacubgA",
+  "analysis": {
+    "title": "Garip Bir Ghosting Anısı Arkadaş mıyız Görümce Miyiz ?",
+    "channel": "Bilal JESTER",
+    "thumbnail": "https://i.ytimg.com/vi/h7nSFacubgA/hqdefault.jpg",
+    "detected_type": "ilişki_danışmanlığı",
+    "title_analysis": {
+      "length": 54,
+      "word_count": 9,
+      "has_question": true,
+      "keywords": [
+        "ghosting",
+        "görümce",
+        "arkadaş",
+        "anısı",
+        "garip"
+      ],
+      "emotional_tone": [
+        "kişisel_hikaye",
+        "soru_sorucu",
+        "ilişki_odaklı"
+      ]
+    }
+  },
+  "analyzed_at": "2026-01-29T23:02:13.185602"
+}

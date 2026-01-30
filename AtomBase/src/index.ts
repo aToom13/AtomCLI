@@ -30,6 +30,13 @@ import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 import { FlowCommand } from "./cli/cmd/flow"
 import { FeaturesCommand } from "./cli/cmd/features"
+import { TestGenCommand } from "./cli/cmd/test-gen"
+import { DocsCommand } from "./cli/cmd/docs"
+import { SecurityCommand } from "./cli/cmd/security"
+import { ReviewCommand } from "./cli/cmd/review"
+import { PerfCommand } from "./cli/cmd/perf"
+import { RefactorCommand } from "./cli/cmd/refactor"
+import { WorkspaceCommand } from "./cli/cmd/workspace"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -117,6 +124,13 @@ const cli = yargs(hideBin(process.argv))
   .command(SessionCommand)
   .command(FlowCommand)
   .command(FeaturesCommand)
+  .command(TestGenCommand)
+  .command(DocsCommand)
+  .command(SecurityCommand)
+  .command(ReviewCommand)
+  .command(PerfCommand)
+  .command(RefactorCommand)
+  .command(WorkspaceCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

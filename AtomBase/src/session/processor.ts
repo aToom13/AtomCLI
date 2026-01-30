@@ -15,6 +15,8 @@ import { Config } from "@/config/config"
 import { SessionCompaction } from "./compaction"
 import { PermissionNext } from "@/permission/next"
 import { Question } from "@/question"
+import { AmendmentQueue } from "./amendment"
+import { ModelFallback } from "@/provider/fallback"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -42,18 +44,67 @@ export namespace SessionProcessor {
       partFromToolCall(toolCallID: string) {
         return toolcalls[toolCallID]
       },
-      async process(streamInput: LLM.StreamInput) {
+      async process(streamInput: LLM.StreamInput, options?: {
+        enableAmendments?: boolean
+        fallbackChain?: ModelFallback.FallbackChain
+      }) {
         log.info("process")
         needsCompaction = false
         const shouldBreak = (await Config.get()).experimental?.continue_loop_on_deny !== true
+        
+        // Enable amendment processing by default
+        const enableAmendments = options?.enableAmendments !== false
+        if (enableAmendments) {
+          AmendmentQueue.setProcessing(input.sessionID, true)
+        }
+        
         while (true) {
           try {
             let currentText: MessageV2.TextPart | undefined
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
-            const stream = await LLM.stream(streamInput)
+            
+            // Use fallback chain if provided
+            let stream: Awaited<ReturnType<typeof LLM.stream>>
+            if (options?.fallbackChain) {
+              const fallbackResult = await ModelFallback.streamWithFallback(
+                options.fallbackChain,
+                streamInput,
+                { maxRetriesPerModel: 1, enableCostTracking: true }
+              )
+              if (!fallbackResult.success) {
+                throw fallbackResult.error || new Error("All fallback models failed")
+              }
+              stream = fallbackResult.result!
+            } else {
+              stream = await LLM.stream(streamInput)
+            }
 
             for await (const value of stream.fullStream) {
               input.abort.throwIfAborted()
+              
+              // Check for amendments during streaming
+              if (enableAmendments) {
+                const amendment = AmendmentQueue.dequeue(input.sessionID)
+                if (amendment) {
+                  if (amendment.type === "interrupt") {
+                    log.info("interrupt received", { sessionID: input.sessionID })
+                    throw new Error("Stream interrupted by user")
+                  } else {
+                    // Handle amendment - inject into context
+                    log.info("amendment received", { sessionID: input.sessionID, amendmentID: amendment.id })
+                    await Session.updatePart({
+                      id: Identifier.ascending("part"),
+                      messageID: input.assistantMessage.id,
+                      sessionID: input.sessionID,
+                      type: "text",
+                      text: `\n[Amendment: ${amendment.content}]\n`,
+                      time: { start: Date.now(), end: Date.now() },
+                      metadata: { amendment: true },
+                    })
+                  }
+                }
+              }
+              
               switch (value.type) {
                 case "start":
                   SessionStatus.set(input.sessionID, { type: "busy" })
@@ -394,6 +445,12 @@ export namespace SessionProcessor {
           }
           input.assistantMessage.time.completed = Date.now()
           await Session.updateMessage(input.assistantMessage)
+          
+          // Cleanup amendment processing state
+          if (enableAmendments) {
+            AmendmentQueue.setProcessing(input.sessionID, false)
+          }
+          
           if (needsCompaction) return "compact"
           if (blocked) return "stop"
           if (input.assistantMessage.error) return "stop"

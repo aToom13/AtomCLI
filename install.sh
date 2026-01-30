@@ -242,6 +242,15 @@ install_binary() {
         fi
         success "Dependencies installed"
         
+        step "Installing Playwright browsers..."
+        bunx playwright install chromium >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            success "Playwright browsers installed"
+        else
+            warn "Could not install Playwright browsers automatically"
+            info "Run manually: cd $SOURCE_DIR/AtomBase && bunx playwright install chromium"
+        fi
+        
         step "Creating wrapper script..."
         cat > "$INSTALL_DIR/atomcli" << EOF
 #!/bin/sh
@@ -353,6 +362,35 @@ EOF
         exit 1
     fi
     success "Installed dependencies"
+    
+    # Install Playwright browsers
+    step "Installing Playwright browsers..."
+    echo -e "${DIM}    (This may take 1-2 minutes)${NC}"
+    
+    local playwright_log="/tmp/atomcli_playwright_$$.log"
+    (cd AtomBase && bunx playwright install chromium > "$playwright_log" 2>&1) &
+    local pw_pid=$!
+    local pw_elapsed=0
+    local pw_timeout=300  # 5 minute timeout
+    
+    while kill -0 $pw_pid 2>/dev/null; do
+        pw_elapsed=$((pw_elapsed + 1))
+        if [ $pw_elapsed -ge $pw_timeout ]; then
+            kill $pw_pid 2>/dev/null
+            warn "Playwright browser installation timed out"
+            info "You can install manually later: bunx playwright install chromium"
+            break
+        fi
+        # Show progress every 5 seconds
+        if [ $((pw_elapsed % 5)) -eq 0 ]; then
+            printf "\r${BLUE}◐${NC} Installing Playwright browsers... ${DIM}(${pw_elapsed}s)${NC}  "
+        fi
+        sleep 1
+    done
+    
+    wait $pw_pid 2>/dev/null
+    printf "\r"  # Clear progress line
+    success "Installed Playwright browsers"
     
     cd AtomBase
     echo ""

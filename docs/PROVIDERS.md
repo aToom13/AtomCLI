@@ -240,6 +240,67 @@ These providers require API keys with paid usage.
 }
 ```
 
+### Kilocode (v2.1.2+)
+
+**Models**: Various premium models via Kilocode API or web
+
+**Get API Key**: [kilocode.ai](https://kilocode.ai/)
+
+```json
+{
+  "providers": {
+    "kilocode": {
+      "apiKey": "kl-..."
+    }
+  }
+}
+```
+
+**Environment Variable**: `KILOCODE_API_KEY`
+
+**How It Works**:
+
+Kilocode is a unified AI API that provides access to multiple top-tier models through a single endpoint. AtomCLI integrates with Kilocode to offer:
+
+- **Model Aggregation**: Access to GPT-4, Claude, Gemini, and more through one provider
+- **Smart Routing**: Automatic model selection based on task complexity
+- **Cost Optimization**: Intelligent caching and request optimization
+- **High Availability**: Built-in fallback between models
+
+**Configuration Options**:
+
+```json
+{
+  "providers": {
+    "kilocode": {
+      "apiKey": "kl-...",
+      "baseURL": "https://api.kilocode.ai/v1",
+      "models": {
+        "gpt-4o": {
+          "name": "GPT-4o via Kilocode",
+          "cost": { "input": 2.5, "output": 10 }
+        },
+        "claude-sonnet-4": {
+          "name": "Claude Sonnet via Kilocode",
+          "cost": { "input": 3, "output": 15 }
+        }
+      }
+    }
+  }
+}
+```
+
+**Features**:
+- Single API key for multiple models
+- Built-in retry and fallback mechanisms
+- Usage analytics and cost tracking
+- Enterprise-grade SLA
+
+**Best For**:
+- Teams needing multiple model access
+- Production applications requiring high availability
+- Cost-conscious users wanting optimized pricing
+
 ### Together AI
 
 **Models**: Various open source models

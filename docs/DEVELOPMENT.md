@@ -130,15 +130,17 @@ Sessions handle conversations and message processing:
 
 AI provider integrations in `AtomBase/src/provider/`:
 
-| Provider   | File                                                    | Status    |
-| ---------- | ------------------------------------------------------- | --------- |
-| Anthropic  | [anthropic.ts](../AtomBase/src/provider/anthropic.ts)   | Supported |
-| OpenAI     | [openai.ts](../AtomBase/src/provider/openai.ts)         | Supported |
-| Google     | [google.ts](../AtomBase/src/provider/google.ts)         | Supported |
-| Ollama     | [ollama.ts](../AtomBase/src/provider/ollama.ts)         | Supported |
-| OpenRouter | [openrouter.ts](../AtomBase/src/provider/openrouter.ts) | Supported |
-| MiniMax    | [minimax.ts](../AtomBase/src/provider/minimax.ts)       | Free tier |
-| GLM        | [glm.ts](../AtomBase/src/provider/glm.ts)               | Free tier |
+| Provider   | File                                                    | Status       |
+| ---------- | ------------------------------------------------------- | ------------ |
+| Anthropic  | [anthropic.ts](../AtomBase/src/provider/anthropic.ts)   | Supported    |
+| OpenAI     | [openai.ts](../AtomBase/src/provider/openai.ts)         | Supported    |
+| Google     | [google.ts](../AtomBase/src/provider/google.ts)         | Supported    |
+| Ollama     | [ollama.ts](../AtomBase/src/provider/ollama.ts)         | Supported    |
+| OpenRouter | [openrouter.ts](../AtomBase/src/provider/openrouter.ts) | Supported    |
+| MiniMax    | [minimax.ts](../AtomBase/src/provider/minimax.ts)       | Free tier    |
+| GLM        | [glm.ts](../AtomBase/src/provider/glm.ts)               | Free tier    |
+| Kilocode   | [kilocode.ts](../AtomBase/src/provider/kilocode.ts)     | v2.1.2+      |
+| Fallback   | [fallback.ts](../AtomBase/src/provider/fallback.ts)     | v2.1.2+      |
 
 ### Tool System
 
@@ -153,6 +155,18 @@ Agent tools in `AtomBase/src/tool/`:
 | Grep    | [grep.ts](../AtomBase/src/tool/grep.ts)       | Content search        |
 | Bash    | [bash.ts](../AtomBase/src/tool/bash.ts)       | Command execution     |
 | Browser | [browser.ts](../AtomBase/src/tool/browser.ts) | Web browsing          |
+
+### New Tools (v2.1.2+)
+
+| Tool       | File                                                | Description                    |
+| ---------- | --------------------------------------------------- | ------------------------------ |
+| TestGen    | [test-gen.ts](../AtomBase/src/tool/test-gen.ts)     | Automatic test generation      |
+| Docs       | [docs.ts](../AtomBase/src/tool/docs.ts)             | Documentation generation       |
+| Refactor   | [refactor.ts](../AtomBase/src/tool/refactor.ts)     | Code smell detection & fixes   |
+| Review     | [review.ts](../AtomBase/src/tool/review.ts)         | Code review & analysis         |
+| Finance    | [finance.ts](../AtomBase/src/tool/finance.ts)       | Financial market analysis      |
+| CodeSearch | [codesearch.ts](../AtomBase/src/tool/codesearch.ts) | AI code search                 |
+| WebSearch  | [websearch.ts](../AtomBase/src/tool/websearch.ts)   | Web search with Exa AI         |
 
 ---
 
@@ -182,6 +196,76 @@ Agent tools in `AtomBase/src/tool/`:
 | `atomcli skill list`   | List installed skills | [skill.ts](../AtomBase/src/cli/cmd/skill.ts) |
 | `atomcli skill add`    | Add skill from URL    | [skill.ts](../AtomBase/src/cli/cmd/skill.ts) |
 | `atomcli skill remove` | Remove skill          | [skill.ts](../AtomBase/src/cli/cmd/skill.ts) |
+
+### Developer Tools (v2.1.2+)
+
+| Command                      | Description                      | Source                                                          |
+| ---------------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `atomcli test-gen`           | Generate unit tests              | [test-gen.ts](../AtomBase/src/cli/cmd/test-gen.ts)              |
+| `atomcli docs`               | Generate documentation           | [docs.ts](../AtomBase/src/cli/cmd/docs.ts)                      |
+| `atomcli security`           | Security vulnerability scan      | [security.ts](../AtomBase/src/cli/cmd/security.ts)              |
+| `atomcli perf`               | Performance analysis             | [perf.ts](../AtomBase/src/cli/cmd/perf.ts)                      |
+| `atomcli refactor`           | Code refactoring assistant       | [refactor.ts](../AtomBase/src/cli/cmd/refactor.ts)              |
+| `atomcli review`             | Code review for PRs              | [review.ts](../AtomBase/src/cli/cmd/review.ts)                  |
+| `atomcli workspace`          | Multi-project workspace manager  | [workspace.ts](../AtomBase/src/cli/cmd/workspace.ts)            |
+
+---
+
+## Advanced Features (v2.1.2+)
+
+### Streaming Interrupt System
+
+AtomCLI supports non-blocking user input during AI streaming:
+
+- **Amendment Queue**: Send additional instructions while AI is writing
+- **Shift+Enter**: Add amendment to queue
+- **Enter**: Force interrupt current stream
+- **Implementation**: [session/amendment.ts](../AtomBase/src/session/amendment.ts)
+
+```typescript
+// Usage in TUI
+// While AI is streaming, press:
+// - Shift+Enter to add amendment
+// - Enter to interrupt
+```
+
+### Model Fallback System
+
+Automatic failover when primary AI provider fails:
+
+- **Fallback Chain**: Primary → Secondary → Tertiary models
+- **Error Detection**: Automatic detection of rate limits, timeouts, service errors
+- **Seamless Switching**: Continue conversation without interruption
+- **Cost Tracking**: Track costs across different providers
+- **Implementation**: [provider/fallback.ts](../AtomBase/src/provider/fallback.ts)
+
+```typescript
+// Configuration example
+{
+  "model": "anthropic/claude-sonnet-4",
+  "fallback": {
+    "secondary": "openai/gpt-4o",
+    "tertiary": "google/gemini-pro"
+  }
+}
+```
+
+### Self-Learning System
+
+AtomCLI learns from errors and successful patterns:
+
+- **Error Analysis**: Automatically analyze and categorize errors
+- **Pattern Storage**: Store successful solutions for reuse
+- **Memory Persistence**: JSON-based storage in `~/.atomcli/learning/`
+- **Research Integration**: Web research for unknown errors
+- **Implementation**: [learning/](../AtomBase/src/learning/)
+
+| Component | File | Description |
+| --------- | ---- | ----------- |
+| Memory | [memory.ts](../AtomBase/src/learning/memory.ts) | Persistent storage |
+| Research | [research.ts](../AtomBase/src/learning/research.ts) | Web research integration |
+| Error Analyzer | [error-analyzer.ts](../AtomBase/src/learning/error-analyzer.ts) | Error pattern analysis |
+| Integration | [integration.ts](../AtomBase/src/learning/integration.ts) | Session integration |
 
 ---
 

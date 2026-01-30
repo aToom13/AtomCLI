@@ -15,6 +15,11 @@ import { SkillTool } from "./skill"
 import { SkillAddTool } from "./skilladd"
 import { McpAddTool } from "./mcpadd"
 import { BrainTool } from "./brain"
+import { LearnTool } from "./learn"
+import { TestGenTool } from "./test-gen"
+import { DocsTool } from "./docs"
+import { RefactorTool } from "./refactor"
+import { ReviewTool } from "./review"
 import type { Agent } from "../agent/agent"
 import { Tool } from "./tool"
 import { Instance } from "../project/instance"
@@ -119,8 +124,13 @@ export namespace ToolRegistry {
       SkillAddTool,
       McpAddTool,
       BrainTool,
+      LearnTool,
       SysadminTool,
       BrowserTool,
+      TestGenTool,
+      DocsTool,
+      RefactorTool,
+      ReviewTool,
       ...(Flag.ATOMCLI_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
       ...custom,

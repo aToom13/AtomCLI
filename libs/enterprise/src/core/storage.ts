@@ -83,11 +83,51 @@ export namespace Storage {
     return createAdapter(client, `https://${accountId}.r2.cloudflarestorage.com`, process.env.ATOMCLI_STORAGE_BUCKET!)
   }
 
+  // In-memory storage for testing
+  function memory(): Adapter {
+    const store = new Map<string, string>()
+    return {
+      async read(path: string): Promise<string | undefined> {
+        return store.get(path)
+      },
+      async write(path: string, value: string): Promise<void> {
+        store.set(path, value)
+      },
+      async remove(path: string): Promise<void> {
+        store.delete(path)
+      },
+      async list(options?: { prefix?: string; limit?: number; after?: string; before?: string }): Promise<string[]> {
+        let keys = Array.from(store.keys())
+        if (options?.prefix) {
+          keys = keys.filter(k => k.startsWith(options.prefix!))
+        }
+        keys = keys.sort()
+        
+        // Handle after/before with full path comparison
+        // The after/before values are partial keys that need to be combined with prefix
+        const prefix = options?.prefix || ""
+        if (options?.after) {
+          const afterPath = prefix + options.after + ".json"
+          keys = keys.filter(k => k > afterPath)
+        }
+        if (options?.before) {
+          const beforePath = prefix + options.before + ".json"
+          keys = keys.filter(k => k < beforePath)
+        }
+        if (options?.limit) {
+          keys = keys.slice(0, options.limit)
+        }
+        return keys
+      },
+    }
+  }
+
   const adapter = lazy(() => {
     const type = process.env.ATOMCLI_STORAGE_ADAPTER
     if (type === "r2") return r2()
     if (type === "s3") return s3()
-    throw new Error("No storage adapter configured")
+    if (type === "memory" || !type) return memory()
+    throw new Error(`Unknown storage adapter: ${type}`)
   })
 
   function resolve(key: string[]) {
