@@ -1,7 +1,9 @@
-import { chromium, type Browser as PlaywrightBrowser, type BrowserContext, type Page } from "playwright"
 import { Log } from "../util/log"
 import fs from "fs"
 import path from "path"
+
+// Type-only imports for Playwright types
+import type { Browser as PlaywrightBrowser, BrowserContext, Page } from "playwright"
 
 export class BrowserManager {
     private static instance: BrowserManager
@@ -11,6 +13,7 @@ export class BrowserManager {
     private log = Log.create({ service: "browser" })
     private screenshotDir = path.join(process.cwd(), ".screenshots")
     private consoleLogs: string[] = []
+    private playwrightAvailable: boolean | null = null
 
     private constructor() { }
 
@@ -19,6 +22,34 @@ export class BrowserManager {
             BrowserManager.instance = new BrowserManager()
         }
         return BrowserManager.instance
+    }
+
+    /**
+     * Check if Playwright is available without crashing
+     */
+    public async isPlaywrightAvailable(): Promise<boolean> {
+        if (this.playwrightAvailable !== null) {
+            return this.playwrightAvailable
+        }
+
+        try {
+            // Try to dynamically import playwright
+            await import("playwright")
+            this.playwrightAvailable = true
+            return true
+        } catch (e) {
+            this.log.warn("Playwright not available", { error: (e as Error).message })
+            this.playwrightAvailable = false
+            return false
+        }
+    }
+
+    /**
+     * Get Playwright module dynamically
+     */
+    private async getPlaywright() {
+        const pw = await import("playwright")
+        return pw
     }
 
     public getLogs(): string[] {
@@ -44,6 +75,15 @@ export class BrowserManager {
     }
 
     private async init() {
+        // Check if Playwright is available first
+        const available = await this.isPlaywrightAvailable()
+        if (!available) {
+            throw new Error(
+                "Playwright is not available. Please install it with: bun add -g playwright && bunx playwright install chromium\n" +
+                "Or run: npx playwright install chromium"
+            )
+        }
+
         // if (this.browser) return
 
         if (this.browser && !this.browser.isConnected()) {
@@ -55,12 +95,14 @@ export class BrowserManager {
         if (!this.browser) {
             try {
                 this.log.info("launching browser (headed)")
+                const { chromium } = await this.getPlaywright()
                 this.browser = await chromium.launch({
                     headless: false,
                     args: ["--no-sandbox", "--disable-setuid-sandbox"],
                 })
             } catch (e: any) {
                 this.log.warn("headed launch failed, falling back to headless", { error: e.message })
+                const { chromium } = await this.getPlaywright()
                 this.browser = await chromium.launch({
                     headless: true,
                     args: ["--no-sandbox", "--disable-setuid-sandbox"],

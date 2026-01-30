@@ -51,7 +51,7 @@ Run `atomcli` to start.
 - **Streaming Interrupt** - Send amendments while AI is writing (Shift+Enter)
 - **Model Fallback** - Automatic failover when primary model fails
 
-### Developer Tools (v2.1.2+)
+### Developer Tools (v2.1.4+)
 
 - **`atomcli test-gen`** - Automatically generate unit tests for source files
 - **`atomcli docs`** - Generate JSDoc comments and API documentation
@@ -60,6 +60,7 @@ Run `atomcli` to start.
 - **`atomcli refactor`** - Detect code smells and suggest automated refactorings
 - **`atomcli review`** - Review GitHub PRs automatically
 - **`atomcli workspace`** - Manage multi-project workspace
+- **`atomcli setup`** - Install optional dependencies (Playwright for browser automation)
 
 ### Extensibility
 
@@ -105,6 +106,23 @@ cd AtomCLI && bun install
 cd AtomBase && bun run build
 cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
 ```
+
+### Setup (Optional Dependencies)
+
+Some AtomCLI features require additional dependencies:
+
+```bash
+atomcli setup                # Install optional dependencies (Playwright)
+atomcli setup --check        # Check status without installing
+```
+
+The `setup` command installs **Playwright** for the browser automation tool, which enables:
+- Web page navigation and interaction
+- Screenshot capture
+- JavaScript execution in browser context
+- Console log monitoring
+
+If Playwright is not installed, the browser tool will show a graceful error message with installation instructions.
 
 ### Updating
 

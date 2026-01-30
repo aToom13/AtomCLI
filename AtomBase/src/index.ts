@@ -37,6 +37,7 @@ import { ReviewCommand } from "./cli/cmd/review"
 import { PerfCommand } from "./cli/cmd/perf"
 import { RefactorCommand } from "./cli/cmd/refactor"
 import { WorkspaceCommand } from "./cli/cmd/workspace"
+import { SetupCommand } from "./cli/cmd/setup"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -131,6 +132,7 @@ const cli = yargs(hideBin(process.argv))
   .command(PerfCommand)
   .command(RefactorCommand)
   .command(WorkspaceCommand)
+  .command(SetupCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

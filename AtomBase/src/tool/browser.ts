@@ -19,7 +19,9 @@ Use this tool to:
 - Drag and drop elements
 - Take screenshots regarding visual analysis
 - Read console logs and execute JavaScript
-The browser stays open between calls, allowing sequential interactions.`,
+The browser stays open between calls, allowing sequential interactions.
+
+NOTE: This tool requires Playwright to be installed. If not available, you'll see an error message with installation instructions.`,
     parameters: z.object({
         action: z.enum([
             "navigate",
@@ -69,6 +71,25 @@ The browser stays open between calls, allowing sequential interactions.`,
         fullPage: z.boolean().optional().describe("Capture full page screenshot (default: false)"),
     }),
     async execute(params, ctx) {
+        // Check if Playwright is available before trying to use it
+        const isAvailable = await Browser.isPlaywrightAvailable()
+        if (!isAvailable) {
+            return {
+                output: `❌ Browser tool unavailable: Playwright is not installed.
+
+📦 To install Playwright, run one of these commands:
+   • bun add -g playwright && bunx playwright install chromium
+   • npm install -g playwright && npx playwright install chromium
+   • yarn global add playwright && npx playwright install chromium
+
+🌐 Or visit: https://playwright.dev/docs/intro
+
+💡 After installation, restart atomcli and the browser tool will work automatically.`,
+                title: "Browser: Not Available",
+                metadata: { error: "Playwright not installed" },
+            }
+        }
+
         const page = await Browser.getPage()
 
         try {
