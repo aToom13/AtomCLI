@@ -23,7 +23,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "2.1.3",
+      "version": "2.1.4",
       "bin": {
         "atomcli": "./bin/atomcli",
       },

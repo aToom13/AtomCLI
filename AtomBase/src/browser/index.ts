@@ -14,6 +14,7 @@ export class BrowserManager {
     private screenshotDir = path.join(process.cwd(), ".screenshots")
     private consoleLogs: string[] = []
     private playwrightAvailable: boolean | null = null
+    private playwrightPath: string = "playwright"
 
     private constructor() { }
 
@@ -26,29 +27,44 @@ export class BrowserManager {
 
     /**
      * Check if Playwright is available without crashing
+     * Searches multiple locations: local node_modules, config dir, and global
      */
     public async isPlaywrightAvailable(): Promise<boolean> {
         if (this.playwrightAvailable !== null) {
             return this.playwrightAvailable
         }
 
-        try {
-            // Try to dynamically import playwright
-            await import("playwright")
-            this.playwrightAvailable = true
-            return true
-        } catch (e) {
-            this.log.warn("Playwright not available", { error: (e as Error).message })
-            this.playwrightAvailable = false
-            return false
+        // List of potential playwright module paths
+        const playwrightPaths = [
+            // 1. Standard dynamic import (local node_modules, NODE_PATH)
+            "playwright",
+            // 2. AtomCLI config directory (where install.sh installs it)
+            `${process.env.HOME}/.config/atomcli/playwright/node_modules/playwright`,
+            // 3. XDG config directory
+            `${process.env.XDG_CONFIG_HOME || process.env.HOME + "/.config"}/atomcli/playwright/node_modules/playwright`,
+        ]
+
+        for (const modulePath of playwrightPaths) {
+            try {
+                await import(modulePath)
+                this.playwrightAvailable = true
+                this.playwrightPath = modulePath
+                return true
+            } catch (e) {
+                // Try next path
+            }
         }
+
+        this.log.warn("Playwright not available in any known location")
+        this.playwrightAvailable = false
+        return false
     }
 
     /**
-     * Get Playwright module dynamically
+     * Get Playwright module dynamically from discovered path
      */
     private async getPlaywright() {
-        const pw = await import("playwright")
+        const pw = await import(this.playwrightPath)
         return pw
     }
 

@@ -257,6 +257,7 @@ install_binary() {
 export ATOMCLI_INSTALL_DIR="$SOURCE_DIR"
 export ATOMCLI_CWD="\$PWD"
 export NIXPKGS_ALLOW_UNFREE=1
+export NODE_PATH="$SOURCE_DIR/AtomBase/node_modules:\$NODE_PATH"
 
 cd "$SOURCE_DIR/AtomBase" || exit 1
 
@@ -362,6 +363,11 @@ EOF
         exit 1
     fi
     success "Installed dependencies"
+    
+    # Install Playwright package explicitly in AtomBase
+    step "Installing Playwright package..."
+    (cd AtomBase && bun add playwright > /dev/null 2>&1) || warn "Could not install playwright package"
+    success "Playwright package installed"
     
     # Install Playwright browsers
     step "Installing Playwright browsers..."
@@ -497,17 +503,72 @@ EOF
     
     success "Installed AtomCLI to $INSTALL_DIR"
     
-    # Check if Playwright is needed and provide instructions
-    step "Checking Playwright installation..."
-    if ! command -v playwright >/dev/null 2>&1 && ! [ -d "$HOME/.cache/ms-playwright" ]; then
-        warn "Playwright not detected. Some features (browser tool) may not work."
-        info "To install Playwright, run:"
-        info "  bunx playwright install chromium"
-        info "Or if you don't have bun globally:"
-        info "  npx playwright install chromium"
+    # Setup Playwright for browser tool (plug and play)
+    step "Setting up Playwright for browser tool..."
+    
+    local playwright_dir="$CONFIG_DIR/playwright"
+    mkdir -p "$playwright_dir"
+    
+    if [ ! -d "$playwright_dir/node_modules/playwright" ]; then
+        cd "$playwright_dir"
+        
+        if has bun; then
+            step "Installing Playwright package via bun..."
+            bun init -y > /dev/null 2>&1 || true
+            (bun add playwright > /dev/null 2>&1) &
+            spin $! "Installing Playwright package..."
+            
+            if [ -d "node_modules/playwright" ]; then
+                success "Playwright package installed"
+                
+                step "Installing Chromium browser..."
+                (bunx playwright install chromium > /dev/null 2>&1) &
+                spin $! "Installing Chromium..."
+                success "Chromium installed"
+                
+                # Try to install system deps
+                if command -v sudo >/dev/null 2>&1; then
+                    info "Installing system dependencies (may require password)..."
+                    sudo bunx playwright install-deps chromium 2>/dev/null || warn "Could not auto-install system deps"
+                fi
+            else
+                warn "Could not install Playwright package"
+            fi
+        elif has npm; then
+            step "Installing Playwright package via npm..."
+            npm init -y > /dev/null 2>&1 || true
+            (npm install playwright > /dev/null 2>&1) &
+            spin $! "Installing Playwright package..."
+            
+            if [ -d "node_modules/playwright" ]; then
+                success "Playwright package installed"
+                
+                step "Installing Chromium browser..."
+                (npx playwright install chromium > /dev/null 2>&1) &
+                spin $! "Installing Chromium..."
+                success "Chromium installed"
+                
+                # Try to install system deps
+                if command -v sudo >/dev/null 2>&1; then
+                    info "Installing system dependencies (may require password)..."
+                    sudo npx playwright install-deps chromium 2>/dev/null || warn "Could not auto-install system deps"
+                fi
+            else
+                warn "Could not install Playwright package"
+            fi
+        else
+            warn "Neither bun nor npm found. Browser tool may not work."
+            info "To install Playwright manually, run:"
+            info "  npm install playwright && npx playwright install chromium"
+        fi
+        
+        cd - > /dev/null
     else
-        success "Playwright appears to be installed"
+        success "Playwright already installed"
     fi
+    
+    # Set NODE_PATH hint for atomcli
+    info "Note: If browser tool still fails, ensure NODE_PATH includes: $playwright_dir/node_modules"
 }
 
 # Setup PATH
