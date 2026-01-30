@@ -68,31 +68,32 @@ export namespace Skill {
       }
     }
 
-    // Scan .claude/skills/ directories (project-level)
-    const claudeDirs = await Array.fromAsync(
+    // Scan .atomcli/skills/ and .claude/skills/ directories (project-level)
+    // .atomcli is primary, .claude is fallback for backward compatibility
+    const skillDirs = await Array.fromAsync(
       Filesystem.up({
-        targets: [".claude", ".atomcli"],
+        targets: [".atomcli", ".claude"],
         start: Instance.directory,
         stop: Instance.worktree,
       }),
     )
-    // Also include global ~/.claude/skills/
-    const globalClaude = `${Global.Path.home}/.claude`
+    // Also include global ~/.atomcli/skills/ and ~/.claude/skills/
     const globalAtom = `${Global.Path.home}/.atomcli`
-    if (await exists(globalClaude)) {
-      claudeDirs.push(globalClaude)
-    }
+    const globalClaude = `${Global.Path.home}/.claude`
     if (await exists(globalAtom)) {
-      claudeDirs.push(globalAtom)
+      skillDirs.push(globalAtom)
+    }
+    if (await exists(globalClaude)) {
+      skillDirs.push(globalClaude)
     }
 
     // Add bundled skills from installation directory
     if (Flag.ATOMCLI_INSTALL_DIR) {
-      const installClaude = `${Flag.ATOMCLI_INSTALL_DIR}/.claude`
-      if (await exists(installClaude)) claudeDirs.push(installClaude)
-
       const installAtom = `${Flag.ATOMCLI_INSTALL_DIR}/.atomcli`
-      if (await exists(installAtom)) claudeDirs.push(installAtom)
+      if (await exists(installAtom)) skillDirs.push(installAtom)
+
+      const installClaude = `${Flag.ATOMCLI_INSTALL_DIR}/.claude`
+      if (await exists(installClaude)) skillDirs.push(installClaude)
     } else {
       // Fallback for compiled binary: check relative to executable
       try {
@@ -100,18 +101,18 @@ export namespace Skill {
         const binaryDir = path.dirname(process.execPath)
         const distRoot = path.resolve(binaryDir, "..")
 
-        const bundledClaude = path.join(distRoot, ".claude")
-        if (await exists(bundledClaude)) claudeDirs.push(bundledClaude)
-
         const bundledAtom = path.join(distRoot, ".atomcli")
-        if (await exists(bundledAtom)) claudeDirs.push(bundledAtom)
+        if (await exists(bundledAtom)) skillDirs.push(bundledAtom)
+
+        const bundledClaude = path.join(distRoot, ".claude")
+        if (await exists(bundledClaude)) skillDirs.push(bundledClaude)
       } catch (e) {
         // ignore
       }
     }
 
     if (!Flag.ATOMCLI_DISABLE_CLAUDE_CODE_SKILLS) {
-      for (const dir of claudeDirs) {
+      for (const dir of skillDirs) {
         const matches = await Array.fromAsync(
           CLAUDE_SKILL_GLOB.scan({
             cwd: dir,
@@ -121,7 +122,7 @@ export namespace Skill {
             dot: true,
           }),
         ).catch((error) => {
-          log.error("failed .claude directory scan for skills", { dir, error })
+          log.error("failed directory scan for skills", { dir, error })
           return []
         })
 

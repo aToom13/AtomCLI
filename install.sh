@@ -801,7 +801,8 @@ EOF
         step "Installing default skills..."
         
         # Create Ralph skill
-        cat > "$CONFIG_DIR/skills/ralph.md" << 'EOF'
+        mkdir -p "$CONFIG_DIR/skills/ralph"
+        cat > "$CONFIG_DIR/skills/ralph/SKILL.md" << 'EOF'
 ---
 name: Ralph
 description: Friendly AI coding assistant with personality
@@ -818,7 +819,8 @@ Your traits:
 EOF
         
         # Create Code Review skill
-        cat > "$CONFIG_DIR/skills/code-review.md" << 'EOF'
+        mkdir -p "$CONFIG_DIR/skills/code-review"
+        cat > "$CONFIG_DIR/skills/code-review/SKILL.md" << 'EOF'
 ---
 name: Code Review
 description: Automated code review with best practices
@@ -835,7 +837,8 @@ Provide specific, actionable feedback with line references.
 EOF
         
         # Create Git Commit skill
-        cat > "$CONFIG_DIR/skills/git-commit.md" << 'EOF'
+        mkdir -p "$CONFIG_DIR/skills/git-commit"
+        cat > "$CONFIG_DIR/skills/git-commit/SKILL.md" << 'EOF'
 ---
 name: Git Commit
 description: Generate conventional commit messages
