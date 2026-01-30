@@ -146,7 +146,7 @@ for (const item of targets) {
       ATOMCLI_CHANNEL: `'${Script.channel}'`,
       ATOMCLI_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
-    external: ["electron", "chromium-bidi"],
+    external: ["electron", "chromium-bidi", "playwright", "playwright-core", "@playwright/browser-chromium"],
   })
 
   await $`rm -rf ./dist/${name}/bin/tui`

@@ -496,6 +496,18 @@ EOF
     rm -rf "$tmp_dir"
     
     success "Installed AtomCLI to $INSTALL_DIR"
+    
+    # Check if Playwright is needed and provide instructions
+    step "Checking Playwright installation..."
+    if ! command -v playwright >/dev/null 2>&1 && ! [ -d "$HOME/.cache/ms-playwright" ]; then
+        warn "Playwright not detected. Some features (browser tool) may not work."
+        info "To install Playwright, run:"
+        info "  bunx playwright install chromium"
+        info "Or if you don't have bun globally:"
+        info "  npx playwright install chromium"
+    else
+        success "Playwright appears to be installed"
+    fi
 }
 
 # Setup PATH
