@@ -24,9 +24,9 @@ CROSS="✗"
 ARROW="→"
 SPINNER="◐◓◑◒"
 
-# Installation directory
-INSTALL_DIR="${ATOMCLI_INSTALL_DIR:-$HOME/.local/bin}"
-CONFIG_DIR="${ATOMCLI_CONFIG_DIR:-$HOME/.config/atomcli}"
+# Installation directory - all under ~/.atomcli/
+INSTALL_DIR="${ATOMCLI_INSTALL_DIR:-$HOME/.atomcli/bin}"
+CONFIG_DIR="${ATOMCLI_CONFIG_DIR:-$HOME/.atomcli}"
 
 # Banner
 print_banner() {

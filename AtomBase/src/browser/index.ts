@@ -38,9 +38,9 @@ export class BrowserManager {
         const playwrightPaths = [
             // 1. Standard dynamic import (local node_modules, NODE_PATH)
             "playwright",
-            // 2. AtomCLI config directory (where install.sh installs it)
-            `${process.env.HOME}/.config/atomcli/playwright/node_modules/playwright`,
-            // 3. XDG config directory
+            // 2. AtomCLI directory (where install.sh installs it)
+            `${process.env.HOME}/.atomcli/playwright/node_modules/playwright`,
+            // 3. Legacy config directory (backward compatibility)
             `${process.env.XDG_CONFIG_HOME || process.env.HOME + "/.config"}/atomcli/playwright/node_modules/playwright`,
         ]
 

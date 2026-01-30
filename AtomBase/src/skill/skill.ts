@@ -77,11 +77,11 @@ export namespace Skill {
         stop: Instance.worktree,
       }),
     )
-    // Also include global ~/.atomcli/skills/ and ~/.claude/skills/
-    const globalAtom = `${Global.Path.home}/.atomcli`
+    // Also include global ~/.atomcli/skills/ and ~/.claude/skills/ (fallback)
+    const globalAtom = Global.Path.skills  // ~/.atomcli/skills/
     const globalClaude = `${Global.Path.home}/.claude`
     if (await exists(globalAtom)) {
-      skillDirs.push(globalAtom)
+      skillDirs.push(path.dirname(globalAtom))  // Add ~/.atomcli/ to scan for skills subdir
     }
     if (await exists(globalClaude)) {
       skillDirs.push(globalClaude)

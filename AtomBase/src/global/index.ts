@@ -1,14 +1,15 @@
 import fs from "fs/promises"
-import { xdgData, xdgCache, xdgConfig, xdgState } from "xdg-basedir"
 import path from "path"
 import os from "os"
 
 const app = "atomcli"
 
-const data = path.join(xdgData!, app)
-const cache = path.join(xdgCache!, app)
-const config = path.join(xdgConfig!, app)
-const state = path.join(xdgState!, app)
+// All AtomCLI files are stored under ~/.atomcli/
+const root = path.join(os.homedir(), ".atomcli")
+const data = path.join(root, "data")
+const cache = path.join(root, "cache")
+const config = root  // Config files directly in ~/.atomcli/
+const state = path.join(root, "state")
 
 export namespace Global {
   export const Path = {
@@ -16,21 +17,30 @@ export namespace Global {
     get home() {
       return process.env.ATOMCLI_TEST_HOME || os.homedir()
     },
+    root,
     data,
-    bin: path.join(data, "bin"),
-    log: path.join(data, "log"),
+    bin: path.join(root, "bin"),
+    log: path.join(root, "logs"),
     cache,
     config,
     state,
+    skills: path.join(root, "skills"),
+    sessions: path.join(root, "sessions"),
+    plugins: path.join(root, "plugins"),
   }
 }
 
 await Promise.all([
+  fs.mkdir(Global.Path.root, { recursive: true }),
   fs.mkdir(Global.Path.data, { recursive: true }),
   fs.mkdir(Global.Path.config, { recursive: true }),
   fs.mkdir(Global.Path.state, { recursive: true }),
   fs.mkdir(Global.Path.log, { recursive: true }),
   fs.mkdir(Global.Path.bin, { recursive: true }),
+  fs.mkdir(Global.Path.skills, { recursive: true }),
+  fs.mkdir(Global.Path.sessions, { recursive: true }),
+  fs.mkdir(Global.Path.plugins, { recursive: true }),
+  fs.mkdir(Global.Path.cache, { recursive: true }),
 ])
 
 const CACHE_VERSION = "16"
@@ -50,6 +60,6 @@ if (version !== CACHE_VERSION) {
         }),
       ),
     )
-  } catch (e) {}
+  } catch (e) { }
   await Bun.file(path.join(Global.Path.cache, "version")).write(CACHE_VERSION)
 }
