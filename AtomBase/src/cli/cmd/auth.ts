@@ -164,7 +164,7 @@ export const AuthCommand = cmd({
   describe: "manage credentials",
   builder: (yargs) =>
     yargs.command(AuthLoginCommand).command(AuthLogoutCommand).command(AuthListCommand).demandCommand(),
-  async handler() {},
+  async handler() { },
 })
 
 export const AuthListCommand = cmd({
@@ -251,7 +251,7 @@ export const AuthLoginCommand = cmd({
           prompts.outro("Done")
           return
         }
-        await ModelsDev.refresh().catch(() => {})
+        await ModelsDev.refresh().catch(() => { })
 
         const config = await Config.get()
 
@@ -268,22 +268,34 @@ export const AuthLoginCommand = cmd({
           return filtered
         })
 
+        // Get plugin-based auth providers that might not be in models.dev
+        const pluginAuthProviders = await Plugin.list().then((plugins) =>
+          plugins
+            .filter((p) => p.auth?.provider && !providers[p.auth.provider])
+            .map((p) => ({
+              id: p.auth!.provider,
+              name: p.auth!.provider.charAt(0).toUpperCase() + p.auth!.provider.slice(1),
+              env: [],
+              models: {},
+            }))
+        )
+
         const priority: Record<string, number> = {
           atomcli: 0,
           anthropic: 1,
           "github-copilot": 2,
           openai: 3,
           google: 4,
-          openrouter: 5,
-          vercel: 6,
+          antigravity: 5,
+          openrouter: 6,
+          vercel: 7,
         }
         let provider = await prompts.autocomplete({
           message: "Select provider",
           maxItems: 8,
           options: [
             ...pipe(
-              providers,
-              values(),
+              [...values()(providers), ...pluginAuthProviders],
               sortBy(
                 (x) => priority[x.id] ?? 99,
                 (x) => x.name ?? x.id,
@@ -295,6 +307,7 @@ export const AuthLoginCommand = cmd({
                   atomcli: "recommended",
                   anthropic: "Claude Max or API key",
                   openai: "ChatGPT Plus/Pro or API key",
+                  antigravity: "Google OAuth → Claude & Gemini",
                 }[x.id],
               })),
             ),
@@ -337,10 +350,10 @@ export const AuthLoginCommand = cmd({
         if (provider === "amazon-bedrock") {
           prompts.log.info(
             "Amazon Bedrock authentication priority:\n" +
-              "  1. Bearer token (AWS_BEARER_TOKEN_BEDROCK or /connect)\n" +
-              "  2. AWS credential chain (profile, access keys, IAM roles)\n\n" +
-              "Configure via atomcli.json options (profile, region, endpoint) or\n" +
-              "AWS environment variables (AWS_PROFILE, AWS_REGION, AWS_ACCESS_KEY_ID).",
+            "  1. Bearer token (AWS_BEARER_TOKEN_BEDROCK or /connect)\n" +
+            "  2. AWS credential chain (profile, access keys, IAM roles)\n\n" +
+            "Configure via atomcli.json options (profile, region, endpoint) or\n" +
+            "AWS environment variables (AWS_PROFILE, AWS_REGION, AWS_ACCESS_KEY_ID).",
           )
         }
 

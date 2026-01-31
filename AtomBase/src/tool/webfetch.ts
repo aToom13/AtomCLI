@@ -6,6 +6,113 @@ import DESCRIPTION from "./webfetch.txt"
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
+const MAX_REDIRECTS = 5
+
+// Private IP ranges for SSRF protection
+const PRIVATE_IP_PATTERNS = [
+  /^127\./, // 127.0.0.0/8
+  /^10\./, // 10.0.0.0/8
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
+  /^192\.168\./, // 192.168.0.0/16
+  /^169\.254\./, // Link-local
+  /^0\./, // 0.0.0.0/8
+  /^::1$/, // IPv6 loopback
+  /^fc00:/, // IPv6 unique local
+  /^fe80:/, // IPv6 link-local
+]
+
+// Dangerous URL schemes
+const DANGEROUS_SCHEMES = [
+  "file://",
+  "ftp://",
+  "ftps://",
+  "sftp://",
+  "scp://",
+  "ssh://",
+  "telnet://",
+  "smtp://",
+  "imap://",
+  "pop3://",
+  "ldap://",
+  "ldaps://",
+]
+
+/**
+ * Validates URL for security issues
+ * - Checks for allowed schemes (http/https only)
+ * - Prevents SSRF by blocking private IPs
+ * - Validates URL format
+ */
+function validateUrl(url: string): URL {
+  // Check for dangerous schemes first
+  const lowerUrl = url.toLowerCase()
+  for (const scheme of DANGEROUS_SCHEMES) {
+    if (lowerUrl.startsWith(scheme)) {
+      throw new Error(
+        `URL scheme "${scheme}" is not allowed for security reasons. Only http:// and https:// are permitted.`,
+      )
+    }
+  }
+
+  // Must start with http:// or https://
+  if (!lowerUrl.startsWith("http://") && !lowerUrl.startsWith("https://")) {
+    throw new Error("URL must start with http:// or https://")
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error("Invalid URL format")
+  }
+
+  // Check for private/internal IP addresses (SSRF protection)
+  const hostname = parsed.hostname.toLowerCase()
+
+  // Block localhost variants
+  if (hostname === "localhost" || hostname === "localhost.localdomain") {
+    throw new Error("Access to localhost is not allowed for security reasons.")
+  }
+
+  // Block private IP ranges
+  for (const pattern of PRIVATE_IP_PATTERNS) {
+    if (pattern.test(hostname)) {
+      throw new Error(`Access to private IP address "${hostname}" is not allowed for security reasons.`)
+    }
+  }
+
+  // Block common internal hostnames
+  const blockedHostnames = [
+    "metadata.google.internal",
+    "metadata.google.internal.",
+    "169.254.169.254", // AWS/Azure/GCP metadata
+    "instance-data", // EC2
+    "metadata", // Cloud metadata
+  ]
+  if (blockedHostnames.includes(hostname)) {
+    throw new Error(`Access to internal service "${hostname}" is not allowed.`)
+  }
+
+  // Validate port (block common internal ports)
+  const port = parsed.port || (parsed.protocol === "https:" ? 443 : 80)
+  const dangerousPorts = [
+    22, // SSH
+    23, // Telnet
+    25, // SMTP
+    110, // POP3
+    143, // IMAP
+    3306, // MySQL
+    5432, // PostgreSQL
+    6379, // Redis
+    27017, // MongoDB
+    9200, // Elasticsearch
+  ]
+  if (dangerousPorts.includes(Number(port))) {
+    throw new Error(`Access to port ${port} is not allowed for security reasons.`)
+  }
+
+  return parsed
+}
 
 export const WebFetchTool = Tool.define("webfetch", {
   description: DESCRIPTION,
@@ -18,10 +125,8 @@ export const WebFetchTool = Tool.define("webfetch", {
     timeout: z.number().describe("Optional timeout in seconds (max 120)").optional(),
   }),
   async execute(params, ctx) {
-    // Validate URL
-    if (!params.url.startsWith("http://") && !params.url.startsWith("https://")) {
-      throw new Error("URL must start with http:// or https://")
-    }
+    // Validate URL with enhanced security checks
+    const validatedUrl = validateUrl(params.url)
 
     await ctx.ask({
       permission: "webfetch",
@@ -56,15 +161,47 @@ export const WebFetchTool = Tool.define("webfetch", {
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
     }
 
-    const response = await fetch(params.url, {
-      signal: AbortSignal.any([controller.signal, ctx.abort]),
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: acceptHeader,
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-    })
+    // Custom fetch with redirect limit to prevent redirect loops
+    let redirectCount = 0
+    let currentUrl = validatedUrl.toString()
+    let response: Response
+
+    while (true) {
+      response = await fetch(currentUrl, {
+        signal: AbortSignal.any([controller.signal, ctx.abort]),
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: acceptHeader,
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "manual", // Handle redirects manually to validate each hop
+      })
+
+      // Check if it's a redirect
+      if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
+        redirectCount++
+        if (redirectCount > MAX_REDIRECTS) {
+          throw new Error(`Too many redirects (maximum ${MAX_REDIRECTS} allowed)`)
+        }
+
+        // Validate the redirect URL
+        const location = response.headers.get("location")!
+        const redirectUrl = new URL(location, currentUrl)
+
+        // Re-validate the redirect URL for security
+        try {
+          validateUrl(redirectUrl.toString())
+        } catch (error) {
+          throw new Error(`Redirect to unsafe URL blocked: ${error instanceof Error ? error.message : "Unknown error"}`)
+        }
+
+        currentUrl = redirectUrl.toString()
+        continue
+      }
+
+      break
+    }
 
     clearTimeout(timeoutId)
 

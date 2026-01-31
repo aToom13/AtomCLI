@@ -4,6 +4,7 @@ import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
 import { Provider } from "../../src/provider/provider"
 import { Env } from "../../src/env"
+import { Config } from "../../src/config/config"
 
 test("provider loaded from env variable", async () => {
   await using tmp = await tmpdir({
@@ -384,6 +385,7 @@ test("defaultModel returns first available model when no config set", async () =
 })
 
 test("defaultModel respects config model setting", async () => {
+  await Config.clearCache()
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(

@@ -8,6 +8,7 @@ import fs from "fs/promises"
 import { pathToFileURL } from "url"
 
 test("loads config with defaults when no files exist", async () => {
+  await Config.clearCache()
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
@@ -19,6 +20,7 @@ test("loads config with defaults when no files exist", async () => {
 })
 
 test("loads JSON config file", async () => {
+  await Config.clearCache()
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -42,6 +44,7 @@ test("loads JSON config file", async () => {
 })
 
 test("loads JSONC config file", async () => {
+  await Config.clearCache()
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -66,6 +69,7 @@ test("loads JSONC config file", async () => {
 })
 
 test("merges multiple config files with correct precedence", async () => {
+  await Config.clearCache()
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(

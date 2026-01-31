@@ -14,6 +14,7 @@ import { Flag } from "../flag/flag"
 import { Auth } from "../auth"
 import { type ParseError as JsoncParseError, parse as parseJsonc, printParseErrorCode } from "jsonc-parser"
 import { Instance } from "../project/instance"
+import { State } from "../project/state"
 import { LSPServer } from "../lsp/server"
 import { BunProc } from "@/bun"
 import { Installation } from "@/installation"
@@ -23,19 +24,107 @@ import { existsSync } from "fs"
 export namespace Config {
   const log = Log.create({ service: "config" })
 
+  // Simple LRU cache for loaded config files to avoid redundant disk reads
+  const configFileCache = new Map<string, { mtime: number; data: Info }>()
+  const MAX_CACHE_SIZE = 50
+
+  // Check if running in test mode - disable cache in tests
+  function isTestMode(): boolean {
+    return process.env.NODE_ENV === "test" || process.env.ATOMCLI_TEST === "true"
+  }
+
+  /**
+   * Gets cached config file if it hasn't changed on disk
+   * Returns undefined in test mode to disable caching
+   */
+  async function getCachedConfigFile(filepath: string): Promise<Info | undefined> {
+    // Disable cache in test mode
+    if (isTestMode()) {
+      return undefined
+    }
+
+    try {
+      const file = Bun.file(filepath)
+      const stat = await file.stat()
+      const cached = configFileCache.get(filepath)
+
+      if (cached && cached.mtime === stat.mtime.getTime()) {
+        log.debug("using cached config", { path: filepath })
+        return cached.data
+      }
+
+      // Cache miss or file changed - will need to reload
+      return undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Sets cached config file with current mtime
+   * No-op in test mode
+   */
+  async function setCachedConfigFile(filepath: string, data: Info): Promise<void> {
+    // Disable cache in test mode
+    if (isTestMode()) {
+      return
+    }
+
+    try {
+      const file = Bun.file(filepath)
+      const stat = await file.stat()
+
+      // Implement LRU eviction
+      if (configFileCache.size >= MAX_CACHE_SIZE && !configFileCache.has(filepath)) {
+        const firstKey = configFileCache.keys().next().value
+        if (firstKey !== undefined) {
+          configFileCache.delete(firstKey)
+        }
+      }
+
+      configFileCache.set(filepath, { mtime: stat.mtime.getTime(), data })
+    } catch {
+      // Ignore cache errors
+    }
+  }
+
+  /**
+   * Clears the config file cache - useful for testing or when config is updated
+   */
+  export async function clearCache(): Promise<void> {
+    configFileCache.clear()
+    global.reset()
+    // Clear the instance state to force fresh config loading (only if instance exists)
+    try {
+      const dir = Instance.directory
+      if (dir) {
+        await State.dispose(dir)
+      }
+    } catch {
+      // Ignore if no instance context is available
+    }
+  }
+
   // Custom merge function that concatenates array fields instead of replacing them
   function mergeConfigConcatArrays(target: Info, source: Info): Info {
+    // Fast path: if target is empty, just return source (avoid unnecessary merge)
+    if (Object.keys(target).length === 0) {
+      return { ...source }
+    }
+
     const merged = mergeDeep(target, source)
     if (target.plugin && source.plugin) {
-      merged.plugin = Array.from(new Set([...target.plugin, ...source.plugin]))
+      // Use faster Set-based deduplication for plugins
+      merged.plugin = [...new Set([...target.plugin, ...source.plugin])]
     }
     if (target.instructions && source.instructions) {
-      merged.instructions = Array.from(new Set([...target.instructions, ...source.instructions]))
+      merged.instructions = [...new Set([...target.instructions, ...source.instructions])]
     }
     return merged
   }
 
-  export const state = Instance.state(async () => {
+  // Config loading implementation - extracted for reuse in test mode
+  async function loadConfigState(): Promise<{ config: Info; directories: string[] }> {
     const auth = await Auth.all()
 
     // Load remote/well-known config first as the base layer (lowest precedence)
@@ -53,10 +142,7 @@ export namespace Config {
         const remoteConfig = wellknown.config ?? {}
         // Add $schema to prevent load() from trying to write back to a non-existent file
         if (!remoteConfig.$schema) remoteConfig.$schema = "https://atomcli.ai/config.json"
-        result = mergeConfigConcatArrays(
-          result,
-          await load(JSON.stringify(remoteConfig), `${key}/.well-known/atomcli`),
-        )
+        result = mergeConfigConcatArrays(result, await load(JSON.stringify(remoteConfig), `${key}/.well-known/atomcli`))
         log.debug("loaded remote config from well-known", { url: key })
       }
     }
@@ -77,7 +163,7 @@ export namespace Config {
         const config = await loadFile(resolved)
         if (file === "mcp.json") {
           // If loading mcp.json, wrap it in an mcp object if it isn't already
-          if (!config.mcp && Object.keys(config).every(k => k !== "mcp" && k !== "provider")) {
+          if (!config.mcp && Object.keys(config).every((k) => k !== "mcp" && k !== "provider")) {
             result = mergeConfigConcatArrays(result, { mcp: config as any })
           } else {
             result = mergeConfigConcatArrays(result, config)
@@ -123,14 +209,18 @@ export namespace Config {
 
     // Scan .atomcli/skill/ directories
     for (const dir of unique(directories)) {
-      if (dir.endsWith(".atomcli") || dir === Flag.ATOMCLI_CONFIG_DIR) {
+      // Skip loading config files from Global.Path.config since it was already loaded via global()
+      // This prevents global config from overriding project config (project should have higher precedence)
+      // We still process Global.Path.config for loading skills/agents/plugins below
+      const isGlobalConfigDir = dir === Global.Path.config
+      if ((dir.endsWith(".atomcli") || dir === Flag.ATOMCLI_CONFIG_DIR) && !isGlobalConfigDir) {
         for (const file of ["atomcli.jsonc", "atomcli.json", "mcp.json"]) {
           log.debug(`loading config from ${path.join(dir, file)}`)
           const config = await loadFile(path.join(dir, file))
 
           if (file === "mcp.json") {
             // If loading mcp.json, assume top-level keys are mcp servers if not structured otherwise
-            if (!config.mcp && Object.keys(config).every(k => k !== "mcp" && k !== "provider")) {
+            if (!config.mcp && Object.keys(config).every((k) => k !== "mcp" && k !== "provider")) {
               result = mergeConfigConcatArrays(result, { mcp: config as any })
             } else {
               result = mergeConfigConcatArrays(result, config)
@@ -207,7 +297,11 @@ export namespace Config {
       config: result,
       directories,
     }
-  })
+  }
+
+  // In test mode, don't use Instance.state caching - always load fresh
+  // In normal mode, use Instance.state for caching
+  export const state = isTestMode() ? loadConfigState : Instance.state(loadConfigState)
 
   export async function installDependencies(dir: string) {
     const pkg = path.join(dir, "package.json")
@@ -951,7 +1045,7 @@ export namespace Config {
         .enum(["safe", "autonomous"])
         .optional()
         .describe(
-          "Agent execution mode: 'safe' requires confirmation per step, 'autonomous' runs fully without prompts"
+          "Agent execution mode: 'safe' requires confirmation per step, 'autonomous' runs fully without prompts",
         ),
       agent_retry: z
         .object({
@@ -1138,6 +1232,12 @@ export namespace Config {
   })
 
   async function loadFile(filepath: string): Promise<Info> {
+    // Check cache first
+    const cached = await getCachedConfigFile(filepath)
+    if (cached !== undefined) {
+      return cached
+    }
+
     log.info("loading", { path: filepath })
     let text = await Bun.file(filepath)
       .text()
@@ -1146,7 +1246,13 @@ export namespace Config {
         throw new JsonError({ path: filepath }, { cause: err })
       })
     if (!text) return {}
-    return load(text, filepath)
+
+    const result = await load(text, filepath)
+
+    // Cache the result
+    await setCachedConfigFile(filepath, result)
+
+    return result
   }
 
   // Load mcp.json without strict schema validation
