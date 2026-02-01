@@ -38,8 +38,8 @@ export namespace SessionCompaction {
     return count > usable
   }
 
-  export const PRUNE_MINIMUM = 20_000
-  export const PRUNE_PROTECT = 40_000
+  export const PRUNE_MINIMUM = 8_000
+  export const PRUNE_PROTECT = 16_000
 
   const PRUNE_PROTECTED_TOOLS = ["skill"]
 

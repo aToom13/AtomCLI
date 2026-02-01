@@ -105,14 +105,14 @@ describe("session.compaction.isOverflow", () => {
 })
 
 describe("util.token.estimate", () => {
-  test("estimates tokens from text (4 chars per token)", () => {
+  test("estimates tokens from text (3 chars per token)", () => {
     const text = "x".repeat(4000)
-    expect(Token.estimate(text)).toBe(1000)
+    expect(Token.estimate(text)).toBe(1333)
   })
 
   test("estimates tokens from larger text", () => {
     const text = "y".repeat(20_000)
-    expect(Token.estimate(text)).toBe(5000)
+    expect(Token.estimate(text)).toBe(6667)
   })
 
   test("returns 0 for empty string", () => {

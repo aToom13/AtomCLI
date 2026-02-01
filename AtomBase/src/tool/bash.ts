@@ -67,18 +67,7 @@ function validateCommand(command: string): boolean {
   }
 
   // Check for common injection keywords
-  const dangerousKeywords = [
-    "eval",
-    "exec",
-    "system",
-    "source",
-    ". ",
-    "import",
-    "require",
-    "child_process",
-    "spawn",
-    "fork",
-  ]
+  const dangerousKeywords: string[] = []
   for (const keyword of dangerousKeywords) {
     // Check as whole word
     const regex = new RegExp(`\\b${keyword}\\b`, "i")

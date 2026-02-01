@@ -604,6 +604,30 @@ export namespace SessionPrompt {
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
 
       const [environment, custom] = await Promise.all([SystemPrompt.environment(), SystemPrompt.custom()])
+
+      // Proactive Memory Recall
+      let memoryContext = ""
+      const lastUserWithParts = lastUser ? msgs.find(m => m.info.id === lastUser.id) : undefined
+      if (lastUserWithParts && lastUserWithParts.parts) {
+        const userText = lastUserWithParts.parts
+          .filter(p => p.type === "text")
+          .map(p => (p as any).text)
+          .join(" ")
+
+        if (userText) {
+          const { LearningIntegration } = await import("../learning/integration")
+          memoryContext = await LearningIntegration.recall(userText, {
+            sessionID: sessionID,
+            technology: "general" // Could be refined based on context
+          })
+        }
+      }
+
+      const system = [...environment, ...custom]
+      if (memoryContext) {
+        system.push(memoryContext)
+      }
+
       const result = await processor.process({
         user: lastUser,
         agent,

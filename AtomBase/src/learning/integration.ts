@@ -42,6 +42,25 @@ export namespace LearningIntegration {
     return state ? { learnedCount: state.learnedCount, errorsCount: state.errorsCount } : { learnedCount: 0, errorsCount: 0 }
   }
 
+  // Recall relevant memories based on user query
+  export async function recall(
+    query: string,
+    context?: { technology?: string; sessionID?: string }
+  ): Promise<string> {
+    const items = await Learning.Memory.search(query, context?.technology, 3)
+
+    if (items.length === 0) return ""
+
+    let memory = `\n<learning_memory>\nI found some relevant past experiences that might help:\n`
+    for (const item of items) {
+      memory += `- **${item.title}**: ${item.solution.slice(0, 300)}${item.solution.length > 300 ? "..." : ""} (Success Rate: ${(item.successRate * 100).toFixed(0)}%)\n`
+    }
+    memory += `</learning_memory>\n`
+
+    log.info("recalled memories", { query, count: items.length })
+    return memory
+  }
+
   // Learn from a tool error
   export async function learnFromError(
     error: Error,
@@ -63,10 +82,10 @@ export namespace LearningIntegration {
 
     // Extract error type
     const errorType = error.constructor.name || "Error"
-    
+
     // Create a meaningful title
     const title = `${errorType} in ${toolName}`
-    
+
     // Analyze the error
     const description = analyzeError(error, toolName, input)
 
@@ -82,8 +101,9 @@ export namespace LearningIntegration {
       tags: ["tool-error", toolName, errorType.toLowerCase()],
     })
 
-    if (sessionState) {
-      sessionState.learnedCount++
+    const currentState = sessionState.get(context.sessionID)
+    if (currentState) {
+      currentState.learnedCount++
     }
 
     log.info("learned from error", { title, tool: toolName })
@@ -157,49 +177,49 @@ export namespace LearningIntegration {
     input: Record<string, any>
   ): { rootCause: string; solution: string } {
     const message = error.message.toLowerCase()
-    
+
     // Common error patterns
     const patterns: Array<{
       match: RegExp
       rootCause: string
       solution: string
     }> = [
-      {
-        match: /not found|cannot find module/i,
-        rootCause: "Missing dependency or file",
-        solution: `Check if the file/dependency exists. Use absolute paths.`,
-      },
-      {
-        match: /permission denied|access denied/i,
-        rootCause: "Insufficient permissions",
-        solution: `Check file permissions or use permission system.`,
-      },
-      {
-        match: /timeout/i,
-        rootCause: "Operation timed out",
-        solution: `Increase timeout or optimize the operation.`,
-      },
-      {
-        match: /network|connection/i,
-        rootCause: "Network issue",
-        solution: `Check network connectivity and retry logic.`,
-      },
-      {
-        match: /syntax|parse/i,
-        rootCause: "Syntax error",
-        solution: `Fix the syntax error in the input.`,
-      },
-      {
-        match: /type|undefined is not/i,
-        rootCause: "Type mismatch or undefined value",
-        solution: `Add type checking or null guards.`,
-      },
-      {
-        match: /already exists/i,
-        rootCause: "Duplicate operation",
-        solution: `Check if already exists before creating.`,
-      },
-    ]
+        {
+          match: /not found|cannot find module/i,
+          rootCause: "Missing dependency or file",
+          solution: `Check if the file/dependency exists. Use absolute paths.`,
+        },
+        {
+          match: /permission denied|access denied/i,
+          rootCause: "Insufficient permissions",
+          solution: `Check file permissions or use permission system.`,
+        },
+        {
+          match: /timeout/i,
+          rootCause: "Operation timed out",
+          solution: `Increase timeout or optimize the operation.`,
+        },
+        {
+          match: /network|connection/i,
+          rootCause: "Network issue",
+          solution: `Check network connectivity and retry logic.`,
+        },
+        {
+          match: /syntax|parse/i,
+          rootCause: "Syntax error",
+          solution: `Fix the syntax error in the input.`,
+        },
+        {
+          match: /type|undefined is not/i,
+          rootCause: "Type mismatch or undefined value",
+          solution: `Add type checking or null guards.`,
+        },
+        {
+          match: /already exists/i,
+          rootCause: "Duplicate operation",
+          solution: `Check if already exists before creating.`,
+        },
+      ]
 
     for (const p of patterns) {
       if (p.match.test(message)) {
@@ -219,7 +239,7 @@ export namespace LearningIntegration {
     sessionID: string
   ): Promise<string> {
     const stats = getSessionStats(sessionID)
-    
+
     if (stats.learnedCount === 0) {
       return ""
     }
@@ -228,7 +248,7 @@ export namespace LearningIntegration {
     const recentItems = items.slice(0, 3)
 
     let summary = `## Session Learning Summary (${stats.learnedCount} items learned, ${stats.errorsCount} errors)\n\n`
-    
+
     if (recentItems.length > 0) {
       summary += "### Recent Learnings:\n"
       for (const item of recentItems) {

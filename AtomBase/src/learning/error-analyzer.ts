@@ -1,3 +1,4 @@
+import path from "path"
 import { Log } from "../util/log"
 import { LearningMemory } from "./memory"
 import { ulid } from "ulid"
@@ -25,9 +26,9 @@ export namespace LearningErrorAnalyzer {
 
   // Hata analizi yap
   export async function analyze(errorContext: ErrorContext): Promise<ErrorAnalysis> {
-    log.info("analyzing error", { 
+    log.info("analyzing error", {
       type: errorContext.error.name,
-      tech: errorContext.technology 
+      tech: errorContext.technology
     })
 
     const error = errorContext.error
@@ -87,43 +88,43 @@ export namespace LearningErrorAnalyzer {
       solution: string
       prevention: string
     }> = [
-      {
-        pattern: /cannot find module|module not found/i,
-        rootCause: "Missing dependency or incorrect import path",
-        solution: "Install the missing package or fix the import path",
-        prevention: "Always check package.json and use correct relative paths",
-      },
-      {
-        pattern: /is not defined|referenceerror/i,
-        rootCause: "Variable or function used before declaration",
-        solution: "Declare the variable/function before using it, or check scope",
-        prevention: "Use 'use strict' and linters to catch undefined variables",
-      },
-      {
-        pattern: /cannot read propert(?:y|ies) of (null|undefined)/i,
-        rootCause: "Accessing property on null/undefined value",
-        solution: "Add null checks or optional chaining (?.)",
-        prevention: "Always validate data before accessing nested properties",
-      },
-      {
-        pattern: /websocket|socket/i,
-        rootCause: "WebSocket connection issue or SSR incompatibility",
-        solution: "Check if window is defined before using WebSocket, or handle connection errors",
-        prevention: "Use typeof window !== 'undefined' checks for browser APIs",
-      },
-      {
-        pattern: /async|await|promise/i,
-        rootCause: "Asynchronous code handling issue",
-        solution: "Add proper await, handle promise rejections, or use try-catch",
-        prevention: "Always await promises and wrap async code in try-catch",
-      },
-      {
-        pattern: /type.*is not assignable|typescript/i,
-        rootCause: "TypeScript type mismatch",
-        solution: "Fix type annotation or use type assertion/casting",
-        prevention: "Use strict TypeScript config and proper type definitions",
-      },
-    ]
+        {
+          pattern: /cannot find module|module not found/i,
+          rootCause: "Missing dependency or incorrect import path",
+          solution: "Install the missing package or fix the import path",
+          prevention: "Always check package.json and use correct relative paths",
+        },
+        {
+          pattern: /is not defined|referenceerror/i,
+          rootCause: "Variable or function used before declaration",
+          solution: "Declare the variable/function before using it, or check scope",
+          prevention: "Use 'use strict' and linters to catch undefined variables",
+        },
+        {
+          pattern: /cannot read propert(?:y|ies) of (null|undefined)/i,
+          rootCause: "Accessing property on null/undefined value",
+          solution: "Add null checks or optional chaining (?.)",
+          prevention: "Always validate data before accessing nested properties",
+        },
+        {
+          pattern: /websocket|socket/i,
+          rootCause: "WebSocket connection issue or SSR incompatibility",
+          solution: "Check if window is defined before using WebSocket, or handle connection errors",
+          prevention: "Use typeof window !== 'undefined' checks for browser APIs",
+        },
+        {
+          pattern: /async|await|promise/i,
+          rootCause: "Asynchronous code handling issue",
+          solution: "Add proper await, handle promise rejections, or use try-catch",
+          prevention: "Always await promises and wrap async code in try-catch",
+        },
+        {
+          pattern: /type.*is not assignable|typescript/i,
+          rootCause: "TypeScript type mismatch",
+          solution: "Fix type annotation or use type assertion/casting",
+          prevention: "Use strict TypeScript config and proper type definitions",
+        },
+      ]
 
     // Pattern eşleştir
     for (const p of patterns) {
@@ -144,18 +145,38 @@ export namespace LearningErrorAnalyzer {
       const lineMatch = error.stack.match(/:(\d+):(\d+)/)
       if (lineMatch) {
         const lineNumber = parseInt(lineMatch[1])
-        
+
         // Dosyayı oku ve kontekst bul
         try {
-          // ReadTool.execute çağrısı - tool context gerektirir
-          // Şimdilik sadece logla, gerçek implementasyonda düzgün context ile çağrılacak
-          log.debug("error context", { 
-            file: errorContext.filePath, 
-            line: lineNumber,
-            message: "Would read file for context"
-          })
-        } catch {
-          // Dosya okunamazsa atla
+          const { ReadTool } = await import("../tool/read")
+          // Create a synthetic context for the tool execution
+          const toolCtx: any = {
+            metadata: () => { },
+            ask: () => { }, // Assuming internal reads are trusted or handle permissions elsewhere
+            abort: new AbortController().signal
+          }
+
+          const startLine = Math.max(1, lineNumber - 5)
+          const limit = 10
+
+          const readToolInstance = await ReadTool.init({ agent: { name: "error-analyzer", mode: "subagent", permission: [], options: {}, native: true } })
+          const result = await readToolInstance.execute({
+            filePath: errorContext.filePath,
+            offset: startLine - 1, // 0-based index
+            limit: limit
+          }, toolCtx)
+
+          return {
+            errorType: error.name,
+            errorMessage: message,
+            rootCause: `Error at line ${lineNumber} in ${path.basename(errorContext.filePath)}`,
+            solution: "Review the code context below to identify the issue.",
+            prevention: "Add better error handling or validations.",
+            confidence: 0.7,
+            codeFix: `Code context:\n${result.output}`
+          }
+        } catch (e) {
+          log.warn("failed to read error context", { error: e })
         }
       }
     }
@@ -179,9 +200,9 @@ export namespace LearningErrorAnalyzer {
   ): Promise<void> {
     const file = await LearningMemory.getAll()
     const error = file.errors.find(
-      e => e.errorType === errorType && 
-           e.errorMessage === errorMessage &&
-           e.technology === technology
+      e => e.errorType === errorType &&
+        e.errorMessage === errorMessage &&
+        e.technology === technology
     )
 
     if (error) {
@@ -223,11 +244,11 @@ export namespace LearningErrorAnalyzer {
     technology?: string
   ): Promise<LearningMemory.ErrorLearning[]> {
     const { errors } = await LearningMemory.getAll()
-    
+
     if (technology) {
       return errors.filter(e => e.technology === technology)
     }
-    
+
     return errors
   }
 }
