@@ -19,6 +19,9 @@ import PROMPT_CODEX_INSTRUCTIONS from "./prompt/codex_header.txt"
 import type { Provider } from "@/provider/provider"
 import { Flag } from "@/flag/flag"
 
+// Memory integration
+import { SessionMemoryIntegration } from "../memory/integration/session"
+
 export namespace SystemPrompt {
   export function header(providerID: string) {
     if (providerID.includes("anthropic")) return [PROMPT_ANTHROPIC_SPOOF.trim()]
@@ -48,6 +51,9 @@ export namespace SystemPrompt {
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
     })
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+    // Initialize memory system
+    await SessionMemoryIntegration.initialize()
 
     const envBlock = [
       `## CURRENT DATE AND TIME (IMPORTANT!)`,
@@ -79,6 +85,10 @@ export namespace SystemPrompt {
       }`,
       `</files>`,
     ].join("\n")
+
+    // Get user context from memory
+    const userContext = await SessionMemoryIntegration.getUserContext()
+    const userContextBlock = userContext ? `\n\n## 🧠 User Memory\n\n${userContext}` : ""
 
     const [skills, mcpStatus] = await Promise.all([Skill.state(), MCP.status()])
     const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
@@ -141,7 +151,7 @@ This helps you think through problems systematically before acting.
       ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : [])
     ].join("\n")
 
-    return [envBlock, skillsMcpBlock]
+    return [envBlock + userContextBlock, skillsMcpBlock]
   }
 
   const LOCAL_RULE_FILES = [

@@ -10,6 +10,7 @@
 
 import fs from "fs/promises"
 import path from "path"
+import os from "os"
 
 // Import base prompts
 import PROMPT_IDENTITY from "./base/identity.txt"
@@ -130,8 +131,41 @@ export async function buildAsync(options: BuildOptions): Promise<string> {
 
     const provider = detectProvider(modelId)
     
-    // ⭐ YENİ: Session başında hafıza özetini al
+    // ⭐ YENİ: Session başında user profile ve hafıza özetini al
+    let userContextSection = ""
     let memorySection = ""
+    
+    // User profile yükle (her session başında otomatik)
+    try {
+        const userProfilePath = path.join(os.homedir(), ".atomcli", "personality", "user-profile.json")
+        const userProfileData = await fs.readFile(userProfilePath, "utf-8")
+        const userProfile = JSON.parse(userProfileData)
+        
+        const parts = ["# USER CONTEXT (Otomatik Yüklendi)"]
+        parts.push(`- **Name**: ${userProfile.name || 'Bilinmiyor'}`)
+        
+        if (userProfile.techLevel) {
+            parts.push(`- **Tech Level**: ${userProfile.techLevel}`)
+        }
+        if (userProfile.communication) {
+            parts.push(`- **Communication Style**: ${userProfile.communication}`)
+        }
+        if (userProfile.primaryLanguage) {
+            parts.push(`- **Primary Language**: ${userProfile.primaryLanguage}`)
+        }
+        if (userProfile.interests && userProfile.interests.length > 0) {
+            parts.push(`- **Interests**: ${userProfile.interests.join(", ")}`)
+        }
+        if (userProfile.lastActive) {
+            parts.push(`- **Last Active**: ${userProfile.lastActive}`)
+        }
+        
+        userContextSection = `<user_context>\n${parts.join("\n")}\n</user_context>`
+    } catch (e) {
+        // User profile okunamazsa sessizce devam et
+    }
+    
+    // Learning memory yükle
     if (includeLearningMemory) {
         try {
             const memorySummary = await Learning.buildMemorySummary()
@@ -146,6 +180,8 @@ export async function buildAsync(options: BuildOptions): Promise<string> {
     const sections: string[] = [
         // Core identity and capabilities
         ...BASE_PROMPTS,
+        // ⭐ YENİ: User context (session başında otomatik yüklenir)
+        ...(userContextSection ? [userContextSection] : []),
         // ⭐ YENİ: Learning memory (session başında otomatik)
         ...(memorySection ? [memorySection] : []),
         // Provider-specific optimizations

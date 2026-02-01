@@ -23,7 +23,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "2.1.8",
+      "version": "2.1.9",
       "bin": {
         "atomcli": "./bin/atomcli",
       },
@@ -345,6 +345,7 @@
     "@types/node": "22.13.9",
     "@typescript/native-preview": "7.0.0-dev.20251207.1",
     "ai": "5.0.97",
+    "chromadb": "^1.0.0",
     "diff": "8.0.2",
     "fuzzysort": "3.1.0",
     "hono": "4.10.7",
@@ -352,6 +353,7 @@
     "luxon": "3.6.1",
     "marked": "17.0.1",
     "marked-shiki": "1.2.1",
+    "openai": "^4.0.0",
     "remeda": "2.26.0",
     "shiki": "3.20.0",
     "solid-js": "1.9.10",

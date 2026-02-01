@@ -46,6 +46,7 @@ Run `atomcli` to start.
 - **Interactive TUI** - Beautiful terminal interface with mouse support, syntax highlighting, and multi-panel layouts
 - **Multi-Provider Support** - Works with OpenAI, Anthropic, Google, Ollama, OpenRouter, and more
 - **Free Models Available** - Use built-in free providers (MiniMax, GLM, Kimi, GPT, ex.) without API keys
+- **Semantic Memory System** - AI learns your preferences, coding style, and project context automatically
 - **Code Intelligence** - File editing, code generation, debugging, and refactoring capabilities
 - **Session Management** - Save and continue conversations, branch sessions, and manage history
 - **Streaming Interrupt** - Send amendments while AI is writing (Shift+Enter)

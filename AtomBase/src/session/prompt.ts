@@ -1249,6 +1249,18 @@ export namespace SessionPrompt {
       await Session.updatePart(part)
     }
 
+    // Learn from user message
+    try {
+      const { SessionMemoryIntegration } = await import("../memory/integration/session")
+      const textParts = parts.filter(p => p.type === "text" && !("synthetic" in p && p.synthetic))
+      const userText = textParts.map(p => (p as any).text).join(" ")
+      if (userText) {
+        await SessionMemoryIntegration.learnFromMessage(userText)
+      }
+    } catch (error) {
+      log.error("Failed to learn from user message", { error })
+    }
+
     return {
       info,
       parts,

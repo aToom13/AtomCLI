@@ -36,6 +36,7 @@ export namespace SessionProcessor {
     let blocked = false
     let attempt = 0
     let needsCompaction = false
+    let userMessageText: string | undefined // Store user message for context
 
     const result = {
       get message() {
@@ -51,6 +52,16 @@ export namespace SessionProcessor {
         log.info("process")
         needsCompaction = false
         const shouldBreak = (await Config.get()).experimental?.continue_loop_on_deny !== true
+        
+        // Store user message text for semantic learning
+        try {
+          const userMsg = streamInput.user
+          const userParts = await MessageV2.parts(userMsg.id)
+          const textParts = userParts.filter(p => p.type === "text" && !("synthetic" in p && p.synthetic))
+          userMessageText = textParts.map(p => (p as any).text).join(" ")
+        } catch (error) {
+          log.warn("Failed to get user message text", { error })
+        }
         
         // Enable amendment processing by default
         const enableAmendments = options?.enableAmendments !== false
@@ -372,6 +383,17 @@ export namespace SessionProcessor {
                     }
                     if (value.providerMetadata) currentText.metadata = value.providerMetadata
                     await Session.updatePart(currentText)
+                    
+                    // Learn from assistant response with user message context
+                    try {
+                      const { SessionMemoryIntegration } = await import("../memory/integration/session")
+                      await SessionMemoryIntegration.learnFromResponse(
+                        currentText.text,
+                        userMessageText // Pass user message for context
+                      )
+                    } catch (error) {
+                      log.error("Failed to learn from assistant response", { error })
+                    }
                   }
                   currentText = undefined
                   break

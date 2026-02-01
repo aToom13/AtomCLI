@@ -546,3 +546,4 @@ atomcli /status
 - [Development Guide](./DEVELOPMENT.md) - Technical documentation
 - [MCP Guide](./MCP-GUIDE.md) - Extending with MCP servers
 - [Skills Guide](./SKILLS-GUIDE.md) - Custom agent behaviors
+- [Memory Integration](./MEMORY-INTEGRATION.md) - Semantic memory system

@@ -490,6 +490,7 @@ bun test --watch
 - [Providers Guide](./PROVIDERS.md) - AI provider configuration and API keys
 - [MCP Guide](./MCP-GUIDE.md) - MCP server installation and development
 - [Skills Guide](./SKILLS-GUIDE.md) - Skill development and usage
+- [Memory Integration](./MEMORY-INTEGRATION.md) - Semantic memory system
 - [AtomBase README](../AtomBase/README.md) - Core package docs
 - [SDK README](../libs/sdk/README.md) - SDK documentation
 - [Libs README](../libs/README.md) - Shared libraries
