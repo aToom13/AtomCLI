@@ -13,6 +13,7 @@ import type { BunWebSocketData } from "hono/bun"
 await Log.init({
   print: process.argv.includes("--print-logs"),
   dev: Installation.isLocal(),
+  tui: true,
   level: (() => {
     if (Installation.isLocal()) return "DEBUG"
     return "INFO"

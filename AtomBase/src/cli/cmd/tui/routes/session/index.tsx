@@ -11,6 +11,7 @@ import { useCommandDialog } from "@tui/component/dialog-command"
 import parsers from "../../../../../../parsers-config.ts"
 import { Toast, useToast } from "../../ui/toast"
 import { useDialog } from "../../ui/dialog"
+import { Log } from "@/util/log"
 import { Sidebar } from "./sidebar"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
@@ -32,7 +33,27 @@ addDefaultParsers(parsers.parsers)
 
 export function Session() {
   const state = useSessionState()
-  const { session, messages, route, sync, sidebarVisible, wide, showThinking, showAssistantMetadata, showDetails, showTimestamps, diffWrapMode, contentWidth, conceal, scrollAcceleration, pending, lastAssistant, children, navigate, sidebarOpen } = state
+  const {
+    session,
+    messages,
+    route,
+    sync,
+    sidebarVisible,
+    wide,
+    showThinking,
+    showAssistantMetadata,
+    showDetails,
+    showTimestamps,
+    diffWrapMode,
+    contentWidth,
+    conceal,
+    scrollAcceleration,
+    pending,
+    lastAssistant,
+    children,
+    navigate,
+    sidebarOpen,
+  } = state
 
   const toast = useToast()
   const sdk = useSDK()
@@ -55,7 +76,7 @@ export function Session() {
         if (scroll) scroll.scrollBy(100_000)
       })
       .catch((e) => {
-        console.error(e)
+        Log.Default.error("session sync failed", { error: e instanceof Error ? e.message : String(e) })
         toast.show({
           message: `Session not found: ${route.sessionID}`,
           variant: "error",
@@ -252,7 +273,8 @@ export function Session() {
                             >
                               <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
                               <text fg={theme.textMuted}>
-                                <span style={{ fg: theme.text }}>{keybind.print("messages_redo")}</span> or /redo to restore
+                                <span style={{ fg: theme.text }}>{keybind.print("messages_redo")}</span> or /redo to
+                                restore
                               </text>
                               <Show when={revert()!.diffFiles?.length}>
                                 <box marginTop={1}>

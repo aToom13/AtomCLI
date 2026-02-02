@@ -2,6 +2,7 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import { Clipboard } from "@tui/util/clipboard"
 import { TextAttributes } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
+import { Log } from "@/util/log"
 import { Switch, Match, createEffect, untrack, ErrorBoundary, createSignal, onMount, batch, Show, on } from "solid-js"
 import { Installation } from "@/installation"
 import { Flag } from "@/flag/flag"
@@ -178,7 +179,9 @@ export function tui(input: {
           keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
           onCopySelection: (text) => {
             Clipboard.copy(text).catch((error) => {
-              console.error(`Failed to copy console selection to clipboard: ${error}`)
+              Log.Default.error("Failed to copy console selection to clipboard", {
+                error: error instanceof Error ? error.message : String(error),
+              })
             })
           },
         },
@@ -218,10 +221,6 @@ function App() {
     renderer.clearSelection()
   }
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
-
-  createEffect(() => {
-    console.log(JSON.stringify(route.data))
-  })
 
   // Update terminal window title based on current route and session
   createEffect(() => {
@@ -464,7 +463,7 @@ function App() {
       title: "Open docs",
       value: "docs.open",
       onSelect: () => {
-        open("https://atomcli.ai/docs").catch(() => { })
+        open("https://atomcli.ai/docs").catch(() => {})
         dialog.clear()
       },
       category: "System",
@@ -546,12 +545,12 @@ function App() {
         if (current) {
           current.set({
             input: "List all installed skills and their descriptions.",
-            parts: []
+            parts: [],
           })
           current.submit()
         }
         dialog.clear()
-      }
+      },
     },
     {
       title: "Toggle file tree",
@@ -561,7 +560,7 @@ function App() {
       onSelect: (dialog) => {
         fileTreeCtx.toggleFileTree()
         dialog.clear()
-      }
+      },
     },
     {
       title: "Toggle code panel",
@@ -571,7 +570,7 @@ function App() {
       onSelect: (dialog) => {
         fileTreeCtx.toggleCodePanel()
         dialog.clear()
-      }
+      },
     },
   ])
 
@@ -682,7 +681,6 @@ function App() {
     chainCtx.failStep(evt.properties.error)
   })
 
-
   sdk.event.on(TuiEvent.ChainSetTodos.type, (evt) => {
     chainCtx.setCurrentStepTodos(evt.properties.todos)
   })
@@ -701,12 +699,7 @@ function App() {
   })
 
   sdk.event.on(TuiEvent.FileTreeOpen.type, (evt) => {
-    fileTreeCtx.openFile(
-      evt.properties.path,
-      evt.properties.content,
-      evt.properties.language,
-      evt.properties.highlight
-    )
+    fileTreeCtx.openFile(evt.properties.path, evt.properties.content, evt.properties.language, evt.properties.highlight)
   })
 
   sdk.event.on(TuiEvent.FileTreeClose.type, (evt) => {

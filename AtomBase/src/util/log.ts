@@ -44,9 +44,11 @@ export namespace Log {
     print: boolean
     dev?: boolean
     level?: Level
+    tui?: boolean
   }
 
   let logpath = ""
+  let isTuiMode = false
   export function file() {
     return logpath
   }
@@ -57,14 +59,21 @@ export namespace Log {
 
   export async function init(options: Options) {
     if (options.level) level = options.level
+    isTuiMode = options.tui ?? false
     cleanup(Global.Path.log)
-    if (options.print) return
+    if (options.print) {
+      // In TUI mode, suppress stderr output to avoid terminal corruption
+      if (isTuiMode) {
+        write = () => 0
+      }
+      return
+    }
     logpath = path.join(
       Global.Path.log,
       options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
     )
     const logfile = Bun.file(logpath)
-    await fs.truncate(logpath).catch(() => { })
+    await fs.truncate(logpath).catch(() => {})
     const writer = logfile.writer()
     write = async (msg: any) => {
       const num = writer.write(msg)
@@ -84,7 +93,7 @@ export namespace Log {
     if (files.length <= 5) return
 
     const filesToDelete = files.slice(0, -10)
-    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => { })))
+    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
   }
 
   function formatError(error: Error, depth = 0): string {
