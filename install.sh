@@ -284,7 +284,17 @@ EOF
     fi
 
     # Try to get from releases first
-    local version=$(get_latest_release)
+    # Try to get from releases first
+    local version=""
+    if [ -n "$VERSION" ]; then
+        # Ensure starts with v
+        case "$VERSION" in
+            v*) version="$VERSION" ;;
+            *) version="v$VERSION" ;;
+        esac
+    else
+        version=$(get_latest_release)
+    fi
     local binary_name="atomcli-${OS_TYPE}-${ARCH_TYPE}"
     
     # Create install directory
