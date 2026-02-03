@@ -293,17 +293,33 @@ EOF
     
     if [ -n "$version" ]; then
         local url="https://github.com/aToom13/AtomCLI/releases/download/${version}/${binary_name}"
+        local tmp_binary="$(mktemp)"
         
+        # progress bar if possible
         if has curl; then
-            curl -fsSL "$url" -o "$INSTALL_DIR/atomcli" 2>/dev/null && chmod +x "$INSTALL_DIR/atomcli"
-        else
-            wget -q "$url" -O "$INSTALL_DIR/atomcli" 2>/dev/null && chmod +x "$INSTALL_DIR/atomcli"
+            # Check if we can download successfully
+            if curl -fsSL "$url" -o "$tmp_binary"; then
+                if [ -s "$tmp_binary" ]; then
+                    chmod +x "$tmp_binary"
+                    mv "$tmp_binary" "$INSTALL_DIR/atomcli"
+                    success "Downloaded AtomCLI ${version}"
+                    return 0
+                fi
+            fi
+        elif has wget; then
+            if wget -q "$url" -O "$tmp_binary"; then
+                if [ -s "$tmp_binary" ]; then
+                    chmod +x "$tmp_binary"
+                    mv "$tmp_binary" "$INSTALL_DIR/atomcli"
+                    success "Downloaded AtomCLI ${version}"
+                    return 0
+                fi
+            fi
         fi
         
-        if [ -f "$INSTALL_DIR/atomcli" ]; then
-            success "Downloaded AtomCLI ${version}"
-            return 0
-        fi
+        # Clean up temp file if failed
+        rm -f "$tmp_binary"
+        warn "Download failed or file empty, attempting build from source..."
     fi
     
     # Fallback: build from source
