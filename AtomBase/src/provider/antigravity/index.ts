@@ -104,8 +104,6 @@ function createAntigravityFetch(headerStyle: HeaderStyle, projectId?: string) {
             )
         }
 
-        console.log(`[Antigravity] Request to: ${targetUrl}`)
-
         return fetch(targetUrl, {
             ...init,
             headers: {

@@ -65,6 +65,8 @@ export namespace Log {
       // In TUI mode, suppress stderr output to avoid terminal corruption
       if (isTuiMode) {
         write = () => 0
+        // Override console methods to prevent terminal corruption
+        overrideConsole()
       }
       return
     }
@@ -73,12 +75,45 @@ export namespace Log {
       options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
     )
     const logfile = Bun.file(logpath)
-    await fs.truncate(logpath).catch(() => {})
+    await fs.truncate(logpath).catch(() => { })
     const writer = logfile.writer()
     write = async (msg: any) => {
       const num = writer.write(msg)
       writer.flush()
       return num
+    }
+    // In TUI mode, redirect console output to log file
+    if (isTuiMode) {
+      overrideConsole()
+    }
+  }
+
+  function overrideConsole() {
+    const formatArgs = (...args: any[]) => {
+      return args.map(arg => {
+        if (arg instanceof Error) return formatError(arg)
+        if (typeof arg === "object") {
+          try {
+            return JSON.stringify(arg)
+          } catch {
+            return String(arg)
+          }
+        }
+        return String(arg)
+      }).join(" ")
+    }
+
+    console.log = (...args: any[]) => {
+      write(`CONSOLE.LOG   ${new Date().toISOString().split(".")[0]} ${formatArgs(...args)}\n`)
+    }
+    console.error = (...args: any[]) => {
+      write(`CONSOLE.ERROR ${new Date().toISOString().split(".")[0]} ${formatArgs(...args)}\n`)
+    }
+    console.warn = (...args: any[]) => {
+      write(`CONSOLE.WARN  ${new Date().toISOString().split(".")[0]} ${formatArgs(...args)}\n`)
+    }
+    console.debug = (...args: any[]) => {
+      write(`CONSOLE.DEBUG ${new Date().toISOString().split(".")[0]} ${formatArgs(...args)}\n`)
     }
   }
 
@@ -93,7 +128,7 @@ export namespace Log {
     if (files.length <= 5) return
 
     const filesToDelete = files.slice(0, -10)
-    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => { })))
   }
 
   function formatError(error: Error, depth = 0): string {
