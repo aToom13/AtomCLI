@@ -682,8 +682,8 @@ setup_optional_features() {
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    # Check if /dev/tty is available for interactive input
-    if [ ! -e /dev/tty ]; then
+    # Check if running interactively (not piped and tty available)
+    if [ ! -t 0 ] || [ ! -e /dev/tty ]; then
         info "Non-interactive mode: skipping optional features"
         info "Run 'atomcli auth login' to set up manually"
         return 0
