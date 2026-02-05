@@ -160,7 +160,7 @@ export namespace Installation {
         break
       }
       case "curl":
-        cmd = $`curl -fsSL https://atomcli.ai/install | bash`.env({
+        cmd = $`curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash`.env({
           ...process.env,
           VERSION: target,
         })
