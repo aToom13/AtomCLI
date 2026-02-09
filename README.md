@@ -216,6 +216,7 @@ atomcli mcp remove <name>    # Remove an MCP server
 
 Skills are specialized instructions that modify agent behavior for specific tasks.
 
+
 ### Managing Skills
 
 ```bash
