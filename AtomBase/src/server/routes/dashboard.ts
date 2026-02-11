@@ -1,8 +1,9 @@
 import { Hono } from "hono"
 
-const html = await Bun.file(new URL("../dashboard/index.html", import.meta.url).pathname).text()
+// @ts-ignore
+import html from "../dashboard/index.html" with { type: "text" }
 
 export const DashboardRoute = new Hono()
     .get("/", (c) => {
-        return c.html(html)
+        return c.html(html as unknown as string)
     })
