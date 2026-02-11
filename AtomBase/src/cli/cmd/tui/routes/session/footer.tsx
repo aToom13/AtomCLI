@@ -5,11 +5,13 @@ import { useDirectory } from "../../context/directory"
 import { useConnected } from "../../component/dialog-model"
 import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
+import { useKV } from "../../context/kv"
 
 export function Footer() {
   const { theme } = useTheme()
   const sync = useSync()
   const route = useRoute()
+  const kv = useKV()
   const mcp = createMemo(() => Object.values(sync.data.mcp).filter((x) => x.status === "connected").length)
   const mcpError = createMemo(() => Object.values(sync.data.mcp).some((x) => x.status === "failed"))
   const lsp = createMemo(() => Object.keys(sync.data.lsp))
@@ -19,6 +21,7 @@ export function Footer() {
   })
   const directory = useDirectory()
   const connected = useConnected()
+  const autoFollow = createMemo(() => kv.get("auto_follow", true))
 
   const [store, setStore] = createStore({
     welcome: false,
@@ -57,6 +60,11 @@ export function Footer() {
             </text>
           </Match>
           <Match when={connected()}>
+            <Show when={!autoFollow()}>
+              <text fg={theme.warning}>
+                <span style={{ fg: theme.warning }}>↑</span> Scroll
+              </text>
+            </Show>
             <Show when={permissions().length > 0}>
               <text fg={theme.warning}>
                 <span style={{ fg: theme.warning }}>△</span> {permissions().length} Permission

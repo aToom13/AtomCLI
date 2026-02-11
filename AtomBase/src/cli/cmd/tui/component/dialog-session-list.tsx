@@ -30,21 +30,51 @@ export function DialogSessionList() {
   })
 
   const deleteKeybind = "ctrl+d"
+  const pinKeybind = "ctrl+p"
 
   const currentSessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
 
   const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+  // Pinned sessions stored in KV as a comma-separated string
+  const [pinnedRaw, setPinnedRaw] = kv.signal("pinned_sessions", "")
+  const pinnedSet = createMemo(() => {
+    const raw = pinnedRaw()
+    if (!raw) return new Set<string>()
+    return new Set(raw.split(",").filter(Boolean))
+  })
+
+  function togglePin(sessionID: string) {
+    const current = pinnedSet()
+    if (current.has(sessionID)) {
+      current.delete(sessionID)
+    } else {
+      current.add(sessionID)
+    }
+    setPinnedRaw(() => Array.from(current).join(","))
+  }
+
   const sessions = createMemo(() => searchResults() ?? sync.data.session)
 
   const options = createMemo(() => {
     const today = new Date().toDateString()
+    const pinned = pinnedSet()
+
     return sessions()
       .filter((x) => x.parentID === undefined)
-      .toSorted((a, b) => b.time.updated - a.time.updated)
+      .toSorted((a, b) => {
+        // Pinned sessions first
+        const aPinned = pinned.has(a.id)
+        const bPinned = pinned.has(b.id)
+        if (aPinned && !bPinned) return -1
+        if (!aPinned && bPinned) return 1
+        // Then by updated time
+        return b.time.updated - a.time.updated
+      })
       .map((x) => {
         const date = new Date(x.time.updated)
-        let category = date.toDateString()
+        const isPinned = pinned.has(x.id)
+        let category = isPinned ? "📌 Pinned" : date.toDateString()
         if (category === today) {
           category = "Today"
         }
@@ -52,7 +82,9 @@ export function DialogSessionList() {
         const status = sync.data.session_status?.[x.id]
         const isWorking = status?.type === "busy"
         return {
-          title: isDeleting ? `Press ${deleteKeybind} again to confirm` : x.title,
+          title: isDeleting
+            ? `Press ${deleteKeybind} again to confirm`
+            : (isPinned ? "📌 " : "") + x.title,
           bg: isDeleting ? theme.error : undefined,
           value: x.id,
           category,
@@ -107,6 +139,13 @@ export function DialogSessionList() {
           title: "rename",
           onTrigger: async (option) => {
             dialog.replace(() => <DialogSessionRename session={option.value} />)
+          },
+        },
+        {
+          keybind: Keybind.parse(pinKeybind)[0],
+          title: "pin/unpin",
+          onTrigger: async (option) => {
+            togglePin(option.value)
           },
         },
       ]}

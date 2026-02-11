@@ -36,6 +36,7 @@ import { SystemRoute } from "./routes/system"
 import { PermissionRoute } from "./routes/permission"
 import { LspRoute } from "./routes/lsp"
 import { FormatterRoute } from "./routes/formatter"
+import { DashboardRoute } from "./routes/dashboard"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -165,6 +166,7 @@ export namespace Server {
         .route("/provider", ProviderRoute)
         .route("/lsp", LspRoute)
         .route("/formatter", FormatterRoute)
+        .route("/dashboard", DashboardRoute)
         .all("/*", async (c) => {
           const path = c.req.path
           const response = await proxy(`https://app.atomcli.ai${path}`, {

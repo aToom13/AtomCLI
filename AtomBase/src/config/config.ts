@@ -871,6 +871,7 @@ export namespace Config {
       filetree_toggle: z.string().optional().default("ctrl+b").describe("Toggle file tree sidebar"),
       codepanel_toggle: z.string().optional().default("ctrl+e").describe("Toggle code panel"),
       tips_toggle: z.string().optional().default("<leader>h").describe("Toggle tips on home screen"),
+      autofollow_toggle: z.string().optional().default("<leader>f").describe("Toggle auto-follow (live scroll)"),
     })
     .strict()
     .meta({

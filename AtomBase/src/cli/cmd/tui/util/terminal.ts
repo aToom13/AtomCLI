@@ -19,6 +19,11 @@ export namespace Terminal {
   }> {
     if (!process.stdin.isTTY) return { background: null, foreground: null, colors: [] }
 
+    // Skip OSC queries on terminals that don't support them (e.g., Termux)
+    if (process.env.TERMUX_VERSION || process.env.TERM_PROGRAM === "termux") {
+      return { background: null, foreground: null, colors: [] }
+    }
+
     return new Promise((resolve) => {
       let background: RGBA | null = null
       let foreground: RGBA | null = null
@@ -96,7 +101,7 @@ export namespace Terminal {
       timeout = setTimeout(() => {
         cleanup()
         resolve({ background, foreground, colors: paletteColors })
-      }, 1000)
+      }, 500)
     })
   }
 

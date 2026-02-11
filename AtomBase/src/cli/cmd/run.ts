@@ -102,8 +102,8 @@ export const RunCommand = cmd({
       .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
       .join(" ")
 
-    // If message is provided and no specific command/agent overrides, default to Ralph Loop
-    if ((args.loop || (message.length > 0 && !args.command && !args.agent)) && args.loop !== false) {
+    // Only redirect to Ralph Loop when explicitly requested with --loop flag
+    if (args.loop) {
       // Redirect to FlowRunCommand
       // @ts-ignore
       return FlowRunCommand.handler({ ...args, name: "ralph", loop: message })

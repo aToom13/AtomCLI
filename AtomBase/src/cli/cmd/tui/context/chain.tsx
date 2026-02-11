@@ -1,5 +1,5 @@
 import { createContext, useContext, createSignal, type Accessor, type Setter, type ParentProps } from "solid-js"
-import { type AgentChain, Chain, type StepTodo } from "@/agent/chain"
+import { type AgentChain, Chain, type StepTodo, type SubStep } from "@/agent/chain"
 
 /**
  * Chain Context - Global state for agent task chain
@@ -8,6 +8,8 @@ import { type AgentChain, Chain, type StepTodo } from "@/agent/chain"
  * - Current chain state
  * - Methods to update chain
  * - Per-step todo management
+ * - Sub-plan support (nested steps within a parent step)
+ * - Parallel step execution
  */
 
 export interface ChainContextValue {
@@ -24,6 +26,13 @@ export interface ChainContextValue {
     setCurrentStepTodos: (todos: StepTodo[]) => void
     markTodoDone: (todoIndex: number) => void
     clearChain: () => void
+
+    // Sub-plan operations
+    startSubPlan: (stepIndex: number, reason: string, steps: { name: string; description: string }[]) => void
+    endSubPlan: (stepIndex: number, success: boolean) => void
+
+    // Parallel step operations
+    updateStepByIndex: (stepIndex: number, status: string) => void
 }
 
 const ChainContext = createContext<ChainContextValue>()
@@ -91,6 +100,61 @@ export function ChainProvider(props: ParentProps) {
         setChain({ ...current, steps: updatedSteps })
     }
 
+    const startSubPlan = (stepIndex: number, reason: string, steps: { name: string; description: string }[]) => {
+        const current = chain()
+        if (!current) return
+        const updatedSteps = [...current.steps]
+        if (updatedSteps[stepIndex]) {
+            const subSteps: SubStep[] = steps.map((s, i) => ({
+                id: `sub-${stepIndex}-${i}`,
+                name: s.name,
+                description: s.description,
+                status: i === 0 ? "running" : "pending",
+            }))
+            updatedSteps[stepIndex] = {
+                ...updatedSteps[stepIndex],
+                subSteps,
+                subPlanActive: true,
+                subPlanReason: reason,
+            }
+        }
+        setChain({ ...current, steps: updatedSteps })
+    }
+
+    const endSubPlan = (stepIndex: number, success: boolean) => {
+        const current = chain()
+        if (!current) return
+        const updatedSteps = [...current.steps]
+        if (updatedSteps[stepIndex]) {
+            // Mark all remaining sub-steps as complete or failed
+            const subSteps = updatedSteps[stepIndex].subSteps?.map(s => ({
+                ...s,
+                status: (s.status === "pending" || s.status === "running")
+                    ? (success ? "complete" as const : "failed" as const)
+                    : s.status,
+            }))
+            updatedSteps[stepIndex] = {
+                ...updatedSteps[stepIndex],
+                subSteps,
+                subPlanActive: false,
+            }
+        }
+        setChain({ ...current, steps: updatedSteps })
+    }
+
+    const updateStepByIndex = (stepIndex: number, status: string) => {
+        const current = chain()
+        if (!current) return
+        const updatedSteps = [...current.steps]
+        if (updatedSteps[stepIndex]) {
+            updatedSteps[stepIndex] = {
+                ...updatedSteps[stepIndex],
+                status: status as any,
+            }
+        }
+        setChain({ ...current, steps: updatedSteps })
+    }
+
     const clearChain = () => {
         setChain(null)
     }
@@ -107,6 +171,9 @@ export function ChainProvider(props: ParentProps) {
         setCurrentStepTodos,
         markTodoDone,
         clearChain,
+        startSubPlan,
+        endSubPlan,
+        updateStepByIndex,
     }
 
     return (
@@ -133,6 +200,9 @@ export function useChain() {
             setCurrentStepTodos: () => { },
             markTodoDone: () => { },
             clearChain: () => { },
+            startSubPlan: () => { },
+            endSubPlan: () => { },
+            updateStepByIndex: () => { },
         } as ChainContextValue
     }
     return ctx

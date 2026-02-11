@@ -524,6 +524,12 @@ export function Autocomplete(props: {
         description: "exit the app",
         onSelect: () => command.trigger("app.exit"),
       },
+      {
+        display: "/scroll",
+        aliases: ["/scroll on", "/scroll off", "/follow", "/autoscroll"],
+        description: "toggle auto-follow (live scroll)",
+        onSelect: () => command.trigger("session.toggle.autofollow"),
+      },
     )
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length
     if (!max) return results

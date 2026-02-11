@@ -37,20 +37,46 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
 function createEventSource(client: RpcClient, directory: string): EventSource {
   return {
     on: (handler) => {
-      // Listen for instance-scoped events
-      const unsub1 = client.on<Event>("event", (event) => {
+      // Deduplication: Track events already delivered via the instance "event" channel
+      // to prevent GlobalBus from re-delivering the same events.
+      // Bus.publish() fires both Bus subscribers AND GlobalBus, so without dedup
+      // every event arrives twice in the TUI.
+      const recentEvents = new Set<string>()
+      let cleanupTimer: Timer | undefined
+
+      const makeEventKey = (event: Event) => `${event.type}:${JSON.stringify(event.properties ?? {})}`
+
+      const trackAndHandle = (event: Event) => {
+        const key = makeEventKey(event)
+        recentEvents.add(key)
+        // Clean up old entries periodically to prevent memory leak
+        if (!cleanupTimer) {
+          cleanupTimer = setTimeout(() => {
+            recentEvents.clear()
+            cleanupTimer = undefined
+          }, 1000)
+        }
         handler(event)
+      }
+
+      // Listen for instance-scoped events (primary channel)
+      const unsub1 = client.on<Event>("event", (event) => {
+        trackAndHandle(event)
         if (event.type === "server.instance.disposed") {
           client.call("subscribe", { directory }).catch(() => { })
         }
       })
       // Listen for global events (e.g., installation updates)
+      // Skip events already delivered via the "event" channel
       const unsub2 = client.on<{ directory: string; payload: Event }>("global.event", (event) => {
+        const key = makeEventKey(event.payload)
+        if (recentEvents.has(key)) return // Already delivered via "event" channel
         handler(event.payload)
       })
       return () => {
         unsub1()
         unsub2()
+        if (cleanupTimer) clearTimeout(cleanupTimer)
       }
     },
   }

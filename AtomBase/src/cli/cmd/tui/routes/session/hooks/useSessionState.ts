@@ -54,6 +54,7 @@ export function useSessionState() {
     const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
     const [diffWrapMode, setDiffWrapMode] = createSignal<"word" | "none">("word")
     const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", true)
+    const [autoFollow, setAutoFollow] = kv.signal("auto_follow", true)
 
     const wide = createMemo(() => dimensions().width > 120)
 
@@ -102,6 +103,7 @@ export function useSessionState() {
         showScrollbar, setShowScrollbar,
         diffWrapMode, setDiffWrapMode,
         animationsEnabled, setAnimationsEnabled,
+        autoFollow, setAutoFollow,
         // UI
         wide,
         sidebarVisible,

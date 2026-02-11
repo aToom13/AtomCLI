@@ -26,7 +26,7 @@ export type SessionActions = {
 }
 
 export function getSessionCommands(state: SessionState, actions: SessionActions) {
-    const { session, messages, route, sync, sidebarVisible, showThinking, showDetails, showAssistantMetadata, showTimestamps, showScrollbar, animationsEnabled } = state
+    const { session, messages, route, sync, sidebarVisible, showThinking, showDetails, showAssistantMetadata, showTimestamps, showScrollbar, animationsEnabled, autoFollow } = state
     const { navigate, toast, sdk, dialog, prompt, scroll, toBottom, scrollToMessage, moveChild, local } = actions
 
     return [
@@ -284,6 +284,16 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
                 d.clear()
             },
         },
+        {
+            title: autoFollow() ? "Disable auto-follow" : "Enable auto-follow",
+            value: "session.toggle.autofollow",
+            keybind: "autofollow_toggle",
+            category: "Session",
+            onSelect: (d: any) => {
+                state.setAutoFollow((!state.autoFollow()) as any)
+                d.clear()
+            },
+        },
         // Scrolling and others omitted for brevity but should be included
         {
             title: "Copy last assistant message",
@@ -456,6 +466,85 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
                     })
                 }
                 d.clear()
+            },
+        },
+        // ── Scroll Commands ──────────────────────────────────────────
+        {
+            title: "Scroll page up",
+            value: "messages.page_up",
+            keybind: "messages_page_up",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                if (scroll) scroll.scrollBy(-scroll.height)
+                d.clear()
+            },
+        },
+        {
+            title: "Scroll page down",
+            value: "messages.page_down",
+            keybind: "messages_page_down",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                if (scroll) scroll.scrollBy(scroll.height)
+                d.clear()
+            },
+        },
+        {
+            title: "Scroll half page up",
+            value: "messages.half_page_up",
+            keybind: "messages_half_page_up",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                if (scroll) scroll.scrollBy(-Math.floor(scroll.height / 2))
+                d.clear()
+            },
+        },
+        {
+            title: "Scroll half page down",
+            value: "messages.half_page_down",
+            keybind: "messages_half_page_down",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                if (scroll) scroll.scrollBy(Math.floor(scroll.height / 2))
+                d.clear()
+            },
+        },
+        {
+            title: "Go to first message",
+            value: "messages.first",
+            keybind: "messages_first",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                if (scroll) scroll.scrollTo(0)
+                d.clear()
+            },
+        },
+        {
+            title: "Go to last message",
+            value: "messages.last",
+            keybind: "messages_last",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                toBottom()
+                d.clear()
+            },
+        },
+        {
+            title: "Next message",
+            value: "messages.next",
+            keybind: "messages_next",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                scrollToMessage("next", d)
+            },
+        },
+        {
+            title: "Previous message",
+            value: "messages.previous",
+            keybind: "messages_previous",
+            category: "Navigation",
+            onSelect: (d: any) => {
+                scrollToMessage("prev", d)
             },
         },
     ]

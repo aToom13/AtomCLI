@@ -53,6 +53,7 @@ export function Session() {
     children,
     navigate,
     sidebarOpen,
+    autoFollow,
   } = state
 
   const toast = useToast()
@@ -73,7 +74,7 @@ export function Session() {
     await sync.session
       .sync(route.sessionID)
       .then(() => {
-        if (scroll) scroll.scrollBy(100_000)
+        if (scroll && autoFollow()) scroll.scrollBy(100_000)
       })
       .catch((e) => {
         Log.Default.error("session sync failed", { error: e instanceof Error ? e.message : String(e) })
@@ -230,7 +231,7 @@ export function Session() {
                   foregroundColor: theme.border,
                 },
               }}
-              stickyScroll={true}
+              stickyScroll={autoFollow()}
               stickyStart="bottom"
               flexGrow={1}
               scrollAcceleration={scrollAcceleration()}

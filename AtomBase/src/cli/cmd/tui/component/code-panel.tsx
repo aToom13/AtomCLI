@@ -20,8 +20,10 @@ import path from "path"
 
 // Custom keybindings for code editor - Enter creates newline, not submit
 const CODE_EDITOR_KEYBINDINGS: KeyBinding[] = [
-    // Shift+Enter = newline
+    // Enter = newline (plain, shift, ctrl variants)
+    { name: "return", action: "newline" },
     { name: "return", shift: true, action: "newline" },
+    { name: "return", ctrl: true, action: "newline" },
     // Standard navigation
     { name: "left", action: "move-left" },
     { name: "right", action: "move-right" },
