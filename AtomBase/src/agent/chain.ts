@@ -30,6 +30,16 @@ export type ChainStatus =
     | "failed" // ❌ Başarısız
 
 /**
+ * A sub-step within a parent step's sub-plan
+ */
+export interface SubStep {
+    id: string
+    name: string
+    description: string
+    status: StepStatus
+}
+
+/**
  * A single step in the agent chain
  */
 export interface ChainStep {
@@ -42,6 +52,9 @@ export interface ChainStep {
     error?: string
     tool?: string // Hangi tool kullanılıyor (bash, read, write, etc.)
     todos?: StepTodo[] // Per-step todo list
+    subSteps?: SubStep[] // Nested sub-plan steps
+    subPlanActive?: boolean // Whether a sub-plan is currently running
+    subPlanReason?: string // Why the sub-plan was created
 }
 
 /**

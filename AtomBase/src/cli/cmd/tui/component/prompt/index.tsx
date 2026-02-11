@@ -168,7 +168,7 @@ export function Prompt(props: PromptProps) {
         title: "Submit prompt",
         value: "prompt.submit",
         disabled: true,
-        keybind: "input_submit",
+        // keybind: "input_submit", // Handled locally in onKeyDown to prevent global interception
         category: "Prompt",
         onSelect: (dialog) => {
           if (!input.focused) return
@@ -502,9 +502,9 @@ export function Prompt(props: PromptProps) {
     const sessionID = props.sessionID
       ? props.sessionID
       : await (async () => {
-          const sessionID = await sdk.client.session.create({}).then((x) => x.data!.id)
-          return sessionID
-        })()
+        const sessionID = await sdk.client.session.create({}).then((x) => x.data!.id)
+        return sessionID
+      })()
     const messageID = Identifier.ascending("message")
     let inputText = store.prompt.input
 
@@ -778,6 +778,12 @@ export function Prompt(props: PromptProps) {
                   e.preventDefault()
                   return
                 }
+                // Handle submission locally (moved from global command to prevent interception)
+                if (keybind.match("input_submit", e)) {
+                  e.preventDefault()
+                  submit()
+                  return
+                }
                 // Handle clipboard paste (Ctrl+V) - check for images first on Windows
                 // This is needed because Windows terminal doesn't properly send image data
                 // through bracketed paste, so we need to intercept the keypress and
@@ -885,7 +891,7 @@ export function Prompt(props: PromptProps) {
                     // Handle SVG as raw text content, not as base64 image
                     if (file.type === "image/svg+xml") {
                       event.preventDefault()
-                      const content = await file.text().catch(() => {})
+                      const content = await file.text().catch(() => { })
                       if (content) {
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
                         return
@@ -896,7 +902,7 @@ export function Prompt(props: PromptProps) {
                       const content = await file
                         .arrayBuffer()
                         .then((buffer) => Buffer.from(buffer).toString("base64"))
-                        .catch(() => {})
+                        .catch(() => { })
                       if (content) {
                         await pasteImage({
                           filename: file.name,
@@ -906,7 +912,7 @@ export function Prompt(props: PromptProps) {
                         return
                       }
                     }
-                  } catch {}
+                  } catch { }
                 }
 
                 const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
@@ -974,13 +980,13 @@ export function Prompt(props: PromptProps) {
             customBorderChars={
               theme.backgroundElement.a !== 0
                 ? {
-                    ...EmptyBorder,
-                    horizontal: "▀",
-                  }
+                  ...EmptyBorder,
+                  horizontal: "▀",
+                }
                 : {
-                    ...EmptyBorder,
-                    horizontal: " ",
-                  }
+                  ...EmptyBorder,
+                  horizontal: " ",
+                }
             }
           />
         </box>

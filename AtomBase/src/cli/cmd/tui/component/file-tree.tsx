@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js"
 import { useTheme } from "@tui/context/theme"
 import { useFileTree } from "@tui/context/file-tree"
 import { useSync } from "@tui/context/sync"
+import { InputRenderable } from "@opentui/core"
 import path from "path"
 import fs from "fs"
 
@@ -15,6 +16,7 @@ import fs from "fs"
  * - File icons by extension
  * - Click to open in code panel
  * - Auto-refresh on directory toggle and file changes
+ * - Search/filter by filename
  */
 
 // File icons by extension
@@ -70,6 +72,41 @@ function readDirectory(dirPath: string): FileEntry[] {
     } catch {
         return []
     }
+}
+
+// Recursively collect all files matching a search query
+function searchFiles(dirPath: string, query: string, maxResults: number = 50): FileEntry[] {
+    const results: FileEntry[] = []
+    const lowerQuery = query.toLowerCase()
+
+    function walk(dir: string) {
+        if (results.length >= maxResults) return
+        try {
+            const items = fs.readdirSync(dir, { withFileTypes: true })
+            for (const item of items) {
+                if (results.length >= maxResults) return
+                if (item.name.startsWith(".") && item.name !== ".atomcli") continue
+
+                const fullPath = path.join(dir, item.name)
+                if (item.isDirectory()) {
+                    // Include directory if name matches
+                    if (item.name.toLowerCase().includes(lowerQuery)) {
+                        results.push({ name: item.name, path: fullPath, isDir: true })
+                    }
+                    walk(fullPath)
+                } else {
+                    if (item.name.toLowerCase().includes(lowerQuery)) {
+                        results.push({ name: item.name, path: fullPath, isDir: false })
+                    }
+                }
+            }
+        } catch {
+            // Ignore permission errors
+        }
+    }
+
+    walk(dirPath)
+    return results
 }
 
 // Global refresh counter - triggers re-read when changed
@@ -139,6 +176,44 @@ function FileTreeNode(props: { dirPath: string; depth: number }) {
     )
 }
 
+// Search results flat list component
+function SearchResults(props: { results: FileEntry[] }) {
+    const { theme } = useTheme()
+    const fileTree = useFileTree()
+    const sync = useSync()
+    const directory = createMemo(() => sync.data.path.directory || process.cwd())
+
+    return (
+        <For each={props.results}>
+            {(entry) => {
+                const relativePath = createMemo(() => {
+                    const rel = path.relative(directory(), path.dirname(entry.path))
+                    return rel ? rel + "/" : ""
+                })
+
+                return (
+                    <box
+                        flexDirection="row"
+                        gap={1}
+                        paddingLeft={1}
+                        onMouseUp={() => {
+                            if (entry.isDir) {
+                                fileTree.toggleDir(entry.path)
+                            } else {
+                                fileTree.openFile(entry.path)
+                            }
+                        }}
+                    >
+                        <text fg={theme.text}>
+                            {getFileIcon(entry.name, entry.isDir)} <span style={{ fg: theme.textMuted }}>{relativePath()}</span>{entry.name}
+                        </text>
+                    </box>
+                )
+            }}
+        </For>
+    )
+}
+
 export function FileTree() {
     const { theme } = useTheme()
     const fileTree = useFileTree()
@@ -149,6 +224,18 @@ export function FileTree() {
 
     // Local refresh key for manual refresh
     const [refreshKey, setRefreshKey] = createSignal(0)
+
+    // Search state
+    const [searchQuery, setSearchQuery] = createSignal("")
+
+    // Search results
+    const searchResults = createMemo(() => {
+        const q = searchQuery().trim()
+        if (!q) return []
+        return searchFiles(directory(), q)
+    })
+
+    const hasSearch = createMemo(() => searchQuery().trim().length > 0)
 
     // Auto-refresh when file tree becomes visible or when openFiles changes
     createEffect(on(
@@ -196,13 +283,35 @@ export function FileTree() {
 
             {/* File Tree Content */}
             <Show when={fileTree.state.visible}>
+                {/* Search Input */}
+                <box paddingLeft={1} paddingRight={1}>
+                    <input
+                        onInput={(value) => setSearchQuery(value)}
+                        placeholder="Search files..."
+                        placeholderColor={theme.textMuted}
+                        focusedBackgroundColor={theme.backgroundElement}
+                        backgroundColor={theme.backgroundPanel}
+                        textColor={theme.text}
+                        focusedTextColor={theme.text}
+                        cursorColor={theme.primary}
+                    />
+                </box>
+
                 <scrollbox flexGrow={1} paddingTop={1}>
-                    {/* Key forces re-mount on refresh */}
-                    <Show when={refreshKey() >= 0}>
-                        <FileTreeNode
-                            dirPath={directory()}
-                            depth={0}
-                        />
+                    <Show when={hasSearch()} fallback={
+                        /* Normal tree view */
+                        <Show when={refreshKey() >= 0}>
+                            <FileTreeNode
+                                dirPath={directory()}
+                                depth={0}
+                            />
+                        </Show>
+                    }>
+                        {/* Search results */}
+                        <SearchResults results={searchResults()} />
+                        <Show when={searchResults().length === 0}>
+                            <text fg={theme.textMuted} paddingLeft={1}>No results</text>
+                        </Show>
                     </Show>
                 </scrollbox>
             </Show>

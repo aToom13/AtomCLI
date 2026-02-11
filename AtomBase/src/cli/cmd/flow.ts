@@ -1,11 +1,13 @@
 import { cmd } from "./cmd"
 import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
-import { Instance } from "../../project/instance"
+import { bootstrap } from "../bootstrap"
+import { createAtomcliClient } from "@atomcli/sdk/v2"
+import { Server } from "../../server/server"
 import { createRalphFlow } from "../../flow/ralph"
 import { FlowRunner } from "../../flow/runner"
-// import { Session } from "../../session"
 import { FlowContext } from "../../flow/context"
+import { EOL } from "os"
 
 export const FlowCommand = cmd({
     command: "flow",
@@ -29,42 +31,59 @@ export const FlowRunCommand = cmd({
             .option("loop", {
                 type: "string",
                 describe: "Initial instruction for ralph loop",
+            })
+            .option("port", {
+                type: "number",
+                describe: "port for the local server",
             }),
     async handler(args) {
-        await Instance.provide({
-            directory: process.cwd(),
-            async fn() {
-                UI.empty()
-                prompts.intro("Agent Flow")
+        const instruction = args.loop || "Analyze and improve the project"
 
-                let flow
-                const context = new FlowContext()
+        if (args.name !== "ralph" && !args.loop) {
+            UI.error("Only 'ralph' flow is currently supported. Use: atomcli flow run ralph")
+            process.exit(1)
+        }
 
-                if (args.name === "ralph" || args.loop) {
-                    const instruction = args.loop || "Analyze and improve the project"
-                    flow = createRalphFlow(instruction)
-                    context.addStep("Initial Analysis", instruction)
-                } else {
-                    prompts.log.error("Only 'ralph' flow is currently supported.")
-                    return
-                }
+        UI.empty()
+        prompts.intro("Agent Flow — Ralph Auto-Dev Loop")
+        prompts.log.info(`Instruction: ${instruction}`)
 
-                prompts.log.info(`Starting Flow: ${flow.name}`)
+        await bootstrap(process.cwd(), async () => {
+            const server = Server.listen({ port: args.port ?? 0, hostname: "127.0.0.1" })
+            const sdk = createAtomcliClient({ baseUrl: `http://${server.hostname}:${server.port}` })
 
-                // Create a dummy session for now, or hook into real one
-                // In real app we would use Session.create()
-                const session = {}
+            // Create a session for the flow
+            const result = await sdk.session.create({
+                title: `Flow: ${instruction.slice(0, 50)}${instruction.length > 50 ? "..." : ""}`,
+            })
+            const sessionID = result.data?.id
 
-                const runner = new FlowRunner(flow, session, context)
+            if (!sessionID) {
+                server.stop()
+                UI.error("Failed to create session")
+                process.exit(1)
+            }
 
-                try {
-                    await runner.run()
-                    prompts.outro("Flow Completed Successfully")
-                } catch (e) {
-                    prompts.log.error(String(e))
-                    prompts.outro("Flow Failed")
-                }
-            },
+            prompts.log.info(`Session: ${sessionID}`)
+
+            // Create the flow
+            const flow = createRalphFlow(instruction)
+            const context = new FlowContext()
+
+            // Create runner with SDK connection
+            const runner = new FlowRunner(flow, context, { sdk, sessionID })
+
+            try {
+                await runner.run()
+                UI.println()
+                prompts.outro("Flow Completed Successfully")
+            } catch (e) {
+                UI.println()
+                prompts.log.error(String(e))
+                prompts.outro("Flow Failed")
+            } finally {
+                server.stop()
+            }
         })
     },
 })

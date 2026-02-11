@@ -44,6 +44,11 @@ async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
   if (!process.stdin.isTTY) return "dark"
 
+  // Skip OSC queries on terminals that don't support them (e.g., Termux)
+  if (process.env.TERMUX_VERSION || process.env.TERM_PROGRAM === "termux") {
+    return "dark"
+  }
+
   return new Promise((resolve) => {
     let timeout: NodeJS.Timeout
 
@@ -96,7 +101,7 @@ async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
     timeout = setTimeout(() => {
       cleanup()
       resolve("dark")
-    }, 1000)
+    }, 500)
   })
 }
 
@@ -464,7 +469,7 @@ function App() {
       title: "Open docs",
       value: "docs.open",
       onSelect: () => {
-        open("https://atomcli.ai/docs").catch(() => {})
+        open("https://atomcli.ai/docs").catch(() => { })
         dialog.clear()
       },
       category: "System",
@@ -692,6 +697,18 @@ function App() {
 
   sdk.event.on(TuiEvent.ChainClear.type, () => {
     chainCtx.clearChain()
+  })
+
+  sdk.event.on(TuiEvent.ChainSubPlanStart.type, (evt) => {
+    chainCtx.startSubPlan(evt.properties.stepIndex, evt.properties.reason, evt.properties.steps)
+  })
+
+  sdk.event.on(TuiEvent.ChainSubPlanEnd.type, (evt) => {
+    chainCtx.endSubPlan(evt.properties.stepIndex, evt.properties.success)
+  })
+
+  sdk.event.on(TuiEvent.ChainParallelUpdate.type, (evt) => {
+    chainCtx.updateStepByIndex(evt.properties.stepIndex, evt.properties.status)
   })
 
   // File Tree event handlers

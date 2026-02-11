@@ -157,6 +157,37 @@ atomcli -m anthropic/claude  # Start with specific model
 atomcli --help               # Show all options
 ```
 
+### Run Command (Non-Interactive)
+
+Execute a single prompt without the TUI:
+
+```bash
+atomcli run "fix the bug in auth.ts"                    # Run with default model
+atomcli run -m google/gemini-pro "explain this code"     # Use specific model
+atomcli run --agent coder "add error handling"           # Use a specific agent
+cat file.ts | atomcli run "review this code"             # Pipe input
+atomcli run --json "list all functions"                  # JSON output mode
+```
+
+### Flow Command (Autonomous Dev Loop)
+
+Run an autonomous agent that plans, executes, verifies, and iterates:
+
+```bash
+atomcli flow run ralph --loop "build a REST API for users"        # Autonomous loop
+atomcli flow run ralph --loop "refactor the auth module"          # Multi-step tasks
+atomcli flow run ralph --loop "add unit tests for utils.ts"       # Test generation
+```
+
+The flow command uses the **Ralph loop** — an autonomous development cycle:
+
+1. **Planner** → Analyzes the task and generates execution steps
+2. **Executor** → Executes each step using the AI agent (code, commands, etc.)
+3. **Verifier** → Validates the work done
+4. **Decision** → Determines if the step passed or needs retry
+
+> **Note:** The flow command uses your default configured model. You can change it in `~/.config/atomcli/config.json` with the `"model"` field.
+
 ### Session Workflow
 
 AtomCLI provides a conversational interface where you can:

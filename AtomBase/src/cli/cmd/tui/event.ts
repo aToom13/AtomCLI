@@ -102,6 +102,37 @@ export const TuiEvent = {
     }),
   ),
   ChainClear: BusEvent.define("tui.chain.clear", z.object({})),
+  // Sub-plan: creates a nested plan under the current step when issues arise
+  ChainSubPlanStart: BusEvent.define(
+    "tui.chain.subplan.start",
+    z.object({
+      stepIndex: z.number().describe("Index of the parent step this sub-plan belongs to"),
+      reason: z.string().describe("Why a sub-plan is needed"),
+      steps: z.array(z.object({
+        name: z.string(),
+        description: z.string(),
+      })),
+    }),
+  ),
+  ChainSubPlanEnd: BusEvent.define(
+    "tui.chain.subplan.end",
+    z.object({
+      stepIndex: z.number(),
+      success: z.boolean(),
+    }),
+  ),
+  // Parallel: mark a specific step as running (not just the current step)
+  ChainParallelUpdate: BusEvent.define(
+    "tui.chain.parallel.update",
+    z.object({
+      stepIndex: z.number(),
+      status: z.enum([
+        "pending", "running", "coding", "searching_web", "searching_code",
+        "reading_file", "writing_file", "running_command", "analyzing",
+        "thinking", "complete", "failed", "retrying"
+      ]),
+    }),
+  ),
 
   // File Tree events for file browser and code panel
   FileTreeToggle: BusEvent.define("tui.filetree.toggle", z.object({})),

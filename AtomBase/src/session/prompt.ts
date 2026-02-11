@@ -766,7 +766,15 @@ export namespace SessionPrompt {
       })
     }
 
-    for (const [key, item] of Object.entries(await MCP.tools())) {
+    // Timeout MCP tools loading to prevent hanging when MCP servers are slow/unreachable
+    const mcpTools = await Promise.race([
+      MCP.tools(),
+      new Promise<Record<string, AITool>>((resolve) => setTimeout(() => {
+        log.warn("MCP tools loading timed out after 5s, skipping MCP tools")
+        resolve({})
+      }, 5000)),
+    ])
+    for (const [key, item] of Object.entries(mcpTools)) {
       const execute = item.execute
       if (!execute) continue
 
@@ -1249,16 +1257,19 @@ export namespace SessionPrompt {
       await Session.updatePart(part)
     }
 
-    // Learn from user message
+    // Learn from user message (non-blocking to prevent hanging the prompt response)
     try {
       const { SessionMemoryIntegration } = await import("../memory/integration/session")
       const textParts = parts.filter(p => p.type === "text" && !("synthetic" in p && p.synthetic))
       const userText = textParts.map(p => (p as any).text).join(" ")
       if (userText) {
-        await SessionMemoryIntegration.learnFromMessage(userText)
+        // Fire-and-forget: don't block prompt processing on memory learning
+        SessionMemoryIntegration.learnFromMessage(userText).catch((error) => {
+          log.error("Failed to learn from user message", { error })
+        })
       }
     } catch (error) {
-      log.error("Failed to learn from user message", { error })
+      log.error("Failed to import SessionMemoryIntegration", { error })
     }
 
     return {

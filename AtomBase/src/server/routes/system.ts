@@ -107,9 +107,13 @@ export const SystemRoute = new Hono()
                     })
                 }, 30000)
 
-                stream.onAbort(() => {
-                    clearInterval(heartbeat)
-                    unsub()
+                // Keep the stream open until client disconnects
+                await new Promise<void>((resolve) => {
+                    stream.onAbort(() => {
+                        clearInterval(heartbeat)
+                        unsub()
+                        resolve()
+                    })
                 })
             })
         },
