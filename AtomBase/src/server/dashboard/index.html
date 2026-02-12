@@ -1,922 +1,61 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AtomCLI Dashboard</title>
   <link rel="icon"
-    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚛</text></svg>">
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚛</text></svg>" />
+  <!-- Fonts: Plus Jakarta Sans + JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-    rel="stylesheet">
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box
-    }
-
-    :root {
-      --bg: #0a0a0f;
-      --bg2: #12121a;
-      --bg3: #1a1a2e;
-      --bg4: #252540;
-      --accent: #6c5ce7;
-      --accent2: #a29bfe;
-      --accent3: #00cec9;
-      --text: #e8e8f0;
-      --text2: #a0a0b8;
-      --text3: #6c6c80;
-      --border: #2a2a40;
-      --border2: #3a3a55;
-      --success: #00b894;
-      --warning: #fdcb6e;
-      --danger: #e17055;
-      --info: #74b9ff;
-      --glass: rgba(26, 26, 46, 0.7);
-      --glass2: rgba(37, 37, 64, 0.5);
-      --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-      --radius: 12px;
-      --radius2: 8px;
-    }
-
-    html,
-    body {
-      height: 100%;
-      font-family: 'Inter', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      overflow: hidden
-    }
-
-    button {
-      font-family: inherit;
-      cursor: pointer;
-      border: none;
-      outline: none
-    }
-
-    input,
-    textarea,
-    select {
-      font-family: inherit;
-      outline: none
-    }
-
-    ::-webkit-scrollbar {
-      width: 6px
-    }
-
-    ::-webkit-scrollbar-track {
-      background: transparent
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: var(--border2);
-      border-radius: 3px
-    }
-
-    .app {
-      display: flex;
-      height: 100vh;
-      width: 100vw
-    }
-
-    /* Sidebar */
-    .sidebar {
-      width: 260px;
-      background: var(--bg2);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      flex-shrink: 0
-    }
-
-    .sidebar-header {
-      padding: 20px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 12px
-    }
-
-    .sidebar-logo {
-      width: 36px;
-      height: 36px;
-      background: linear-gradient(135deg, var(--accent), var(--accent3));
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 16px;
-      color: #fff
-    }
-
-    .sidebar-title {
-      font-size: 18px;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--accent2), var(--accent3));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent
-    }
-
-    .sidebar-version {
-      font-size: 11px;
-      color: var(--text3);
-      margin-top: 2px
-    }
-
-    .sidebar-nav {
-      flex: 1;
-      padding: 12px;
-      overflow-y: auto
-    }
-
-    .nav-section {
-      margin-bottom: 16px
-    }
-
-    .nav-section-title {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      color: var(--text3);
-      padding: 8px 12px;
-      margin-bottom: 4px
-    }
-
-    .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      border-radius: var(--radius2);
-      color: var(--text2);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all .2s;
-      margin-bottom: 2px
-    }
-
-    .nav-item:hover {
-      background: var(--glass2);
-      color: var(--text)
-    }
-
-    .nav-item.active {
-      background: linear-gradient(135deg, rgba(108, 92, 231, 0.2), rgba(0, 206, 201, 0.1));
-      color: var(--accent2);
-      border: 1px solid rgba(108, 92, 231, 0.3)
-    }
-
-    .nav-icon {
-      font-size: 16px;
-      width: 20px;
-      text-align: center
-    }
-
-    .nav-badge {
-      margin-left: auto;
-      background: var(--accent);
-      color: #fff;
-      font-size: 10px;
-      padding: 2px 7px;
-      border-radius: 10px;
-      font-weight: 600
-    }
-
-    .sidebar-footer {
-      padding: 16px;
-      border-top: 1px solid var(--border);
-      font-size: 11px;
-      color: var(--text3);
-      text-align: center
-    }
-
-    /* Session list in sidebar */
-    .session-list {
-      max-height: 200px;
-      overflow-y: auto;
-      margin-top: 4px
-    }
-
-    .session-item {
-      padding: 8px 12px;
-      font-size: 12px;
-      color: var(--text2);
-      cursor: pointer;
-      border-radius: var(--radius2);
-      transition: all .15s;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis
-    }
-
-    .session-item:hover {
-      background: var(--glass2);
-      color: var(--text)
-    }
-
-    .session-item.active {
-      background: rgba(108, 92, 231, 0.15);
-      color: var(--accent2)
-    }
-
-    /* Main */
-    .main {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden
-    }
-
-    .topbar {
-      height: 56px;
-      background: var(--bg2);
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      padding: 0 24px;
-      gap: 16px;
-      flex-shrink: 0
-    }
-
-    .topbar-title {
-      font-size: 16px;
-      font-weight: 600
-    }
-
-    .topbar-right {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 12px
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      animation: pulse 2s infinite
-    }
-
-    @keyframes pulse {
-
-      0%,
-      100% {
-        opacity: 1
-      }
-
-      50% {
-        opacity: .5
-      }
-    }
-
-    .topbar-btn {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      color: var(--text2);
-      padding: 6px 14px;
-      border-radius: var(--radius2);
-      font-size: 12px;
-      font-weight: 500;
-      transition: all .2s
-    }
-
-    .topbar-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent2)
-    }
-
-    .content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px
-    }
-
-    .page {
-      display: none;
-      animation: fadeIn .3s ease
-    }
-
-    .page.active {
-      display: flex;
-      flex-direction: column;
-      height: 100%
-    }
-
-    @keyframes fadeIn {
-      from {
-        opacity: 0;
-        transform: translateY(8px)
-      }
-
-      to {
-        opacity: 1;
-        transform: translateY(0)
-      }
-    }
-
-    /* Cards */
-    .cards-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px
-    }
-
-    .card {
-      background: var(--glass);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 20px;
-      transition: all .3s
-    }
-
-    .card:hover {
-      border-color: var(--border2);
-      transform: translateY(-2px);
-      box-shadow: var(--shadow)
-    }
-
-    .card-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 12px
-    }
-
-    .card-icon {
-      font-size: 24px
-    }
-
-    .card-title {
-      font-size: 14px;
-      font-weight: 600
-    }
-
-    .card-value {
-      font-size: 28px;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--accent2), var(--accent3));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent
-    }
-
-    .card-subtitle {
-      font-size: 12px;
-      color: var(--text3);
-      margin-top: 4px
-    }
-
-    /* Tables */
-    .table-container {
-      background: var(--glass);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden
-    }
-
-    .table {
-      width: 100%;
-      border-collapse: collapse
-    }
-
-    .table th {
-      text-align: left;
-      padding: 12px 16px;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--text3);
-      background: var(--bg3);
-      border-bottom: 1px solid var(--border)
-    }
-
-    .table td {
-      padding: 12px 16px;
-      font-size: 13px;
-      border-bottom: 1px solid var(--border);
-      color: var(--text2)
-    }
-
-    .table tr:hover td {
-      background: var(--glass2);
-      color: var(--text)
-    }
-
-    .table tr:last-child td {
-      border-bottom: none
-    }
-
-    .badge {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 20px;
-      font-size: 11px;
-      font-weight: 600
-    }
-
-    .badge-success {
-      background: rgba(0, 184, 148, 0.15);
-      color: var(--success);
-      border: 1px solid rgba(0, 184, 148, 0.3)
-    }
-
-    .badge-warning {
-      background: rgba(253, 203, 110, 0.15);
-      color: var(--warning);
-      border: 1px solid rgba(253, 203, 110, 0.3)
-    }
-
-    .badge-danger {
-      background: rgba(225, 112, 85, 0.15);
-      color: var(--danger);
-      border: 1px solid rgba(225, 112, 85, 0.3)
-    }
-
-    .badge-info {
-      background: rgba(116, 185, 255, 0.15);
-      color: var(--info);
-      border: 1px solid rgba(116, 185, 255, 0.3)
-    }
-
-    .btn {
-      padding: 8px 18px;
-      border-radius: var(--radius2);
-      font-size: 13px;
-      font-weight: 500;
-      transition: all .2s;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px
-    }
-
-    .btn-primary {
-      background: linear-gradient(135deg, var(--accent), #5a4bd1);
-      color: #fff
-    }
-
-    .btn-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4)
-    }
-
-    .btn-secondary {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      color: var(--text2)
-    }
-
-    .btn-secondary:hover {
-      border-color: var(--accent);
-      color: var(--text)
-    }
-
-    .btn-danger {
-      background: rgba(225, 112, 85, 0.15);
-      border: 1px solid rgba(225, 112, 85, 0.3);
-      color: var(--danger)
-    }
-
-    .btn-sm {
-      padding: 5px 12px;
-      font-size: 11px
-    }
-
-    .input {
-      width: 100%;
-      padding: 10px 14px;
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--radius2);
-      color: var(--text);
-      font-size: 13px;
-      transition: border-color .2s
-    }
-
-    .input:focus {
-      border-color: var(--accent)
-    }
-
-    textarea.input {
-      min-height: 100px;
-      resize: vertical;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px
-    }
-
-    .input-group {
-      margin-bottom: 16px
-    }
-
-    .input-group label {
-      display: block;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text2);
-      margin-bottom: 6px
-    }
-
-    .section {
-      margin-bottom: 24px
-    }
-
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 16px
-    }
-
-    .section-title {
-      font-size: 18px;
-      font-weight: 600
-    }
-
-    /* Chat - Primary UI */
-    .chat-page {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      overflow: hidden
-    }
-
-    .chat-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 0 0 16px 0;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0
-    }
-
-    .chat-messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px 0;
-      display: flex;
-      flex-direction: column;
-      gap: 16px
-    }
-
-    .chat-msg {
-      max-width: 90%;
-      animation: fadeIn .2s ease
-    }
-
-    .chat-msg.user {
-      align-self: flex-end
-    }
-
-    .chat-msg.assistant {
-      align-self: flex-start;
-      width: 90%
-    }
-
-    .chat-bubble {
-      padding: 14px 18px;
-      border-radius: var(--radius);
-      font-size: 13px;
-      line-height: 1.7;
-      white-space: pre-wrap;
-      word-break: break-word
-    }
-
-    .chat-msg.user .chat-bubble {
-      background: linear-gradient(135deg, var(--accent), #5a4bd1);
-      color: #fff;
-      border-bottom-right-radius: 4px
-    }
-
-    .chat-msg.assistant .chat-bubble {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      color: var(--text);
-      border-bottom-left-radius: 4px
-    }
-
-    .chat-role {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--text3);
-      margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-      gap: 6px
-    }
-
-    .chat-msg.user .chat-role {
-      text-align: right;
-      justify-content: flex-end
-    }
-
-    .chat-tool {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--radius2);
-      padding: 8px 12px;
-      margin-top: 6px;
-      font-size: 11px;
-      font-family: 'JetBrains Mono', monospace;
-      color: var(--accent3)
-    }
-
-    .chat-input-area {
-      display: flex;
-      gap: 8px;
-      padding: 16px 0 0 0;
-      border-top: 1px solid var(--border);
-      flex-shrink: 0;
-      align-items: flex-end
-    }
-
-    .chat-input-wrap {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 8px
-    }
-
-    .chat-model-select {
-      display: flex;
-      gap: 8px;
-      align-items: center
-    }
-
-    .chat-input {
-      flex: 1;
-      padding: 12px 16px;
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--text);
-      font-size: 13px;
-      min-height: 44px;
-      max-height: 120px;
-      resize: none;
-      font-family: 'Inter', sans-serif;
-      line-height: 1.5
-    }
-
-    .chat-input:focus {
-      border-color: var(--accent)
-    }
-
-    .chat-send-btn {
-      padding: 12px 24px;
-      border-radius: var(--radius);
-      background: linear-gradient(135deg, var(--accent), #5a4bd1);
-      color: #fff;
-      font-size: 14px;
-      font-weight: 600;
-      transition: all .2s;
-      flex-shrink: 0;
-      height: 44px
-    }
-
-    .chat-send-btn:hover {
-      box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);
-      transform: translateY(-1px)
-    }
-
-    .chat-send-btn:disabled {
-      opacity: .5;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none
-    }
-
-    .chat-empty {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      flex: 1;
-      gap: 12px;
-      color: var(--text3)
-    }
-
-    .chat-empty-icon {
-      font-size: 64px;
-      opacity: .4
-    }
-
-    /* Streaming indicator */
-    .streaming-dot {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--accent3);
-      animation: blink 1s infinite
-    }
-
-    @keyframes blink {
-
-      0%,
-      100% {
-        opacity: 1
-      }
-
-      50% {
-        opacity: .2
-      }
-    }
-
-    /* Event Log */
-    .event-log {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 12px;
-      max-height: 400px;
-      overflow-y: auto;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px
-    }
-
-    .event-item {
-      padding: 4px 0;
-      color: var(--text2);
-      border-bottom: 1px solid rgba(42, 42, 64, 0.5)
-    }
-
-    .event-item:last-child {
-      border-bottom: none
-    }
-
-    .event-time {
-      color: var(--text3);
-      margin-right: 8px
-    }
-
-    .event-type {
-      color: var(--accent2);
-      font-weight: 500
-    }
-
-    .json-editor {
-      width: 100%;
-      min-height: 400px;
-      padding: 16px;
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--accent2);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      line-height: 1.6;
-      resize: vertical
-    }
-
-    .empty {
-      text-align: center;
-      padding: 48px;
-      color: var(--text3)
-    }
-
-    .empty-icon {
-      font-size: 48px;
-      margin-bottom: 12px;
-      opacity: .5
-    }
-
-    .loading {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 32px
-    }
-
-    .spinner {
-      width: 24px;
-      height: 24px;
-      border: 3px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin .8s linear infinite
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg)
-      }
-    }
-
-    .modal-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.6);
-      backdrop-filter: blur(4px);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000
-    }
-
-    .modal-overlay.active {
-      display: flex
-    }
-
-    .modal {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
-      max-width: 500px;
-      width: 90%;
-      max-height: 80vh;
-      overflow-y: auto
-    }
-
-    .modal-title {
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 16px
-    }
-
-    .toast-container {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      z-index: 2000;
-      display: flex;
-      flex-direction: column;
-      gap: 8px
-    }
-
-    .toast {
-      padding: 12px 20px;
-      border-radius: var(--radius2);
-      font-size: 13px;
-      font-weight: 500;
-      animation: slideIn .3s ease;
-      box-shadow: var(--shadow)
-    }
-
-    .toast-success {
-      background: rgba(0, 184, 148, 0.9);
-      color: #fff
-    }
-
-    .toast-error {
-      background: rgba(225, 112, 85, 0.9);
-      color: #fff
-    }
-
-    @keyframes slideIn {
-      from {
-        opacity: 0;
-        transform: translateX(50px)
-      }
-
-      to {
-        opacity: 1;
-        transform: translateX(0)
-      }
-    }
-
-    .overflow-scroll {
-      overflow-y: auto
-    }
-
-    @media(max-width:768px) {
-      .sidebar {
-        width: 60px
-      }
-
-      .sidebar-title,
-      .sidebar-version,
-      .nav-section-title,
-      .nav-item span:not(.nav-icon),
-      .nav-badge,
-      .sidebar-footer,
-      .session-list {
-        display: none
-      }
-
-      .sidebar-header {
-        justify-content: center;
-        padding: 16px
-      }
-    }
-  </style>
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+
+  <link rel="stylesheet" href="/dashboard/css/main.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/layout.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/sidebar.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/topbar.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/content.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/components.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/chat.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/responsive.css?v=6" />
 </head>
 
 <body>
   <div class="app">
+    <!-- Mobile Header with Hamburger Menu -->
+    <header class="mobile-header">
+      <div class="mobile-header-left">
+        <button class="hamburger-btn" id="hamburger-btn" aria-label="Toggle menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <div class="mobile-logo">
+          <div class="mobile-logo-icon">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div class="mobile-header-right">
+        <div class="mobile-status">
+          <span class="status-dot" id="mobile-status-dot" style="background: var(--warning)"></span>
+          <span style="font-size: 11px" id="mobile-status-text">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Sidebar Overlay -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Sidebar -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="sidebar-logo">⚛</div>
@@ -928,57 +67,89 @@
       <nav class="sidebar-nav">
         <div class="nav-section">
           <div class="nav-section-title">Chat</div>
-          <div class="nav-item active" data-page="chat"><span class="nav-icon">💬</span><span>New Chat</span></div>
+          <div class="nav-item active" data-page="chat">
+            <span class="nav-icon">💬</span>
+            <span>New Chat</span>
+          </div>
           <div class="session-list" id="session-sidebar-list"></div>
         </div>
         <div class="nav-section">
           <div class="nav-section-title">System</div>
-          <div class="nav-item" data-page="dashboard"><span class="nav-icon">📊</span><span>Dashboard</span></div>
-          <div class="nav-item" data-page="providers"><span class="nav-icon">🤖</span><span>Providers</span></div>
-          <div class="nav-item" data-page="agents"><span class="nav-icon">🎯</span><span>Agents</span></div>
-          <div class="nav-item" data-page="tools"><span class="nav-icon">🔧</span><span>Tools</span></div>
-          <div class="nav-item" data-page="mcp"><span class="nav-icon">🔌</span><span>MCP Servers</span></div>
-          <div class="nav-item" data-page="config"><span class="nav-icon">⚙️</span><span>Config</span></div>
-          <div class="nav-item" data-page="files"><span class="nav-icon">📁</span><span>Files</span></div>
-          <div class="nav-item" data-page="events"><span class="nav-icon">📡</span><span>Events</span></div>
+          <div class="nav-item" data-page="dashboard">
+            <span class="nav-icon">📊</span>
+            <span>Dashboard</span>
+          </div>
+          <div class="nav-item" data-page="providers">
+            <span class="nav-icon">🤖</span>
+            <span>Providers</span>
+          </div>
+          <div class="nav-item" data-page="agents">
+            <span class="nav-icon">🎯</span>
+            <span>Agents</span>
+          </div>
+          <div class="nav-item" data-page="tools">
+            <span class="nav-icon">🔧</span>
+            <span>Tools</span>
+          </div>
+          <div class="nav-item" data-page="mcp">
+            <span class="nav-icon">🔌</span>
+            <span>MCP Servers</span>
+          </div>
+          <div class="nav-item" data-page="config">
+            <span class="nav-icon">⚙️</span>
+            <span>Config</span>
+          </div>
+          <div class="nav-item" data-page="files">
+            <span class="nav-icon">📁</span>
+            <span>Files</span>
+          </div>
+          <div class="nav-item" data-page="skills">
+            <span class="nav-icon">⚡</span>
+            <span>Skills</span>
+          </div>
         </div>
       </nav>
       <div class="sidebar-footer">AtomCLI Web Dashboard</div>
     </aside>
 
+    <!-- Main Content -->
     <main class="main">
       <header class="topbar">
         <div class="topbar-title" id="page-title">Chat</div>
         <div class="topbar-right">
-          <div class="status-dot" id="status-dot" style="background:var(--warning)"></div>
-          <span style="font-size:12px;color:var(--text3)" id="status-text">Connecting...</span>
-          <button class="topbar-btn" onclick="location.reload()">↻ Refresh</button>
+          <div class="status-dot" id="desktop-status-dot" style="background: var(--warning)"></div>
+          <span style="font-size: 12px; color: var(--text3)" id="desktop-status-text">Connecting...</span>
+          <button class="topbar-btn" onclick="App.refreshPage()">↻ Refresh</button>
         </div>
       </header>
 
       <div class="content">
-        <!-- CHAT PAGE (Primary) -->
+        <!-- CHAT PAGE -->
         <div class="page active" id="page-chat">
           <div class="chat-page">
             <div class="chat-messages" id="chat-messages">
               <div class="chat-empty">
                 <div class="chat-empty-icon">💬</div>
-                <div style="font-size:18px;font-weight:600">Start a conversation</div>
-                <div style="font-size:13px">Select a model and type your message below</div>
+                <div style="font-size: 18px; font-weight: 600">Start a conversation</div>
+                <div style="font-size: 13px">Select a model and type your message below</div>
               </div>
             </div>
             <div class="chat-input-area">
               <div class="chat-input-wrap">
-                <div class="chat-model-select">
-                  <select class="input" id="chat-provider" style="width:280px;padding:8px 12px;font-size:12px">
-                    <option>Loading models...</option>
-                  </select>
-                  <span style="font-size:11px;color:var(--text3)" id="chat-session-info"></span>
+                <div class="chat-model-bar">
+                  <div class="model-filter-container" id="model-filter-container"></div>
+                  <div class="model-select-row">
+                    <select class="input chat-model-dropdown" id="chat-provider">
+                      <option>Loading models...</option>
+                    </select>
+                    <span class="chat-session-label" id="chat-session-info"></span>
+                  </div>
                 </div>
-                <textarea class="chat-input" id="chat-input" placeholder="Type your message..." rows="1"
-                  onkeydown="handleChatKey(event)"></textarea>
+                <div class="chat-compose">
+                  <textarea class="chat-input" id="chat-input" placeholder="Type your message..." rows="1"></textarea>
+                  <button class="chat-send-btn" id="chat-send-btn">Send ➤</button>
+                </div>
               </div>
-              <button class="chat-send-btn" id="chat-send-btn" onclick="sendMessage()">Send ➤</button>
             </div>
           </div>
         </div>
@@ -986,6 +157,50 @@
         <!-- DASHBOARD PAGE -->
         <div class="page" id="page-dashboard">
           <div class="cards-grid" id="dashboard-cards"></div>
+
+          <!-- Quick Actions -->
+          <div class="section">
+            <div class="section-header">
+              <h2 class="section-title">Quick Actions</h2>
+            </div>
+            <div class="cards-grid" id="dashboard-actions">
+              <div class="card cursor-pointer" onclick="Navigation.startNewChat()">
+                <div class="card-header">
+                  <span class="card-icon">💬</span>
+                  <span class="card-title">New Chat</span>
+                </div>
+                <div class="card-subtitle">Start a new conversation</div>
+              </div>
+              <div class="card cursor-pointer" onclick="Navigation.navigate('providers')">
+                <div class="card-header">
+                  <span class="card-icon">🔌</span>
+                  <span class="card-title">Providers</span>
+                </div>
+                <div class="card-subtitle">Manage AI providers & models</div>
+              </div>
+              <div class="card cursor-pointer" onclick="Navigation.navigate('config')">
+                <div class="card-header">
+                  <span class="card-icon">⚙️</span>
+                  <span class="card-title">Configuration</span>
+                </div>
+                <div class="card-subtitle">Edit settings & preferences</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Connected Providers -->
+          <div class="section">
+            <div class="section-header">
+              <h2 class="section-title">Connected Providers</h2>
+            </div>
+            <div id="dashboard-providers">
+              <div class="loading">
+                <div class="spinner"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- System Info -->
           <div class="section">
             <div class="section-header">
               <h2 class="section-title">System Info</h2>
@@ -1003,6 +218,7 @@
           <div class="section">
             <div class="section-header">
               <h2 class="section-title">AI Providers</h2>
+              <span style="font-size: 12px; color: var(--text3)" id="model-filter-info"></span>
             </div>
             <div id="providers-list">
               <div class="loading">
@@ -1045,7 +261,7 @@
           <div class="section">
             <div class="section-header">
               <h2 class="section-title">MCP Servers</h2>
-              <button class="btn btn-primary" onclick="showAddMcpModal()">+ Add Server</button>
+              <button class="btn btn-primary" id="add-mcp-btn">+ Add Server</button>
             </div>
             <div id="mcp-list">
               <div class="loading">
@@ -1060,7 +276,7 @@
           <div class="section">
             <div class="section-header">
               <h2 class="section-title">Configuration</h2>
-              <button class="btn btn-primary" onclick="saveConfig()">💾 Save</button>
+              <button class="btn btn-primary" id="save-config-btn">💾 Save</button>
             </div>
             <textarea class="json-editor" id="config-editor"></textarea>
           </div>
@@ -1071,9 +287,9 @@
           <div class="section">
             <div class="section-header">
               <h2 class="section-title">File Browser</h2>
-              <div style="display:flex;gap:8px;align-items:center">
-                <span style="font-size:12px;color:var(--text3)" id="current-path">/</span>
-                <button class="btn btn-secondary btn-sm" onclick="navigateFiles('..')">⬆ Up</button>
+              <div style="display: flex; gap: 8px; align-items: center">
+                <span style="font-size: 12px; color: var(--text3)" id="current-path">/</span>
+                <button class="btn btn-secondary btn-sm" id="files-up-btn">⬆ Up</button>
               </div>
             </div>
             <div id="files-list">
@@ -1082,28 +298,23 @@
               </div>
             </div>
           </div>
-          <div class="section" id="file-content-section" style="display:none">
+          <div class="section" id="file-content-section" style="display: none">
             <div class="section-header">
               <h2 class="section-title" id="file-content-title"></h2>
             </div>
-            <pre class="json-editor" id="file-content-area" style="min-height:200px;white-space:pre-wrap"></pre>
+            <pre class="json-editor" id="file-content-area" style="min-height: 200px; white-space: pre-wrap"></pre>
           </div>
         </div>
 
-        <!-- EVENTS PAGE -->
-        <div class="page" id="page-events">
+        <!-- SKILLS PAGE -->
+        <div class="page" id="page-skills">
           <div class="section">
             <div class="section-header">
-              <h2 class="section-title">Live Events</h2>
-              <div style="display:flex;gap:8px">
-                <button class="btn btn-secondary btn-sm" onclick="clearEvents()">Clear</button>
-                <button class="btn btn-primary btn-sm" id="sse-toggle" onclick="toggleSSE()">● Listening</button>
-              </div>
+              <h2 class="section-title">Skills & Agents</h2>
             </div>
-            <div class="event-log" id="event-log">
-              <div class="empty">
-                <div class="empty-icon">📡</div>
-                <div>Waiting for events...</div>
+            <div id="skills-list">
+              <div class="loading">
+                <div class="spinner"></div>
               </div>
             </div>
           </div>
@@ -1112,446 +323,22 @@
     </main>
   </div>
 
+  <!-- Modal Overlay -->
   <div class="modal-overlay" id="modal-overlay">
     <div class="modal" id="modal-content"></div>
   </div>
+
+  <!-- Toast Container -->
   <div class="toast-container" id="toast-container"></div>
 
-  <script>
-    const BASE = window.location.origin;
-    let currentPage = 'chat';
-    let currentSessionID = null;
-    let currentFilePath = '.';
-    let sseSource = null;
-    let sseActive = true;
-    let isStreaming = false;
-    let allProviders = [];
-    let connectedProviders = [];
-
-    // ===== API =====
-    async function api(path, opts = {}) {
-      const url = new URL(path, BASE);
-      if (opts.query) Object.entries(opts.query).forEach(([k, v]) => url.searchParams.set(k, String(v)));
-      const res = await fetch(url, {
-        method: opts.method || 'GET',
-        headers: opts.body ? { 'Content-Type': 'application/json' } : {},
-        body: opts.body ? JSON.stringify(opts.body) : undefined
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`API ${res.status}: ${text}`);
-      }
-      const ct = res.headers.get('content-type');
-      return ct && ct.includes('json') ? res.json() : res.text();
-    }
-
-    function toast(msg, type = 'success') {
-      const c = document.getElementById('toast-container');
-      const t = document.createElement('div');
-      t.className = `toast toast-${type}`;
-      t.textContent = msg;
-      c.appendChild(t);
-      setTimeout(() => t.remove(), 3000);
-    }
-
-    function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
-
-    // ===== NAVIGATION =====
-    document.querySelectorAll('.nav-item[data-page]').forEach(item => {
-      item.addEventListener('click', () => navigate(item.dataset.page));
-    });
-
-    function navigate(page) {
-      currentPage = page;
-      document.querySelectorAll('.nav-item[data-page]').forEach(n => n.classList.toggle('active', n.dataset.page === page));
-      document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
-      const titles = { chat: 'Chat', dashboard: 'Dashboard', providers: 'Providers', agents: 'Agents', tools: 'Tools', mcp: 'MCP Servers', config: 'Config', files: 'Files', events: 'Events' };
-      document.getElementById('page-title').textContent = titles[page] || page;
-      if (page === 'chat' && !currentSessionID) {
-        // stay on new chat screen
-      }
-      loaders[page]?.();
-    }
-
-    // ===== PROVIDERS / MODELS =====
-    async function loadProviders() {
-      try {
-        const data = await api('/provider');
-        allProviders = data.all || [];
-        connectedProviders = data.connected || [];
-        populateModelSelect();
-      } catch (e) { console.error('Failed to load providers:', e); }
-    }
-
-    function populateModelSelect() {
-      const sel = document.getElementById('chat-provider');
-      sel.innerHTML = '';
-      let hasModels = false;
-      allProviders.forEach(p => {
-        const isConnected = connectedProviders.includes(p.id);
-        Object.entries(p.models || {}).forEach(([mId, m]) => {
-          const opt = document.createElement('option');
-          opt.value = `${p.id}::${m.id || mId}`;
-          opt.textContent = `${p.name || p.id} / ${m.name || m.id || mId}`;
-          if (!isConnected) opt.style.color = 'var(--text3)';
-          sel.appendChild(opt);
-          hasModels = true;
-        });
-      });
-      if (!hasModels) {
-        const opt = document.createElement('option');
-        opt.textContent = 'No models available';
-        sel.appendChild(opt);
-      }
-    }
-
-    // ===== SESSIONS =====
-    async function loadSessionList() {
-      try {
-        const sessions = await api('/session');
-        const el = document.getElementById('session-sidebar-list');
-        el.innerHTML = sessions.slice(0, 20).map(s =>
-          `<div class="session-item ${s.id === currentSessionID ? 'active' : ''}" onclick="openSession('${s.id}')" title="${esc(s.title || s.id)}">${esc(s.title || 'Untitled')}</div>`
-        ).join('');
-      } catch (e) { console.error(e); }
-    }
-
-    async function openSession(id) {
-      currentSessionID = id;
-      navigate('chat');
-      document.getElementById('chat-session-info').textContent = `Session: ${id.substring(0, 16)}...`;
-      document.querySelectorAll('.session-item').forEach(s => s.classList.toggle('active', s.getAttribute('onclick')?.includes(id)));
-      try {
-        const messages = await api(`/session/${id}/message`);
-        renderMessages(messages);
-      } catch (e) { console.error(e); toast('Failed to load messages', 'error'); }
-    }
-
-    async function createNewSession() {
-      try {
-        const session = await api('/session', { method: 'POST', body: {} });
-        currentSessionID = session.id;
-        document.getElementById('chat-session-info').textContent = `Session: ${session.id.substring(0, 16)}...`;
-        loadSessionList();
-        return session;
-      } catch (e) { toast('Failed to create session', 'error'); throw e; }
-    }
-
-    // ===== CHAT MESSAGES =====
-    function renderMessages(messages) {
-      const el = document.getElementById('chat-messages');
-      if (!messages || !messages.length) {
-        el.innerHTML = '<div class="chat-empty"><div class="chat-empty-icon">💬</div><div style="font-size:18px;font-weight:600">Start a conversation</div><div style="font-size:13px">Select a model and type your message below</div></div>';
-        return;
-      }
-      el.innerHTML = messages.map(m => {
-        const info = m.info || {};
-        const role = info.role || 'unknown';
-        const parts = m.parts || [];
-        let html = '';
-        parts.forEach(p => {
-          if (p.type === 'text' && !p.ignored && !p.synthetic) {
-            html += `<div class="chat-bubble">${esc(p.text)}</div>`;
-          } else if (p.type === 'tool') {
-            const toolName = p.tool || 'unknown';
-            const status = p.state?.status || 'unknown';
-            const icon = status === 'completed' ? '✅' : status === 'error' ? '❌' : status === 'running' ? '⏳' : '⏸';
-            html += `<div class="chat-tool">${icon} Tool: ${esc(toolName)} — ${status}</div>`;
-          } else if (p.type === 'reasoning') {
-            html += `<div class="chat-tool" style="border-color:var(--accent);color:var(--accent2)">💭 ${esc(p.text?.substring(0, 200))}${p.text?.length > 200 ? '...' : ''}</div>`;
-          }
-        });
-        if (!html) return '';
-        return `<div class="chat-msg ${role}"><div class="chat-role">${role === 'assistant' ? '🤖 ' : '👤 '}${role}</div>${html}</div>`;
-      }).filter(Boolean).join('');
-      el.scrollTop = el.scrollHeight;
-    }
-
-    function handleChatKey(e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
-    }
-
-    async function sendMessage() {
-      const input = document.getElementById('chat-input');
-      const text = input.value.trim();
-      if (!text || isStreaming) return;
-
-      const sel = document.getElementById('chat-provider');
-      const parts = (sel.value || '').split('::');
-      const providerID = parts[0];
-      const modelID = parts[1];
-      if (!providerID || !modelID) {
-        toast('Please select a model', 'error');
-        return;
-      }
-
-      // Create session if needed
-      if (!currentSessionID) {
-        try { await createNewSession(); } catch { return; }
-      }
-
-      input.value = '';
-      input.style.height = 'auto';
-
-      // Add user message to UI immediately
-      const msgs = document.getElementById('chat-messages');
-      const emptyEl = msgs.querySelector('.chat-empty');
-      if (emptyEl) emptyEl.remove();
-      msgs.innerHTML += `<div class="chat-msg user"><div class="chat-role">👤 user</div><div class="chat-bubble">${esc(text)}</div></div>`;
-      msgs.innerHTML += `<div class="chat-msg assistant" id="streaming-msg"><div class="chat-role">🤖 assistant <span class="streaming-dot"></span></div><div class="chat-bubble" id="streaming-content">Thinking...</div></div>`;
-      msgs.scrollTop = msgs.scrollHeight;
-
-      isStreaming = true;
-      document.getElementById('chat-send-btn').disabled = true;
-
-      try {
-        const body = {
-          parts: [{ type: 'text', text: text }],
-          model: { providerID, modelID }
-        };
-
-        const res = await fetch(`${BASE}/session/${currentSessionID}/message`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(errText);
-        }
-
-        // Read the streaming response
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-        }
-
-        // Parse the completed response
-        try {
-          const result = JSON.parse(buffer);
-          // Reload all messages for clean display
-          const updated = await api(`/session/${currentSessionID}/message`);
-          renderMessages(updated);
-        } catch {
-          // Still reload to get proper state
-          const updated = await api(`/session/${currentSessionID}/message`);
-          renderMessages(updated);
-        }
-
-        loadSessionList();
-        toast('Message sent');
-
-      } catch (e) {
-        console.error(e);
-        const streamingEl = document.getElementById('streaming-msg');
-        if (streamingEl) streamingEl.remove();
-        toast('Failed to send message: ' + e.message?.substring(0, 100), 'error');
-        // Reload messages to get current state
-        try {
-          const updated = await api(`/session/${currentSessionID}/message`);
-          renderMessages(updated);
-        } catch { }
-      } finally {
-        isStreaming = false;
-        document.getElementById('chat-send-btn').disabled = false;
-      }
-    }
-
-    // ===== PAGE LOADERS =====
-    const loaders = {
-      chat() { loadSessionList(); },
-
-      async dashboard() {
-        try {
-          const [health, paths] = await Promise.all([
-            api('/global/health'),
-            api('/path').catch(() => null)
-          ]);
-          document.getElementById('sidebar-version').textContent = 'v' + (health.version || '?');
-          document.getElementById('dashboard-cards').innerHTML = `
-        <div class="card"><div class="card-header"><span class="card-icon">💚</span><span class="card-title">Status</span></div><div class="card-value">${health.healthy ? 'Healthy' : 'Unhealthy'}</div><div class="card-subtitle">Server is running</div></div>
-        <div class="card"><div class="card-header"><span class="card-icon">📦</span><span class="card-title">Version</span></div><div class="card-value">${health.version || '?'}</div><div class="card-subtitle">AtomCLI Version</div></div>
-        <div class="card"><div class="card-header"><span class="card-icon">📂</span><span class="card-title">Directory</span></div><div class="card-value" style="font-size:14px;word-break:break-all">${paths?.directory || 'N/A'}</div><div class="card-subtitle">Working Directory</div></div>
-        <div class="card"><div class="card-header"><span class="card-icon">🌿</span><span class="card-title">VCS</span></div><div class="card-value" id="vcs-branch" style="font-size:18px">Loading...</div><div class="card-subtitle">Git Branch</div></div>`;
-          document.querySelector('#system-info-table tbody').innerHTML = `
-        <tr><td style="font-weight:500">Home</td><td>${paths?.home || '—'}</td></tr>
-        <tr><td style="font-weight:500">State</td><td>${paths?.state || '—'}</td></tr>
-        <tr><td style="font-weight:500">Config</td><td>${paths?.config || '—'}</td></tr>
-        <tr><td style="font-weight:500">Worktree</td><td>${paths?.worktree || '—'}</td></tr>`;
-          api('/vcs').then(v => { const el = document.getElementById('vcs-branch'); if (el) el.textContent = v.branch || 'N/A'; }).catch(() => { });
-        } catch (e) { console.error(e); }
-      },
-
-      async providers() {
-        const el = document.getElementById('providers-list');
-        el.innerHTML = `<div class="table-container"><table class="table"><thead><tr><th>Provider</th><th>Status</th><th>Models</th></tr></thead><tbody>${allProviders.map(p => {
-          const connected = connectedProviders.includes(p.id);
-          return `<tr><td style="font-weight:500">${esc(p.name || p.id)}</td><td><span class="badge ${connected ? 'badge-success' : 'badge-warning'}">${connected ? 'Connected' : 'Available'}</span></td><td>${Object.keys(p.models || {}).length} models</td></tr>`;
-        }).join('')}</tbody></table></div>`;
-      },
-
-      async agents() {
-        try {
-          const agents = await api('/agent');
-          const el = document.getElementById('agents-list');
-          if (!agents.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">🎯</div><div>No agents found</div></div>'; return; }
-          el.innerHTML = `<div class="cards-grid">${agents.map(a => `<div class="card"><div class="card-header"><span class="card-icon">🎯</span><span class="card-title">${esc(a.name || a.id)}</span></div><p style="font-size:12px;color:var(--text2);line-height:1.5">${esc((a.description || a.instructions || 'No description').substring(0, 120))}</p></div>`).join('')}</div>`;
-        } catch (e) { toast('Failed to load agents', 'error'); }
-      },
-
-      async tools() {
-        try {
-          const ids = await api('/experimental/tool/ids');
-          document.getElementById('tools-list').innerHTML = `<div class="table-container"><table class="table"><thead><tr><th>#</th><th>Tool ID</th></tr></thead><tbody>${ids.map((id, i) => `<tr><td>${i + 1}</td><td style="font-family:'JetBrains Mono';font-size:12px">${esc(id)}</td></tr>`).join('')}</tbody></table></div>`;
-        } catch (e) { toast('Failed to load tools', 'error'); }
-      },
-
-      async mcp() {
-        try {
-          const status = await api('/mcp');
-          const el = document.getElementById('mcp-list');
-          const entries = Object.entries(status);
-          if (!entries.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">🔌</div><div>No MCP servers configured</div></div>'; return; }
-          el.innerHTML = `<div class="table-container"><table class="table"><thead><tr><th>Name</th><th>Status</th><th>Tools</th><th>Actions</th></tr></thead><tbody>${entries.map(([name, s]) => `<tr><td style="font-weight:500">${esc(name)}</td><td><span class="badge ${s.status === 'connected' ? 'badge-success' : s.status === 'error' ? 'badge-danger' : 'badge-warning'}">${s.status || 'unknown'}</span></td><td>${(s.tools || []).length}</td><td>${s.status === 'connected' ? `<button class="btn btn-secondary btn-sm" onclick="mcpAction('${esc(name)}','disconnect')">Disconnect</button>` : `<button class="btn btn-primary btn-sm" onclick="mcpAction('${esc(name)}','connect')">Connect</button>`}</td></tr>`).join('')}</tbody></table></div>`;
-        } catch (e) { toast('Failed to load MCP', 'error'); }
-      },
-
-      async config() {
-        try {
-          const cfg = await api('/config');
-          document.getElementById('config-editor').value = JSON.stringify(cfg, null, 2);
-        } catch (e) { toast('Failed to load config', 'error'); }
-      },
-
-      async files() {
-        try {
-          const files = await api('/file', { query: { path: currentFilePath } });
-          document.getElementById('current-path').textContent = currentFilePath;
-          const el = document.getElementById('files-list');
-          if (!files.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">📁</div><div>Empty directory</div></div>'; return; }
-          const sorted = files.sort((a, b) => (b.type === 'directory') - (a.type === 'directory') || (a.name || '').localeCompare(b.name || ''));
-          el.innerHTML = `<div class="table-container"><table class="table"><thead><tr><th>Name</th><th>Type</th><th>Size</th></tr></thead><tbody>${sorted.map(f => `<tr onclick="${f.type === 'directory' ? `navigateFiles('${esc(f.name)}')` : `viewFile('${esc(f.path || f.name)}')`}" style="cursor:pointer"><td><span style="margin-right:8px">${f.type === 'directory' ? '📁' : '📄'}</span>${esc(f.name)}</td><td>${f.type}</td><td>${f.size != null ? formatSize(f.size) : '—'}</td></tr>`).join('')}</tbody></table></div>`;
-        } catch (e) { toast('Failed to load files', 'error'); }
-      },
-      events() { }
-    };
-
-    // ===== MCP =====
-    async function mcpAction(name, action) {
-      try { await api(`/mcp/${encodeURIComponent(name)}/${action}`, { method: 'POST' }); toast(`MCP ${name} ${action}ed`); loaders.mcp(); } catch (e) { toast(`Failed: ${e.message}`, 'error'); }
-    }
-    function showAddMcpModal() {
-      document.getElementById('modal-content').innerHTML = `<div class="modal-title">Add MCP Server</div><div class="input-group"><label>Name</label><input class="input" id="mcp-name" placeholder="e.g. memory"></div><div class="input-group"><label>Command</label><input class="input" id="mcp-cmd" placeholder="e.g. npx -y @modelcontextprotocol/server-memory"></div><div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="addMcp()">Add</button></div>`;
-      document.getElementById('modal-overlay').classList.add('active');
-    }
-    async function addMcp() {
-      const name = document.getElementById('mcp-name').value.trim();
-      const command = document.getElementById('mcp-cmd').value.trim();
-      if (!name || !command) return toast('Fill all fields', 'error');
-      try { await api('/mcp', { method: 'POST', body: { name, config: { type: 'local', command: command.split(' ') } } }); toast(`MCP "${name}" added`); closeModal(); loaders.mcp(); } catch (e) { toast('Failed', 'error'); }
-    }
-
-    // ===== CONFIG =====
-    async function saveConfig() {
-      try {
-        const cfg = JSON.parse(document.getElementById('config-editor').value);
-        await api('/config', { method: 'PATCH', body: cfg });
-        toast('Config saved');
-      } catch (e) { toast(e instanceof SyntaxError ? 'Invalid JSON' : 'Failed to save', 'error'); }
-    }
-
-    // ===== FILES =====
-    function navigateFiles(name) {
-      if (name === '..') { const p = currentFilePath.split('/'); p.pop(); currentFilePath = p.join('/') || '.'; }
-      else currentFilePath = currentFilePath === '.' ? name : `${currentFilePath}/${name}`;
-      document.getElementById('file-content-section').style.display = 'none';
-      loaders.files();
-    }
-    async function viewFile(path) {
-      try {
-        const content = await api('/file/content', { query: { path } });
-        document.getElementById('file-content-section').style.display = 'block';
-        document.getElementById('file-content-title').textContent = path.split('/').pop();
-        document.getElementById('file-content-area').textContent = content.content || content.text || JSON.stringify(content, null, 2);
-      } catch (e) { toast('Failed to read file', 'error'); }
-    }
-    function formatSize(b) { if (b < 1024) return b + ' B'; if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'; return (b / 1048576).toFixed(1) + ' MB'; }
-
-    // ===== SSE =====
-    function initSSE() {
-      if (sseSource) sseSource.close();
-      try {
-        sseSource = new EventSource(`${BASE}/global/event`);
-        sseSource.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data);
-            addEvent(data);
-            // If message updated for current session, refresh chat
-            if (data.type === 'message.part.updated' && data.properties?.part?.sessionID === currentSessionID) {
-              // update streaming content if visible
-              const streamEl = document.getElementById('streaming-content');
-              if (streamEl && data.properties?.part?.type === 'text') {
-                streamEl.textContent = data.properties.part.text || streamEl.textContent;
-              }
-            }
-          } catch { }
-        };
-        sseSource.onerror = () => {
-          document.getElementById('status-dot').style.background = 'var(--danger)';
-          document.getElementById('status-text').textContent = 'Disconnected';
-          setTimeout(() => { if (sseActive) initSSE(); }, 3000);
-        };
-        sseSource.onopen = () => {
-          document.getElementById('status-dot').style.background = 'var(--success)';
-          document.getElementById('status-text').textContent = 'Connected';
-        };
-      } catch (e) {
-        console.error('SSE init failed:', e);
-        document.getElementById('status-dot').style.background = 'var(--danger)';
-        document.getElementById('status-text').textContent = 'SSE Failed';
-      }
-    }
-
-    function addEvent(data) {
-      if (data.type === 'server.heartbeat') return;
-      const log = document.getElementById('event-log');
-      if (log.querySelector('.empty')) log.innerHTML = '';
-      const item = document.createElement('div');
-      item.className = 'event-item';
-      item.innerHTML = `<span class="event-time">${new Date().toLocaleTimeString()}</span><span class="event-type">${data.type || 'unknown'}</span> <span style="color:var(--text3)">${JSON.stringify(data.properties || {}).substring(0, 120)}</span>`;
-      log.insertBefore(item, log.firstChild);
-      while (log.children.length > 200) log.removeChild(log.lastChild);
-    }
-
-    function clearEvents() { document.getElementById('event-log').innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div>Events cleared</div></div>'; }
-    function toggleSSE() {
-      sseActive = !sseActive;
-      const btn = document.getElementById('sse-toggle');
-      if (sseActive) { initSSE(); btn.textContent = '● Listening'; } else { if (sseSource) sseSource.close(); btn.textContent = '○ Paused'; }
-    }
-
-    // ===== MODAL =====
-    function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
-    document.getElementById('modal-overlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(); });
-
-    // ===== INIT =====
-    (async function init() {
-      await loadProviders();
-      loadSessionList();
-      initSSE();
-      // Load health info
-      api('/global/health').then(h => { document.getElementById('sidebar-version').textContent = 'v' + (h.version || '?'); }).catch(() => { });
-    })();
-  </script>
+  <!-- JavaScript Files -->
+  <script src="/dashboard/js/utilities.js?v=6"></script>
+  <script src="/dashboard/js/navigation.js?v=6"></script>
+  <script src="/dashboard/js/chat.js?v=6"></script>
+  <script src="/dashboard/js/pageLoaders.js?v=6"></script>
+  <script src="/dashboard/js/sse.js?v=6"></script>
+  <script src="/dashboard/js/modal.js?v=6"></script>
+  <script src="/dashboard/js/main.js?v=6"></script>
 </body>
 
 </html>

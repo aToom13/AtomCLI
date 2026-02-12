@@ -132,7 +132,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
           if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
         })
-        .catch(() => {})
+        .catch(() => { })
         .finally(() => {
           setModelStore("ready", true)
         })
@@ -255,7 +255,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!next) return
           setModelStore("model", agent.current().name, { ...next })
           const uniq = uniqueBy([next, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
-          if (uniq.length > 10) uniq.pop()
+          while (uniq.length > 5) uniq.pop()
           setModelStore(
             "recent",
             uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
@@ -275,13 +275,30 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             setModelStore("model", agent.current().name, model)
             if (options?.recent) {
               const uniq = uniqueBy([model, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
-              if (uniq.length > 10) uniq.pop()
+              while (uniq.length > 5) uniq.pop()
               setModelStore(
                 "recent",
                 uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
               )
               save()
             }
+          })
+        },
+        removeRecent(model: { providerID: string; modelID: string }) {
+          batch(() => {
+            const next = modelStore.recent.filter(
+              (x) => x.providerID !== model.providerID || x.modelID !== model.modelID,
+            )
+            setModelStore(
+              "recent",
+              next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
+            )
+            save()
+            toast.show({
+              variant: "info",
+              message: "Removed from recent models",
+              duration: 2000,
+            })
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {

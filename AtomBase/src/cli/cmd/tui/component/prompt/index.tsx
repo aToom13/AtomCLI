@@ -778,6 +778,10 @@ export function Prompt(props: PromptProps) {
                   e.preventDefault()
                   return
                 }
+                // Handle autocomplete FIRST so Enter/Tab selects the item
+                // before submission keybind intercepts it
+                if (store.mode === "normal") autocomplete.onKeyDown(e)
+                if (e.defaultPrevented) return
                 // Handle submission locally (moved from global command to prevent interception)
                 if (keybind.match("input_submit", e)) {
                   e.preventDefault()
@@ -838,7 +842,7 @@ export function Prompt(props: PromptProps) {
                     return
                   }
                 }
-                if (store.mode === "normal") autocomplete.onKeyDown(e)
+                // autocomplete.onKeyDown is now called at the top of onKeyDown
                 if (!autocomplete.visible) {
                   if (
                     (keybind.match("history_previous", e) && input.cursorOffset === 0) ||

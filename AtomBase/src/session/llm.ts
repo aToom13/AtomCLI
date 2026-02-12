@@ -130,7 +130,15 @@ export namespace LLM {
         OUTPUT_TOKEN_MAX,
       )
 
-    const tools = await resolveTools(input)
+    const tools = input.model.capabilities.toolcall !== false
+      ? await resolveTools(input)
+      : {}
+    if (!input.model.capabilities.toolcall) {
+      l.info("model does not support tool calls, skipping tools", {
+        modelID: input.model.id,
+        providerID: input.model.providerID,
+      })
+    }
 
 
     const extractReasoningMiddleware = await getExtractReasoningMiddleware()

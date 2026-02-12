@@ -238,6 +238,14 @@ export function DialogModel(props: { providerID?: string }) {
             setShowFreeOnly((prev) => !prev)
           },
         },
+        {
+          keybind: Keybind.parse("ctrl+d")[0],
+          title: "Remove from recent",
+          disabled: !connected(),
+          onTrigger: (option) => {
+            local.model.removeRecent(option.value as { providerID: string; modelID: string })
+          },
+        },
       ]}
       ref={setRef}
       onFilter={setQuery}

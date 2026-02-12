@@ -6,6 +6,12 @@ export async function data() {
       return await file.text()
     }
   }
-  const json = await fetch("https://models.dev/api.json").then((x) => x.text())
-  return json
+  // try {
+  //   const json = await fetch("https://models.dev/api.json").then((x) => x.text())
+  //   return json
+  // } catch (error) {
+  //   console.error("Failed to fetch models: ", error)
+  //   return "{}"
+  // }
+  return "{}"
 }

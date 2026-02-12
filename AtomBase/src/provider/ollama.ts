@@ -196,6 +196,90 @@ function estimateContextLength(modelName: string, paramSize?: string): number {
 }
 
 /**
+ * Detect if an Ollama model supports vision/image input
+ * based on model name patterns.
+ */
+function detectVision(model: OllamaModel): boolean {
+    const name = model.id.toLowerCase()
+    const visionModels = [
+        "llava", "bakllava", "moondream", "llama3.2-vision",
+        "llama-3.2-vision", "minicpm-v", "cogvlm",
+        "internvl", "qwen2-vl", "qwen2.5-vl", "gemma3",
+        "gemma-3",
+    ]
+    return visionModels.some(v => name.includes(v))
+}
+
+/**
+ * Determine if an Ollama model supports tool/function calling
+ * based on its family and name. Most modern models support tools,
+ * but some older/smaller models do not.
+ */
+function supportsTools(model: OllamaModel): boolean {
+    const name = model.id.toLowerCase()
+    const family = model.family.toLowerCase()
+
+    // Models known to support tool calling
+    const toolCapableFamilies = [
+        "llama", // Llama 3+ supports tools
+        "mistral",
+        "mixtral",
+        "qwen", // Qwen 2+ supports tools
+        "deepseek",
+        "command-r",
+        "phi3", "phi-3", "phi4", "phi-4",
+        "gemma2", "gemma-2", "gemma3", "gemma-3",
+        "granite",
+        "nemotron",
+        "hermes",
+        "yi",
+        "internlm",
+    ]
+
+    // Models known to NOT support tool calling
+    const noToolModels = [
+        "tinyllama",
+        "llama2", "llama-2",
+        "codellama",
+        "phi",    // phi-1, phi-2 (not phi-3/phi-4)
+        "stablelm",
+        "orca-mini",
+        "neural-chat",
+        "starling",
+        "vicuna",
+        "solar",
+        "openchat",
+        "zephyr",
+    ]
+
+    // Check no-tool list first (more specific match)
+    for (const pattern of noToolModels) {
+        if (name.startsWith(pattern) || name.includes(`:${pattern}`)) {
+            // But don't exclude if it's actually a newer version
+            // e.g. phi3 should not match the "phi" exclusion
+            if (pattern === "phi" && (name.includes("phi3") || name.includes("phi-3") || name.includes("phi4") || name.includes("phi-4"))) {
+                continue
+            }
+            if (pattern === "llama2" && (name.includes("llama3") || name.includes("llama-3"))) {
+                continue
+            }
+            return false
+        }
+    }
+
+    // Check tool-capable families
+    for (const f of toolCapableFamilies) {
+        if (family.includes(f) || name.includes(f)) {
+            return true
+        }
+    }
+
+    // Default: assume tool support for unknown models
+    // Modern models generally support tool calling
+    return true
+}
+
+/**
  * Convert detected Ollama models to AtomCLI provider format
  */
 export function toProviderModels(models: OllamaModel[]): Record<string, OllamaProviderModel> {
@@ -224,10 +308,10 @@ export function toProviderModels(models: OllamaModel[]): Record<string, OllamaPr
             },
             capabilities: {
                 temperature: true,
-                reasoning: false,
+                reasoning: model.family.toLowerCase().includes("deepseek") && model.id.toLowerCase().includes("r1"),
                 attachment: false,
-                toolcall: true,
-                input: { text: true, audio: false, image: false, video: false, pdf: false },
+                toolcall: supportsTools(model),
+                input: { text: true, audio: false, image: detectVision(model), video: false, pdf: false },
                 output: { text: true, audio: false, image: false, video: false, pdf: false },
                 interleaved: false,
             },

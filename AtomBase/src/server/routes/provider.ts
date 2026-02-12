@@ -184,3 +184,40 @@ export const ProviderRoute = new Hono()
             return c.json(true)
         },
     )
+    .post(
+        "/:providerID/key",
+        describeRoute({
+            summary: "Set API key",
+            description: "Set the API key for a specific AI provider.",
+            operationId: "provider.key",
+            responses: {
+                200: {
+                    description: "API key saved successfully",
+                    content: {
+                        "application/json": {
+                            schema: resolver(z.boolean()),
+                        },
+                    },
+                },
+                ...errors(400),
+            },
+        }),
+        validator(
+            "param",
+            z.object({
+                providerID: z.string().meta({ description: "Provider ID" }),
+            }),
+        ),
+        validator(
+            "json",
+            z.object({
+                key: z.string().meta({ description: "API key for the provider" }),
+            }),
+        ),
+        async (c) => {
+            const providerID = c.req.valid("param").providerID
+            const { key } = c.req.valid("json")
+            await ProviderAuth.api({ providerID, key })
+            return c.json(true)
+        },
+    )

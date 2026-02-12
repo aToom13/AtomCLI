@@ -168,33 +168,48 @@ export class FlowRunner {
         UI.println(UI.Style.TEXT_HIGHLIGHT_BOLD + "▶ Planner" + UI.Style.TEXT_NORMAL)
         UI.println(UI.Style.TEXT_DIM + "  Generating execution plan..." + UI.Style.TEXT_NORMAL)
 
-        const prompt = node.prompt +
-            `\n\nIMPORTANT: After your analysis, output a JSON block with the steps you plan to take:
+        const prompt = `${node.prompt}
+
+## CRITICAL INSTRUCTIONS
+You MUST follow these rules exactly:
+
+1. First, analyze the request carefully.
+2. Break it down into 3-6 concrete, actionable steps.
+3. At the END of your response, output a JSON code block with the steps.
+
+## REQUIRED OUTPUT FORMAT
+You MUST end your response with this exact JSON format:
+
 \`\`\`json
 [
-  { "name": "Step Name", "description": "What to do" }
+  { "name": "Step 1 Title", "description": "Clear description of what to do" },
+  { "name": "Step 2 Title", "description": "Clear description of what to do" }
 ]
 \`\`\`
-Keep it to 3-6 concrete steps.`
+
+## EXAMPLE
+For "Add a login page":
+\`\`\`json
+[
+  { "name": "Create Login Component", "description": "Create LoginForm component with email/password fields" },
+  { "name": "Add Authentication Logic", "description": "Implement auth service with JWT token handling" },
+  { "name": "Connect to API", "description": "Wire login form to POST /auth/login endpoint" },
+  { "name": "Test Login Flow", "description": "Verify successful and failed login scenarios" }
+]
+\`\`\`
+
+Do NOT skip the JSON block. It is REQUIRED.`
 
         const response = await this.executePrompt(prompt)
 
-        // Parse steps from response
-        const jsonMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
-        if (jsonMatch) {
-            try {
-                const steps = JSON.parse(jsonMatch[1])
-                if (Array.isArray(steps)) {
-                    // Clear the initial step that was just a placeholder
-                    for (const step of steps) {
-                        this.context.addStep(step.name, step.description || "")
-                    }
-                    UI.println(UI.Style.TEXT_SUCCESS + `  ✓ Plan generated with ${steps.length} steps` + UI.Style.TEXT_NORMAL)
-                    return
-                }
-            } catch {
-                // Fall through to default steps
+        // Parse steps from response with multiple fallback patterns
+        const steps = this.parseJsonSteps(response)
+        if (steps && steps.length > 0) {
+            for (const step of steps) {
+                this.context.addStep(step.name, step.description || "")
             }
+            UI.println(UI.Style.TEXT_SUCCESS + `  ✓ Plan generated with ${steps.length} steps` + UI.Style.TEXT_NORMAL)
+            return
         }
 
         // Fallback: add generic steps if parsing failed
@@ -203,6 +218,37 @@ Keep it to 3-6 concrete steps.`
         this.context.addStep("Implement", "Make the required changes")
         this.context.addStep("Verify", "Verify the changes work correctly")
         UI.println(UI.Style.TEXT_WARNING + "  ⚠ Using fallback plan (3 steps)" + UI.Style.TEXT_NORMAL)
+    }
+
+    /**
+     * Try multiple JSON extraction patterns to parse steps from a response.
+     */
+    private parseJsonSteps(response: string): Array<{ name: string; description: string }> | null {
+        // Pattern 1: Standard fenced code block
+        const fencedMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+        if (fencedMatch) {
+            try {
+                const parsed = JSON.parse(fencedMatch[1].trim())
+                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].name) return parsed
+            } catch { /* try next pattern */ }
+        }
+
+        // Pattern 2: Raw JSON array (no code fences)
+        const rawMatch = response.match(/(\[\s*\{[\s\S]*?\}\s*\])/)
+        if (rawMatch) {
+            try {
+                const parsed = JSON.parse(rawMatch[1])
+                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].name) return parsed
+            } catch { /* try next pattern */ }
+        }
+
+        // Pattern 3: Extract numbered list as steps
+        const listMatch = [...response.matchAll(/^\d+\.\s*\*\*(.+?)\*\*[:\s]*(.+)$/gm)]
+        if (listMatch.length >= 2) {
+            return listMatch.map(m => ({ name: m[1].trim(), description: m[2].trim() }))
+        }
+
+        return null
     }
 
     private async runDecisionNode(node: FlowNode & { kind: "decision" }): Promise<string> {
@@ -219,18 +265,34 @@ Keep it to 3-6 concrete steps.`
             UI.println(UI.Style.TEXT_INFO_BOLD + "⚡ Decision:" + UI.Style.TEXT_NORMAL + ` ${node.prompt}`)
 
             const choices = node.choices || ["YES", "NO"]
-            const prompt = `${node.prompt}
+            const prompt = `## Decision Required
 
-Context: Step "${step?.name || "unknown"}" has been executed.
+${node.prompt}
 
-Respond with EXACTLY one of these choices: ${choices.join(", ")}
-Your response must be ONLY the choice word, nothing else.`
+**Context:** Step "${step?.name || "unknown"}" has been executed.
+
+## RULES
+- You MUST respond with EXACTLY one word.
+- Your response must be one of: ${choices.join(" or ")}
+- Do NOT add any explanation or additional text.
+- Do NOT use quotes or punctuation.
+
+## Example valid responses:
+${choices.map(c => `${c}`).join("\n")}
+
+Your answer:`
 
             const response = await this.executePrompt(prompt)
-            const choice = response.trim().toUpperCase()
+            const cleaned = response.trim().toUpperCase().replace(/[^A-Z]/g, " ").trim()
 
-            // Find the closest match
-            const matched = choices.find(c => choice.includes(c)) || choices[0]
+            // Find the closest match — check exact first, then includes
+            const exactMatch = choices.find(c => cleaned === c)
+            if (exactMatch) {
+                UI.println(UI.Style.TEXT_DIM + `  → Decision: ${exactMatch}` + UI.Style.TEXT_NORMAL)
+                return exactMatch
+            }
+            const partialMatch = choices.find(c => cleaned.includes(c))
+            const matched = partialMatch || choices[0]
             UI.println(UI.Style.TEXT_DIM + `  → Decision: ${matched}` + UI.Style.TEXT_NORMAL)
             return matched
         }
@@ -264,13 +326,25 @@ Your response must be ONLY the choice word, nothing else.`
 
         this.context.updateCurrentStepStatus("running", "coding")
 
-        const prompt = `Execute the following task:
+        const prompt = `## Task Execution
+
+You are executing step ${this.context.getChain().currentStep + 1} of ${this.context.getChain().steps.length}.
 
 **Task:** ${step.name}
 **Description:** ${step.description || "No description provided"}
 
-Use the available tools (file read/write, bash, search, etc.) to complete this task.
-When done, confirm what you did.`
+## Instructions
+1. Use the available tools (file read/write, bash, search, etc.) to complete this task.
+2. Work systematically — read relevant files first, then make changes.
+3. After making changes, verify they compile/run correctly.
+4. When finished, provide a brief summary of what you accomplished.
+
+## Success Criteria
+- All required changes are made
+- Code compiles without errors
+- The task objectives are met
+
+Begin execution now.`
 
         try {
             const response = await this.executePrompt(prompt)
@@ -287,14 +361,25 @@ When done, confirm what you did.`
         UI.println()
         UI.println(UI.Style.TEXT_WARNING_BOLD + "▶ Verifying" + UI.Style.TEXT_NORMAL)
 
-        const prompt = `Verify the implementation of the most recent changes.
+        const prompt = `## Verification Checklist
 
-Check for:
-- Code correctness and completeness
-- No obvious bugs or errors
-- The changes match the requested task
+Verify the implementation of the most recent changes.
 
-If you find issues, describe them. If everything looks good, confirm it passes.`
+### Check each item:
+1. **Code Correctness**: Are there any syntax errors, typos, or logical bugs?
+2. **Completeness**: Does the implementation cover all requirements?
+3. **Integration**: Do the changes work with existing code without breaking anything?
+4. **Edge Cases**: Are obvious edge cases handled?
+
+### Actions to take:
+- Read the modified files to check for issues
+- Run any relevant tests or build commands
+- Verify the output matches expectations
+
+### Your verdict:
+After checking, state clearly:
+- "PASS" if everything looks correct
+- "FAIL" followed by a list of specific issues if problems were found`
 
         await this.executePrompt(prompt)
     }
@@ -304,8 +389,19 @@ If you find issues, describe them. If everything looks good, confirm it passes.`
         UI.println(UI.Style.TEXT_DANGER_BOLD + "▶ Debugging" + UI.Style.TEXT_NORMAL)
         UI.println(UI.Style.TEXT_DIM + "  Previous step failed, attempting fix..." + UI.Style.TEXT_NORMAL)
 
-        const prompt = `The previous step failed verification. Analyze what went wrong and fix the issues.
-Use the available tools to investigate and correct the problems.`
+        const failedStep = this.context.getChain().steps.find(s => s.status === "failed")
+        const prompt = `## Debug & Fix Required
+
+The previous step failed verification.
+${failedStep ? `\n**Failed Step:** ${failedStep.name}\n**Error:** ${failedStep.error || "Unknown error"}` : ""}
+
+### Instructions:
+1. Read the relevant files to understand what went wrong
+2. Identify the root cause of the failure
+3. Fix the issue using the available tools
+4. Verify your fix resolves the problem
+
+Do NOT just describe the problem — actually FIX it using tools.`
 
         const response = await this.executePrompt(prompt)
         this.context.addStep("Fix Issue", "Fix detected error from previous step")
