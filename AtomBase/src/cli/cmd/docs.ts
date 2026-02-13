@@ -20,7 +20,6 @@ import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
 import path from "path"
 import fs from "fs/promises"
-import { AbortController } from "abort-controller"
 
 export namespace DocsGen {
   const log = Log.create({ service: "docs-gen" })
@@ -166,12 +165,12 @@ export namespace DocsGen {
 
   function parseParameters(params: string): CodeElement["parameters"] {
     if (!params.trim()) return []
-    
+
     return params.split(",").map(p => {
       const trimmed = p.trim()
       const optional = trimmed.includes("?")
       const parts = trimmed.replace(/\?/, "").split(/:\s*/)
-      
+
       return {
         name: parts[0].trim(),
         type: parts[1]?.trim() || "any",
@@ -182,13 +181,13 @@ export namespace DocsGen {
 
   function extractDescription(comment: string[]): string | undefined {
     if (comment.length === 0) return undefined
-    
+
     const lines = comment
       .map(line => line.replace(/^\s*\/\*\*?\s*/, "").replace(/\s*\*\/$/, "").replace(/^\s*\*\s?/, ""))
       .filter(line => !line.startsWith("@"))
       .join(" ")
       .trim()
-    
+
     return lines || undefined
   }
 
@@ -223,16 +222,21 @@ Return ONLY the JSDoc comment, no other text.`
       sessionID: "docs-gen-session",
       role: "user",
       time: { created: Date.now() },
-      text: prompt,
+      agent: "general",
+      model: {
+        providerID: model.providerID,
+        modelID: model.id,
+      },
     }
 
+    const abortController = new AbortController()
     const stream = await LLM.stream({
       agent,
       user: userMessage,
       sessionID: "docs-gen-session",
       model,
       system: ["You are a documentation expert. Generate clear, concise JSDoc comments."],
-      abort: new AbortController().signal,
+      abort: abortController.signal,
       messages: [{ role: "user", content: prompt }],
       tools: {},
     })
@@ -261,7 +265,7 @@ Return ONLY the JSDoc comment, no other text.`
 
     // Apply updates in reverse order to maintain line numbers
     updates.sort((a, b) => b.line - a.line)
-    
+
     for (const update of updates) {
       lines.splice(update.line, 0, ...update.jsdoc.split("\n"))
     }
@@ -278,12 +282,12 @@ Return ONLY the JSDoc comment, no other text.`
     outputPath: string
   ): Promise<void> {
     const grouped = groupByFile(elements)
-    
+
     let markdown = `# API Documentation\n\nGenerated automatically by AtomCLI.\n\n`
 
     for (const [file, fileElements] of Object.entries(grouped)) {
       markdown += `## ${path.basename(file)}\n\n`
-      
+
       for (const element of fileElements) {
         markdown += renderElementMarkdown(element)
       }
@@ -306,18 +310,18 @@ Return ONLY the JSDoc comment, no other text.`
     const params = element.parameters
       ?.map(p => `${p.name}${p.optional ? "?" : ""}: ${p.type}`)
       .join(", ") || ""
-    
+
     let md = `### ${element.name}\n\n`
     md += `**Type:** ${element.type}  \n`
-    
+
     if (element.description) {
       md += `\n${element.description}\n\n`
     }
-    
+
     if (element.signature) {
       md += `\`\`\`typescript\n${element.signature}\n\`\`\`\n\n`
     }
-    
+
     if (element.parameters && element.parameters.length > 0) {
       md += `**Parameters:**\n\n`
       for (const param of element.parameters) {
@@ -325,11 +329,11 @@ Return ONLY the JSDoc comment, no other text.`
       }
       md += `\n`
     }
-    
+
     if (element.returnType) {
       md += `**Returns:** ${element.returnType}\n\n`
     }
-    
+
     return md
   }
 
@@ -345,7 +349,7 @@ Return ONLY the JSDoc comment, no other text.`
   ): Promise<void> {
     const readmePath = "README.md"
     let content: string
-    
+
     try {
       content = await fs.readFile(readmePath, "utf-8")
     } catch {
@@ -389,16 +393,21 @@ Return the complete README content.`
       sessionID: "docs-gen-session",
       role: "user",
       time: { created: Date.now() },
-      text: prompt,
+      agent: "general",
+      model: {
+        providerID: model.providerID,
+        modelID: model.id,
+      },
     }
 
+    const abortController = new AbortController()
     const stream = await LLM.stream({
       agent,
       user: userMessage,
       sessionID: "docs-gen-session",
       model,
       system: ["You are a technical writer. Generate clear, professional README documentation."],
-      abort: new AbortController().signal,
+      abort: abortController.signal,
       messages: [{ role: "user", content: prompt }],
       tools: {},
     })

@@ -199,11 +199,63 @@ export namespace Installation {
     await $`${process.execPath} --version`.nothrow().quiet().text()
   }
 
+  /**
+   * Compare two version strings with support for:
+   * - Standard semver: 2.2.7
+   * - 4-segment versions: 2.2.8.1
+   * - Pre-release tags: 2.2.8-beta, 2.2.8-alfa
+   * - Leading 'v' prefix: v2.2.7
+   *
+   * Returns: negative if a < b, 0 if equal, positive if a > b
+   * A release version (no tag) is considered newer than a pre-release of the same core.
+   */
+  export function compareVersions(a: string, b: string): number {
+    const va = a.replace(/^v/, "")
+    const vb = b.replace(/^v/, "")
+
+    const [coreA, preA] = va.split("-", 2)
+    const [coreB, preB] = vb.split("-", 2)
+
+    // Compare numeric segments (supports 3 or 4 segments)
+    const segsA = coreA.split(".").map(Number)
+    const segsB = coreB.split(".").map(Number)
+    const maxLen = Math.max(segsA.length, segsB.length)
+
+    for (let i = 0; i < maxLen; i++) {
+      const diff = (segsA[i] ?? 0) - (segsB[i] ?? 0)
+      if (diff !== 0) return diff
+    }
+
+    // If cores equal: release > pre-release
+    if (!preA && preB) return 1
+    if (preA && !preB) return -1
+    if (preA && preB) return preA.localeCompare(preB)
+    return 0
+  }
+
   export const VERSION = typeof ATOMCLI_VERSION === "string" ? ATOMCLI_VERSION : "local"
   export const CHANNEL = typeof ATOMCLI_CHANNEL === "string" ? ATOMCLI_CHANNEL : "local"
   export const USER_AGENT = `atomcli/${CHANNEL}/${VERSION}/${Flag.ATOMCLI_CLIENT}`
 
-  export async function latest(installMethod?: Method) {
+  /**
+   * Fetch recent releases from GitHub for interactive version selection.
+   * Returns an array of version strings (without 'v' prefix).
+   */
+  export async function listReleases(limit = 10): Promise<string[]> {
+    try {
+      const res = await fetch("https://api.github.com/repos/aToom13/AtomCLI/releases?per_page=" + limit)
+      if (!res.ok) throw new Error(res.statusText)
+      const data = (await res.json()) as Array<{ tag_name: string; prerelease: boolean; draft: boolean }>
+      return data
+        .filter((r) => !r.draft)
+        .map((r) => r.tag_name.replace(/^v/, ""))
+    } catch (e) {
+      log.warn("failed to fetch releases", { error: e })
+      return []
+    }
+  }
+
+  export async function latest(installMethod?: Method, channel?: string) {
     const detectedMethod = installMethod || (await method())
 
     if (detectedMethod === "git") {
@@ -249,8 +301,8 @@ export namespace Installation {
         const reg = r || "https://registry.npmjs.org"
         return reg.endsWith("/") ? reg.slice(0, -1) : reg
       })
-      const channel = CHANNEL
-      return fetch(`${registry}/atomcli-ai/${channel}`)
+      const npmChannel = channel || CHANNEL
+      return fetch(`${registry}/atomcli-ai/${npmChannel}`)
         .then((res) => {
           if (!res.ok) throw new Error(res.statusText)
           return res.json()
@@ -258,11 +310,27 @@ export namespace Installation {
         .then((data: any) => data.version)
     }
 
-    return fetch("https://api.github.com/repos/aToom13/AtomCLI/releases/latest")
+    // GitHub releases: if channel specified, search all releases for matching tag
+    const endpoint = channel
+      ? "https://api.github.com/repos/aToom13/AtomCLI/releases"
+      : "https://api.github.com/repos/aToom13/AtomCLI/releases/latest"
+
+    return fetch(endpoint)
       .then((res) => {
         if (!res.ok) throw new Error(res.statusText)
         return res.json()
       })
-      .then((data: any) => data.tag_name.replace(/^v/, ""))
+      .then((data: any) => {
+        if (channel) {
+          const releases = Array.isArray(data) ? data : [data]
+          const match = releases.find((r: any) =>
+            r.tag_name?.toLowerCase().includes(channel.toLowerCase()),
+          )
+          return match
+            ? match.tag_name.replace(/^v/, "")
+            : releases[0]?.tag_name?.replace(/^v/, "") ?? VERSION
+        }
+        return data.tag_name.replace(/^v/, "")
+      })
   }
 }

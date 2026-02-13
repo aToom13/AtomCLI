@@ -530,6 +530,15 @@ export namespace SessionPrompt {
         agent,
       })
 
+      // Track fallback model within this turn - if fallback occurred, continue with fallback model
+      let currentModel = model
+      let fallbackModel: Provider.Model | undefined
+
+      // If we have a fallback model from previous iteration in this turn, use it
+      if (fallbackModel) {
+        currentModel = fallbackModel
+      }
+
       const processor = SessionProcessor.create({
         assistantMessage: (await Session.updateMessage({
           id: Identifier.ascending("message"),
@@ -548,16 +557,17 @@ export namespace SessionPrompt {
             reasoning: 0,
             cache: { read: 0, write: 0 },
           },
-          modelID: model.id,
-          providerID: model.providerID,
+          modelID: currentModel.id,
+          providerID: currentModel.providerID,
           time: {
             created: Date.now(),
           },
           sessionID,
         })) as MessageV2.Assistant,
         sessionID: sessionID,
-        model,
+        model: currentModel,
         abort,
+        initialFallbackModel: fallbackModel,
       })
 
       // Check if user explicitly invoked an agent via @ in this turn
@@ -646,10 +656,14 @@ export namespace SessionPrompt {
             : []),
         ],
         tools,
-        model,
+        model: currentModel,
       })
-      if (result === "stop") break
-      if (result === "compact") {
+      // Update fallback model if it was set during processing
+      if (result.fallbackModel) {
+        fallbackModel = result.fallbackModel
+      }
+      if (result.status === "stop") break
+      if (result.status === "compact") {
         await SessionCompaction.create({
           sessionID,
           agent: lastUser.agent,

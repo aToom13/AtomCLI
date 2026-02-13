@@ -26,10 +26,9 @@ function normalizeLineEndings(text: string): string {
 
 /**
  * Validates file path to prevent path traversal attacks
- * Ensures the resolved path is within allowed project boundaries
- * In test mode, allows access to /tmp for test files
+ * Returns path info for external directory check
  */
-function validateFilePath(filePath: string): string {
+function validateFilePath(filePath: string): { normalizedPath: string; isExternal: boolean } {
   const isTestMode = process.env.NODE_ENV === "test" || process.env.ATOMCLI_TEST === "true"
 
   // Resolve to absolute path
@@ -40,19 +39,14 @@ function validateFilePath(filePath: string): string {
 
   // In test mode, allow access to /tmp for test files
   if (isTestMode && normalizedPath.startsWith("/tmp")) {
-    return normalizedPath
+    return { normalizedPath, isExternal: false }
   }
 
   // Get the allowed base directory
   const allowedBase = path.resolve(Instance.worktree || Instance.directory)
 
   // Check if the normalized path is within allowed boundaries
-  if (!normalizedPath.startsWith(allowedBase)) {
-    throw new Error(
-      `File path "${filePath}" is outside the allowed project boundaries. ` +
-        `For security, files can only be edited within the project directory.`,
-    )
-  }
+  const isExternal = !normalizedPath.startsWith(allowedBase)
 
   // Additional check for path traversal attempts using ..
   // In test mode, skip this check to allow external_directory permission tests
@@ -62,7 +56,7 @@ function validateFilePath(filePath: string): string {
     )
   }
 
-  return normalizedPath
+  return { normalizedPath, isExternal }
 }
 
 export const EditTool = Tool.define("edit", {
@@ -83,8 +77,12 @@ export const EditTool = Tool.define("edit", {
     }
 
     // Validate file path to prevent path traversal
-    const filePath = validateFilePath(params.filePath)
-    await assertExternalDirectory(ctx, filePath)
+    const { normalizedPath: filePath, isExternal } = validateFilePath(params.filePath)
+
+    // If external, ask for permission first
+    if (isExternal) {
+      await assertExternalDirectory(ctx, filePath)
+    }
 
     let diff = ""
     let contentOld = ""
@@ -686,3 +684,6 @@ export function replace(content: string, oldString: string, newString: string, r
     "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match.",
   )
 }
+
+// Alias for backward compatibility with cli/cmd imports
+export { EditTool as Edit }

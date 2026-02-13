@@ -82,3 +82,6 @@ export const WriteTool = Tool.define("write", {
     }
   },
 })
+
+// Alias for backward compatibility with cli/cmd imports
+export { WriteTool as Write }

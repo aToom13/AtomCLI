@@ -118,20 +118,24 @@ export namespace Permission {
     const keys = toKeys(input.pattern, input.type)
     if (covered(keys, approvedForSession)) return
 
-    // Autonomous mode: auto-allow most operations within workspace
-    // Can be set via config or CLI flag (--autonomous / --yolo)
+    // Permission auto-approval mode (different from chain execution mode)
+    // This controls whether permission prompts are auto-allowed
+    // - "autonomous": Auto-allow all permissions within workspace (no prompts)
+    // - "safe": Ask for permission on each operation (default)
+    // Can be set via config.agent_mode or CLI flag (--autonomous / --yolo)
+    // Note: This is DIFFERENT from chain's execution mode which controls UI behavior
     const config = await Config.get()
-    const agentMode = process.env.ATOMCLI_AUTONOMOUS === "1" ? "autonomous" : (config.agent_mode ?? "safe")
+    const permissionMode = process.env.ATOMCLI_AUTONOMOUS === "1" ? "autonomous" : (config.agent_mode ?? "safe")
 
-    if (agentMode === "autonomous") {
+    if (permissionMode === "autonomous") {
       // Only require permission for operations outside workspace
       const isOutsideWorkspace = input.type === "external_directory"
 
       if (!isOutsideWorkspace) {
-        log.info("autonomous mode: auto-allowing", { type: input.type, keys })
+        log.info("permission autonomous mode: auto-allowing", { type: input.type, keys })
         return
       }
-      log.info("autonomous mode: requiring permission for external operation", { type: input.type })
+      log.info("permission autonomous mode: requiring permission for external operation", { type: input.type })
     }
     const info: Info = {
       id: Identifier.ascending("permission"),
@@ -148,9 +152,9 @@ export namespace Permission {
     }
 
     switch (
-    await Plugin.trigger("permission.ask", info, {
-      status: "ask",
-    }).then((x) => x.status)
+      await Plugin.trigger("permission.ask", info, {
+        status: "ask",
+      }).then((x) => x.status)
     ) {
       case "deny":
         throw new RejectedError(info.sessionID, info.id, info.callID, info.metadata)

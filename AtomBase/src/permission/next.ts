@@ -9,8 +9,13 @@ import { Log } from "@/util/log"
 import { Wildcard } from "@/util/wildcard"
 import z from "zod"
 
+import { Flag } from "../flag/flag"
+
 export namespace PermissionNext {
   const log = Log.create({ service: "permission" })
+
+  // Permissions that are NEVER auto-allowed, even in YOLO mode
+  const YOLO_EXEMPT_PERMISSIONS = ["window_control"]
 
   export const Action = z.enum(["allow", "deny", "ask"]).meta({
     ref: "PermissionAction",
@@ -118,6 +123,11 @@ export namespace PermissionNext {
       ruleset: Ruleset,
     }),
     async (input) => {
+      // YOLO mode: auto-allow everything except exempt permissions (e.g., window_control)
+      if (Flag.ATOMCLI_YOLO && !YOLO_EXEMPT_PERMISSIONS.includes(input.permission)) {
+        log.info("YOLO mode: auto-allowing", { permission: input.permission })
+        return
+      }
       const s = await state()
       const { ruleset, ...request } = input
       for (const pattern of request.patterns ?? []) {
@@ -132,10 +142,26 @@ export namespace PermissionNext {
               id,
               ...request,
             }
+            // Auto-reject after 20s if user doesn't respond
+            const autoRejectTimer = setTimeout(() => {
+              if (s.pending[id]) {
+                delete s.pending[id]
+                log.warn("permission auto-rejected after 20s timeout", {
+                  id,
+                  permission: request.permission,
+                })
+                Bus.publish(Event.Replied, {
+                  sessionID: request.sessionID,
+                  requestID: id,
+                  reply: "reject" as Reply,
+                })
+                reject(new RejectedError())
+              }
+            }, 20_000)
             s.pending[id] = {
               info,
-              resolve,
-              reject,
+              resolve: () => { clearTimeout(autoRejectTimer); resolve() },
+              reject: (e: any) => { clearTimeout(autoRejectTimer); reject(e) },
             }
             Bus.publish(Event.Asked, info)
           })

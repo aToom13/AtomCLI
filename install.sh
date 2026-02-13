@@ -978,6 +978,37 @@ main_install() {
     
     check_dependencies
     install_bun
+    
+    # Interactive version selection when running in a terminal
+    if [ -t 0 ]; then
+        select_version
+        
+        if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
+            info "Building from source..."
+            local tmp_dir
+            tmp_dir=$(mktemp -d)
+            step "Cloning repository..."
+            git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$tmp_dir/AtomCLI" 2>/dev/null
+            step "Building..."
+            cd "$tmp_dir/AtomCLI/AtomBase" && bun install && bun run build
+            if [ -f "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" ]; then
+                mkdir -p "$INSTALL_DIR"
+                cp "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" "$INSTALL_DIR/atomcli"
+                chmod +x "$INSTALL_DIR/atomcli"
+                success "Built and installed from source"
+            else
+                error "Build produced no binary"
+            fi
+            rm -rf "$tmp_dir"
+            setup_path
+            setup_config
+            setup_optional_features
+            verify_installation 
+            print_complete
+            return
+        fi
+    fi
+    
     install_binary
     setup_path
     setup_config
@@ -1065,6 +1096,89 @@ uninstall() {
     echo ""
 }
 
+# Interactive version selection menu
+select_version() {
+    echo ""
+    echo -e "${CYAN}${BOLD}  Fetching available versions...${NC}"
+    
+    # Fetch releases from GitHub
+    local releases_json=""
+    if command -v curl &>/dev/null; then
+        releases_json=$(curl -fsSL "https://api.github.com/repos/aToom13/AtomCLI/releases?per_page=8" 2>/dev/null || echo "")
+    elif command -v wget &>/dev/null; then
+        releases_json=$(wget -qO- "https://api.github.com/repos/aToom13/AtomCLI/releases?per_page=8" 2>/dev/null || echo "")
+    fi
+    
+    if [ -z "$releases_json" ] || [ "$releases_json" = "[]" ]; then
+        warn "Could not fetch version list"
+        echo -e "  ${DIM}Falling back to latest version${NC}"
+        return 0
+    fi
+    
+    # Parse version tags (portable: no jq dependency)
+    local versions=()
+    while IFS= read -r tag; do
+        tag="${tag#v}"  # Strip leading 'v'
+        [ -n "$tag" ] && versions+=("$tag")
+    done < <(echo "$releases_json" | grep -o '"tag_name": *"[^"]*"' | sed 's/"tag_name": *"//;s/"//')
+    
+    if [ ${#versions[@]} -eq 0 ]; then
+        warn "No versions found"
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${BOLD}Select a version to install:${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    local i=1
+    for v in "${versions[@]}"; do
+        local hint=""
+        [ "$i" -eq 1 ] && hint=" ${GREEN}(Latest)${NC}"
+        echo -e "  ${CYAN}${i})${NC} v${v}${hint}"
+        ((i++))
+    done
+    echo ""
+    echo -e "  ${CYAN}${i})${NC} 🔧 Build from Source ${DIM}(clone & compile main branch)${NC}"
+    local source_option=$i
+    ((i++))
+    echo -e "  ${CYAN}${i})${NC} Cancel"
+    local cancel_option=$i
+    echo ""
+    
+    # Auto-default to latest after 30s
+    local choice=""
+    read -t 30 -p "$(echo -e "  ${BOLD}Choice [1]:${NC} ")" choice
+    
+    if [ -z "$choice" ]; then
+        choice=1
+    fi
+    
+    if [ "$choice" -eq "$cancel_option" ] 2>/dev/null; then
+        echo ""
+        echo -e "  ${YELLOW}Cancelled${NC}"
+        exit 0
+    fi
+    
+    if [ "$choice" -eq "$source_option" ] 2>/dev/null; then
+        INSTALL_FROM_SOURCE=true
+        return 0
+    fi
+    
+    if [ "$choice" -ge 1 ] && [ "$choice" -le "${#versions[@]}" ] 2>/dev/null; then
+        SELECTED_VERSION="${versions[$((choice-1))]}"
+        VERSION="$SELECTED_VERSION"
+        export SELECTED_VERSION VERSION
+        info "Selected version: v${SELECTED_VERSION}"
+        return 0
+    fi
+    
+    warn "Invalid selection, using latest"
+    return 0
+}
+
 # Update function
 update() {
     print_banner
@@ -1072,14 +1186,42 @@ update() {
     echo -e "${CYAN}${BOLD}Updating AtomCLI...${NC}"
     echo ""
     
-    # Just run main install, but without re-checking basic dependencies essentially 
-    # (though re-checking is fast and safe).
-    # The key is checking if we have an existing install.
-    
     if [ ! -x "$INSTALL_DIR/atomcli" ]; then
         warn "AtomCLI not found. Performing fresh installation."
     else
         info "Found existing installation at $INSTALL_DIR/atomcli"
+    fi
+    
+    # Interactive version selection if running in a terminal
+    if [ -t 0 ]; then
+        select_version
+        
+        if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
+            info "Building from source..."
+            detect_os
+            check_dependencies
+            # Clone and build from source
+            local tmp_dir
+            tmp_dir=$(mktemp -d)
+            step "Cloning repository..."
+            git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$tmp_dir/AtomCLI" 2>/dev/null
+            step "Building..."
+            cd "$tmp_dir/AtomCLI/AtomBase" && bun install && bun run build
+            if [ -f "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" ]; then
+                cp "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" "$INSTALL_DIR/atomcli"
+                chmod +x "$INSTALL_DIR/atomcli"
+                success "Built and installed from source"
+            else
+                error "Build produced no binary"
+            fi
+            rm -rf "$tmp_dir"
+            echo ""
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  ${GREEN}${CHECK}${NC} ${BOLD}AtomCLI built from source successfully!${NC}"
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            return
+        fi
     fi
     
     # Run main install flow
@@ -1112,19 +1254,25 @@ show_help() {
     echo "  install.sh [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --update       Update AtomCLI to the latest version"
+    echo "  --update       Update AtomCLI (interactive version selection)"
+    echo "  --source       Build and install from source"
     echo "  --uninstall    Remove AtomCLI from the system"
     echo "  --help         Show this help message"
     echo ""
     echo "Examples:"
     echo "  curl -fsSL .../install.sh | bash                      # Install"
-    echo "  curl -fsSL .../install.sh | bash -s -- --update       # Update"
+    echo "  curl -fsSL .../install.sh | bash -s -- --update       # Update (interactive)"
+    echo "  curl -fsSL .../install.sh | bash -s -- --source       # Build from source"
     echo "  curl -fsSL .../install.sh | bash -s -- --uninstall    # Uninstall"
 }
 
 # Parse arguments and run
 case "${1:-}" in
     --update)
+        update
+        ;;
+    --source)
+        INSTALL_FROM_SOURCE=true
         update
         ;;
     --uninstall|-u)

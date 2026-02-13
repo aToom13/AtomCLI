@@ -37,6 +37,11 @@ import { LspTool } from "./lsp"
 import { Truncate } from "./truncation"
 import { SysadminTool } from "./sysadmin"
 import { BrowserTool } from "./browser"
+import { SystemHealthTool } from "./system-health"
+import { ScreenCaptureTool } from "./screen-capture"
+import { AppSwitcherTool } from "./app-switcher"
+import { FileWatcherTool } from "./file-watcher"
+import { SelfMaintenanceTool } from "./self-maintenance"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -127,6 +132,11 @@ export namespace ToolRegistry {
       LearnTool,
       SysadminTool,
       BrowserTool,
+      SystemHealthTool,
+      ScreenCaptureTool,
+      AppSwitcherTool,
+      FileWatcherTool,
+      SelfMaintenanceTool,
       TestGenTool,
       DocsTool,
       RefactorTool,

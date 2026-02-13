@@ -2,18 +2,34 @@ import { Tool } from "./tool"
 import { z } from "zod"
 import { Learning } from "../learning"
 
+// Preprocess to handle JSON string serialization from LLM tool calls
+const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
+  return z.preprocess((val) => {
+    if (typeof val === "string") {
+      try {
+        return JSON.parse(val)
+      } catch {
+        return val
+      }
+    }
+    return val
+  }, schema)
+}
+
 // Self-learning tool - Agent'in öğrenmesini sağlar
 export const LearnTool = Tool.define("learn", {
   description: "Learn from experience, errors, or research. Stores knowledge for future use.",
   parameters: z.object({
-    action: z.enum([
-      "record_error",      // Hatadan öğren
-      "record_pattern",    // Pattern öğren
-      "record_solution",   // Çözüm öğren
-      "research",          // Araştırma yap
-      "find_knowledge",    // Bilgi ara
-      "get_stats",         // İstatistikler
-    ]).describe("What learning action to perform"),
+    action: z
+      .enum([
+        "record_error", // Hatadan öğren
+        "record_pattern", // Pattern öğren
+        "record_solution", // Çözüm öğren
+        "research", // Araştırma yap
+        "find_knowledge", // Bilgi ara
+        "get_stats", // İstatistikler
+      ])
+      .describe("What learning action to perform"),
 
     // record_error, record_pattern, record_solution için
     title: z.string().optional().describe("Short title for what was learned"),
@@ -23,7 +39,7 @@ export const LearnTool = Tool.define("learn", {
     solution: z.string().optional().describe("The solution or fix"),
     codeBefore: z.string().optional().describe("Code before the fix"),
     codeAfter: z.string().optional().describe("Code after the fix"),
-    tags: z.array(z.string()).optional().describe("Tags for categorization"),
+    tags: parseJsonIfString(z.array(z.string())).optional().describe("Tags for categorization"),
 
     // research ve find_knowledge için
     query: z.string().optional().describe("Search query or topic to research"),
@@ -35,7 +51,7 @@ export const LearnTool = Tool.define("learn", {
     filePath: z.string().optional().describe("File where error occurred"),
   }),
 
-  async execute(params, _ctx) {
+  async execute(params, _ctx): Promise<any> {
     switch (params.action) {
       case "record_error":
         return recordError(params)
@@ -59,7 +75,7 @@ export const LearnTool = Tool.define("learn", {
         return {
           title: "Error",
           output: "Unknown action",
-          metadata: { error: true }
+          metadata: { error: true },
         }
     }
   },
@@ -70,7 +86,7 @@ async function recordError(params: any) {
     return {
       title: "Error",
       output: "errorType and errorMessage are required for record_error",
-      metadata: { error: true }
+      metadata: { error: true },
     }
   }
 
@@ -92,8 +108,8 @@ async function recordError(params: any) {
     output: `Learned from error: ${params.errorType}. Will remember this for future tasks.\n\nRoot Cause: ${params.description || params.errorMessage}\nSolution: ${params.solution || "Recorded"}`,
     metadata: {
       errorType: params.errorType,
-      recorded: true
-    }
+      recorded: true,
+    },
   }
 }
 
@@ -102,7 +118,7 @@ async function recordPattern(params: any) {
     return {
       title: "Error",
       output: "title and solution are required for record_pattern",
-      metadata: { error: true }
+      metadata: { error: true },
     }
   }
 
@@ -120,7 +136,7 @@ async function recordPattern(params: any) {
   return {
     title: "Pattern Recorded",
     output: `Learned pattern: ${params.title}\n\n${params.solution}`,
-    metadata: { recorded: true }
+    metadata: { recorded: true },
   }
 }
 
@@ -129,7 +145,7 @@ async function recordSolution(params: any) {
     return {
       title: "Error",
       output: "title and solution are required for record_solution",
-      metadata: { error: true }
+      metadata: { error: true },
     }
   }
 
@@ -148,7 +164,7 @@ async function recordSolution(params: any) {
   return {
     title: "Solution Recorded",
     output: `Learned solution: ${params.title}\n\nProblem: ${params.problem || "N/A"}\nSolution: ${params.solution}`,
-    metadata: { recorded: true }
+    metadata: { recorded: true },
   }
 }
 
@@ -157,7 +173,7 @@ async function doResearch(params: any) {
     return {
       title: "Error",
       output: "query and topic are required for research",
-      metadata: { error: true }
+      metadata: { error: true },
     }
   }
 
@@ -172,8 +188,8 @@ async function doResearch(params: any) {
     output: `Researched "${params.topic}". Found ${result.sources.length} sources.\n\nSummary:\n${result.summary}\n\nKey Points:\n${result.keyPoints.join("\n")}`,
     metadata: {
       sources: result.sources,
-      confidence: result.confidence
-    }
+      confidence: result.confidence,
+    },
   }
 }
 
@@ -182,7 +198,7 @@ async function findKnowledge(params: any) {
     return {
       title: "Error",
       output: "query is required for find_knowledge",
-      metadata: { error: true }
+      metadata: { error: true },
     }
   }
 
@@ -199,15 +215,15 @@ async function findKnowledge(params: any) {
       output: `Found knowledge from ${result.source}:\n\n${result.content}`,
       metadata: {
         source: result.source,
-        confidence: result.confidence
-      }
+        confidence: result.confidence,
+      },
     }
   }
 
   return {
     title: "No Knowledge Found",
     output: "No knowledge found for this query.",
-    metadata: { found: false }
+    metadata: { found: false },
   }
 }
 
@@ -226,7 +242,7 @@ async function getStats() {
       totalLearned: stats.totalLearned,
       totalErrors: stats.totalErrors,
       totalResearches: stats.totalResearches,
-      successRate: stats.successRate
-    }
+      successRate: stats.successRate,
+    },
   }
 }

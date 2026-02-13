@@ -19,9 +19,9 @@ export const RefactorTool = Tool.define("refactor", {
     fix: z.boolean().default(false).describe("Apply auto-fixable changes"),
     dry_run: z.boolean().default(true).describe("Show changes without applying"),
   }),
-  async execute(input, ctx) {
+  async execute(input, ctx): Promise<any> {
     const log = Log.create({ service: "refactor-tool" })
-    
+
     try {
       return await Instance.provide({
         directory: process.cwd(),
@@ -72,11 +72,11 @@ export const RefactorTool = Tool.define("refactor", {
           return {
             title: "Refactoring Analysis",
             output: message.trim(),
-            metadata: { 
-              success: true, 
-              issues_found: result.stats.total, 
+            metadata: {
+              success: true,
+              issues_found: result.stats.total,
               auto_fixable: result.stats.autoFixable,
-              fixes_applied: input.fix ? fixesApplied : undefined 
+              fixes_applied: input.fix ? fixesApplied : undefined
             },
           }
         }

@@ -3,10 +3,26 @@ import { Tool } from "./tool"
 import { Question } from "../question"
 import DESCRIPTION from "./question.txt"
 
+// Preprocess to handle JSON string serialization from LLM tool calls
+const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
+  return z.preprocess((val) => {
+    if (typeof val === "string") {
+      try {
+        return JSON.parse(val)
+      } catch {
+        return val
+      }
+    }
+    return val
+  }, schema)
+}
+
 export const QuestionTool = Tool.define("question", {
   description: DESCRIPTION,
   parameters: z.object({
-    questions: z.array(Question.Info).describe("Questions to ask (support text, password, and select types)"),
+    questions: parseJsonIfString(z.array(Question.Info)).describe(
+      "Questions to ask (support text, password, and select types)",
+    ),
   }),
   async execute(params, ctx) {
     const answers = await Question.ask({

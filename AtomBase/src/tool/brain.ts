@@ -100,9 +100,10 @@ type BrainMetadata = {
 export const BrainTool = Tool.define("brain", {
     description: "Semantic search and memory. Indexes project files and allows conceptual searching.",
     parameters: z.object({
-        action: z.enum(["index", "search", "clear"]).describe("Action to perform"),
+        action: z.enum(["index", "search", "clear", "remember", "recall"]).describe("Action to perform: index/search/clear for semantic search, remember/recall for persistent notes"),
         query: z.string().optional().describe("Search query (required for 'search')"),
         path: z.string().optional().describe("Path to index (required for 'index', defaults to cwd)"),
+        content: z.string().optional().describe("Content to remember (required for 'remember')"),
         limit: z.number().default(5).describe("Number of results to return"),
     }),
     async execute(params, ctx) {
@@ -110,7 +111,58 @@ export const BrainTool = Tool.define("brain", {
         const config = await Config.get()
         const apiKey = process.env.OPENAI_API_KEY || config.provider?.openai?.options?.apiKey
 
-        // Check API Key
+        // Handle remember/recall actions first — they don't need API key
+        const memoryDir = path.join(Global.Path.home, ".atomcli", "brain")
+        const memoryFile = path.join(memoryDir, "memory.md")
+
+        if (params.action === "remember") {
+            if (!params.content) throw new Error("Content required for remember")
+            try {
+                await fs.mkdir(memoryDir, { recursive: true })
+                const timestamp = new Date().toISOString()
+                const entry = `\n---\n**[${timestamp}]**\n${params.content}\n`
+                await fs.appendFile(memoryFile, entry, "utf-8")
+                return {
+                    title: "Memory Saved",
+                    output: `Remembered: ${params.content.slice(0, 100)}${params.content.length > 100 ? "..." : ""}`,
+                    metadata: { count: 1 } as BrainMetadata
+                }
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error)
+                return {
+                    title: "Memory Error",
+                    output: `Failed to save memory: ${msg}`,
+                    metadata: { error: msg } as BrainMetadata
+                }
+            }
+        }
+
+        if (params.action === "recall") {
+            try {
+                const content = await fs.readFile(memoryFile, "utf-8").catch(() => "")
+                if (!content.trim()) {
+                    return {
+                        title: "No Memories",
+                        output: "No memories stored yet. Use action='remember' to save notes.",
+                        metadata: { count: 0 } as BrainMetadata
+                    }
+                }
+                return {
+                    title: "Brain Memory",
+                    output: content,
+                    metadata: { count: content.split("---").length - 1 } as BrainMetadata
+                }
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error)
+                return {
+                    title: "Memory Error",
+                    output: `Failed to recall memory: ${msg}`,
+                    metadata: { error: msg } as BrainMetadata
+                }
+            }
+        }
+
+        // Check API Key (only needed for index/search/clear)
         if (!apiKey) {
             if (params.action === "search" || params.action === "index") {
                 return {
@@ -232,8 +284,8 @@ export const BrainTool = Tool.define("brain", {
                     metadata: { count: 0 } as BrainMetadata
                 }
 
-                const output = scored.map((r: any) => {
-                    const doc = r.item || r.doc as Doc
+                const output = scored.map((r: { doc: Doc; score: number }) => {
+                    const doc = r.doc
                     return `[Score: ${r.score.toFixed(4)}] ${doc.url}\n${doc.content.slice(0, 300).replace(/\n/g, ' ')}...`
                 }).join("\n\n")
 

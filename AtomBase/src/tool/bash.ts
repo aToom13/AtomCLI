@@ -339,3 +339,6 @@ export const BashTool = Tool.define("bash", async () => {
     },
   }
 })
+
+// Alias for backward compatibility with cli/cmd imports
+export { BashTool as Bash }

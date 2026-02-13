@@ -75,3 +75,6 @@ export const GlobTool = Tool.define("glob", {
     }
   },
 })
+
+// Alias for backward compatibility with cli/cmd imports
+export { GlobTool as Glob }

@@ -9,7 +9,7 @@ import { Bus } from "@/bus"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { Plugin } from "@/plugin"
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
 import { LLM } from "./llm"
 import { Config } from "@/config/config"
 import { SessionCompaction } from "./compaction"
@@ -23,18 +23,25 @@ export namespace SessionProcessor {
   const log = Log.create({ service: "session.processor" })
 
   export type Info = Awaited<ReturnType<typeof create>>
-  export type Result = Awaited<ReturnType<Info["process"]>>
+  export type ProcessResult = {
+    status: "compact" | "stop" | "continue"
+    fallbackModel?: Provider.Model
+  }
+  export type Result = ProcessResult
 
   export function create(input: {
     assistantMessage: MessageV2.Assistant
     sessionID: string
     model: Provider.Model
     abort: AbortSignal
+    initialFallbackModel?: Provider.Model
   }) {
     const toolcalls: Record<string, MessageV2.ToolPart> = {}
     let snapshot: string | undefined
     let blocked = false
     let attempt = 0
+    let fallbackAttempted = !!input.initialFallbackModel
+    let currentFallbackModel = input.initialFallbackModel
     let needsCompaction = false
     let userMessageText: string | undefined // Store user message for context
 
@@ -47,12 +54,15 @@ export namespace SessionProcessor {
       },
       async process(streamInput: LLM.StreamInput, options?: {
         enableAmendments?: boolean
-        fallbackChain?: ModelFallback.FallbackChain
       }) {
         log.info("process")
         needsCompaction = false
-        const shouldBreak = (await Config.get()).experimental?.continue_loop_on_deny !== true
-        
+
+        // If we have a fallback model from previous iteration, use it
+        if (currentFallbackModel) {
+          streamInput = { ...streamInput, model: currentFallbackModel }
+        }
+
         // Store user message text for semantic learning
         try {
           const userMsg = streamInput.user
@@ -62,37 +72,24 @@ export namespace SessionProcessor {
         } catch (error) {
           log.warn("Failed to get user message text", { error })
         }
-        
+
         // Enable amendment processing by default
         const enableAmendments = options?.enableAmendments !== false
         if (enableAmendments) {
           AmendmentQueue.setProcessing(input.sessionID, true)
         }
-        
+
         while (true) {
           try {
             let currentText: MessageV2.TextPart | undefined
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
-            
-            // Use fallback chain if provided
-            let stream: Awaited<ReturnType<typeof LLM.stream>>
-            if (options?.fallbackChain) {
-              const fallbackResult = await ModelFallback.streamWithFallback(
-                options.fallbackChain,
-                streamInput,
-                { maxRetriesPerModel: 1, enableCostTracking: true }
-              )
-              if (!fallbackResult.success) {
-                throw fallbackResult.error || new Error("All fallback models failed")
-              }
-              stream = fallbackResult.result!
-            } else {
-              stream = await LLM.stream(streamInput)
-            }
+
+            // Direct stream — errors happen during fullStream iteration, caught below
+            const stream = await LLM.stream(streamInput)
 
             for await (const value of stream.fullStream) {
               input.abort.throwIfAborted()
-              
+
               // Check for amendments during streaming
               if (enableAmendments) {
                 const amendment = AmendmentQueue.dequeue(input.sessionID)
@@ -115,7 +112,7 @@ export namespace SessionProcessor {
                   }
                 }
               }
-              
+
               switch (value.type) {
                 case "start":
                   SessionStatus.set(input.sessionID, { type: "busy" })
@@ -275,7 +272,9 @@ export namespace SessionProcessor {
                       value.error instanceof PermissionNext.RejectedError ||
                       value.error instanceof Question.RejectedError
                     ) {
-                      blocked = shouldBreak
+                      // Don't block the session on permission/question rejection
+                      // Just skip this tool call and continue with the next one
+                      blocked = false
                     }
                     delete toolcalls[value.toolCallId]
                   }
@@ -383,7 +382,7 @@ export namespace SessionProcessor {
                     }
                     if (value.providerMetadata) currentText.metadata = value.providerMetadata
                     await Session.updatePart(currentText)
-                    
+
                     // Learn from assistant response with user message context
                     try {
                       const { SessionMemoryIntegration } = await import("../memory/integration/session")
@@ -419,6 +418,81 @@ export namespace SessionProcessor {
             if (retry !== undefined) {
               attempt++
               const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
+
+              // FALLBACK: On first retryable error, try switching to a fallback model
+              // instead of waiting (delay can be 43277s)
+              if (!fallbackAttempted) {
+                try {
+                  // Get fallback models from config or use defaults
+                  const config = await Config.get()
+                  const fallbackModels = [
+                    config.fallback?.secondary,
+                    config.fallback?.tertiary,
+                    ...ModelFallback.DEFAULT_FALLBACK_MODELS,
+                  ].filter(Boolean) as string[]
+
+                  // Check if fallback is enabled
+                  if (config.fallback?.enabled === false) {
+                    log.info("fallback disabled by config")
+                  } else {
+                    // Try each fallback model in order
+                    for (const fallbackModelID of fallbackModels) {
+                      try {
+                        const parsed = Provider.parseModel(fallbackModelID)
+                        const fallbackModel = await Provider.getModel(parsed.providerID, parsed.modelID)
+
+                        // Skip if same as current model
+                        if (fallbackModel.providerID === streamInput.model.providerID &&
+                          fallbackModel.id === streamInput.model.id) {
+                          continue
+                        }
+
+                        log.warn("switching to fallback model", {
+                          from: `${streamInput.model.providerID}/${streamInput.model.id}`,
+                          to: `${fallbackModel.providerID}/${fallbackModel.id}`,
+                          reason: retry,
+                          originalDelay: delay,
+                        })
+
+                        streamInput = { ...streamInput, model: fallbackModel }
+                        // Update assistant message model info for UI display
+                        input.assistantMessage.modelID = fallbackModel.id
+                        input.assistantMessage.providerID = fallbackModel.providerID
+                        // Publish message update event so UI refreshes
+                        Bus.publish(MessageV2.Event.Updated, {
+                          info: input.assistantMessage,
+                        })
+                        attempt = 0
+                        fallbackAttempted = true
+                        currentFallbackModel = fallbackModel
+
+                        SessionStatus.set(input.sessionID, {
+                          type: "retry",
+                          attempt: 0,
+                          message: `Switching to ${fallbackModel.providerID}/${fallbackModel.id} (${retry})`,
+                          next: Date.now() + 1000,
+                        })
+                        await SessionRetry.sleep(1000, input.abort).catch(() => { })
+                        break
+                      } catch (modelErr) {
+                        log.warn("failed to load fallback model", {
+                          model: fallbackModelID,
+                          error: (modelErr as Error).message,
+                        })
+                      }
+                    }
+                  }
+                } catch (fallbackErr) {
+                  log.warn("failed to find fallback provider", {
+                    error: (fallbackErr as Error).message,
+                  })
+                }
+
+                if (fallbackAttempted) {
+                  continue // Retry with new model
+                }
+              }
+
               SessionStatus.set(input.sessionID, {
                 type: "retry",
                 attempt,
@@ -467,16 +541,16 @@ export namespace SessionProcessor {
           }
           input.assistantMessage.time.completed = Date.now()
           await Session.updateMessage(input.assistantMessage)
-          
+
           // Cleanup amendment processing state
           if (enableAmendments) {
             AmendmentQueue.setProcessing(input.sessionID, false)
           }
-          
-          if (needsCompaction) return "compact"
-          if (blocked) return "stop"
-          if (input.assistantMessage.error) return "stop"
-          return "continue"
+
+          if (needsCompaction) return { status: "compact" as const, fallbackModel: currentFallbackModel }
+          if (blocked) return { status: "stop" as const, fallbackModel: currentFallbackModel }
+          if (input.assistantMessage.error) return { status: "stop" as const, fallbackModel: currentFallbackModel }
+          return { status: "continue" as const, fallbackModel: currentFallbackModel }
         }
       },
     }

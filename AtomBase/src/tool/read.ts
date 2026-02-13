@@ -15,10 +15,9 @@ const MAX_BYTES = 50 * 1024
 
 /**
  * Validates file path to prevent path traversal attacks
- * Ensures the resolved path is within allowed project boundaries
- * In test mode, allows access to /tmp for test files
+ * Returns path info for external directory check
  */
-function validateFilePath(filePath: string): string {
+function validateFilePath(filePath: string): { normalizedPath: string; isExternal: boolean } {
   const isTestMode = process.env.NODE_ENV === "test" || process.env.ATOMCLI_TEST === "true"
 
   // Check for path traversal attempts using .. before resolving
@@ -37,21 +36,16 @@ function validateFilePath(filePath: string): string {
 
   // In test mode, allow access to /tmp for test files
   if (isTestMode && normalizedPath.startsWith("/tmp")) {
-    return normalizedPath
+    return { normalizedPath, isExternal: false }
   }
 
   // Get the allowed base directory
   const allowedBase = path.resolve(Instance.worktree || Instance.directory)
 
   // Check if the normalized path is within allowed boundaries
-  if (!normalizedPath.startsWith(allowedBase)) {
-    throw new Error(
-      `File path "${filePath}" is outside the allowed project boundaries. ` +
-        `For security, files can only be read within the project directory.`,
-    )
-  }
+  const isExternal = !normalizedPath.startsWith(allowedBase)
 
-  return normalizedPath
+  return { normalizedPath, isExternal }
 }
 
 export const ReadTool = Tool.define("read", {
@@ -63,10 +57,13 @@ export const ReadTool = Tool.define("read", {
   }),
   async execute(params, ctx) {
     // Validate file path to prevent path traversal
-    const filepath = validateFilePath(params.filePath)
+    const { normalizedPath: filepath, isExternal } = validateFilePath(params.filePath)
     const title = path.relative(Instance.worktree, filepath)
 
-    await assertExternalDirectory(ctx, filepath)
+    // If external, ask for permission first
+    if (isExternal) {
+      await assertExternalDirectory(ctx, filepath)
+    }
 
     await ctx.ask({
       permission: "read",
@@ -235,3 +232,6 @@ async function isBinaryFile(filepath: string, file: Bun.BunFile): Promise<boolea
   // If >30% non-printable characters, consider it binary
   return nonPrintableCount / bytes.length > 0.3
 }
+
+// Alias for backward compatibility with cli/cmd imports
+export { ReadTool as Read }

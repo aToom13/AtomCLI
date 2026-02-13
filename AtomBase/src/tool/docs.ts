@@ -20,16 +20,16 @@ export const DocsTool = Tool.define("docs", {
     files: z.string().array().optional().describe("Specific files to document (default: all source files)"),
     output: z.string().default("./docs").describe("Output directory for generated documentation"),
   }),
-  async execute(input, ctx) {
+  async execute(input, ctx): Promise<any> {
     const log = Log.create({ service: "docs-tool" })
-    
+
     try {
       return await Instance.provide({
         directory: process.cwd(),
         fn: async () => {
           // Find files to process
           let files: string[] = input.files || []
-          
+
           if (files.length === 0) {
             const glob = new Bun.Glob("src/**/*.{ts,js}")
             for await (const file of glob.scan(".")) {
@@ -49,7 +49,7 @@ export const DocsTool = Tool.define("docs", {
 
           // Parse all source files
           const allElements: DocsGen.CodeElement[] = []
-          
+
           for (const file of files) {
             try {
               const elements = await DocsGen.parseSourceFile(file)

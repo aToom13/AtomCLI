@@ -6,6 +6,20 @@ import { Instance } from "../project/instance"
 import { Ripgrep } from "../file/ripgrep"
 import { assertExternalDirectory } from "./external-directory"
 
+// Preprocess to handle JSON string serialization from LLM tool calls
+const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
+  return z.preprocess((val) => {
+    if (typeof val === "string") {
+      try {
+        return JSON.parse(val)
+      } catch {
+        return val
+      }
+    }
+    return val
+  }, schema)
+}
+
 export const IGNORE_PATTERNS = [
   "node_modules/",
   "__pycache__/",
@@ -39,11 +53,10 @@ export const ListTool = Tool.define("list", {
   description: DESCRIPTION,
   parameters: z.object({
     path: z.string().describe("The absolute path to the directory to list (must be absolute, not relative)").optional(),
-    ignore: z.array(z.string()).describe("List of glob patterns to ignore").optional(),
+    ignore: parseJsonIfString(z.array(z.string())).describe("List of glob patterns to ignore").optional(),
   }),
   async execute(params, ctx) {
     const searchPath = path.resolve(Instance.directory, params.path || ".")
-
 
     await ctx.ask({
       permission: "list",

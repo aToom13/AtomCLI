@@ -18,8 +18,13 @@ export const UpgradeCommand = {
         type: "string",
         choices: ["curl", "npm", "pnpm", "bun", "brew"],
       })
+      .option("channel", {
+        alias: "c",
+        describe: "release channel (e.g., beta, alfa, rc, demo)",
+        type: "string",
+      })
   },
-  handler: async (args: { target?: string; method?: string }) => {
+  handler: async (args: { target?: string; method?: string; channel?: string }) => {
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
@@ -42,9 +47,90 @@ export const UpgradeCommand = {
       }
     }
     prompts.log.info("Using method: " + method)
-    const target = args.target ? args.target.replace(/^v/, "") : await Installation.latest()
 
-    if (Installation.VERSION === target) {
+    let target: string
+
+    if (args.target) {
+      // Direct target specified via CLI arg
+      target = args.target.replace(/^v/, "")
+    } else {
+      // Interactive version selection menu
+      const spinner = prompts.spinner()
+      spinner.start("Fetching available versions...")
+      const releases = await Installation.listReleases(10)
+      const latestVersion = await Installation.latest(undefined, args.channel)
+      spinner.stop("Versions fetched")
+
+      if (releases.length === 0) {
+        // Fallback to latest if we can't get the list
+        prompts.log.warn("Could not fetch version list, using latest")
+        target = latestVersion
+      } else {
+        // Build options: latest first, then other releases, then "Build from Source"
+        const options: { value: string; label: string; hint?: string }[] = []
+
+        for (const version of releases) {
+          const isCurrent = Installation.compareVersions(version, Installation.VERSION) === 0
+          const isLatest = Installation.compareVersions(version, latestVersion) === 0
+          const hints: string[] = []
+          if (isLatest) hints.push("Latest")
+          if (isCurrent) hints.push("Current")
+          if (version.includes("-")) hints.push(version.split("-")[1]!)
+
+          options.push({
+            value: version,
+            label: `v${version}`,
+            hint: hints.length > 0 ? hints.join(", ") : undefined,
+          })
+        }
+
+        options.push({
+          value: "__source__",
+          label: "🔧 Build from Source",
+          hint: "Clone & compile latest from main branch",
+        })
+
+        const selected = await prompts.select({
+          message: "Select version to install:",
+          options,
+          initialValue: latestVersion,
+        })
+
+        if (prompts.isCancel(selected)) {
+          prompts.outro("Cancelled")
+          return
+        }
+
+        if (selected === "__source__") {
+          prompts.log.info("Building from source...")
+          const buildSpinner = prompts.spinner()
+          buildSpinner.start("Cloning and building AtomCLI from source...")
+          try {
+            const proc = Bun.spawn(
+              ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --source"],
+              { stdout: "pipe", stderr: "pipe" },
+            )
+            await proc.exited
+            if (proc.exitCode !== 0) {
+              const stderr = await new Response(proc.stderr).text()
+              buildSpinner.stop("Build failed", 1)
+              prompts.log.error(stderr || "Build from source failed")
+            } else {
+              buildSpinner.stop("Build from source complete")
+            }
+          } catch (e) {
+            buildSpinner.stop("Build failed", 1)
+            prompts.log.error((e as Error).message)
+          }
+          prompts.outro("Done")
+          return
+        }
+
+        target = selected as string
+      }
+    }
+
+    if (Installation.compareVersions(Installation.VERSION, target) === 0) {
       prompts.log.warn(`atomcli upgrade skipped: ${target} is already installed`)
       prompts.outro("Done")
       return

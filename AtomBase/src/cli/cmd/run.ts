@@ -6,7 +6,7 @@ import { Flag } from "../../flag/flag"
 import { bootstrap } from "../bootstrap"
 import { Command } from "../../command"
 import { EOL } from "os"
-import { select } from "@clack/prompts"
+import * as prompts from "@clack/prompts"
 import { createAtomcliClient, type AtomcliClient } from "@atomcli/sdk/v2"
 import { Server } from "../../server/server"
 import { Provider } from "../../provider/provider"
@@ -221,7 +221,27 @@ export const RunCommand = cmd({
           if (event.type === "permission.asked") {
             const permission = event.properties
             if (permission.sessionID !== sessionID) continue
-            const result = await select({
+
+            // Auto-reject after 20s timeout using prompts.cancel()
+            const PERMISSION_TIMEOUT_MS = 20_000
+            let resolved = false
+
+            const autoRejectTimer = setTimeout(() => {
+              if (!resolved) {
+                resolved = true
+                UI.println()
+                UI.println(
+                  UI.Style.TEXT_WARNING_BOLD + "!",
+                  UI.Style.TEXT_NORMAL,
+                  "Permission auto-rejected after 20s timeout",
+                )
+                // Use prompts.cancel() to properly cancel the active prompt
+                prompts.cancel("Permission auto-rejected after 20s timeout")
+              }
+            }, PERMISSION_TIMEOUT_MS)
+
+            // Show select prompt
+            const result = await prompts.select({
               message: `Permission required: ${permission.permission} (${permission.patterns.join(", ")})`,
               options: [
                 { value: "once", label: "Allow once" },
@@ -229,8 +249,14 @@ export const RunCommand = cmd({
                 { value: "reject", label: "Reject" },
               ],
               initialValue: "once",
-            }).catch(() => "reject")
-            const response = (result.toString().includes("cancel") ? "reject" : result) as "once" | "always" | "reject"
+            })
+
+            resolved = true
+            clearTimeout(autoRejectTimer)
+
+            // Handle clack cancel symbol (returns Symbol.for("clack:cancel") when cancelled)
+            const response = (result === Symbol.for("clack:cancel") ? "reject" : result) as "once" | "always" | "reject"
+
             await sdk.permission.respond({
               sessionID,
               permissionID: permission.id,

@@ -44,6 +44,21 @@ export namespace Tool {
   export type InferParameters<T extends Info> = T extends Info<infer P> ? z.infer<P> : never
   export type InferMetadata<T extends Info> = T extends Info<any, infer M> ? M : never
 
+  /**
+   * Default validation error formatter for Zod errors
+   */
+  function defaultFormatValidationError(toolId: string, error: z.ZodError): string {
+    const issues = error.issues
+    const messages: string[] = []
+
+    for (const issue of issues) {
+      const path = issue.path.length > 0 ? issue.path.join(".") : "root"
+      messages.push(`  • ${path}: ${issue.message}`)
+    }
+
+    return `The ${toolId} tool received invalid arguments:\n${messages.join("\n")}\n\nPlease check the parameter types and try again.`
+  }
+
   export function define<Parameters extends z.ZodType, Result extends Metadata>(
     id: string,
     init: Info<Parameters, Result>["init"] | Awaited<ReturnType<Info<Parameters, Result>["init"]>>,
@@ -53,17 +68,20 @@ export namespace Tool {
       init: async (initCtx) => {
         const toolInfo = init instanceof Function ? await init(initCtx) : init
         const execute = toolInfo.execute
+
+        // Use custom formatValidationError or default
+        const formatError = toolInfo.formatValidationError
+          ? toolInfo.formatValidationError
+          : (err: z.ZodError) => defaultFormatValidationError(id, err)
+
         toolInfo.execute = async (args, ctx) => {
           try {
             toolInfo.parameters.parse(args)
           } catch (error) {
-            if (error instanceof z.ZodError && toolInfo.formatValidationError) {
-              throw new Error(toolInfo.formatValidationError(error), { cause: error })
+            if (error instanceof z.ZodError) {
+              throw new Error(formatError(error), { cause: error })
             }
-            throw new Error(
-              `The ${id} tool was called with invalid arguments: ${error}.\nPlease rewrite the input so it satisfies the expected schema.`,
-              { cause: error },
-            )
+            throw new Error(`The ${id} tool encountered an unexpected error: ${error}`, { cause: error })
           }
           const result = await execute(args, ctx)
           // skip truncation for tools that handle it themselves

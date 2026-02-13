@@ -51,12 +51,17 @@ CHAIN TOOL: `chainupdate`
 1. START CHAIN (call EXACTLY ONCE at beginning):
    ```
    chainupdate action="start" steps=[
-     {"name": "Proje kurulumu", "todos": ["Klasör oluştur", "Bağımlılıkları yükle"]},
-     {"name": "Araştırma", "todos": ["Web'de ara", "Rapor yaz"]},
-     {"name": "Ana kod", "todos": ["Temel yapı", "Ana logic", "Helper fonksiyonlar"]},
-     {"name": "Test", "todos": ["Çalıştır", "Hataları düzelt"]}
+     {"name": "Proje kurulumu", "description": "Projenin temel yapısını oluştur", "todos": ["Klasör oluştur", "Bağımlılıkları yükle"]},
+     {"name": "Araştırma", "description": "Gerekli bilgileri topla", "todos": ["Web'de ara", "Rapor yaz"]},
+     {"name": "Ana kod", "description": "Ana uygulama kodunu yaz", "todos": ["Temel yapı", "Ana logic", "Helper fonksiyonlar"]},
+     {"name": "Test", "description": "Uygulamayı test et", "todos": ["Çalıştır", "Hataları düzelt"]}
    ]
    ```
+   
+   **Important:** Each step object can have:
+   - `name` (required): The step title
+   - `description` (optional): A brief explanation of the step
+   - `todos` (optional): Array of sub-tasks for this step
 
 2. UPDATE STATUS (while working):
    ```
@@ -217,10 +222,10 @@ User: "Flappy Bird oyunu yap pygame ile"
 
 1. Chain oluştur:
    chainupdate action="start" steps=[
-     {"name": "Proje yapısı", "todos": ["flappybird klasör", "requirements.txt"]},
-     {"name": "Araştırma", "todos": ["Flappy Bird mekaniği", "bird.md rapor"]},
-     {"name": "Ana oyun", "todos": ["Pygame window", "Bird class", "Pipe sistemi"]},
-     {"name": "Test", "todos": ["Oyunu çalıştır", "Bug fix"]}
+     {"name": "Proje yapısı", "description": "Oyun projesinin temel dosyalarını oluştur", "todos": ["flappybird klasör", "requirements.txt"]},
+     {"name": "Araştırma", "description": "Flappy Bird oyun mekaniğini araştır", "todos": ["Flappy Bird mekaniği", "bird.md rapor"]},
+     {"name": "Ana oyun", "description": "Oyunun ana kodunu yaz", "todos": ["Pygame window", "Bird class", "Pipe sistemi"]},
+     {"name": "Test", "description": "Oyunu test et ve hataları düzelt", "todos": ["Oyunu çalıştır", "Bug fix"]}
    ]
 
 2. Step 1 üzerinde çalış:

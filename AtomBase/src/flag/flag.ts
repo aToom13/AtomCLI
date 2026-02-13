@@ -38,6 +38,13 @@ export namespace Flag {
   export const ATOMCLI_EXPERIMENTAL_LSP_TY = truthy("ATOMCLI_EXPERIMENTAL_LSP_TY")
   export const ATOMCLI_EXPERIMENTAL_LSP_TOOL = ATOMCLI_EXPERIMENTAL || truthy("ATOMCLI_EXPERIMENTAL_LSP_TOOL")
 
+  // YOLO mode — full autonomous permissions (except window_control which always requires permission)
+  export let ATOMCLI_YOLO = truthy("ATOMCLI_YOLO")
+  /** Enable YOLO mode at runtime (called by /yolo command) */
+  export function enableYolo() {
+    ATOMCLI_YOLO = true
+  }
+
   function truthy(key: string) {
     const value = process.env[key]?.toLowerCase()
     return value === "true" || value === "1"

@@ -12,15 +12,10 @@ export const SysadminTool = Tool.define("sysadmin", {
         command: z.enum(["upgrade"]).describe("The operation to perform"),
     }),
     execute: async ({ command }, ctx) => {
+        const log = Log.create({ service: "tool:sysadmin" })
+
         try {
-            const log = Log.create({ service: "tool:sysadmin" })
-
             if (command === "upgrade") {
-                // ... (keep existing logic) ...
-                // I need to copy the whole body or use a smaller replacement.
-                // Coping content from previous step but wrapped.
-                // Actually, replace_file_content is partial. I can start at line 14.
-
                 // 1. Check for saved password
                 const passFile = `${Global.Path.home}/.atomcli/.sysadmin_pass`
                 let password = ""
@@ -52,21 +47,24 @@ export const SysadminTool = Tool.define("sysadmin", {
                         return {
                             title: "System Update",
                             output: "Operation cancelled: No password provided.",
-                            metadata: {}
+                            metadata: { exitCode: -1 as number | null },
                         }
                     }
                     password = answer
                 }
 
-                // 3. Execute update
+                // 3. Execute update — pipe password via stdin to prevent command injection
                 log.info("starting system upgrade")
 
-                const cmd = `echo "${password}" | sudo -S apt update && echo "${password}" | sudo -S apt upgrade -y`
-
-                const proc = spawn(["bash", "-c", cmd], {
+                const proc = spawn(["sudo", "-S", "bash", "-c", "apt update && apt upgrade -y"], {
+                    stdin: "pipe",
                     stdout: "pipe",
-                    stderr: "pipe"
+                    stderr: "pipe",
                 })
+
+                // Safely pipe password to sudo stdin (no shell interpolation)
+                proc.stdin.write(password + "\n")
+                proc.stdin.end()
 
                 const output = await new Response(proc.stdout).text()
                 const error = await new Response(proc.stderr).text()
@@ -81,27 +79,27 @@ export const SysadminTool = Tool.define("sysadmin", {
                     return {
                         title: "System Update",
                         output: msg,
-                        metadata: { exitCode: proc.exitCode }
+                        metadata: { exitCode: proc.exitCode as number | null },
                     }
                 }
 
                 return {
                     title: "System Update",
                     output: `System update completed successfully:\n${output}`,
-                    metadata: { exitCode: 0 }
+                    metadata: { exitCode: 0 as number | null },
                 }
             }
 
             return {
                 title: "System Update",
                 output: "Unknown command",
-                metadata: {}
+                metadata: { exitCode: -1 as number | null },
             }
         } catch (e) {
             return {
                 title: "System Update",
                 output: `Error executing tool: ${e}`,
-                metadata: { error: String(e) }
+                metadata: { exitCode: -1 as number | null },
             }
         }
     },

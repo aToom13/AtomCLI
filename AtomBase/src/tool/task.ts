@@ -56,37 +56,50 @@ export const TaskTool = Tool.define("task", async (ctx) => {
 
       const agent = await Agent.get(params.subagent_type)
       if (!agent) throw new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`)
+
+      // Get parent session for permission inheritance
+      const parentSession = await Session.get(ctx.sessionID).catch(() => null)
+      const parentPermissions = parentSession?.permission ?? []
+
       const session = await iife(async () => {
         if (params.session_id) {
-          const found = await Session.get(params.session_id).catch(() => {})
+          const found = await Session.get(params.session_id).catch(() => { })
           if (found) return found
         }
+
+        // Base permissions for subagents (deny tools that shouldn't be nested)
+        const subagentBasePermissions: PermissionNext.Rule[] = [
+          {
+            permission: "todowrite",
+            pattern: "*",
+            action: "deny" as const,
+          },
+          {
+            permission: "todoread",
+            pattern: "*",
+            action: "deny" as const,
+          },
+          {
+            permission: "task",
+            pattern: "*",
+            action: "deny" as const,
+          },
+        ]
+
+        // Inherit parent permissions (but subagent base permissions take precedence)
+        const inheritedPermissions = PermissionNext.merge(parentPermissions, subagentBasePermissions)
+
+        // Add experimental primary_tools if configured
+        const experimentalPermissions = (config.experimental?.primary_tools ?? []).map((t) => ({
+          pattern: "*",
+          action: "allow" as const,
+          permission: t,
+        }))
 
         return await Session.create({
           parentID: ctx.sessionID,
           title: params.description + ` (@${agent.name} subagent)`,
-          permission: [
-            {
-              permission: "todowrite",
-              pattern: "*",
-              action: "deny",
-            },
-            {
-              permission: "todoread",
-              pattern: "*",
-              action: "deny",
-            },
-            {
-              permission: "task",
-              pattern: "*",
-              action: "deny",
-            },
-            ...(config.experimental?.primary_tools?.map((t) => ({
-              pattern: "*",
-              action: "allow" as const,
-              permission: t,
-            })) ?? []),
-          ],
+          permission: PermissionNext.merge(inheritedPermissions, experimentalPermissions),
         })
       })
       const msg = await MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID })

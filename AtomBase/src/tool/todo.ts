@@ -3,10 +3,24 @@ import { Tool } from "./tool"
 import DESCRIPTION_WRITE from "./todowrite.txt"
 import { Todo } from "../session/todo"
 
+// Preprocess to handle JSON string serialization from LLM tool calls
+const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
+  return z.preprocess((val) => {
+    if (typeof val === "string") {
+      try {
+        return JSON.parse(val)
+      } catch {
+        return val
+      }
+    }
+    return val
+  }, schema)
+}
+
 export const TodoWriteTool = Tool.define("todowrite", {
   description: DESCRIPTION_WRITE,
   parameters: z.object({
-    todos: z.array(z.object(Todo.Info.shape)).describe("The updated todo list"),
+    todos: parseJsonIfString(z.array(z.object(Todo.Info.shape))).describe("The updated todo list"),
   }),
   async execute(params, ctx) {
     await ctx.ask({

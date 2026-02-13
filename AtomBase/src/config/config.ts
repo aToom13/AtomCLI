@@ -627,6 +627,13 @@ export namespace Config {
           codesearch: PermissionAction.optional(),
           lsp: PermissionRule.optional(),
           doom_loop: PermissionAction.optional(),
+          chainupdate: PermissionAction.optional().describe(
+            "Permission for chain progress bar updates (usually auto-allowed)",
+          ),
+          // MCP tool permissions - allows pattern matching for MCP tool names (e.g., "filesystem_read", "memory_create")
+          mcp: PermissionRule.optional().describe(
+            "Permission for MCP tool calls (pattern matches tool names like 'filesystem_read')",
+          ),
         })
         .catchall(PermissionRule)
         .or(PermissionAction),
@@ -1007,6 +1014,14 @@ export namespace Config {
         .string()
         .describe("Small model to use for tasks like title generation in the format of provider/model")
         .optional(),
+      fallback: z
+        .object({
+          enabled: z.boolean().optional().default(true).describe("Enable fallback mechanism"),
+          secondary: z.string().optional().describe("Secondary fallback model (e.g., atomcli/minimax-m2.5-free)"),
+          tertiary: z.string().optional().describe("Tertiary fallback model (e.g., atomcli/gpt-5-nano)"),
+        })
+        .optional()
+        .describe("Fallback model configuration for automatic model switching on errors"),
       default_agent: z
         .string()
         .optional()

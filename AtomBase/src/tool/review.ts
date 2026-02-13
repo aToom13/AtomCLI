@@ -20,9 +20,9 @@ export const ReviewTool = Tool.define("review", {
     repo: z.string().optional().describe("Repository (owner/repo format, for PR review)"),
     target: z.enum(["quality", "security", "performance", "all"]).default("all").describe("Review focus area"),
   }),
-  async execute(input, ctx) {
+  async execute(input, ctx): Promise<any> {
     const log = Log.create({ service: "review-tool" })
-    
+
     try {
       // If PR review requested
       if (input.pr && input.repo) {
@@ -46,10 +46,10 @@ export const ReviewTool = Tool.define("review", {
             return {
               title: "PR Review Complete",
               output: `Reviewed PR #${input.pr} in ${input.repo}. Found ${result.stats.total} issues.`,
-              metadata: { 
-                success: true, 
+              metadata: {
+                success: true,
                 issues_count: issues.length,
-                summary: result.summary 
+                summary: result.summary
               },
             }
           }
@@ -62,7 +62,7 @@ export const ReviewTool = Tool.define("review", {
           directory: process.cwd(),
           fn: async () => {
             const content = await Bun.file(input.file!).text()
-            
+
             // Simple code analysis
             const issues: Array<{
               severity: "info" | "warning" | "error" | "suggestion"
@@ -73,7 +73,7 @@ export const ReviewTool = Tool.define("review", {
             }> = []
 
             const lines = content.split("\n")
-            
+
             // Check for common issues
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i]
@@ -115,10 +115,10 @@ export const ReviewTool = Tool.define("review", {
             return {
               title: "Code Review Complete",
               output: `Reviewed ${input.file}. Found ${issues.length} issues.`,
-              metadata: { 
-                success: true, 
+              metadata: {
+                success: true,
                 issues_count: issues.length,
-                summary: issues.length > 0 
+                summary: issues.length > 0
                   ? `Code review found ${issues.length} potential improvements.`
                   : "Code looks good! No major issues found."
               },
@@ -141,7 +141,7 @@ export const ReviewTool = Tool.define("review", {
         // Similar checks as file review
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i]
-          
+
           if (line.match(/console\.(log|warn|error)/)) {
             issues.push({
               severity: "warning",
@@ -155,10 +155,10 @@ export const ReviewTool = Tool.define("review", {
         return {
           title: "Code Review Complete",
           output: `Reviewed code snippet. Found ${issues.length} issues.`,
-          metadata: { 
-            success: true, 
+          metadata: {
+            success: true,
             issues_count: issues.length,
-            summary: issues.length > 0 
+            summary: issues.length > 0
               ? `Found ${issues.length} potential improvements in the code.`
               : "Code looks good!"
           },

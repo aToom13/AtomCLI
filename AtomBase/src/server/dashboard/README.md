@@ -2,33 +2,33 @@
 
 Modern, modüler ve responsive web dashboard for AtomCLI.
 
-## ✨ Yapılan İyileştirmeler
+## Yapılan İyileştirmeler
 
 ### 1. Modüler Yapı
-- ✅ CSS ve JavaScript dosyaları ayrıldı
-- ✅ Her bileşen kendi dosyasında
-- ✅ Kolay bakım ve güncelleme
+- X CSS ve JavaScript dosyaları ayrıldı
+- X Her bileşen kendi dosyasında
+- X Kolay bakım ve güncelleme
 
 ### 2. Responsive Tasarım
-- ✅ PC'de ferah ve geniş arayüz
-- ✅ Tablet için optimize edilmiş görünüm
-- ✅ Mobil cihazlar için dokunmatik dostu
-- ✅ Tüm ekran boyutlarında mükemmel görünüm
+- X PC'de ferah ve geniş arayüz
+- X Tablet için optimize edilmiş görünüm
+- X Mobil cihazlar için dokunmatik dostu
+- X Tüm ekran boyutlarında mükemmel görünüm
 
 ### 3. Model Filtreleme Sistemi
-- ✅ Model arama özelliği
-- ✅ Ücretsiz modeller filtresi
-- ✅ Bağlı sağlayıcılar filtresi
-- ✅ Dinamik filtreleme
+- X Model arama özelliği
+- X Ücretsiz modeller filtresi
+- X Bağlı sağlayıcılar filtresi
+- X Dinamik filtreleme
 
 ### 4. Gelişmiş Özellikler
-- ✅ Server-Sent Events ile gerçek zamanlı güncellemeler
-- ✅ Toast bildirimleri
-- ✅ Modal pencereler
-- ✅ Oturum yönetimi
-- ✅ Dosya tarayıcı
+- X Server-Sent Events ile gerçek zamanlı güncellemeler
+- X Toast bildirimleri
+- X Modal pencereler
+- X Oturum yönetimi
+- X Dosya tarayıcı
 
-## 📁 Yapı
+## Yapı
 
 ```
 dashboard/
@@ -51,7 +51,7 @@ dashboard/
 └── README.md             # Bu dosya
 ```
 
-## 🎨 Tasarım İyileştirmeleri
+## Tasarım İyileştirmeleri
 
 ### PC (Desktop)
 - Daha geniş padding ve spacing
@@ -70,7 +70,7 @@ dashboard/
 - Dokunmatik dostu butonlar
 - Tam genişlik elementler
 
-## 🚀 Kullanım
+## Kullanım
 
 Dashboard `/dashboard` endpoint'inde çalışır.
 
@@ -80,7 +80,7 @@ Dashboard `/dashboard` endpoint'inde çalışır.
 3. **Connected**: Sadece bağlı sağlayıcıları göster
 4. **Clear**: Tüm filtreleri kaldır
 
-## 🔧 Teknik Detaylar
+## Teknik Detaylar
 
 ### API Endpoints
 - `/dashboard` - Ana sayfa
@@ -93,12 +93,8 @@ Dashboard `/dashboard` endpoint'inde çalışır.
 - **Tablet**: 768px - 1024px
 - **Desktop**: > 1024px
 
-## 📝 Notlar
+## Notlar
 
 - Sunucu yeniden başlatıldığında değişiklikler yüklenir
 - CSS ve JS dosyaları cache edilir (1 saat)
 - Tüm dosyalar modüler yapıda
-
-## 📄 Lisans
-
-AtomCLI projesi kapsamında.

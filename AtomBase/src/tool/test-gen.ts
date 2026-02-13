@@ -20,9 +20,9 @@ export const TestGenTool = Tool.define("test_gen", {
     edge_cases: z.boolean().default(true).describe("Include edge case tests"),
     run: z.boolean().default(false).describe("Run tests after generation"),
   }),
-  async execute(input, ctx) {
+  async execute(input, ctx): Promise<any> {
     const log = Log.create({ service: "test-gen-tool" })
-    
+
     try {
       return await Instance.provide({
         directory: process.cwd(),
@@ -39,7 +39,7 @@ export const TestGenTool = Tool.define("test_gen", {
 
           // Analyze source file
           const functions = await TestGen.analyzeFile(input.file)
-          
+
           if (functions.length === 0) {
             return {
               title: "No Functions Found",

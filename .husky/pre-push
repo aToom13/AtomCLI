@@ -1,0 +1,21 @@
+#!/bin/sh
+
+# Read version from AtomBase/package.json
+VERSION=$(bun -e 'console.log(require("./AtomBase/package.json").version)')
+TAG="v$VERSION"
+
+# Check if tag exists locally
+if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+    echo "🚀 Auto-tagging version $TAG..."
+    git tag "$TAG"
+    echo "✅ Created tag $TAG"
+    
+    # Push the tag proactively
+    # Note: regular 'git push' might be running right now, so we push the tag explicitly
+    git push origin "$TAG"
+else
+    echo "ℹ️ Tag $TAG already exists."
+fi
+
+# Exit with success to allow the push to proceed
+exit 0

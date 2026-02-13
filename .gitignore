@@ -20,7 +20,6 @@ atomcli.json
 a.out
 target
 .scripts
-.husky
 
 # Local dev files
 atomcli-dev
@@ -31,3 +30,11 @@ logs/
 # Release artifacts
 release_bin/
 **/release_bin/
+
+# Local config and temp files
+.atomcli.json
+plans/
+scripts/
+taskdocuments/
+/*.txt
+.screenshots/
