@@ -14,6 +14,10 @@ export function DialogStatus() {
     process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
   )
 
+  const isSmartRouting = createMemo(() =>
+    (sync.data.config as any).experimental?.smart_model_routing === true
+  )
+
   const enabledFormatters = createMemo(() => (sync.data.formatter ?? []).filter((f) => f.enabled))
 
 
@@ -68,6 +72,25 @@ export function DialogStatus() {
         {isAutonomous()
           ? "Auto-approves tools within workspace. Only asks for external operations."
           : "Asks permission for each tool call."}
+      </text>
+
+      {/* Smart Model Routing Toggle */}
+      <box flexDirection="row" gap={1} alignItems="center">
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>Routing:</text>
+        <text
+          fg={isSmartRouting() ? theme.primary : theme.textMuted}
+          attributes={TextAttributes.BOLD}
+        >
+          {isSmartRouting() ? "🧠 SMART" : "📌 DEFAULT"}
+        </text>
+        <text fg={theme.textMuted}>
+          (type /smart_model to toggle)
+        </text>
+      </box>
+      <text fg={theme.textMuted} wrapMode="word">
+        {isSmartRouting()
+          ? "Auto-selects optimal model per task category (coding→reasoning, docs→long-context)."
+          : "All tasks use the same selected model."}
       </text>
 
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>

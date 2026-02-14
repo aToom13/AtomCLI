@@ -497,7 +497,7 @@ export const SecurityCommand = cmd({
       const result = await SecurityScanner.scan({
         scan: args.scan,
         fix: args.fix,
-        severity: args.severity,
+        severity: args.severity as "low" | "medium" | "high" | "critical" | undefined,
       })
 
       // Filter by severity if specified

@@ -17,7 +17,6 @@ import { Identifier } from "@/id/id"
 import { Bash } from "@/tool/bash"
 import { Read } from "@/tool/read"
 import { Instance } from "@/project/instance"
-import { AbortController } from "abort-controller"
 import fs from "fs/promises"
 
 export namespace CodeReview {
@@ -195,8 +194,11 @@ If no issues found, return an empty array [].`
       sessionID: "code-review-session",
       role: "user",
       time: { created: Date.now() },
-      text: prompt,
+      agent: "code-review",
+      model: { providerID: model.providerID, modelID: model.id },
     }
+
+    const abortController = new AbortController()
 
     try {
       const stream = await LLM.stream({
@@ -207,7 +209,7 @@ If no issues found, return an empty array [].`
         system: [
           "You are an expert code reviewer. Provide constructive, specific feedback. Focus on real issues, not nitpicks.",
         ],
-        abort: new AbortController().signal,
+        abort: abortController.signal,
         messages: [{ role: "user", content: prompt }],
         tools: {},
       })
@@ -283,9 +285,8 @@ If no issues found, return an empty array [].`
     const body = {
       path: comment.file,
       line: comment.line,
-      body: `**${comment.severity.toUpperCase()}** (${comment.category}): ${comment.message}${
-        comment.suggestion ? `\n\n**Suggestion:** ${comment.suggestion}` : ""
-      }`,
+      body: `**${comment.severity.toUpperCase()}** (${comment.category}): ${comment.message}${comment.suggestion ? `\n\n**Suggestion:** ${comment.suggestion}` : ""
+        }`,
     }
 
     const proc = Bun.spawn(
@@ -404,9 +405,9 @@ Severities: ${severities.join(", ")}
 
 Top issues:
 ${comments
-  .slice(0, 5)
-  .map((c) => `- ${c.category}: ${c.message}`)
-  .join("\n")}
+        .slice(0, 5)
+        .map((c) => `- ${c.category}: ${c.message}`)
+        .join("\n")}
 
 Provide a brief, constructive summary.`
 
@@ -415,8 +416,11 @@ Provide a brief, constructive summary.`
       sessionID: "code-review-session",
       role: "user",
       time: { created: Date.now() },
-      text: prompt,
+      agent: "code-review",
+      model: { providerID: model.providerID, modelID: model.id },
     }
+
+    const abortController = new AbortController()
 
     try {
       const stream = await LLM.stream({
@@ -425,7 +429,7 @@ Provide a brief, constructive summary.`
         sessionID: "code-review-session",
         model,
         system: ["You are a helpful code reviewer. Be constructive and encouraging."],
-        abort: new AbortController().signal,
+        abort: abortController.signal,
         messages: [{ role: "user", content: prompt }],
         tools: {},
       })
@@ -491,7 +495,7 @@ export const ReviewCommand = cmd({
           const result = await CodeReview.review({
             pr: args.pr,
             repo: args.repo,
-            provider: args.provider,
+            provider: args.provider as "github" | "gitlab",
             diffOnly: args.diffOnly,
           })
 

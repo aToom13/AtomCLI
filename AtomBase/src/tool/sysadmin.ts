@@ -4,6 +4,7 @@ import { Question } from "../question"
 import { Log } from "../util/log"
 import { Global } from "@/global"
 import { Filesystem } from "@/util/filesystem"
+import { Crypto } from "@/util/crypto"
 import { spawn } from "bun"
 
 export const SysadminTool = Tool.define("sysadmin", {
@@ -24,7 +25,8 @@ export const SysadminTool = Tool.define("sysadmin", {
                     const saved = await Bun.file(passFile).text()
                     if (saved.trim()) {
                         log.info("using saved sudo password")
-                        password = saved.trim()
+                        // Decrypt password (handles both encrypted and legacy plaintext)
+                        password = await Crypto.decrypt(saved.trim())
                     }
                 } catch (e) {
                     // ignore missing file

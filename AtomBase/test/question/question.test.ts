@@ -36,6 +36,7 @@ test("ask - adds to pending list", async () => {
         {
           question: "What would you like to do?",
           header: "Action",
+          type: "select" as const,
           options: [
             { label: "Option 1", description: "First option" },
             { label: "Option 2", description: "Second option" },
@@ -66,6 +67,7 @@ test("reply - resolves the pending ask with answers", async () => {
         {
           question: "What would you like to do?",
           header: "Action",
+          type: "select" as const,
           options: [
             { label: "Option 1", description: "First option" },
             { label: "Option 2", description: "Second option" },
@@ -224,6 +226,7 @@ test("ask - handles multiple questions", async () => {
         {
           question: "What would you like to do?",
           header: "Action",
+          type: "select" as const,
           options: [
             { label: "Build", description: "Build the project" },
             { label: "Test", description: "Run tests" },
@@ -232,7 +235,7 @@ test("ask - handles multiple questions", async () => {
         {
           question: "Which environment?",
           header: "Env",
-          type: "select",
+          type: "select" as const,
           options: [
             { label: "Dev", description: "Development" },
             { label: "Prod", description: "Production" },

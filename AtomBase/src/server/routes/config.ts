@@ -50,7 +50,7 @@ export const ConfigRoute = new Hono()
                 ...errors(400),
             },
         }),
-        validator("json", Config.Info),
+        validator("json", Config.Info.partial()),
         async (c) => {
             const config = c.req.valid("json")
             await Config.update(config)

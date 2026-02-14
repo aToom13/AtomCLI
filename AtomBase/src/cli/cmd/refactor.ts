@@ -291,7 +291,8 @@ Return as JSON:
       sessionID: "refactor-session",
       role: "user",
       time: { created: Date.now() },
-      text: prompt,
+      agent: "refactor",
+      model: { providerID: model.providerID, modelID: model.id },
     }
 
     try {
@@ -301,7 +302,7 @@ Return as JSON:
         sessionID: "refactor-session",
         model,
         system: ["You are a refactoring expert. Provide clean, improved code."],
-        abort: new AbortController().signal,
+        abort: new AbortController().signal as AbortSignal,
         messages: [{ role: "user", content: prompt }],
         tools: {},
       })
@@ -539,7 +540,7 @@ export const RefactorCommand = cmd({
           console.log("🔧 Analyzing code for refactoring opportunities...\n")
 
           const result = await RefactoringAssistant.analyze({
-            target: args.target,
+            target: args.target as "all" | "maintainability" | "performance" | "readability" | undefined,
             file: args.file,
             dryRun: args.dryRun,
           })

@@ -195,8 +195,8 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             {/* Show sub-step detail when a sub-step is selected */}
                             <Show when={selectedSubStepData()}>
                                 <box flexDirection="column">
-                                    <text fg={theme.accent} style={{ bold: true }}>
-                                        🔧 Alt Adım Detayı
+                                    <text fg={theme.accent}>
+                                        <span style={{ bold: true }}>🔧 Alt Adım Detayı</span>
                                     </text>
                                     <text fg={theme.text}>
                                         {selectedSubStepData()!.name}
@@ -213,8 +213,8 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             {/* Show sub-plan overview when step has sub-steps but no sub-step is selected */}
                             <Show when={!selectedSubStepData() && selectedStepSubSteps().length > 0}>
                                 <box flexDirection="column">
-                                    <text fg={theme.accent} style={{ bold: true }}>
-                                        📋 Alt Plan: {selectedStepData()?.name}
+                                    <text fg={theme.accent}>
+                                        <span style={{ bold: true }}>📋 Alt Plan: {selectedStepData()?.name}</span>
                                     </text>
                                     <Show when={selectedStepData()?.subPlanReason}>
                                         <text fg={theme.warning}>
@@ -265,8 +265,8 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             {/* Selected step has neither todos nor sub-steps */}
                             <Show when={selectedStep() !== null && !selectedSubStepData() && selectedStepSubSteps().length === 0 && selectedStepTodos().length === 0}>
                                 <box flexDirection="column">
-                                    <text fg={theme.accent} style={{ bold: true }}>
-                                        {selectedStepData()?.name}
+                                    <text fg={theme.accent}>
+                                        <span style={{ bold: true }}>{selectedStepData()?.name}</span>
                                     </text>
                                     <text fg={theme.textMuted}>
                                         Durum: {StatusIcons[selectedStepData()?.status ?? "pending"] ?? "⏳"} {selectedStepData()?.status}

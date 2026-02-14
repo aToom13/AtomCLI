@@ -24,7 +24,6 @@ import { Bash } from "@/tool/bash"
 import { Instance } from "@/project/instance"
 import path from "path"
 import fs from "fs/promises"
-import { AbortController } from "abort-controller"
 
 export namespace TestGen {
   const log = Log.create({ service: "test-gen" })
@@ -183,7 +182,7 @@ export namespace TestGen {
     includeEdgeCases: boolean = true
   ): Promise<string> {
     const sourceContent = await fs.readFile(sourcePath, "utf-8")
-    
+
     // Build prompt for test generation
     const prompt = buildTestPrompt(sourcePath, sourceContent, functions, framework, includeEdgeCases)
 
@@ -202,8 +201,11 @@ export namespace TestGen {
       sessionID: "test-gen-session",
       role: "user",
       time: { created: Date.now() },
-      text: prompt,
+      agent: "test-gen",
+      model: { providerID: model.providerID, modelID: model.id },
     }
+
+    const abortController = new AbortController()
 
     const stream = await LLM.stream({
       agent,
@@ -211,7 +213,7 @@ export namespace TestGen {
       sessionID: "test-gen-session",
       model,
       system: [getTestGenSystemPrompt(framework)],
-      abort: new AbortController().signal,
+      abort: abortController.signal,
       messages: [
         { role: "user", content: prompt }
       ],
@@ -391,14 +393,14 @@ export const TestGenCommand = cmd({
       }),
   handler: async (args) => {
     const log = Log.create({ service: "test-gen-cli" })
-    
+
     try {
       // Initialize instance context
       await Instance.provide({
         directory: process.cwd(),
         fn: async () => {
           // Detect framework
-          const framework = args.framework || await TestGen.detectFramework()
+          const framework = (args.framework || await TestGen.detectFramework()) as TestGen.TestFramework
           if (framework === "unknown") {
             log.error("Could not detect test framework. Please specify with --framework")
             process.exit(1)
@@ -408,13 +410,13 @@ export const TestGenCommand = cmd({
           // Analyze source file
           log.info("analyzing file", { file: args.file })
           const functions = await TestGen.analyzeFile(args.file)
-          
+
           if (functions.length === 0) {
             log.warn("no testable functions found", { file: args.file })
             console.log("No exported functions found in the file.")
             return
           }
-          
+
           log.info("found functions", { count: functions.length })
 
           // Generate test file path

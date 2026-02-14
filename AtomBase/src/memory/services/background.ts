@@ -60,7 +60,7 @@ export class BackgroundLearningService {
     this.storage = storage
     this.graph = graph
 
-    log.info("Background learning service initialized", { 
+    log.info("Background learning service initialized", {
       enabled: this.config.enabled,
       maxConcurrent: this.config.maxConcurrent,
     })
@@ -123,7 +123,7 @@ export class BackgroundLearningService {
 
     // Insert based on priority
     const priorityOrder = { high: 0, medium: 1, low: 2 }
-    const insertIndex = this.queue.findIndex(t => 
+    const insertIndex = this.queue.findIndex(t =>
       priorityOrder[t.priority] > priorityOrder[priority]
     )
 
@@ -184,7 +184,7 @@ export class BackgroundLearningService {
       this.processing.push(task)
       this.processTask(task).finally(() => {
         this.processing = this.processing.filter(t => t.id !== task.id)
-        
+
         // Continue processing
         setTimeout(() => this.processQueue(), 100)
       })
@@ -246,7 +246,7 @@ export class BackgroundLearningService {
 
     try {
       // Get items without embeddings
-      const items = await this.storage.search("", { limit: 100, minRelevance: 0 })
+      const items = await this.storage.search("", { limit: 100, minRelevance: 0, tags: [] })
       const withoutEmbeddings = items.filter(item => !item.embedding)
 
       log.info("Generating embeddings", { count: withoutEmbeddings.length })
@@ -276,7 +276,7 @@ export class BackgroundLearningService {
     try {
       const stats = await this.graph.getStats()
       log.info("Graph cleanup", stats)
-      
+
       // Could add more sophisticated cleanup here
       // Like removing low-weight edges, finding duplicate nodes, etc.
     } catch (error) {
@@ -371,7 +371,7 @@ export class BackgroundLearningService {
   async predictNextTasks(): Promise<string[]> {
     // This would analyze user patterns and predict
     // what the user might want to do next
-    
+
     // Placeholder return
     return []
   }
@@ -381,7 +381,7 @@ export class BackgroundLearningService {
    */
   async preloadForPredictions(): Promise<void> {
     const predictions = await this.predictNextTasks()
-    
+
     for (const prediction of predictions.slice(0, 3)) {
       await this.queueTask("research", { query: prediction }, "low")
     }

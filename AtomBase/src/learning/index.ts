@@ -2,7 +2,6 @@ import { Log } from "../util/log"
 import { LearningMemory } from "./memory"
 import { LearningResearch } from "./research"
 import { LearningErrorAnalyzer } from "./error-analyzer"
-import type { ErrorLearning } from "./error-analyzer"
 import { LearningIntegration } from "./integration"
 import { ulid } from "ulid"
 
@@ -99,7 +98,7 @@ export namespace Learning {
     // 3. Web'de araştır (eğer izin verilmişse)
     if (options.researchIfNotFound !== false) {
       log.info("researching on web", { query: options.query })
-      
+
       const research = await LearningResearch.research({
         query: options.query,
         topic: options.topic,
@@ -131,7 +130,7 @@ export namespace Learning {
 
     // 1. İlgili öğrenilmiş bilgileri bul
     const relevant = await LearningMemory.search(task, technology, 5)
-    
+
     if (relevant.length > 0) {
       parts.push("## Previously Learned Knowledge:")
       for (const item of relevant) {
@@ -169,14 +168,14 @@ export namespace Learning {
   export async function buildMemorySummary(): Promise<string> {
     const stats = await LearningMemory.getStats()
     const all = await LearningMemory.getAll()
-    
+
     if (stats.totalLearned === 0) {
       return ""
     }
 
     const parts: string[] = []
     parts.push(`## 📚 My Learning Memory (${stats.totalLearned} items)`)
-    
+
     // Son öğrenilenler (en fazla 5)
     const recentItems = all.items
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -209,7 +208,7 @@ export namespace Learning {
     }
 
     parts.push("\n> 💡 **Tip:** I automatically apply these learnings to relevant tasks.")
-    
+
     return parts.join("\n")
   }
 
@@ -223,7 +222,7 @@ export namespace Learning {
     for (const item of all.items) {
       let relevance = 0
       const searchText = `${item.title} ${item.description} ${item.tags.join(" ")}`.toLowerCase()
-      
+
       for (const keyword of keywords) {
         if (searchText.includes(keyword.toLowerCase())) {
           relevance += 1
@@ -264,14 +263,14 @@ export namespace Learning {
   // Öğrenilenleri içe aktar
   export async function importAll(data: string): Promise<void> {
     const parsed = JSON.parse(data)
-    
+
     if (parsed.items) {
       for (const item of parsed.items) {
         await LearningMemory.save(item)
       }
     }
-    
-    log.info("imported learning data", { 
+
+    log.info("imported learning data", {
       items: parsed.items?.length || 0,
       errors: parsed.errors?.length || 0,
       researches: parsed.researches?.length || 0,

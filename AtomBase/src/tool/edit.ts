@@ -37,11 +37,6 @@ function validateFilePath(filePath: string): { normalizedPath: string; isExterna
   // Normalize to resolve any .. or . segments
   const normalizedPath = path.normalize(absolutePath)
 
-  // In test mode, allow access to /tmp for test files
-  if (isTestMode && normalizedPath.startsWith("/tmp")) {
-    return { normalizedPath, isExternal: false }
-  }
-
   // Get the allowed base directory
   const allowedBase = path.resolve(Instance.worktree || Instance.directory)
 
@@ -109,7 +104,7 @@ export const EditTool = Tool.define("edit", {
       }
 
       const file = Bun.file(filePath)
-      const stats = await file.stat().catch(() => {})
+      const stats = await file.stat().catch(() => { })
       if (!stats) throw new Error(`File ${filePath} not found`)
       if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
       await FileTime.assert(ctx.sessionID, filePath)

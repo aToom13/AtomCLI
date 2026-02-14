@@ -46,7 +46,7 @@ export class ChromaStorage {
   private initialized = false
 
   constructor(persistPath?: string) {
-    this.persistPath = persistPath 
+    this.persistPath = persistPath
       || path.join(os.homedir(), ".atomcli", "memory", "chroma")
   }
 
@@ -61,9 +61,9 @@ export class ChromaStorage {
     if (this.initialized) return
 
     try {
-      // Import ChromaDB
-      const chromaModule = await import("chromadb")
-      const { ChromaClient } = chromaModule
+      // Import ChromaDB - use dynamic import with type assertion
+      const chromaModule = await import("chromadb" as string)
+      const { ChromaClient } = chromaModule as any
 
       // Ensure directory exists
       await fs.mkdir(this.persistPath, { recursive: true })
@@ -187,7 +187,7 @@ export class ChromaStorage {
       for (let i = 0; i < results.ids[0].length; i++) {
         const id = results.ids[0][i]
         const distance = results.distances?.[0]?.[i] ?? 1
-        
+
         // Convert distance to similarity score (0-1)
         const score = Math.max(0, 1 - distance)
 
@@ -206,6 +206,8 @@ export class ChromaStorage {
             usageCount: 0,
             successRate: 1,
           },
+          relationships: [],
+          strength: 1,
         }
 
         if (results.embeddings?.[0]?.[i]) {
@@ -290,7 +292,7 @@ export class ChromaStorage {
         })
         this.initialized = true
       }
-      
+
       log.info("Cleared ChromaDB storage")
     } catch (error) {
       log.error("Failed to clear storage", { error })

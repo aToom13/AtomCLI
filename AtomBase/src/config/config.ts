@@ -20,6 +20,7 @@ import { BunProc } from "@/bun"
 import { Installation } from "@/installation"
 import { ConfigMarkdown } from "./markdown"
 import { existsSync } from "fs"
+import { Crypto } from "../util/crypto"
 
 export namespace Config {
   const log = Log.create({ service: "config" })
@@ -138,7 +139,20 @@ export namespace Config {
         if (!response.ok) {
           throw new Error(`failed to fetch remote config from ${key}: ${response.status}`)
         }
-        const wellknown = (await response.json()) as any
+        const body = await response.text()
+        // Verify config integrity via HMAC-SHA256 signature
+        const signature = response.headers.get("X-Config-Signature")
+        if (signature) {
+          const valid = Crypto.verifyHMAC(body, signature, value.token)
+          if (!valid) {
+            log.error("Remote config signature verification failed", { url: key })
+            throw new Error(`Remote config signature invalid for ${key}. Config rejected.`)
+          }
+          log.debug("remote config signature verified", { url: key })
+        } else {
+          log.warn("Remote config has no signature - loading without verification", { url: key })
+        }
+        const wellknown = JSON.parse(body) as any
         const remoteConfig = wellknown.config ?? {}
         // Add $schema to prevent load() from trying to write back to a non-existent file
         if (!remoteConfig.$schema) remoteConfig.$schema = "https://atomcli.ai/config.json"
@@ -1189,6 +1203,7 @@ export namespace Config {
             .optional()
             .describe("Tools that should only be available to primary agents."),
           continue_loop_on_deny: z.boolean().optional().describe("Continue the agent loop when a tool call is denied"),
+          smart_model_routing: z.boolean().optional().describe("Enable automatic model selection per task category in orchestrate tool"),
           mcp_timeout: z
             .number()
             .int()
@@ -1410,7 +1425,7 @@ export namespace Config {
     return state().then((x) => x.config)
   }
 
-  export async function update(config: Info) {
+  export async function update(config: Partial<Info>) {
     const filepath = path.join(Instance.directory, "config.json")
     const existing = await loadFile(filepath)
     await Bun.write(filepath, JSON.stringify(mergeDeep(existing, config), null, 2))

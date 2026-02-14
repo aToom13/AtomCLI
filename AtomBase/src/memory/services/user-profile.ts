@@ -101,34 +101,34 @@ export const UserProfile = z.object({
   // Basic info (optional, privacy-respecting)
   name: z.string().optional(),
   preferredPronouns: z.string().optional(),
-  
+
   // Relationship to AI
   userToAIRelation: UserToAIRelation.default("casual"),
-  
+
   // Technical background
   techLevel: TechLevel.default("mid"),
   primaryLanguage: z.string().default("TypeScript"),
   languages: z.array(z.string()).default(["TypeScript", "JavaScript"]),
-  
+
   // Learning & work
   learningStyle: LearningStyle.default("balanced"),
   workStyle: WorkStyle.default("flexible"),
   communication: CommunicationPreference.default("balanced"),
-  
+
   // Preferences
   timePreference: TimePreference.default("whenever"),
   prefersExplanations: z.boolean().default(true),
   prefersCodeExamples: z.boolean().default(true),
   likesHumor: z.boolean().default(true),
-  
+
   // Interests (auto-learned)
   interests: z.array(z.string()).default([]),
   recentlyWorkedOn: z.array(z.string()).default([]),
-  
+
   // Statistics
   totalInteractions: z.number().default(0),
   lastActive: z.string().optional(),
-  
+
   // Custom preferences (free-form)
   customPreferences: z.record(z.string(), z.any()).default({}),
 })
@@ -161,7 +161,7 @@ export class UserProfileService {
   async initialize(): Promise<UserProfile> {
     try {
       await fs.mkdir(path.dirname(this.profilePath), { recursive: true })
-      
+
       try {
         await fs.access(this.profilePath)
         await this.loadProfile()
@@ -169,7 +169,7 @@ export class UserProfileService {
         this.profile = this.createDefaultProfile()
         await this.saveProfile()
       }
-      
+
       return this.profile!
     } catch (error) {
       console.error("Failed to initialize user profile:", error)
@@ -219,23 +219,16 @@ export class UserProfileService {
   // PROFILE MANAGEMENT
   // ============================================================================
 
-  async getProfile(): Promise<UserProfile> {
-    if (!this.profile) {
-      await this.initialize()
-    }
-    return this.profile!
-  }
-
   async updateProfile(updates: Partial<UserProfile>): Promise<void> {
     if (!this.profile) {
       await this.initialize()
     }
-    
+
     this.profile = {
       ...this.profile!,
       ...updates,
     }
-    
+
     await this.saveProfile()
   }
 
@@ -253,7 +246,7 @@ export class UserProfileService {
     }
   ): Promise<void> {
     const p = await this.getProfile()
-    
+
     switch (behavior.type) {
       case "question_length":
         if (behavior.data.questionLength < 20) {
@@ -262,19 +255,19 @@ export class UserProfileService {
           p.communication = "detailed"
         }
         break
-        
+
       case "code_reading":
         if (behavior.data.commentsRequested) {
           p.prefersCodeExamples = true
         }
         break
-        
+
       case "error_handling":
         if (behavior.data.askedForExplanation) {
           p.prefersExplanations = true
         }
         break
-        
+
       case "tool_usage":
         // Track preferred tools
         if (behavior.data.tool) {
@@ -285,14 +278,14 @@ export class UserProfileService {
           tools[behavior.data.tool] = (tools[behavior.data.tool] || 0) + 1
         }
         break
-        
+
       case "explanation_depth":
         if (behavior.data.wantsDeepDive) {
           p.learningStyle = "balanced"
         }
         break
     }
-    
+
     p.lastActive = new Date().toISOString()
     await this.saveProfile()
   }
@@ -321,13 +314,13 @@ export class UserProfileService {
   async addRecentWork(projectOrTopic: string): Promise<void> {
     const p = await this.getProfile()
     const recent = p.recentlyWorkedOn
-    
+
     // Remove if exists (to move to front)
     const filtered = recent.filter(item => item !== projectOrTopic)
-    
+
     // Add to front, keep max 5
     p.recentlyWorkedOn = [projectOrTopic, ...filtered].slice(0, 5)
-    
+
     await this.saveProfile()
   }
 
@@ -344,7 +337,7 @@ export class UserProfileService {
     greeting: string
   }> {
     const p = await this.getProfile()
-    
+
     const styles: Record<UserToAIRelation, { pronoun: string; verbForm: string; greeting: string }> = {
       formal: { pronoun: "you", verbForm: "would", greeting: "May I help you with" },
       casual: { pronoun: "you", verbForm: "", greeting: "What can I help you with" },
@@ -354,7 +347,7 @@ export class UserProfileService {
       siz: { pronoun: "siz", verbForm: "", greeting: "Merhaba" },
       intimate: { pronoun: "you", verbForm: "", greeting: "Hey there" },
     }
-    
+
     return styles[p.userToAIRelation]
   }
 
@@ -367,11 +360,11 @@ export class UserProfileService {
     includeExamples: boolean
   }> {
     const p = await this.getProfile()
-    
+
     return {
-      depth: p.communication === "brief" ? "brief" 
-           : p.communication === "detailed" ? "detailed" 
-           : "medium",
+      depth: p.communication === "brief" ? "brief"
+        : p.communication === "detailed" ? "detailed"
+          : "medium",
       includeCode: p.prefersCodeExamples,
       includeExamples: p.prefersCodeExamples,
     }
@@ -382,37 +375,37 @@ export class UserProfileService {
    */
   async buildContext(): Promise<string> {
     const p = await this.getProfile()
-    
+
     const parts: string[] = ["# User Context"]
-    
+
     if (p.name) {
       parts.push(`- User's name: ${p.name}`)
     }
-    
+
     parts.push(`- Tech level: ${p.techLevel}`)
     parts.push(`- Primary language: ${p.primaryLanguage}`)
     parts.push(`- Communication style: ${p.communication}`)
     parts.push(`- Learning style: ${p.learningStyle}`)
     parts.push(`- Work style: ${p.workStyle}`)
-    
+
     if (p.interests.length > 0) {
       parts.push(`- Interests: ${p.interests.join(", ")}`)
     }
-    
+
     if (p.recentlyWorkedOn.length > 0) {
       parts.push(`- Recently working on: ${p.recentlyWorkedOn.join(", ")}`)
     }
-    
+
     if (p.totalInteractions > 0) {
       parts.push(`- Total interactions: ${p.totalInteractions}`)
     }
-    
+
     parts.push("")
     parts.push("## Preferences")
     parts.push(`- Prefers explanations: ${p.prefersExplanations}`)
     parts.push(`- Prefers code examples: ${p.prefersCodeExamples}`)
     parts.push(`- Likes humor: ${p.likesHumor}`)
-    
+
     return parts.join("\n")
   }
 

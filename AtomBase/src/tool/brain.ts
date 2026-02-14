@@ -74,7 +74,45 @@ const MEMORY: Doc[] = []
 const storage = new JsonStorage()
 let isLoaded = false
 
-// Cosine Similarity implementation
+// Pre-computed magnitude cache: docId -> magnitude
+const magnitudeCache = new Map<string, number>()
+
+/** Compute the magnitude (L2 norm) of a vector */
+function magnitude(vec: number[]): number {
+    let sum = 0.0
+    for (let i = 0; i < vec.length; i++) {
+        sum += vec[i] * vec[i]
+    }
+    return Math.sqrt(sum)
+}
+
+/** Get or compute and cache the magnitude for a document */
+function getCachedMagnitude(doc: Doc): number {
+    let mag = magnitudeCache.get(doc.id)
+    if (mag !== undefined) return mag
+    mag = doc.embeddings ? magnitude(doc.embeddings) : 0
+    magnitudeCache.set(doc.id, mag)
+    return mag
+}
+
+/**
+ * Optimized cosine similarity using pre-computed magnitudes.
+ * Query magnitude is computed once by the caller and passed in.
+ */
+function cosineSimilarityOptimized(queryVec: number[], queryMag: number, doc: Doc): number {
+    const docVec = doc.embeddings
+    if (!queryVec || !docVec || queryVec.length !== docVec.length) return 0
+    const docMag = getCachedMagnitude(doc)
+    if (queryMag === 0 || docMag === 0) return 0
+
+    let dotProduct = 0.0
+    for (let i = 0; i < queryVec.length; i++) {
+        dotProduct += queryVec[i] * docVec[i]
+    }
+    return dotProduct / (queryMag * docMag)
+}
+
+// Legacy fallback for standalone use
 function cosineSimilarity(vecA: number[], vecB: number[]) {
     if (!vecA || !vecB || vecA.length !== vecB.length) return 0
     let dotProduct = 0.0
@@ -228,6 +266,8 @@ export const BrainTool = Tool.define("brain", {
                         } else {
                             MEMORY.push(doc)
                         }
+                        // Pre-compute and cache magnitude
+                        magnitudeCache.set(doc.id, magnitude(embedding))
 
                         count++
                         if (count % 5 === 0) ctx.metadata({ title: `Brain: Indexed ${count} files...` })
@@ -270,10 +310,11 @@ export const BrainTool = Tool.define("brain", {
                     value: params.query,
                 })
 
-                // Linear search with Cosine Similarity
+                // Optimized search: compute query magnitude once, use cached doc magnitudes
+                const queryMag = magnitude(embedding)
                 const scored = MEMORY.map(doc => ({
                     doc,
-                    score: cosineSimilarity(embedding, doc.embeddings || [])
+                    score: cosineSimilarityOptimized(embedding, queryMag, doc)
                 }))
                     .sort((a, b) => b.score - a.score)
                     .slice(0, params.limit)
@@ -311,6 +352,7 @@ export const BrainTool = Tool.define("brain", {
         if (params.action === "clear") {
             MEMORY.length = 0
             isLoaded = false
+            magnitudeCache.clear()
             try {
                 await storage.clear()
             } catch (error) {

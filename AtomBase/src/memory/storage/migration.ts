@@ -9,7 +9,7 @@ import fs from "fs/promises"
 import path from "path"
 import os from "os"
 
-import type { MemoryItem } from "../types"
+import type { MemoryItem, MemoryType } from "../types"
 
 import { Log } from "../../util/log"
 
@@ -99,7 +99,7 @@ export async function migrateLegacyToV1(
     result.success = true
     result.migratedItems = newItems.length
 
-    log.info("Migration complete", { 
+    log.info("Migration complete", {
       migrated: result.migratedItems,
       path: newPath,
     })
@@ -129,7 +129,7 @@ export async function ensureHybridCompatibility(
   try {
     // Check if file exists
     await fs.access(jsonPath)
-    
+
     // Validate format
     const content = await fs.readFile(jsonPath, "utf-8")
     const items: any[] = JSON.parse(content)
@@ -145,7 +145,7 @@ export async function ensureHybridCompatibility(
       const item = items[0]
       const hasContent = "content" in item || "description" in item
       const hasType = "type" in item
-      
+
       if (!hasContent) {
         result.warnings.push("Items missing content/description field")
       }
@@ -212,7 +212,7 @@ export async function cleanupExpiredMemories(
 
     const removed = originalCount - items.length
 
-    log.info("Cleanup complete", { 
+    log.info("Cleanup complete", {
       removed,
       remaining: items.length,
     })
@@ -284,7 +284,7 @@ export async function importMemories(
     // Try JSON format first
     try {
       const parsed = JSON.parse(data)
-      
+
       if (Array.isArray(parsed)) {
         items = parsed
       } else if (parsed.items) {
@@ -343,8 +343,8 @@ export async function importMemories(
 /**
  * Map legacy type to new type
  */
-function mapLegacyType(legacyType: string): string {
-  const typeMap: Record<string, string> = {
+function mapLegacyType(legacyType: string): MemoryType {
+  const typeMap: Record<string, MemoryType> = {
     "error": "error",
     "pattern": "pattern",
     "solution": "solution",
@@ -366,7 +366,7 @@ export function getDefaultStoragePaths(): {
   chromaPath: string
 } {
   const memoryDir = path.join(os.homedir(), ".atomcli", "memory")
-  
+
   return {
     legacyPath: path.join(memoryDir, "learning.json"),
     jsonPath: path.join(memoryDir, "memories.json"),

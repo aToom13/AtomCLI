@@ -34,11 +34,6 @@ function validateFilePath(filePath: string): { normalizedPath: string; isExterna
   // Normalize to resolve any . segments and remaining .. segments
   const normalizedPath = path.normalize(absolutePath)
 
-  // In test mode, allow access to /tmp for test files
-  if (isTestMode && normalizedPath.startsWith("/tmp")) {
-    return { normalizedPath, isExternal: false }
-  }
-
   // Get the allowed base directory
   const allowedBase = path.resolve(Instance.worktree || Instance.directory)
 

@@ -30,6 +30,7 @@ const HELP_SECTIONS = [
     items: [
       { key: "/skill", desc: "List available skills" },
       { key: "/mcp", desc: "Toggle MCP servers" },
+      { key: "/smart_model", desc: "Toggle smart model routing" },
       { key: "@skillname", desc: "Load a skill inline" },
       { key: "atomcli features", desc: "View all hidden features" },
     ],

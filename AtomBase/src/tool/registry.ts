@@ -42,6 +42,11 @@ import { ScreenCaptureTool } from "./screen-capture"
 import { AppSwitcherTool } from "./app-switcher"
 import { FileWatcherTool } from "./file-watcher"
 import { SelfMaintenanceTool } from "./self-maintenance"
+import { ListTool } from "./ls"
+import { PatchTool } from "./patch"
+import { MultiEditTool } from "./multiedit"
+import { FixItTool } from "./fix_it"
+import { OrchestrateTool } from "./orchestrate"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -137,6 +142,11 @@ export namespace ToolRegistry {
       AppSwitcherTool,
       FileWatcherTool,
       SelfMaintenanceTool,
+      ListTool,
+      PatchTool,
+      MultiEditTool,
+      FixItTool,
+      OrchestrateTool,
       TestGenTool,
       DocsTool,
       RefactorTool,

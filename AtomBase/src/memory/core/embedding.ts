@@ -72,10 +72,11 @@ export class OpenAIEmbedding implements EmbeddingService {
   private async getClient(): Promise<any> {
     if (this.client) return this.client
 
-    const OpenAI = (await import("openai")).OpenAI
-    this.client = new OpenAI({
+    // Use dynamic import for OpenAI with @ai-sdk/openai
+    const { createOpenAI } = await import("@ai-sdk/openai")
+    this.client = createOpenAI({
       apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-      baseUrl: this.config.baseUrl,
+      baseURL: this.config.baseUrl,
     })
 
     return this.client
@@ -95,8 +96,8 @@ export class OpenAIEmbedding implements EmbeddingService {
       })
 
       const embedding = response.data[0].embedding
-      
-      log.debug("Generated embedding", { 
+
+      log.debug("Generated embedding", {
         model: this.config.model,
         dimensions: embedding.length,
         textLength: text.length,
@@ -176,8 +177,8 @@ export class LocalEmbedding implements EmbeddingService {
   private baseUrl: string
 
   constructor(config?: Partial<EmbeddingServiceConfig>) {
-    this.config = { 
-      ...defaultConfig, 
+    this.config = {
+      ...defaultConfig,
       provider: "local",
       model: config?.model || "nomic-embed-text",
       dimensions: config?.dimensions || 768,
@@ -231,7 +232,7 @@ export class LocalEmbedding implements EmbeddingService {
 
     // Process sequentially for local embedding
     const results: number[][] = []
-    
+
     for (let i = 0; i < texts.length; i++) {
       const embedding = await this.embed(texts[i])
       results.push(embedding)

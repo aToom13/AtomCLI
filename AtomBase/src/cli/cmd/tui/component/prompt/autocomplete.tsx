@@ -519,6 +519,24 @@ export function Autocomplete(props: {
         },
       },
       {
+        display: "/smart_model",
+        aliases: ["/smart_model on", "/smart_model off", "/routing"],
+        description: "toggle smart model routing (auto-select best model per task)",
+        onSelect: async () => {
+          const current = (sync.data.config as any).experimental?.smart_model_routing === true
+          const newValue = !current
+          const experimental = { ...((sync.data.config as any).experimental || {}), smart_model_routing: newValue }
+          // Update TUI state immediately
+          sync.set("config", "experimental" as any, experimental)
+          // Persist to server (best-effort)
+          try {
+            await sdk.client.config.update({ experimental } as any)
+          } catch (e) {
+            // Server persist failed, TUI state is still updated
+          }
+        },
+      },
+      {
         display: "/exit",
         aliases: ["/quit", "/q"],
         description: "exit the app",

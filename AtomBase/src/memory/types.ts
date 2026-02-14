@@ -150,12 +150,12 @@ export const ErrorLearning = z.object({
   stackTrace: z.string().optional(),
   filePath: z.string().optional(),
   lineNumber: z.number().optional(),
-  
+
   // Analysis
   rootCause: z.string(),
   solution: z.string(),
   prevention: z.string(),
-  
+
   // Meta
   technology: z.string(),
   metadata: MemoryMetadata,
@@ -279,7 +279,7 @@ export const KnowledgeNode = z.object({
   id: z.string(),
   type: NodeType,
   label: z.string(),
-  properties: z.record(z.any()),
+  properties: z.record(z.string(), z.any()),
   embedding: z.array(z.number()).optional(),
   createdAt: z.string(),
   relationships: z.array(z.string()),
@@ -344,7 +344,7 @@ export const BackgroundTask = z.object({
   id: z.string(),
   type: BackgroundTaskType,
   priority: BackgroundPriority,
-  data: z.record(z.any()).optional(),
+  data: z.record(z.string(), z.any()).optional(),
   createdAt: z.string(),
   scheduledAt: z.string().optional(),
 })
