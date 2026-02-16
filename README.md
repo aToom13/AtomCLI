@@ -29,13 +29,29 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## Quick Install
+## What's New (v2.2.9)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash
+### Orchestrate Improvements
+
+- **Independent Tasks**: Tasks without dependencies now run even if other tasks fail
+- **Automatic Retry**: Failed tasks retry with exponential backoff (1s → 2s → 4s), max 3 attempts
+- **Custom Model Selection**: Specify a model per task using `model: "provider/model"` (e.g., `"atomcli/minimax-m2.5-free"`)
+- **Improved UI**: Navigate between task sessions using `Ctrl+↑/↓` arrows
+- **Better Tracking**: Task status, duration, and session IDs are now tracked
+
+```json
+{
+  "action": "plan",
+  "tasks": [
+    { "id": "research", "prompt": "Research the codebase", "model": "atomcli/minimax-m2.5-free" },
+    { "id": "code", "prompt": "Write code", "category": "coding" }
+  ]
+}
 ```
 
-Run `atomcli` to start.
+### Coming Soon
+
+- **Agent Teams**: Advanced multi-agent system with shared knowledge base, event-driven communication, and human-in-the-loop approval
 
 ---
 
@@ -118,6 +134,7 @@ atomcli setup --check        # Check status without installing
 ```
 
 The `setup` command installs **Playwright** for the browser automation tool, which enables:
+
 - Web page navigation and interaction
 - Screenshot capture
 - JavaScript execution in browser context
@@ -134,6 +151,7 @@ atomcli upgrade
 AtomCLI automatically checks for updates on startup and notifies you when a new version is available.
 
 For manual update:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update
 ```
@@ -202,17 +220,19 @@ AtomCLI provides a conversational interface where you can:
 <br>
 <img src="docs/assets/WorkUI.png" alt="AtomCLI Interface" width="600"/>
 
-*Multi-panel layout with file tree, task list, and live coding*
+_Multi-panel layout with file tree, task list, and live coding_
+
 </details>
 
 ### Keyboard Shortcuts
 
-| Key      | Action                   |
-| -------- | ------------------------ |
-| `Tab`    | Switch agent             |
-| `Ctrl+P` | Open command palette     |
-| `Ctrl+C` | Cancel current operation |
-| `Esc`    | Close dialogs            |
+| Key        | Action                               |
+| ---------- | ------------------------------------ |
+| `Tab`      | Switch agent                         |
+| `Ctrl+P`   | Open command palette                 |
+| `Ctrl+C`   | Cancel current operation             |
+| `Ctrl+↑/↓` | Navigate task sessions (Orchestrate) |
+| `Esc`      | Close dialogs                        |
 
 ---
 
@@ -246,7 +266,6 @@ atomcli mcp remove <name>    # Remove an MCP server
 ## Skills
 
 Skills are specialized instructions that modify agent behavior for specific tasks.
-
 
 ### Managing Skills
 

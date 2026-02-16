@@ -36,5 +36,10 @@ release_bin/
 plans/
 scripts/
 taskdocuments/
-/*.txt
+*.txt
 .screenshots/
+
+# Logs and temp
+logs/
+*.log
+*.tmp
