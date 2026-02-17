@@ -1,4 +1,6 @@
 {
+  "$schema": "https://atomcli.ai/config.json",
+  "model": "atomcli/minimax-m2.1-free",
   "provider": {
     "atomcli": {
       "models": {
@@ -136,7 +138,6 @@
       }
     }
   },
-  "model": "atomcli/minimax-m2.1-free",
   "mcp": {
     "memory-bank": {
       "type": "local",
@@ -157,5 +158,7 @@
       "enabled": true
     }
   },
-  "$schema": "https://atomcli.ai/config.json"
+  "experimental": {
+    "smart_model_routing": false
+  }
 }

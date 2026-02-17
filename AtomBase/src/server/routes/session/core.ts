@@ -252,6 +252,7 @@ export const SessionCoreRoute = new Hono()
                         archived: z.number().optional(),
                     })
                     .optional(),
+                metadata: z.record(z.string(), z.any()).optional(),
             }),
         ),
         async (c) => {
@@ -263,6 +264,9 @@ export const SessionCoreRoute = new Hono()
                     session.title = updates.title
                 }
                 if (updates.time?.archived !== undefined) session.time.archived = updates.time.archived
+                if (updates.metadata !== undefined) {
+                    session.metadata = { ...session.metadata, ...updates.metadata }
+                }
             })
 
             return c.json(updatedSession)

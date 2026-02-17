@@ -21,9 +21,21 @@ import { Installation } from "@/installation"
 import { ConfigMarkdown } from "./markdown"
 import { existsSync } from "fs"
 import { Crypto } from "../util/crypto"
+import { BusEvent } from "../bus/bus-event"
+import { Bus } from "@/bus"
 
 export namespace Config {
   const log = Log.create({ service: "config" })
+
+  // Config update event for notifying listeners when config changes
+  export const Event = {
+    Updated: BusEvent.define(
+      "config.updated",
+      z.object({
+        config: z.lazy(() => Info),
+      }),
+    ),
+  }
 
   // Simple LRU cache for loaded config files to avoid redundant disk reads
   const configFileCache = new Map<string, { mtime: number; data: Info }>()
@@ -229,8 +241,12 @@ export namespace Config {
       const isGlobalConfigDir = dir === Global.Path.config
       if ((dir.endsWith(".atomcli") || dir === Flag.ATOMCLI_CONFIG_DIR) && !isGlobalConfigDir) {
         for (const file of ["atomcli.jsonc", "atomcli.json", "mcp.json"]) {
-          log.debug(`loading config from ${path.join(dir, file)}`)
-          const config = await loadFile(path.join(dir, file))
+          const filePath = path.join(dir, file)
+          const fileExists = existsSync(filePath)
+          if (!fileExists) continue
+
+          log.debug(`loading config from ${filePath}`)
+          const config = await loadFile(filePath)
 
           if (file === "mcp.json") {
             // If loading mcp.json, assume top-level keys are mcp servers if not structured otherwise
@@ -333,11 +349,11 @@ export namespace Config {
       {
         cwd: dir,
       },
-    ).catch(() => { })
+    ).catch(() => {})
 
     // Install any additional dependencies defined in the package.json
     // This allows local plugins and custom tools to use external packages
-    await BunProc.run(["install"], { cwd: dir }).catch(() => { })
+    await BunProc.run(["install"], { cwd: dir }).catch(() => {})
   }
 
   const COMMAND_GLOB = new Bun.Glob("{command,commands}/**/*.md")
@@ -1018,6 +1034,12 @@ export namespace Config {
         .describe(
           "Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications",
         ),
+      channel: z
+        .enum(["stable", "beta", "alfa"])
+        .optional()
+        .describe(
+          "Release channel for updates: 'stable' for production releases, 'beta' for beta versions, 'alfa' for alpha versions. Defaults to 'stable'",
+        ),
       disabled_providers: z.array(z.string()).optional().describe("Disable providers that are loaded automatically"),
       enabled_providers: z
         .array(z.string())
@@ -1203,7 +1225,10 @@ export namespace Config {
             .optional()
             .describe("Tools that should only be available to primary agents."),
           continue_loop_on_deny: z.boolean().optional().describe("Continue the agent loop when a tool call is denied"),
-          smart_model_routing: z.boolean().optional().describe("Enable automatic model selection per task category in orchestrate tool"),
+          smart_model_routing: z
+            .boolean()
+            .optional()
+            .describe("Enable automatic model selection per task category in orchestrate tool"),
           mcp_timeout: z
             .number()
             .int()
@@ -1257,7 +1282,7 @@ export namespace Config {
         await Bun.write(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
         await fs.unlink(path.join(Global.Path.config, "config"))
       })
-      .catch(() => { })
+      .catch(() => {})
 
     return result
   })
@@ -1384,7 +1409,7 @@ export namespace Config {
           const plugin = data.plugin[i]
           try {
             data.plugin[i] = import.meta.resolve!(plugin, configFilepath)
-          } catch (err) { }
+          } catch (err) {}
         }
       }
       return data
@@ -1426,10 +1451,67 @@ export namespace Config {
   }
 
   export async function update(config: Partial<Info>) {
-    const filepath = path.join(Instance.directory, "config.json")
+    // Find all config files in .atomcli directories (same logic as reading)
+    const configFiles = ["atomcli.jsonc", "atomcli.json", "config.json"]
+    let filepath: string | undefined
+
+    // Collect all .atomcli directories (same order as reading)
+    const directories = [
+      ...(await Array.fromAsync(
+        Filesystem.up({
+          targets: [".atomcli"],
+          start: Instance.directory,
+          stop: Instance.worktree,
+        }),
+      )),
+    ]
+
+    // Find the LAST (highest priority) .atomcli directory with a config file
+    // This matches the load order where later files override earlier ones
+    for (const dir of directories.toReversed()) {
+      for (const file of configFiles) {
+        const configPath = path.join(dir, file)
+        if (existsSync(configPath)) {
+          filepath = configPath
+          break
+        }
+      }
+      if (filepath) break
+    }
+
+    // Fallback: check Instance.directory/.atomcli
+    if (!filepath) {
+      for (const file of configFiles) {
+        const atomcliPath = path.join(Instance.directory, ".atomcli", file)
+        if (existsSync(atomcliPath)) {
+          filepath = atomcliPath
+          break
+        }
+      }
+    }
+
+    // If no existing config, create new one in .atomcli directory
+    if (!filepath) {
+      const atomcliDir = path.join(Instance.directory, ".atomcli")
+      await fs.mkdir(atomcliDir, { recursive: true }).catch(() => {})
+      filepath = path.join(atomcliDir, "atomcli.json")
+    }
+
+    log.info("updating config", { filepath, config })
     const existing = await loadFile(filepath)
-    await Bun.write(filepath, JSON.stringify(mergeDeep(existing, config), null, 2))
+    const merged = mergeDeep(existing, config)
+    await Bun.write(filepath, JSON.stringify(merged, null, 2))
+    log.info("config updated", { filepath, experimental: merged.experimental })
+
+    // Clear cache to ensure fresh config is loaded next time
+    configFileCache.clear()
+
     await Instance.dispose()
+
+    // Publish config updated event
+    const updatedConfig = await get()
+    log.info("config event published", { smart_model_routing: updatedConfig.experimental?.smart_model_routing })
+    Bus.publish(Event.Updated, { config: updatedConfig })
   }
 
   export async function directories() {

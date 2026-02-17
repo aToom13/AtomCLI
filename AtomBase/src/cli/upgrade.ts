@@ -35,7 +35,10 @@ function isNewerVersion(local: string, remote: string): boolean {
 export async function upgrade() {
   const config = await Config.global()
   const method = await Installation.method()
-  const latest = await Installation.latest(method).catch(() => { })
+
+  // Get channel from config (default to stable)
+  const channel = config.channel || "stable"
+  const latest = await Installation.latest(method, channel).catch(() => { })
   if (!latest) return
 
   // Only show notification if remote version is actually newer

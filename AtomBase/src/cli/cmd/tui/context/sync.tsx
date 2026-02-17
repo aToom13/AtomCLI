@@ -110,6 +110,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "server.instance.disposed":
           bootstrap()
           break
+        case "config.updated": {
+          // Config updated from server - refresh local store
+          setStore("config", reconcile(event.properties.config))
+          break
+        }
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
           if (!requests) break

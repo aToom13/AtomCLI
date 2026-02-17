@@ -21,6 +21,7 @@ import { DialogSessionList } from "@tui/component/dialog-session-list"
 import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { createSignal } from "solid-js"
+import { useSDK } from "@tui/context/sdk"
 
 /**
  * Registers all command palette entries for the TUI.
@@ -322,6 +323,7 @@ export function useCommands() {
                 dialog.clear()
             },
         },
+
     ])
 
     return { terminalTitleEnabled }

@@ -126,6 +126,59 @@ export namespace Agent {
         mode: "subagent",
         native: true,
       },
+      coder: {
+        name: "coder",
+        description: `Coding agent specialized in writing, editing, and refactoring code. Use this agent for code generation, bug fixes, implementing features, and any task that requires modifying source code.`,
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            todoread: "deny",
+            todowrite: "deny",
+          }),
+          user,
+        ),
+        options: {},
+        mode: "subagent",
+        native: true,
+      },
+      documenter: {
+        name: "documenter",
+        description: `Documentation agent specialized in writing and updating documentation. Use this agent for creating README files, API documentation, code comments, changelogs, and any documentation-related tasks.`,
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            todoread: "deny",
+            todowrite: "deny",
+            edit: {
+              "*.md": "allow",
+              "*.mdx": "allow",
+              "*.txt": "allow",
+            },
+          }),
+          user,
+        ),
+        options: {},
+        mode: "subagent",
+        native: true,
+      },
+      analyst: {
+        name: "analyst",
+        description: `Analysis agent specialized in code review, investigation, and assessment. Use this agent for analyzing codebases, reviewing code quality, investigating issues, comparing implementations, and providing detailed technical assessments.`,
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            todoread: "deny",
+            todowrite: "deny",
+            edit: {
+              "*": "deny",  // Analyst sadece okur, yazmaz
+            },
+          }),
+          user,
+        ),
+        options: {},
+        mode: "subagent",
+        native: true,
+      },
       explore: {
         name: "explore",
         permission: PermissionNext.merge(

@@ -28,6 +28,7 @@ import { UserMessage } from "./components/UserMessage"
 import { AssistantMessage } from "./components/AssistantMessage"
 import { Header } from "./header"
 import { SplitBorder } from "@tui/component/border"
+import { AgentWorkspace } from "./components/AgentWorkspace"
 
 addDefaultParsers(parsers.parsers)
 
@@ -55,6 +56,9 @@ export function Session() {
     sidebarOpen,
     autoFollow,
   } = state
+
+  // Agent Teams destructure
+  const { teamsMode, teamLead, teamAgents } = state
 
   const toast = useToast()
   const sdk = useSDK()
@@ -359,8 +363,18 @@ export function Session() {
           <Toast />
         </box>
 
-        {/* Right: Code Panel */}
-        <CodePanel />
+        {/* Right: Code Panel (hidden in teams mode) */}
+        <Show when={!teamsMode()}>
+          <CodePanel />
+        </Show>
+
+        {/* Right: Agent Workspace (teams mode) */}
+        <Show when={teamsMode() && teamLead()}>
+          <AgentWorkspace
+            agents={teamAgents()}
+            eventBus={teamLead()!.eventBus}
+          />
+        </Show>
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>

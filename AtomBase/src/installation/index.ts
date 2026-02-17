@@ -240,14 +240,27 @@ export namespace Installation {
   /**
    * Fetch recent releases from GitHub for interactive version selection.
    * Returns an array of version strings (without 'v' prefix).
+   * @param limit - Maximum number of releases to fetch
+   * @param channel - Filter by release channel: "stable" (no prerelease), "beta", "alfa", or undefined for all
    */
-  export async function listReleases(limit = 10): Promise<string[]> {
+  export async function listReleases(limit = 10, channel?: string): Promise<string[]> {
     try {
       const res = await fetch("https://api.github.com/repos/aToom13/AtomCLI/releases?per_page=" + limit)
       if (!res.ok) throw new Error(res.statusText)
       const data = (await res.json()) as Array<{ tag_name: string; prerelease: boolean; draft: boolean }>
+
       return data
         .filter((r) => !r.draft)
+        .filter((r) => {
+          // If no channel specified, return all
+          if (!channel) return true
+          // stable = not prerelease
+          if (channel === "stable") return !r.prerelease
+          // beta/alfa = prerelease with matching tag
+          if (channel === "beta") return r.prerelease && r.tag_name.toLowerCase().includes("beta")
+          if (channel === "alfa") return r.prerelease && r.tag_name.toLowerCase().includes("alfa")
+          return true
+        })
         .map((r) => r.tag_name.replace(/^v/, ""))
     } catch (e) {
       log.warn("failed to fetch releases", { error: e })

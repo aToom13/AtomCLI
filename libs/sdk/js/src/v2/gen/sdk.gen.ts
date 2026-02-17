@@ -21,8 +21,11 @@ import type {
   EventTuiChainClear,
   EventTuiChainCompleteStep,
   EventTuiChainFailStep,
+  EventTuiChainParallelUpdate,
   EventTuiChainSetTodos,
   EventTuiChainStart,
+  EventTuiChainSubplanEnd,
+  EventTuiChainSubplanStart,
   EventTuiChainTodoDone,
   EventTuiChainUpdateStep,
   EventTuiCodepanelSave,
@@ -82,6 +85,8 @@ import type {
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   ProviderAuthResponses,
+  ProviderKeyErrors,
+  ProviderKeyResponses,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
   ProviderOauthAuthorizeResponses,
@@ -2425,6 +2430,9 @@ export class Tui extends HeyApiClient {
         | EventTuiChainSetTodos
         | EventTuiChainTodoDone
         | EventTuiChainClear
+        | EventTuiChainSubplanStart
+        | EventTuiChainSubplanEnd
+        | EventTuiChainParallelUpdate
         | EventTuiFiletreeToggle
         | EventTuiFiletreeOpen
         | EventTuiFiletreeClose
@@ -2799,6 +2807,43 @@ export class Provider extends HeyApiClient {
       url: "/provider/auth",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Set API key
+   *
+   * Set the API key for a specific AI provider.
+   */
+  public key<ThrowOnError extends boolean = false>(
+    parameters: {
+      providerID: string
+      directory?: string
+      key?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "providerID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "key" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ProviderKeyResponses, ProviderKeyErrors, ThrowOnError>({
+      url: "/provider/{providerID}/key",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 

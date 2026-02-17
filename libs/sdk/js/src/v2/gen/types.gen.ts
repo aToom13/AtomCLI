@@ -261,6 +261,53 @@ export type EventTuiChainClear = {
   }
 }
 
+export type EventTuiChainSubplanStart = {
+  type: "tui.chain.subplan.start"
+  properties: {
+    /**
+     * Index of the parent step this sub-plan belongs to
+     */
+    stepIndex: number
+    /**
+     * Why a sub-plan is needed
+     */
+    reason: string
+    steps: Array<{
+      name: string
+      description: string
+    }>
+  }
+}
+
+export type EventTuiChainSubplanEnd = {
+  type: "tui.chain.subplan.end"
+  properties: {
+    stepIndex: number
+    success: boolean
+  }
+}
+
+export type EventTuiChainParallelUpdate = {
+  type: "tui.chain.parallel.update"
+  properties: {
+    stepIndex: number
+    status:
+      | "pending"
+      | "running"
+      | "coding"
+      | "searching_web"
+      | "searching_code"
+      | "reading_file"
+      | "writing_file"
+      | "running_command"
+      | "analyzing"
+      | "thinking"
+      | "complete"
+      | "failed"
+      | "retrying"
+  }
+}
+
 export type EventTuiFiletreeToggle = {
   type: "tui.filetree.toggle"
   properties: {
@@ -906,6 +953,9 @@ export type Event =
   | EventTuiChainSetTodos
   | EventTuiChainTodoDone
   | EventTuiChainClear
+  | EventTuiChainSubplanStart
+  | EventTuiChainSubplanEnd
+  | EventTuiChainParallelUpdate
   | EventTuiFiletreeToggle
   | EventTuiFiletreeOpen
   | EventTuiFiletreeClose
@@ -1319,6 +1369,10 @@ export type KeybindsConfig = {
    * Toggle tips on home screen
    */
   tips_toggle?: string
+  /**
+   * Toggle auto-follow (live scroll)
+   */
+  autofollow_toggle?: string
 }
 
 /**
@@ -1375,6 +1429,8 @@ export type PermissionConfig =
       codesearch?: PermissionActionConfig
       lsp?: PermissionRuleConfig
       doom_loop?: PermissionActionConfig
+      chainupdate?: PermissionActionConfig
+      mcp?: PermissionRuleConfig
       [key: string]: PermissionRuleConfig | Array<string> | PermissionActionConfig | undefined
     }
   | PermissionActionConfig
@@ -1676,6 +1732,23 @@ export type Config = {
    * Small model to use for tasks like title generation in the format of provider/model
    */
   small_model?: string
+  /**
+   * Fallback model configuration for automatic model switching on errors
+   */
+  fallback?: {
+    /**
+     * Enable fallback mechanism
+     */
+    enabled?: boolean
+    /**
+     * Secondary fallback model (e.g., atomcli/minimax-m2.5-free)
+     */
+    secondary?: string
+    /**
+     * Tertiary fallback model (e.g., atomcli/gpt-5-nano)
+     */
+    tertiary?: string
+  }
   /**
    * Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.
    */
@@ -4271,6 +4344,9 @@ export type TuiPublishData = {
     | EventTuiChainSetTodos
     | EventTuiChainTodoDone
     | EventTuiChainClear
+    | EventTuiChainSubplanStart
+    | EventTuiChainSubplanEnd
+    | EventTuiChainParallelUpdate
     | EventTuiFiletreeToggle
     | EventTuiFiletreeOpen
     | EventTuiFiletreeClose
@@ -4856,6 +4932,43 @@ export type ProviderOauthCallbackResponses = {
 }
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
+
+export type ProviderKeyData = {
+  body?: {
+    /**
+     * API key for the provider
+     */
+    key: string
+  }
+  path: {
+    /**
+     * Provider ID
+     */
+    providerID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/provider/{providerID}/key"
+}
+
+export type ProviderKeyErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderKeyError = ProviderKeyErrors[keyof ProviderKeyErrors]
+
+export type ProviderKeyResponses = {
+  /**
+   * API key saved successfully
+   */
+  200: boolean
+}
+
+export type ProviderKeyResponse = ProviderKeyResponses[keyof ProviderKeyResponses]
 
 export type LspStatusData = {
   body?: never

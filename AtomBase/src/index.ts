@@ -40,6 +40,9 @@ import { WorkspaceCommand } from "./cli/cmd/workspace"
 import { SetupCommand } from "./cli/cmd/setup"
 import { MemoryCommand } from "./cli/cmd/memory"
 import { FallbackCommand } from "./cli/cmd/fallback"
+import { AutoupdateCommand } from "./cli/cmd/autoupdate"
+import { SmartModelCommand } from "./cli/cmd/smart-model"
+import { TeamCommand } from "./cli/cmd/team"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -77,7 +80,6 @@ const cli = yargs(hideBin(process.argv))
     hidden: true,
   })
   .middleware(async (opts) => {
-
     if (opts.uninstall) {
       // @ts-ignore
       await UninstallCommand.handler({})
@@ -137,6 +139,9 @@ const cli = yargs(hideBin(process.argv))
   .command(SetupCommand)
   .command(MemoryCommand)
   .command(FallbackCommand)
+  .command(AutoupdateCommand)
+  .command(SmartModelCommand)
+  .command(TeamCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

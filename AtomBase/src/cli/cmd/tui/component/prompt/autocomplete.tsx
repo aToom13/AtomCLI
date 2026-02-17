@@ -2,7 +2,7 @@ import type { BoxRenderable, TextareaRenderable, KeyEvent, ScrollBoxRenderable }
 import fuzzysort from "fuzzysort"
 import { firstBy } from "remeda"
 import { createMemo, createResource, createEffect, onMount, onCleanup, Index, Show, createSignal } from "solid-js"
-import { createStore } from "solid-js/store"
+import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
 import { useSync } from "@tui/context/sync"
 import { useTheme, selectedForeground } from "@tui/context/theme"
@@ -13,6 +13,7 @@ import { Locale } from "@/util/locale"
 import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
 import { Skill } from "@/skill"
+import { useToast } from "@tui/ui/toast"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -81,6 +82,7 @@ export function Autocomplete(props: {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   const frecency = useFrecency()
+  const toast = useToast()
 
   const [store, setStore] = createStore({
     index: 0,
@@ -319,7 +321,7 @@ export function Autocomplete(props: {
       if (!shouldFetch) return []
       return await Skill.all()
     },
-    { initialValue: [] }
+    { initialValue: [] },
   )
 
   const skills = createMemo((): AutocompleteOption[] => {
@@ -345,7 +347,7 @@ export function Autocomplete(props: {
           input.deleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
           input.insertText(append)
         },
-      })
+      }),
     )
   })
 
@@ -503,10 +505,11 @@ export function Autocomplete(props: {
         description: "toggle autonomous mode (auto-approve tools)",
         onSelect: async () => {
           // Toggle autonomous mode
-          const isCurrentlyAutonomous = process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
+          const isCurrentlyAutonomous =
+            process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
           const newMode = isCurrentlyAutonomous ? "safe" : "autonomous"
           try {
-            await sdk.client.config.update({ agent_mode: newMode } as any)
+            await sdk.client.config.update({ body: { agent_mode: newMode } } as any)
             sync.set("config", "agent_mode" as any, newMode)
             if (newMode === "autonomous") {
               process.env.ATOMCLI_AUTONOMOUS = "1"
@@ -519,34 +522,16 @@ export function Autocomplete(props: {
         },
       },
       {
-        display: "/smart_model",
-        aliases: ["/smart_model on", "/smart_model off", "/routing"],
-        description: "toggle smart model routing (auto-select best model per task)",
-        onSelect: async () => {
-          const current = (sync.data.config as any).experimental?.smart_model_routing === true
-          const newValue = !current
-          const experimental = { ...((sync.data.config as any).experimental || {}), smart_model_routing: newValue }
-          // Update TUI state immediately
-          sync.set("config", "experimental" as any, experimental)
-          // Persist to server (best-effort)
-          try {
-            await sdk.client.config.update({ experimental } as any)
-          } catch (e) {
-            // Server persist failed, TUI state is still updated
-          }
-        },
+        display: "/team",
+        aliases: ["/teams"],
+        description: "activate Agent Teams mode",
+        onSelect: () => command.trigger("team.activate"),
       },
       {
         display: "/exit",
         aliases: ["/quit", "/q"],
         description: "exit the app",
         onSelect: () => command.trigger("app.exit"),
-      },
-      {
-        display: "/scroll",
-        aliases: ["/scroll on", "/scroll off", "/follow", "/autoscroll"],
-        description: "toggle auto-follow (live scroll)",
-        onSelect: () => command.trigger("session.toggle.autofollow"),
       },
     )
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length
@@ -564,7 +549,9 @@ export function Autocomplete(props: {
     const skillsValue = skills()
 
     const mixed: AutocompleteOption[] = (
-      store.visible === "@" ? [...skillsValue, ...agentsValue, ...(filesValue || []), ...mcpResources()] : [...commandsValue]
+      store.visible === "@"
+        ? [...skillsValue, ...agentsValue, ...(filesValue || []), ...mcpResources()]
+        : [...commandsValue]
     ).filter((x) => x.disabled !== true)
 
     const currentFilter = filter()
