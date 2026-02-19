@@ -3,6 +3,8 @@ import { useRoute } from "@tui/context/route"
 import { useToast } from "../ui/toast"
 import { useChain } from "../context/chain"
 import { useFileTree } from "../context/file-tree"
+import { useSubAgents } from "../context/subagent"
+import { useSync } from "../context/sync"
 import { useCommandDialog } from "@tui/component/dialog-command"
 import { TuiEvent } from "../event"
 import { Session as SessionApi } from "@/session"
@@ -20,6 +22,8 @@ export function useSDKEventHandlers() {
     const command = useCommandDialog()
     const chainCtx = useChain()
     const fileTreeCtx = useFileTree()
+    const subAgentCtx = useSubAgents()
+    const sync = useSync()
 
     // Command execution
     sdk.event.on(TuiEvent.CommandExecute.type, (evt) => {
@@ -95,49 +99,66 @@ export function useSDKEventHandlers() {
         })
     })
 
-    // Chain event handlers
+    // Chain event handlers — session-scoped
+    // Using `as any` because Zod inference may not expose sessionID properly
     sdk.event.on(TuiEvent.ChainStart.type, (evt) => {
-        chainCtx.startChain(evt.properties.mode)
+        const p = evt.properties as any
+        chainCtx.startChain(p.mode, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainAddStep.type, (evt) => {
-        chainCtx.addStep(evt.properties.name, evt.properties.description, evt.properties.todos)
+        const p = evt.properties as any
+        chainCtx.addStep(p.name, p.description, p.todos, {
+            sessionId: p.sessionId,
+            agentType: p.agentType,
+            dependsOn: p.dependsOn,
+            sessionID: p.sessionID,
+        })
     })
 
     sdk.event.on(TuiEvent.ChainUpdateStep.type, (evt) => {
-        chainCtx.updateStepStatus(evt.properties.status, evt.properties.tool)
+        const p = evt.properties as any
+        chainCtx.updateStepStatus(p.status, p.tool, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainCompleteStep.type, (evt) => {
-        chainCtx.completeStep(evt.properties.output)
+        const p = evt.properties as any
+        chainCtx.completeStep(p.output, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainFailStep.type, (evt) => {
-        chainCtx.failStep(evt.properties.error)
+        const p = evt.properties as any
+        chainCtx.failStep(p.error, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainSetTodos.type, (evt) => {
-        chainCtx.setCurrentStepTodos(evt.properties.todos)
+        const p = evt.properties as any
+        chainCtx.setCurrentStepTodos(p.todos, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainTodoDone.type, (evt) => {
-        chainCtx.markTodoDone(evt.properties.todoIndex)
+        const p = evt.properties as any
+        chainCtx.markTodoDone(p.todoIndex, p.sessionID)
     })
 
-    sdk.event.on(TuiEvent.ChainClear.type, () => {
-        chainCtx.clearChain()
+    sdk.event.on(TuiEvent.ChainClear.type, (evt) => {
+        const p = evt.properties as any
+        chainCtx.clearChain(p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainSubPlanStart.type, (evt) => {
-        chainCtx.startSubPlan(evt.properties.stepIndex, evt.properties.reason, evt.properties.steps)
+        const p = evt.properties as any
+        chainCtx.startSubPlan(p.stepIndex, p.reason, p.steps, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainSubPlanEnd.type, (evt) => {
-        chainCtx.endSubPlan(evt.properties.stepIndex, evt.properties.success)
+        const p = evt.properties as any
+        chainCtx.endSubPlan(p.stepIndex, p.success, p.sessionID)
     })
 
     sdk.event.on(TuiEvent.ChainParallelUpdate.type, (evt) => {
-        chainCtx.updateStepByIndex(evt.properties.stepIndex, evt.properties.status)
+        const p = evt.properties as any
+        chainCtx.updateStepByIndex(p.stepIndex, p.status, p.sessionID)
     })
 
     // File Tree event handlers
@@ -160,4 +181,30 @@ export function useSDKEventHandlers() {
     sdk.event.on(TuiEvent.CodePanelToggle.type, () => {
         fileTreeCtx.toggleCodePanel()
     })
+
+    // Sub-agent panel events
+    sdk.event.on(TuiEvent.SubAgentActive.type, (evt) => {
+        const { sessionId, agentType, description } = evt.properties as any
+        // Get current session as parent for back-navigation
+        const parentId = route.data.type === "session" ? route.data.sessionID : undefined
+        subAgentCtx.addAgent({ sessionId, agentType, description, parentSessionId: parentId })
+        // Pre-sync the child session so messages appear in SubAgentPanel
+        sync.session.sync(sessionId).catch(() => { })
+    })
+
+    sdk.event.on(TuiEvent.SubAgentDone.type, (evt) => {
+        const { sessionId, lastOutput } = evt.properties as any
+        subAgentCtx.markWaiting(sessionId, lastOutput)
+    })
+
+    sdk.event.on(TuiEvent.SubAgentReactivate.type, (evt) => {
+        const { sessionId, description } = evt.properties as any
+        subAgentCtx.reactivate(sessionId, description)
+    })
+
+    sdk.event.on(TuiEvent.SubAgentRemove.type, (evt) => {
+        const { sessionId } = evt.properties as any
+        subAgentCtx.removeAgent(sessionId)
+    })
 }
+

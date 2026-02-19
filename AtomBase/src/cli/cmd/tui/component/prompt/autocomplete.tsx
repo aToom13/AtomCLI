@@ -521,12 +521,7 @@ export function Autocomplete(props: {
           }
         },
       },
-      {
-        display: "/team",
-        aliases: ["/teams"],
-        description: "activate Agent Teams mode",
-        onSelect: () => command.trigger("team.activate"),
-      },
+
       {
         display: "/exit",
         aliases: ["/quit", "/q"],

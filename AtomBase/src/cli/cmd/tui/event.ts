@@ -47,12 +47,14 @@ export const TuiEvent = {
   ChainStart: BusEvent.define(
     "tui.chain.start",
     z.object({
+      sessionID: z.string().optional(),
       mode: z.enum(["safe", "autonomous"]).default("safe"),
     }),
   ),
   ChainAddStep: BusEvent.define(
     "tui.chain.add_step",
     z.object({
+      sessionID: z.string().optional(),
       name: z.string(),
       description: z.string(),
       todos: z.array(z.object({
@@ -60,11 +62,15 @@ export const TuiEvent = {
         content: z.string(),
         status: z.enum(["pending", "in_progress", "complete", "failed"]),
       })).optional(),
+      sessionId: z.string().optional(),
+      agentType: z.string().optional(),
+      dependsOn: z.array(z.string()).optional(),
     }),
   ),
   ChainUpdateStep: BusEvent.define(
     "tui.chain.update_step",
     z.object({
+      sessionID: z.string().optional(),
       status: z.enum([
         "pending", "running", "coding", "searching_web", "searching_code",
         "reading_file", "writing_file", "running_command", "analyzing",
@@ -76,18 +82,21 @@ export const TuiEvent = {
   ChainCompleteStep: BusEvent.define(
     "tui.chain.complete_step",
     z.object({
+      sessionID: z.string().optional(),
       output: z.string().optional(),
     }),
   ),
   ChainFailStep: BusEvent.define(
     "tui.chain.fail_step",
     z.object({
+      sessionID: z.string().optional(),
       error: z.string(),
     }),
   ),
   ChainSetTodos: BusEvent.define(
     "tui.chain.set_todos",
     z.object({
+      sessionID: z.string().optional(),
       todos: z.array(z.object({
         id: z.string(),
         content: z.string(),
@@ -98,14 +107,18 @@ export const TuiEvent = {
   ChainTodoDone: BusEvent.define(
     "tui.chain.todo_done",
     z.object({
+      sessionID: z.string().optional(),
       todoIndex: z.number(),
     }),
   ),
-  ChainClear: BusEvent.define("tui.chain.clear", z.object({})),
+  ChainClear: BusEvent.define("tui.chain.clear", z.object({
+    sessionID: z.string().optional(),
+  })),
   // Sub-plan: creates a nested plan under the current step when issues arise
   ChainSubPlanStart: BusEvent.define(
     "tui.chain.subplan.start",
     z.object({
+      sessionID: z.string().optional(),
       stepIndex: z.number().describe("Index of the parent step this sub-plan belongs to"),
       reason: z.string().describe("Why a sub-plan is needed"),
       steps: z.array(z.object({
@@ -117,6 +130,7 @@ export const TuiEvent = {
   ChainSubPlanEnd: BusEvent.define(
     "tui.chain.subplan.end",
     z.object({
+      sessionID: z.string().optional(),
       stepIndex: z.number(),
       success: z.boolean(),
     }),
@@ -125,6 +139,7 @@ export const TuiEvent = {
   ChainParallelUpdate: BusEvent.define(
     "tui.chain.parallel.update",
     z.object({
+      sessionID: z.string().optional(),
       stepIndex: z.number(),
       status: z.enum([
         "pending", "running", "coding", "searching_web", "searching_code",
@@ -166,6 +181,35 @@ export const TuiEvent = {
     z.object({
       path: z.string(),
       content: z.string(),
+    }),
+  ),
+  // Sub-agent dynamic panel events
+  SubAgentActive: BusEvent.define(
+    "tui.subagent.active",
+    z.object({
+      sessionId: z.string(),
+      agentType: z.string(),
+      description: z.string(),
+    }),
+  ),
+  SubAgentDone: BusEvent.define(
+    "tui.subagent.done",
+    z.object({
+      sessionId: z.string(),
+      lastOutput: z.string().optional(),
+    }),
+  ),
+  SubAgentReactivate: BusEvent.define(
+    "tui.subagent.reactivate",
+    z.object({
+      sessionId: z.string(),
+      description: z.string().optional(),
+    }),
+  ),
+  SubAgentRemove: BusEvent.define(
+    "tui.subagent.remove",
+    z.object({
+      sessionId: z.string(),
     }),
   ),
 }

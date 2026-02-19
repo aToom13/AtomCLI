@@ -32,7 +32,7 @@ const ContextInfo = (props: { context: Accessor<string | undefined>; cost: Acces
 export function Header() {
   const route = useRouteData("session")
   const sync = useSync()
-  const { chain } = useChain()
+  const chainCtx = useChain()
   const session = createMemo(() => sync.session.get(route.sessionID)!)
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
 
@@ -106,7 +106,7 @@ export function Header() {
       </box>
 
       {/* Chain Progress Bar - Below Title */}
-      <ChainProgressBar chain={chain()} />
+      <ChainProgressBar chain={chainCtx.getChain(session().id)} />
     </box>
   )
 }

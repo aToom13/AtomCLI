@@ -77,6 +77,9 @@ export interface ChainStep {
   subSteps?: SubStep[] // Nested sub-plan steps
   subPlanActive?: boolean // Whether a sub-plan is currently running
   subPlanReason?: string // Why the sub-plan was created
+  sessionId?: string // Sub-agent session ID for navigation
+  agentType?: string // Agent type running this step
+  dependsOn?: string[] // IDs of steps this depends on
 }
 
 /**

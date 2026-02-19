@@ -42,7 +42,6 @@ import { MemoryCommand } from "./cli/cmd/memory"
 import { FallbackCommand } from "./cli/cmd/fallback"
 import { AutoupdateCommand } from "./cli/cmd/autoupdate"
 import { SmartModelCommand } from "./cli/cmd/smart-model"
-import { TeamCommand } from "./cli/cmd/team"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -141,7 +140,6 @@ const cli = yargs(hideBin(process.argv))
   .command(FallbackCommand)
   .command(AutoupdateCommand)
   .command(SmartModelCommand)
-  .command(TeamCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

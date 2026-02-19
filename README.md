@@ -29,8 +29,14 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
+## What's New (v2.3.0)
 
-## What's New (v2.2.9)
+### Agent Teams & Sub-Agents
+
+- **Multi-Agent Orchestration**: Decompose complex tasks and spawn specialized sub-agents dynamically.
+- **Independent Task Chains**: Each sub-agent maintains its own isolated UI chain and todo list.
+- **Event-Driven Progress**: Real-time visual tracking of sub-agent status, dependencies, and waiting states.
+- **Intelligent Session Reuse**: Agents yield context to the orchestrator upon completion and reactivate seamlessly when needed.
 
 ### Orchestrate Improvements
 
@@ -49,10 +55,6 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
   ]
 }
 ```
-
-### Coming Soon
-
-- **Agent Teams**: Advanced multi-agent system with shared knowledge base, event-driven communication, and human-in-the-loop approval
 
 ---
 

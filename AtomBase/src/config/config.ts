@@ -349,11 +349,11 @@ export namespace Config {
       {
         cwd: dir,
       },
-    ).catch(() => {})
+    ).catch(() => { })
 
     // Install any additional dependencies defined in the package.json
     // This allows local plugins and custom tools to use external packages
-    await BunProc.run(["install"], { cwd: dir }).catch(() => {})
+    await BunProc.run(["install"], { cwd: dir }).catch(() => { })
   }
 
   const COMMAND_GLOB = new Bun.Glob("{command,commands}/**/*.md")
@@ -1262,12 +1262,12 @@ export namespace Config {
     }
 
     let result: Info = pipe(
-      {},
-      mergeDeep(configJson),
-      mergeDeep(atomcliJson),
-      mergeDeep(atomcliJsonc),
-      mergeDeep(mcpConfig),
-    )
+      {} as any,
+      mergeDeep(configJson as any),
+      mergeDeep(atomcliJson as any),
+      mergeDeep(atomcliJsonc as any),
+      mergeDeep(mcpConfig as any),
+    ) as Info
 
     await import(path.join(Global.Path.config, "config"), {
       with: {
@@ -1282,7 +1282,7 @@ export namespace Config {
         await Bun.write(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
         await fs.unlink(path.join(Global.Path.config, "config"))
       })
-      .catch(() => {})
+      .catch(() => { })
 
     return result
   })
@@ -1409,7 +1409,7 @@ export namespace Config {
           const plugin = data.plugin[i]
           try {
             data.plugin[i] = import.meta.resolve!(plugin, configFilepath)
-          } catch (err) {}
+          } catch (err) { }
         }
       }
       return data
@@ -1493,12 +1493,12 @@ export namespace Config {
     // If no existing config, create new one in .atomcli directory
     if (!filepath) {
       const atomcliDir = path.join(Instance.directory, ".atomcli")
-      await fs.mkdir(atomcliDir, { recursive: true }).catch(() => {})
+      await fs.mkdir(atomcliDir, { recursive: true }).catch(() => { })
       filepath = path.join(atomcliDir, "atomcli.json")
     }
 
     log.info("updating config", { filepath, config })
-    const existing = await loadFile(filepath)
+    const existing = existsSync(filepath) ? await loadFile(filepath) : {}
     const merged = mergeDeep(existing, config)
     await Bun.write(filepath, JSON.stringify(merged, null, 2))
     log.info("config updated", { filepath, experimental: merged.experimental })
