@@ -29,6 +29,7 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
+
 ## What's New (v2.2.9)
 
 ### Orchestrate Improvements
