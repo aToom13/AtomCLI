@@ -3,6 +3,7 @@ import DESCRIPTION from "./task.txt"
 import z from "zod"
 import { Session } from "../session"
 import { Bus } from "../bus"
+import { TuiEvent } from "../cli/cmd/tui/event"
 import { MessageV2 } from "../session/message-v2"
 import { Identifier } from "../id/id"
 import { Agent } from "../agent/agent"
@@ -13,10 +14,11 @@ import { Config } from "../config/config"
 import { PermissionNext } from "@/permission/next"
 
 const parameters = z.object({
-  description: z.string().describe("A short (3-5 words) description of the task"),
-  prompt: z.string().describe("The task for the agent to perform"),
-  subagent_type: z.string().describe("The type of specialized agent to use for this task"),
-  session_id: z.string().describe("Existing Task session to continue").optional(),
+  action: z.enum(["run", "abort"]).optional().describe("Defaults to run. Set to abort to kill a session_id"),
+  description: z.string().optional().describe("A short (3-5 words) description of the task. Required for run."),
+  prompt: z.string().optional().describe("The task for the agent to perform. Required for run."),
+  subagent_type: z.string().optional().describe("The type of specialized agent to use for this task. Required for run."),
+  session_id: z.string().describe("Existing Task session to continue, or to abort").optional(),
   command: z.string().describe("The command that triggered this task").optional(),
 })
 
@@ -39,6 +41,23 @@ export const TaskTool = Tool.define("task", async (ctx) => {
     description,
     parameters,
     async execute(params: z.infer<typeof parameters>, ctx) {
+      if (params.action === "abort") {
+        if (!params.session_id) throw new Error("session_id is required to abort a task")
+        SessionPrompt.cancel(params.session_id)
+        try {
+          await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: params.session_id })
+        } catch { /* ignore */ }
+        return {
+          title: "Abort Successful",
+          output: `Aborted and removed session ${params.session_id} from UI.`,
+          metadata: { error: false, aborted: 1, summary: [], sessionId: params.session_id },
+        }
+      }
+
+      if (!params.description || !params.prompt || !params.subagent_type) {
+        throw new Error("description, prompt, and subagent_type are required when starting a task")
+      }
+
       const config = await Config.get()
 
       // Skip permission check when user explicitly invoked via @ or command subtask
@@ -64,7 +83,16 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       const session = await iife(async () => {
         if (params.session_id) {
           const found = await Session.get(params.session_id).catch(() => { })
-          if (found) return found
+          if (found) {
+            // Reactivate existing session - notify TUI
+            try {
+              await Bus.publish(TuiEvent.SubAgentReactivate, {
+                sessionId: found.id,
+                description: params.description,
+              })
+            } catch { /* TUI may not be available */ }
+            return found
+          }
         }
 
         // Base permissions for subagents (deny tools that shouldn't be nested)
@@ -111,6 +139,15 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           sessionId: session.id,
         },
       })
+
+      // Notify TUI to open dynamic sub-agent panel for this session
+      try {
+        await Bus.publish(TuiEvent.SubAgentActive, {
+          sessionId: session.id,
+          agentType: params.subagent_type,
+          description: params.description,
+        })
+      } catch { /* TUI may not be available */ }
 
       const messageID = Identifier.ascending("message")
       const parts: Record<string, { id: string; tool: string; state: { status: string; title?: string } }> = {}
@@ -179,15 +216,23 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         }))
       const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
 
-      const output = text + "\n\n" + ["<task_metadata>", `session_id: ${session.id}`, "</task_metadata>"].join("\n")
+      // Notify TUI that sub-agent finished (mark as waiting, keep visible, pass output for context)
+      try {
+        await Bus.publish(TuiEvent.SubAgentDone, {
+          sessionId: session.id,
+          lastOutput: text.slice(0, 2000), // Truncate for UI but full text goes to orchestrator
+        })
+      } catch { /* TUI may not be available */ }
 
       return {
         title: params.description,
         metadata: {
           summary,
           sessionId: session.id,
+          error: false,
+          aborted: 0,
         },
-        output,
+        output: text,
       }
     },
   }

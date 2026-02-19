@@ -22,6 +22,10 @@ Usage notes:
 4. The agent's outputs should generally be trusted
 5. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
 6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
+7. **Automatic Progress Tracking**: When you call the Task tool, the TUI's Chain progress bar automatically updates to show the sub-agent's status (running, complete, failed). You do NOT need to manually call the chainupdate tool to track sub-agent progress — it happens automatically.
+8. **Dynamic Sub-Agent Panel**: When a sub-agent is running, a dynamic panel appears on the right side of the TUI showing the agent's live activity (current tool, last output preview). The user can click on it to navigate to the sub-agent's session. This panel auto-shows and auto-hides.
+9. **Session Reuse**: When re-tasking an agent, pass `session_id` from the previous result's metadata to continue in the same session. This keeps agents persistent and visible in the panel — they go to "waiting" state after each task and stay alive for new orders.
+10. **Context Transfer**: Agents MUST return their full results (research findings, code output, analysis) in their final text response. This output is automatically passed back to the orchestrator for context-aware decision making. Do NOT just say "done" — return the actual content.
 
 Example usage (NOTE: The agents below are fictional examples for illustration only - use the actual agents listed above):
 

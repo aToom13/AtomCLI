@@ -29,30 +29,6 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v2.2.9)
-
-### Orchestrate Improvements
-
-- **Independent Tasks**: Tasks without dependencies now run even if other tasks fail
-- **Automatic Retry**: Failed tasks retry with exponential backoff (1s → 2s → 4s), max 3 attempts
-- **Custom Model Selection**: Specify a model per task using `model: "provider/model"` (e.g., `"atomcli/minimax-m2.5-free"`)
-- **Improved UI**: Navigate between task sessions using `Ctrl+↑/↓` arrows
-- **Better Tracking**: Task status, duration, and session IDs are now tracked
-
-```json
-{
-  "action": "plan",
-  "tasks": [
-    { "id": "research", "prompt": "Research the codebase", "model": "atomcli/minimax-m2.5-free" },
-    { "id": "code", "prompt": "Write code", "category": "coding" }
-  ]
-}
-```
-
-### Coming Soon
-
-- **Agent Teams**: Advanced multi-agent system with shared knowledge base, event-driven communication, and human-in-the-loop approval
-
 ---
 
 ## Features

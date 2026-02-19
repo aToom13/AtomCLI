@@ -9,6 +9,8 @@ import { MessageV2 } from "../session/message-v2"
 import { Config } from "../config/config"
 import { PermissionNext } from "@/permission/next"
 import { selectModel, inferCategory, type TaskCategory } from "./model-router"
+import { Bus } from "../bus"
+import { TuiEvent } from "../cli/cmd/tui/event"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -40,12 +42,22 @@ When smart_model_routing is enabled, each task automatically gets the best model
 \`\`\`json
 { "action": "execute", "workflowId": "<returned-id>" }
 \`\`\`
-→ Runs all tasks, respecting dependencies. Returns results.
+→ Starts tasks in the background and returns immediately. You will be notified when complete.
+The notification will include a table with \`Session ID\`s. You MUST use these IDs if you need to abort/delete an agent.
 
 **STEP 3 (optional) - Status:**
 \`\`\`json
 { "action": "status", "workflowId": "<returned-id>" }
-\`\`\``
+\`\`\`
+
+**STEP 4 (optional) - Abort:**
+\`\`\`json
+{ "action": "abort", "sessionId": "<sub-agent-session-id>" }
+\`\`\`
+→ Or abort an entire workflow:
+\`\`\`json
+{ "action": "abort", "workflowId": "<returned-id>" }
+\`\`\`\`\``
 
 // ─── DAG Utilities ───────────────────────────────────────────
 
@@ -79,6 +91,21 @@ interface TaskResult {
 
 // In-memory workflow store (per session)
 const WORKFLOWS: Map<string, WorkflowState> = new Map()
+
+// Track agent-type to session-id mapping for session reuse across workflow runs
+// Key: "parentSessionId:agentType:taskId" → sessionId
+const AGENT_SESSION_MAP: Map<string, string> = new Map()
+
+// Cleanup completed/failed workflows older than 1 hour to prevent memory leaks
+const WORKFLOW_TTL_MS = 60 * 60 * 1000
+function cleanupOldWorkflows() {
+  const now = Date.now()
+  for (const [id, wf] of WORKFLOWS.entries()) {
+    if ((wf.status === "completed" || wf.status === "failed") && now - wf.createdAt > WORKFLOW_TTL_MS) {
+      WORKFLOWS.delete(id)
+    }
+  }
+}
 
 // Default retry configuration
 const DEFAULT_MAX_RETRIES = 2
@@ -191,9 +218,10 @@ const TaskSchema = z.object({
 export const OrchestrateTool = Tool.define("orchestrate", {
   description: DESCRIPTION,
   parameters: z.object({
-    action: z.enum(["plan", "execute", "status"]).describe("Action to perform"),
+    action: z.enum(["plan", "execute", "status", "abort"]).describe("Action to perform"),
     tasks: z.array(TaskSchema).optional().describe("Task list for 'plan' action"),
-    workflowId: z.string().optional().describe("Workflow ID for 'execute' and 'status' actions"),
+    workflowId: z.string().optional().describe("Workflow ID for 'execute', 'status', and 'abort' actions"),
+    sessionId: z.string().optional().describe("Session ID to abort when action is 'abort'"),
   }),
   async execute(params, ctx): Promise<any> {
     const log = Log.create({ service: "tool.orchestrate", sessionID: ctx.sessionID })
@@ -241,6 +269,23 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           createdAt: Date.now(),
         }
         WORKFLOWS.set(workflowId, workflow)
+
+        // Publish Chain UI events for real-time progress tracking
+        try {
+          await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+          await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
+          for (const task of tasks) {
+            const deps = task.dependsOn.length > 0 ? ` (needs: ${task.dependsOn.join(", ")})` : ""
+            await Bus.publish(TuiEvent.ChainAddStep, {
+              name: `${task.id}`,
+              description: `@${task.agent} [${task.category}]${deps}: ${task.prompt.slice(0, 80)}`,
+              agentType: task.agent,
+              dependsOn: task.dependsOn.length > 0 ? task.dependsOn : undefined,
+              sessionID: ctx.sessionID,
+            })
+          }
+          await Bus.publish(TuiEvent.ChainUpdateStep, { status: "pending", sessionID: ctx.sessionID })
+        } catch { /* TUI may not be active */ }
 
         // Build execution layers (groups of parallelizable tasks)
         const layers: string[][] = []
@@ -330,6 +375,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         }
 
         workflow.status = "running"
+        // Track index of current task in Chain for parallel_update
+        const taskIndexMap: Record<string, number> = {}
+        workflow.tasks.forEach((t, i) => { taskIndexMap[t.id] = i })
         log.info("workflow executing", { workflowId: params.workflowId })
 
         const config = await Config.get()
@@ -354,258 +402,296 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         const completedTasks: string[] = []
         const failedTasks: string[] = []
 
-        // Execute in waves
-        while (true) {
-          // Mark tasks with failed deps as skipped
-          // IMPORTANT: Only skip tasks that HAVE dependencies and whose dependencies failed
-          for (const task of workflow.tasks) {
-            const result = workflow.results[task.id]
-            if (result.status === "pending" && shouldSkipDueToFailedDependency(task, workflow)) {
-              result.status = "skipped"
-              result.error = "Skipped due to failed dependency"
-              log.warn("task skipped due to failed dependency", { taskId: task.id })
-            }
-          }
-
-          const ready = getReadyTasks(workflow)
-          if (ready.length === 0) break
-
-          // Run ready tasks in parallel
-          const promises = ready.map(async (task) => {
-            const result = workflow.results[task.id]
-            result.status = "running"
-            result.startedAt = Date.now()
-
-            // Select model: task'te belirtilen model veya SMART routing
-            let model: { providerID: string; modelID: string }
-            if (task.model) {
-              // Parse "provider/model" format
-              const [providerID, modelID] = task.model.split("/")
-              if (!providerID || !modelID) {
-                throw new Error(
-                  `Invalid model format: ${task.model}. Use "provider/model" (e.g. "atomcli/minimax-m2.5-free")`,
-                )
-              }
-              model = { providerID, modelID }
-              log.info("using specified model", { taskId: task.id, model: task.model })
-            } else {
-              model = await selectModel(task.category, fallbackModel)
-            }
-            result.model = model
-
-            // Resolve agent
-            const agent = await Agent.get(task.agent)
-            if (!agent) throw new Error(`Unknown agent: ${task.agent}`)
-
-            // Build context from completed dependency outputs
-            const depContext = task.dependsOn
-              .map((depId) => {
-                const depResult = workflow.results[depId]
-                if (depResult?.output) {
-                  return `<dependency_output task="${depId}">\n${depResult.output}\n</dependency_output>`
+        // Start execution in background
+        const runWorkflow = async () => {
+          try {
+            // Execute in waves
+            while (true) {
+              // Mark tasks with failed deps as skipped
+              // IMPORTANT: Only skip tasks that HAVE dependencies and whose dependencies failed
+              for (const task of workflow.tasks) {
+                const result = workflow.results[task.id]
+                if (result.status === "pending" && shouldSkipDueToFailedDependency(task, workflow)) {
+                  result.status = "skipped"
+                  result.error = "Skipped due to failed dependency"
+                  log.warn("task skipped due to failed dependency", { taskId: task.id })
                 }
-                return ""
-              })
-              .filter(Boolean)
-              .join("\n\n")
+              }
 
-            const fullPrompt = depContext ? `${depContext}\n\n${task.prompt}` : task.prompt
+              const ready = getReadyTasks(workflow)
+              if (ready.length === 0) break
 
-            // Subagent permissions
-            const subPermissions: PermissionNext.Rule[] = [
-              { permission: "todowrite", pattern: "*", action: "deny" as const },
-              { permission: "todoread", pattern: "*", action: "deny" as const },
-              { permission: "task", pattern: "*", action: "deny" as const },
-            ]
-            const inheritedPermissions = PermissionNext.merge(parentPermissions, subPermissions)
+              // Run ready tasks in parallel
+              const promises = ready.map(async (task) => {
+                const result = workflow.results[task.id]
+                result.status = "running"
+                result.startedAt = Date.now()
 
-            // Execute task with retry logic
-            let taskSuccess = false
-            let lastError: string | undefined
+                // Update Chain UI: mark this task as running
+                const stepIdx = taskIndexMap[task.id]
+                try {
+                  await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "running", sessionID: ctx.sessionID })
+                } catch { /* TUI may not be active */ }
 
-            for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES && !taskSuccess; attempt++) {
-              try {
-                // Create child session
-                const session = await Session.create({
-                  parentID: ctx.sessionID,
-                  title: `[${task.category}] ${task.id} (@${task.agent})`,
-                  permission: inheritedPermissions,
-                })
+                // Select model: task'te belirtilen model veya SMART routing
+                let model: { providerID: string; modelID: string }
+                if (task.model) {
+                  // Parse "provider/model" format
+                  const [providerID, modelID] = task.model.split("/")
+                  if (!providerID || !modelID) {
+                    throw new Error(
+                      `Invalid model format: ${task.model}. Use "provider/model" (e.g. "atomcli/minimax-m2.5-free")`,
+                    )
+                  }
+                  model = { providerID, modelID }
+                  log.info("using specified model", { taskId: task.id, model: task.model })
+                } else {
+                  model = await selectModel(task.category, fallbackModel)
+                }
+                result.model = model
 
-                // Store session ID for UI navigation
-                result.sessionId = session.id
+                // Resolve agent
+                const agent = await Agent.get(task.agent)
+                if (!agent) throw new Error(`Unknown agent: ${task.agent}`)
 
-                const messageID = Identifier.ascending("message")
-                const promptParts = await SessionPrompt.resolvePromptParts(fullPrompt)
+                // Build context from completed dependency outputs
+                const depContext = task.dependsOn
+                  .map((depId) => {
+                    const depResult = workflow.results[depId]
+                    if (depResult?.output) {
+                      return `<dependency_output task="${depId}">\n${depResult.output}\n</dependency_output>`
+                    }
+                    return ""
+                  })
+                  .filter(Boolean)
+                  .join("\n\n")
 
-                const promptResult = await SessionPrompt.prompt({
-                  messageID,
-                  sessionID: session.id,
-                  model: {
-                    modelID: model.modelID,
-                    providerID: model.providerID,
-                  },
-                  agent: agent.name,
-                  tools: {
-                    todowrite: false,
-                    todoread: false,
-                    task: false,
-                  },
-                  parts: promptParts,
-                })
+                const fullPrompt = depContext ? `${depContext}\n\n${task.prompt}` : task.prompt
 
-                const text = promptResult.parts.findLast((x) => x.type === "text")?.text ?? ""
+                // Subagent permissions
+                const subPermissions: PermissionNext.Rule[] = [
+                  { permission: "todowrite", pattern: "*", action: "deny" as const },
+                  { permission: "todoread", pattern: "*", action: "deny" as const },
+                  { permission: "task", pattern: "*", action: "deny" as const },
+                ]
+                const inheritedPermissions = PermissionNext.merge(parentPermissions, subPermissions)
 
-                result.status = "completed"
-                result.output = text
-                result.completedAt = Date.now()
-                result.retryCount = attempt
-                completedTasks.push(task.id)
-                taskSuccess = true
+                // Execute task with retry logic
+                let taskSuccess = false
+                let lastError: string | undefined
 
-                log.info("task completed", {
-                  taskId: task.id,
-                  sessionId: session.id,
-                  model: `${model.providerID}/${model.modelID}`,
-                  duration: result.completedAt - (result.startedAt || 0),
-                  attempts: attempt + 1,
-                })
-              } catch (e) {
-                lastError = (e as Error).message
+                for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES && !taskSuccess; attempt++) {
+                  try {
+                    // Try to reuse existing session for this agent type
+                    const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
+                    const existingSessionId = AGENT_SESSION_MAP.get(sessionKey)
+                    let session: any
 
-                if (attempt < DEFAULT_MAX_RETRIES) {
-                  log.warn("task failed, retrying", {
+                    if (existingSessionId) {
+                      // Reuse existing session
+                      session = await Session.get(existingSessionId).catch(() => null)
+                      if (session) {
+                        // Notify TUI: reactivate existing agent
+                        try {
+                          await Bus.publish(TuiEvent.SubAgentReactivate, {
+                            sessionId: session.id,
+                            description: `[${task.category}] ${task.id}`,
+                          })
+                        } catch { /* TUI may not be available */ }
+                      }
+                    }
+
+                    if (!session) {
+                      // Create new child session
+                      session = await Session.create({
+                        parentID: ctx.sessionID,
+                        title: `[${task.category}] ${task.id} (@${task.agent})`,
+                        permission: inheritedPermissions,
+                      })
+                      // Store mapping for future reuse
+                      AGENT_SESSION_MAP.set(sessionKey, session.id)
+
+                      // Notify TUI: new sub-agent active
+                      try {
+                        await Bus.publish(TuiEvent.SubAgentActive, {
+                          sessionId: session.id,
+                          agentType: task.agent,
+                          description: `[${task.category}] ${task.id}`,
+                        })
+                      } catch { /* TUI may not be available */ }
+                    }
+
+                    // Store session ID for UI navigation
+                    result.sessionId = session.id
+
+                    const messageID = Identifier.ascending("message")
+                    const promptParts = await SessionPrompt.resolvePromptParts(fullPrompt)
+
+                    const promptResult = await SessionPrompt.prompt({
+                      messageID,
+                      sessionID: session.id,
+                      model: {
+                        modelID: model.modelID,
+                        providerID: model.providerID,
+                      },
+                      agent: agent.name,
+                      tools: {
+                        todowrite: false,
+                        todoread: false,
+                        task: false,
+                      },
+                      parts: promptParts,
+                    })
+
+                    const text = promptResult.parts.findLast((x) => x.type === "text")?.text ?? ""
+
+                    result.status = "completed"
+                    result.output = text
+                    result.completedAt = Date.now()
+                    result.retryCount = attempt
+                    completedTasks.push(task.id)
+                    taskSuccess = true
+
+                    // Update Chain UI: mark step as complete
+                    try {
+                      await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "complete", sessionID: ctx.sessionID })
+                    } catch { /* TUI may not be active */ }
+
+                    // Notify TUI: agent done (waiting state), pass output for context transfer
+                    try {
+                      await Bus.publish(TuiEvent.SubAgentDone, {
+                        sessionId: session.id,
+                        lastOutput: text.slice(0, 2000),
+                      })
+                    } catch { /* TUI may not be active */ }
+
+                    log.info("task completed", {
+                      taskId: task.id,
+                      sessionId: session.id,
+                      model: `${model.providerID}/${model.modelID}`,
+                      duration: result.completedAt - (result.startedAt || 0),
+                      attempts: attempt + 1,
+                    })
+                  } catch (e) {
+                    lastError = (e as Error).message
+
+                    if (attempt < DEFAULT_MAX_RETRIES) {
+                      log.warn("task failed, retrying", {
+                        taskId: task.id,
+                        attempt: attempt + 1,
+                        maxRetries: DEFAULT_MAX_RETRIES,
+                        error: lastError,
+                      })
+
+                      // Exponential backoff
+                      const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
+                      await new Promise((resolve) => setTimeout(resolve, delay))
+                    }
+                  }
+                }
+
+                if (!taskSuccess && lastError) {
+                  result.status = "failed"
+                  result.error = lastError
+                  result.completedAt = Date.now()
+                  failedTasks.push(task.id)
+
+                  // Update Chain UI: mark step as failed
+                  try {
+                    await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "failed", sessionID: ctx.sessionID })
+                  } catch { /* TUI may not be active */ }
+
+                  log.error("task failed after all retries", {
                     taskId: task.id,
-                    attempt: attempt + 1,
                     maxRetries: DEFAULT_MAX_RETRIES,
                     error: lastError,
                   })
-
-                  // Exponential backoff
-                  const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
-                  await new Promise((resolve) => setTimeout(resolve, delay))
                 }
+              })
+
+              // Wait for all tasks to complete
+              await Promise.all(promises)
+            }
+
+            // Determine overall status
+            workflow.status = failedTasks.length > 0 ? "failed" : "completed"
+
+            // Clear Chain UI on finish
+            try {
+              await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+            } catch { /* TUI may not be active */ }
+
+            // Cleanup old workflows to prevent memory leaks
+            cleanupOldWorkflows()
+
+            // Build summary
+            const parts: string[] = [
+              `## Workflow ${workflow.status === "completed" ? "✅ Completed" : "⚠️ Completed with Errors"}`,
+              ``,
+              `| Task | Status | Session ID | Model | Duration |`,
+              `|:-----|:-------|:-----------|:------|:---------|`,
+            ]
+
+            for (const task of workflow.tasks) {
+              const r = workflow.results[task.id]
+              const statusEmoji = {
+                pending: "⏳",
+                running: "🔄",
+                completed: "✅",
+                failed: "❌",
+                skipped: "⏭️",
+              }[r.status]
+              const modelStr = r.model ? `${r.model.providerID}/${r.model.modelID}` : "-"
+              const duration = r.startedAt && r.completedAt ? `${((r.completedAt - r.startedAt) / 1000).toFixed(1)}s` : "-"
+              const retryInfo = r.retryCount ? ` (${r.retryCount} retries)` : ""
+              const sessionStr = r.sessionId || "-"
+              parts.push(`| ${task.id} | ${statusEmoji} ${r.status}${retryInfo} | ${sessionStr} | ${modelStr} | ${duration} |`)
+            }
+
+            if (failedTasks.length > 0) {
+              parts.push(`\n### Errors:`)
+              for (const taskId of failedTasks) {
+                const r = workflow.results[taskId]
+                parts.push(`- **${taskId}:** ${r.error}`)
               }
             }
 
-            if (!taskSuccess && lastError) {
-              result.status = "failed"
-              result.error = lastError
-              result.completedAt = Date.now()
-              failedTasks.push(task.id)
-
-              log.error("task failed after all retries", {
-                taskId: task.id,
-                maxRetries: DEFAULT_MAX_RETRIES,
-                error: lastError,
-              })
+            // Include completed outputs
+            for (const taskId of completedTasks) {
+              const r = workflow.results[taskId]
+              if (r.output) {
+                parts.push(`\n### Output: ${taskId}`)
+                // Truncate long outputs
+                const truncated = r.output.length > 4000 ? r.output.slice(0, 4000) + "\n... (truncated)" : r.output
+                parts.push(truncated)
+              }
             }
-          })
 
-          // Wait for all tasks to complete
-          await Promise.all(promises)
-        }
+            // Notify parent session with results
+            const promptText = `<system_notification>\nBackground execution for workflow ${params.workflowId} completed.\nResults:\n${parts.join("\n")}\n</system_notification>\n\nPlease summarize these results to the user.`
+            await SessionPrompt.prompt({
+              sessionID: ctx.sessionID,
+              parts: [{ type: "text", text: promptText }],
+            }).catch((err) => {
+              log.error("failed to send result prompt back to orchestrator", { error: err.message })
+            })
 
-        // Determine overall status
-        workflow.status = failedTasks.length > 0 ? "failed" : "completed"
-
-        // Build summary
-        const parts: string[] = [
-          `## Workflow ${workflow.status === "completed" ? "✅ Completed" : "⚠️ Completed with Errors"}`,
-          ``,
-          `| Task | Status | Model | Duration |`,
-          `|:-----|:-------|:------|:---------|`,
-        ]
-
-        for (const task of workflow.tasks) {
-          const r = workflow.results[task.id]
-          const statusEmoji = {
-            pending: "⏳",
-            running: "🔄",
-            completed: "✅",
-            failed: "❌",
-            skipped: "⏭️",
-          }[r.status]
-          const modelStr = r.model ? `${r.model.providerID}/${r.model.modelID}` : "-"
-          const duration = r.startedAt && r.completedAt ? `${((r.completedAt - r.startedAt) / 1000).toFixed(1)}s` : "-"
-          const retryInfo = r.retryCount ? ` (${r.retryCount} retries)` : ""
-          parts.push(`| ${task.id} | ${statusEmoji} ${r.status}${retryInfo} | ${modelStr} | ${duration} |`)
-        }
-
-        if (failedTasks.length > 0) {
-          parts.push(`\n### Errors:`)
-          for (const taskId of failedTasks) {
-            const r = workflow.results[taskId]
-            parts.push(`- **${taskId}:** ${r.error}`)
+          } catch (err) {
+            log.error("workflow background execution failed", { error: (err as Error).message })
           }
         }
 
-        // Include completed outputs
-        for (const taskId of completedTasks) {
-          const r = workflow.results[taskId]
-          if (r.output) {
-            parts.push(`\n### Output: ${taskId}`)
-            // Truncate long outputs
-            const truncated = r.output.length > 2000 ? r.output.slice(0, 2000) + "\n... (truncated)" : r.output
-            parts.push(truncated)
-          }
-        }
+        // Detach execution
+        setTimeout(runWorkflow, 0)
 
-        // Collect all child session IDs for UI navigation
-        const childSessionIds = Object.values(workflow.results)
-          .filter((r) => r.sessionId)
-          .map((r) => r.sessionId as string)
-
-        // Build task status map for UI
-        const taskStatusMap: Record<
-          string,
-          {
-            status: string
-            duration?: string
-            sessionId?: string
-            error?: string
-          }
-        > = {}
-
-        for (const task of workflow.tasks) {
-          const r = workflow.results[task.id]
-          taskStatusMap[task.id] = {
-            status: r.status,
-            duration:
-              r.startedAt && r.completedAt ? ((r.completedAt - r.startedAt) / 1000).toFixed(1) + "s" : undefined,
-            sessionId: r.sessionId,
-            error: r.error,
-          }
-        }
-
-        // Store full outputs in metadata for context (UI will show truncated, but full data available)
-        // This allows the outputs to be used in subsequent prompts
-        const fullOutputs: Record<string, string> = {}
-        for (const taskId of completedTasks) {
-          const r = workflow.results[taskId]
-          if (r.output) {
-            fullOutputs[taskId] = r.output
-          }
-        }
-
-        // Note: To add to conversation context, outputs are in metadata for now
-        // A more complex implementation would add actual messages to the parent session
-
+        // Return immediately
         return {
-          title: `Workflow ${workflow.status}`,
-          output: parts.join("\n"),
+          title: "Workflow Started",
+          output: `Workflow ${params.workflowId} has been started in the background. You will receive a system notification when it completes. \n\nYou can continue working on other things or answer user questions while waiting.`,
           metadata: {
             error: false,
             workflowId: params.workflowId,
-            status: workflow.status,
-            completed: completedTasks.length,
-            failed: failedTasks.length,
-            skipped: Object.values(workflow.results).filter((r) => r.status === "skipped").length,
-            // For UI navigation
-            childSessionIds,
-            taskStatus: taskStatusMap,
-            // Full outputs for context
-            taskOutputs: fullOutputs,
+            status: "running"
           },
         }
       }
@@ -632,8 +718,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         const parts: string[] = [
           `## Workflow Status: ${workflow.status}`,
           ``,
-          `| Task | Agent | Category | Status | Model |`,
-          `|:-----|:------|:---------|:-------|:------|`,
+          `| Task | Agent | Category | Status | Session ID | Model |`,
+          `|:-----|:------|:---------|:-------|:-----------|:------|`,
         ]
 
         for (const task of workflow.tasks) {
@@ -646,7 +732,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             skipped: "⏭️",
           }[r.status]
           const modelStr = r.model ? `${r.model.providerID}/${r.model.modelID}` : "-"
-          parts.push(`| ${task.id} | ${task.agent} | ${task.category} | ${statusEmoji} ${r.status} | ${modelStr} |`)
+          const sessionStr = r.sessionId || "-"
+          parts.push(`| ${task.id} | ${task.agent} | ${task.category} | ${statusEmoji} ${r.status} | ${sessionStr} | ${modelStr} |`)
         }
 
         return {
@@ -658,6 +745,67 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             status: workflow.status,
             tasks: Object.fromEntries(workflow.tasks.map((t) => [t.id, workflow.results[t.id].status])),
           },
+        }
+      }
+
+      // ─── ABORT ───────────────────────────────────────────
+      case "abort": {
+        if (!params.sessionId && !params.workflowId) {
+          return {
+            title: "Error",
+            output: "Either sessionId or workflowId is required for abort action",
+            metadata: { error: true },
+          }
+        }
+
+        let abortedCount = 0
+
+        // Abort single session
+        if (params.sessionId) {
+          SessionPrompt.cancel(params.sessionId)
+          try {
+            await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: params.sessionId })
+          } catch { /* ignore */ }
+          abortedCount++
+        }
+
+        // Abort workflow and its tasks
+        if (params.workflowId) {
+          const workflow = WORKFLOWS.get(params.workflowId)
+          if (workflow) {
+            if (workflow.status === "running") {
+              workflow.status = "failed"
+            }
+            // Always try to remove UI elements even if not running
+            for (const task of workflow.tasks) {
+              const r = workflow.results[task.id]
+              if (r.status === "running") {
+                r.status = "failed"
+                r.error = "Aborted by orchestrator"
+                if (r.sessionId) {
+                  SessionPrompt.cancel(r.sessionId)
+                  try {
+                    await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: r.sessionId })
+                  } catch { /* ignore */ }
+                  abortedCount++
+                }
+              } else if (r.status === "pending") {
+                r.status = "skipped"
+              } else if (r.sessionId) {
+                // Agent is already done/waiting, but we should remove it from the UI
+                try {
+                  await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: r.sessionId })
+                } catch { /* ignore */ }
+                abortedCount++
+              }
+            }
+          }
+        }
+
+        return {
+          title: "Abort Successful",
+          output: `Aborted/Removed ${abortedCount} tasks/sessions from UI.`,
+          metadata: { error: false, aborted: abortedCount },
         }
       }
 

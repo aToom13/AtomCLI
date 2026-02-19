@@ -140,13 +140,13 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
     switch (params.action) {
       case "start":
         // ALWAYS clear first to prevent accumulation of old steps
-        await Bus.publish(TuiEvent.ChainClear, {})
+        await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
 
         // Small delay to ensure clear is processed
         await new Promise((resolve) => setTimeout(resolve, 10))
 
         if (params.steps && params.steps.length > 0) {
-          await Bus.publish(TuiEvent.ChainStart, { mode: "safe" })
+          await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
 
           for (const step of params.steps) {
             if (typeof step === "string") {
@@ -155,6 +155,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
               await Bus.publish(TuiEvent.ChainAddStep, {
                 name: step,
                 description: step,
+                sessionID: ctx.sessionID,
               })
             } else {
               // Validate: skip if step name is too short
@@ -168,10 +169,11 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
                 name: step.name,
                 description: step.description || step.name,
                 todos,
+                sessionID: ctx.sessionID,
               })
             }
           }
-          await Bus.publish(TuiEvent.ChainUpdateStep, { status: "running" })
+          await Bus.publish(TuiEvent.ChainUpdateStep, { status: "running", sessionID: ctx.sessionID })
         }
         return {
           title: `Chain started with ${params.steps?.length ?? 0} steps`,
@@ -190,6 +192,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
             name: params.step_name,
             description: params.step_description || params.step_name,
             todos,
+            sessionID: ctx.sessionID,
           })
           return {
             title: `Added: ${params.step_name}`,
@@ -204,6 +207,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
           await Bus.publish(TuiEvent.ChainUpdateStep, {
             status: params.status,
             tool: params.tool,
+            sessionID: ctx.sessionID,
           })
         }
         return {
@@ -219,7 +223,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
             content: t,
             status: "pending" as const,
           }))
-          await Bus.publish(TuiEvent.ChainSetTodos, { todos })
+          await Bus.publish(TuiEvent.ChainSetTodos, { todos, sessionID: ctx.sessionID })
         }
         return {
           title: `${params.todos?.length ?? 0} todos set`,
@@ -229,7 +233,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
 
       case "todo_done":
         if (params.todo_index !== undefined) {
-          await Bus.publish(TuiEvent.ChainTodoDone, { todoIndex: params.todo_index })
+          await Bus.publish(TuiEvent.ChainTodoDone, { todoIndex: params.todo_index, sessionID: ctx.sessionID })
         }
         return {
           title: `Todo #${(params.todo_index ?? 0) + 1} ✓`,
@@ -240,6 +244,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
       case "complete":
         await Bus.publish(TuiEvent.ChainCompleteStep, {
           output: params.output,
+          sessionID: ctx.sessionID,
         })
         return {
           title: "Step completed ✓",
@@ -250,6 +255,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
       case "fail":
         await Bus.publish(TuiEvent.ChainFailStep, {
           error: params.error ?? "Unknown error",
+          sessionID: ctx.sessionID,
         })
         return {
           title: "Step failed ✗",
@@ -263,6 +269,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
             stepIndex: params.step_index,
             reason: params.reason,
             steps: params.sub_steps,
+            sessionID: ctx.sessionID,
           })
           return {
             title: `Sub-plan for step ${params.step_index + 1}`,
@@ -278,6 +285,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
           await Bus.publish(TuiEvent.ChainSubPlanEnd, {
             stepIndex: params.step_index,
             success,
+            sessionID: ctx.sessionID,
           })
           return {
             title: success ? "Sub-plan completed ✓" : "Sub-plan failed ✗",
@@ -292,6 +300,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
           await Bus.publish(TuiEvent.ChainParallelUpdate, {
             stepIndex: params.step_index,
             status: params.status,
+            sessionID: ctx.sessionID,
           })
           return {
             title: `Step ${params.step_index + 1}: ${params.status}`,
@@ -302,7 +311,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
         return { title: "Error", output: "step_index and status are required", metadata: {} }
 
       case "clear":
-        await Bus.publish(TuiEvent.ChainClear, {})
+        await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
         return {
           title: "Chain cleared",
           output: "Task chain cleared",

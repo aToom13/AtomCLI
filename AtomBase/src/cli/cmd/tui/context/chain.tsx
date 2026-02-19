@@ -2,166 +2,200 @@ import { createContext, useContext, createSignal, type Accessor, type Setter, ty
 import { type AgentChain, Chain, type StepTodo, type SubStep } from "@/agent/chain"
 
 /**
- * Chain Context - Global state for agent task chain
- * 
- * Provides:
- * - Current chain state
- * - Methods to update chain
- * - Per-step todo management
- * - Sub-plan support (nested steps within a parent step)
- * - Parallel step execution
+ * Chain Context — Session-scoped chain state management
+ *
+ * Each session (orchestrator, sub-agent) has its OWN independent chain.
+ * When viewing a session, the header reads the chain for THAT session.
+ *
+ * Storage: Map<sessionID, AgentChain>
+ * - Orchestrator session → orchestrator's task assignments chain
+ * - Sub-agent session → that agent's own step-by-step chain
  */
 
 export interface ChainContextValue {
+    /** Get the chain for a specific session */
+    getChain: (sessionID: string) => AgentChain | null
+    /** Legacy: global chain accessor (returns chain for "global" key) */
     chain: Accessor<AgentChain | null>
     setChain: Setter<AgentChain | null>
 
-    // Chain operations
-    startChain: (mode?: "safe" | "autonomous") => void
-    addStep: (name: string, description: string, todos?: StepTodo[]) => void
-    updateStepStatus: (status: string, tool?: string) => void
-    completeStep: (output?: string) => void
-    failStep: (error: string) => void
-    retryStep: () => void
-    setCurrentStepTodos: (todos: StepTodo[]) => void
-    markTodoDone: (todoIndex: number) => void
-    clearChain: () => void
+    // Session-scoped chain operations (sessionID optional for backwards compat)
+    startChain: (mode?: "safe" | "autonomous", sessionID?: string) => void
+    addStep: (name: string, description: string, todos?: StepTodo[], extra?: { sessionId?: string; agentType?: string; dependsOn?: string[]; sessionID?: string }) => void
+    updateStepStatus: (status: string, tool?: string, sessionID?: string) => void
+    completeStep: (output?: string, sessionID?: string) => void
+    failStep: (error: string, sessionID?: string) => void
+    retryStep: (sessionID?: string) => void
+    setCurrentStepTodos: (todos: StepTodo[], sessionID?: string) => void
+    markTodoDone: (todoIndex: number, sessionID?: string) => void
+    clearChain: (sessionID?: string) => void
 
     // Sub-plan operations
-    startSubPlan: (stepIndex: number, reason: string, steps: { name: string; description: string }[]) => void
-    endSubPlan: (stepIndex: number, success: boolean) => void
+    startSubPlan: (stepIndex: number, reason: string, steps: { name: string; description: string }[], sessionID?: string) => void
+    endSubPlan: (stepIndex: number, success: boolean, sessionID?: string) => void
 
     // Parallel step operations
-    updateStepByIndex: (stepIndex: number, status: string) => void
+    updateStepByIndex: (stepIndex: number, status: string, sessionID?: string) => void
 }
 
+const GLOBAL_KEY = "__global__"
 const ChainContext = createContext<ChainContextValue>()
 
 export function ChainProvider(props: ParentProps) {
-    const [chain, setChain] = createSignal<AgentChain | null>(null)
+    // Session-scoped chain storage
+    const [chains, setChains] = createSignal<Record<string, AgentChain>>({})
 
-    const startChain = (mode: "safe" | "autonomous" = "safe") => {
-        setChain(Chain.create(mode))
+    // Helper: resolve sessionID (fallback to global key)
+    const key = (sessionID?: string) => sessionID || GLOBAL_KEY
+
+    // Helper: get chain for a session
+    const getChainForSession = (sessionID: string): AgentChain | null => {
+        return chains()[sessionID] ?? chains()[GLOBAL_KEY] ?? null
     }
 
-    const addStep = (name: string, description: string, todos?: StepTodo[]) => {
-        const current = chain()
-        if (!current) return
-        setChain(Chain.addStep(current, { name, description, todos }))
+    // Helper: update chain for a session
+    const updateChainForSession = (sessionID: string, updater: (chain: AgentChain) => AgentChain) => {
+        setChains((prev) => {
+            const k = sessionID
+            const current = prev[k]
+            if (!current) return prev
+            return { ...prev, [k]: updater(current) }
+        })
     }
 
-    const updateStepStatus = (status: string, tool?: string) => {
-        const current = chain()
-        if (!current) return
-        setChain(Chain.updateStepStatus(current, status as any, tool))
+    const startChain = (mode: "safe" | "autonomous" = "safe", sessionID?: string) => {
+        const k = key(sessionID)
+        setChains((prev) => ({ ...prev, [k]: Chain.create(mode) }))
     }
 
-    const completeStep = (output?: string) => {
-        const current = chain()
-        if (!current) return
-        setChain(Chain.completeStep(current, output))
+    const addStep = (name: string, description: string, todos?: StepTodo[], extra?: { sessionId?: string; agentType?: string; dependsOn?: string[]; sessionID?: string }) => {
+        const k = key(extra?.sessionID)
+        updateChainForSession(k, (current) =>
+            Chain.addStep(current, {
+                name,
+                description,
+                todos,
+                sessionId: extra?.sessionId,
+                agentType: extra?.agentType,
+                dependsOn: extra?.dependsOn,
+            }),
+        )
     }
 
-    const failStep = (error: string) => {
-        const current = chain()
-        if (!current) return
-        setChain(Chain.failStep(current, error))
+    const updateStepStatus = (status: string, tool?: string, sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) =>
+            Chain.updateStepStatus(current, status as any, tool),
+        )
     }
 
-    const retryStep = () => {
-        const current = chain()
-        if (!current) return
-        setChain(Chain.retryStep(current))
+    const completeStep = (output?: string, sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => Chain.completeStep(current, output))
     }
 
-    const setCurrentStepTodos = (todos: StepTodo[]) => {
-        const current = chain()
-        if (!current) return
-        const idx = current.currentStep
-        const updatedSteps = [...current.steps]
-        if (updatedSteps[idx]) {
-            updatedSteps[idx] = { ...updatedSteps[idx], todos }
-        }
-        setChain({ ...current, steps: updatedSteps })
+    const failStep = (error: string, sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => Chain.failStep(current, error))
     }
 
-    const markTodoDone = (todoIndex: number) => {
-        const current = chain()
-        if (!current) return
-        const idx = current.currentStep
-        const updatedSteps = [...current.steps]
-        if (updatedSteps[idx] && updatedSteps[idx].todos) {
-            const updatedTodos = [...updatedSteps[idx].todos!]
-            if (updatedTodos[todoIndex]) {
-                updatedTodos[todoIndex] = { ...updatedTodos[todoIndex], status: "complete" }
+    const retryStep = (sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => Chain.retryStep(current))
+    }
+
+    const setCurrentStepTodos = (todos: StepTodo[], sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => {
+            const idx = current.currentStep
+            const updatedSteps = [...current.steps]
+            if (updatedSteps[idx]) {
+                updatedSteps[idx] = { ...updatedSteps[idx], todos }
             }
-            updatedSteps[idx] = { ...updatedSteps[idx], todos: updatedTodos }
-        }
-        setChain({ ...current, steps: updatedSteps })
+            return { ...current, steps: updatedSteps }
+        })
     }
 
-    const startSubPlan = (stepIndex: number, reason: string, steps: { name: string; description: string }[]) => {
-        const current = chain()
-        if (!current) return
-        const updatedSteps = [...current.steps]
-        if (updatedSteps[stepIndex]) {
-            const subSteps: SubStep[] = steps.map((s, i) => ({
-                id: `sub-${stepIndex}-${i}`,
-                name: s.name,
-                description: s.description,
-                status: i === 0 ? "running" : "pending",
-            }))
-            updatedSteps[stepIndex] = {
-                ...updatedSteps[stepIndex],
-                subSteps,
-                subPlanActive: true,
-                subPlanReason: reason,
+    const markTodoDone = (todoIndex: number, sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => {
+            const idx = current.currentStep
+            const updatedSteps = [...current.steps]
+            if (updatedSteps[idx] && updatedSteps[idx].todos) {
+                const updatedTodos = [...updatedSteps[idx].todos!]
+                if (updatedTodos[todoIndex]) {
+                    updatedTodos[todoIndex] = { ...updatedTodos[todoIndex], status: "complete" }
+                }
+                updatedSteps[idx] = { ...updatedSteps[idx], todos: updatedTodos }
             }
-        }
-        setChain({ ...current, steps: updatedSteps })
+            return { ...current, steps: updatedSteps }
+        })
     }
 
-    const endSubPlan = (stepIndex: number, success: boolean) => {
-        const current = chain()
-        if (!current) return
-        const updatedSteps = [...current.steps]
-        if (updatedSteps[stepIndex]) {
-            // Mark all remaining sub-steps as complete or failed
-            const subSteps = updatedSteps[stepIndex].subSteps?.map(s => ({
-                ...s,
-                status: (s.status === "pending" || s.status === "running")
-                    ? (success ? "complete" as const : "failed" as const)
-                    : s.status,
-            }))
-            updatedSteps[stepIndex] = {
-                ...updatedSteps[stepIndex],
-                subSteps,
-                subPlanActive: false,
+    const startSubPlan = (stepIndex: number, reason: string, steps: { name: string; description: string }[], sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => {
+            const updatedSteps = [...current.steps]
+            if (updatedSteps[stepIndex]) {
+                const subSteps: SubStep[] = steps.map((s, i) => ({
+                    id: `sub-${stepIndex}-${i}`,
+                    name: s.name,
+                    description: s.description,
+                    status: i === 0 ? "running" : "pending",
+                }))
+                updatedSteps[stepIndex] = {
+                    ...updatedSteps[stepIndex],
+                    subSteps,
+                    subPlanActive: true,
+                    subPlanReason: reason,
+                }
             }
-        }
-        setChain({ ...current, steps: updatedSteps })
+            return { ...current, steps: updatedSteps }
+        })
     }
 
-    const updateStepByIndex = (stepIndex: number, status: string) => {
-        const current = chain()
-        if (!current) return
-        const updatedSteps = [...current.steps]
-        if (updatedSteps[stepIndex]) {
-            updatedSteps[stepIndex] = {
-                ...updatedSteps[stepIndex],
-                status: status as any,
+    const endSubPlan = (stepIndex: number, success: boolean, sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => {
+            const updatedSteps = [...current.steps]
+            if (updatedSteps[stepIndex]) {
+                const subSteps = updatedSteps[stepIndex].subSteps?.map(s => ({
+                    ...s,
+                    status: (s.status === "pending" || s.status === "running")
+                        ? (success ? "complete" as const : "failed" as const)
+                        : s.status,
+                }))
+                updatedSteps[stepIndex] = {
+                    ...updatedSteps[stepIndex],
+                    subSteps,
+                    subPlanActive: false,
+                }
             }
-        }
-        setChain({ ...current, steps: updatedSteps })
+            return { ...current, steps: updatedSteps }
+        })
     }
 
-    const clearChain = () => {
-        setChain(null)
+    const updateStepByIndex = (stepIndex: number, status: string, sessionID?: string) => {
+        updateChainForSession(key(sessionID), (current) => {
+            const updatedSteps = [...current.steps]
+            if (updatedSteps[stepIndex]) {
+                updatedSteps[stepIndex] = {
+                    ...updatedSteps[stepIndex],
+                    status: status as any,
+                }
+            }
+            return { ...current, steps: updatedSteps }
+        })
     }
+
+    const clearChain = (sessionID?: string) => {
+        const k = key(sessionID)
+        setChains((prev) => {
+            const next = { ...prev }
+            delete next[k]
+            return next
+        })
+    }
+
+    // Legacy: global chain accessor that tries the global key
+    const globalChain = () => chains()[GLOBAL_KEY] ?? null
 
     const value: ChainContextValue = {
-        chain,
-        setChain,
+        getChain: getChainForSession,
+        chain: globalChain,
+        setChain: (() => { }) as any,
         startChain,
         addStep,
         updateStepStatus,
@@ -186,9 +220,9 @@ export function ChainProvider(props: ParentProps) {
 export function useChain() {
     const ctx = useContext(ChainContext)
     if (!ctx) {
-        // Return a mock context for when ChainProvider is not available
         const [chain] = createSignal<AgentChain | null>(null)
         return {
+            getChain: () => null,
             chain,
             setChain: () => { },
             startChain: () => { },
