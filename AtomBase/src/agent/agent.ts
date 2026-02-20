@@ -13,7 +13,6 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
-import PROMPT_AGENT from "./prompt/agent.txt"
 import { PermissionNext } from "@/permission/next"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 
@@ -109,7 +108,7 @@ export namespace Agent {
         ),
         mode: "primary",
         native: true,
-        prompt: PROMPT_AGENT,
+        // prompt is handled by PromptManager (includes agent/agent.txt)
       },
       general: {
         name: "general",

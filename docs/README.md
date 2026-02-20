@@ -26,6 +26,11 @@ Skill development and usage guide.
 
 **Topics**: Skill file format, creating skills, example skills, best practices, sharing skills.
 
+### [Prompt System Architecture](prompts.md)
+System prompt composition, directory structure, and customization guide.
+
+**Topics**: PromptManager API, core/provider/agent/runtime prompt layers, .txt file organization, read-before-edit rule, token statistics, custom section injection.
+
 ---
 
 ## Quick Links

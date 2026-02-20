@@ -9,12 +9,11 @@ import { Instance } from "../project/instance"
 import path from "path"
 import os from "os"
 
-// New modular prompt system
-import { PromptBuilder } from "./prompt/builder"
+// Unified prompt system
+import { PromptManager } from "./prompt/manager"
 
-// Legacy imports for compatibility
-import PROMPT_ANTHROPIC_SPOOF from "./prompt/anthropic_spoof.txt"
-import PROMPT_CODEX_INSTRUCTIONS from "./prompt/codex_header.txt"
+// Runtime prompt injections
+import PROMPT_ANTHROPIC_SPOOF from "./prompt/runtime/anthropic-spoof.txt"
 
 import type { Provider } from "@/provider/provider"
 import { Flag } from "@/flag/flag"
@@ -29,12 +28,14 @@ export namespace SystemPrompt {
   }
 
   export function instructions() {
-    return PROMPT_CODEX_INSTRUCTIONS.trim()
+    // Legacy codex_header instructions are now integrated into PromptManager.
+    // Return empty to prevent duplication/conflict.
+    return ""
   }
 
   export function provider(model: Provider.Model) {
-    // Use new modular PromptBuilder for all models
-    const prompt = PromptBuilder.build({
+    // Use unified PromptManager for all models
+    const prompt = PromptManager.build({
       modelId: model.api.id,
       agent: "agent"  // Default agent mode
     })
