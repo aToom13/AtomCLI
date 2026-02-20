@@ -282,8 +282,8 @@ export namespace ProviderTransform {
         if (!model.id.includes("gpt") && !model.id.includes("gemini-3") && !model.id.includes("grok-4")) return {}
         return Object.fromEntries(OPENAI_EFFORTS.map((effort) => [effort, { reasoning: { effort } }]))
 
-      // TODO: YOU CANNOT SET max_tokens if this is set!!!
       case "@ai-sdk/gateway":
+        // NOTE: max_tokens CANNOT be set when reasoningEffort is used
         return Object.fromEntries(OPENAI_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
 
       case "@ai-sdk/cerebras":
@@ -461,7 +461,7 @@ export namespace ProviderTransform {
       result["promptCacheKey"] = sessionID
     }
 
-    if (model.api.npm === "@ai-sdk/google" || model.api.npm === "@ai-sdk/google-vertex") {
+    if (model.api.npm === "@ai-sdk/google" || model.api.npm === "@ai-sdk/google-vertex" || model.providerID === "antigravity") {
       result["thinkingConfig"] = {
         includeThoughts: true,
       }
@@ -499,7 +499,7 @@ export namespace ProviderTransform {
       }
       return { reasoningEffort: "minimal" }
     }
-    if (model.providerID === "google") {
+    if (model.providerID === "google" || model.providerID === "antigravity") {
       // gemini-3 uses thinkingLevel, gemini-2.5 uses thinkingBudget
       if (model.api.id.includes("gemini-3")) {
         return { thinkingConfig: { thinkingLevel: "minimal" } }
@@ -560,6 +560,11 @@ export namespace ProviderTransform {
     const modelCap = modelLimit || globalLimit
     const standardLimit = Math.min(modelCap, globalLimit)
 
+    // Gateway provider: max_tokens cannot be set when reasoningEffort is used
+    if (npm === "@ai-sdk/gateway" && options?.["reasoningEffort"]) {
+      return 0 // Signal to caller: do not set max_tokens
+    }
+
     if (npm === "@ai-sdk/anthropic") {
       const thinking = options?.["thinking"]
       const budgetTokens = typeof thinking?.["budgetTokens"] === "number" ? thinking["budgetTokens"] : 0
@@ -595,8 +600,8 @@ export namespace ProviderTransform {
     }
     */
 
-    // Convert integer enums to string enums for Google/Gemini
-    if (model.providerID === "google" || model.api.id.includes("gemini")) {
+    // Convert integer enums to string enums for Google/Gemini/Antigravity
+    if (model.providerID === "google" || model.providerID === "antigravity" || model.api.id.includes("gemini")) {
       const sanitizeGemini = (obj: any): any => {
         if (obj === null || typeof obj !== "object") {
           return obj

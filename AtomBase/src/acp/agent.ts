@@ -1064,7 +1064,7 @@ export namespace ACP {
     }
 
     const models = providers.flatMap((p) => Object.values(p.models))
-    const [best] = Provider.sort(models)
+    const [best] = Provider.sort(models as Provider.Model[])
     if (best) {
       return {
         providerID: best.providerID,

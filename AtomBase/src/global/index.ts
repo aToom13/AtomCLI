@@ -76,7 +76,9 @@ async function checkCacheVersion() {
           }),
         ),
       )
-    } catch (e) { }
+    } catch (e) {
+      // Cache directory cleanup failed - non-critical, will retry next launch
+    }
     await Bun.file(path.join(Global.Path.cache, "version")).write(CACHE_VERSION)
   }
 }

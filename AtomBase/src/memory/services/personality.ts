@@ -91,21 +91,21 @@ export const AIPersonality = z.object({
   role: AIRole,
   displayName: z.string(),           // How AI introduces itself
   tagline: z.string().optional(),     // Short description
-  
+
   // Communication style
   formality: FormalityLevel,
   humor: HumorStyle,
   proactivity: ProactivityLevel,
-  
+
   // Characteristics
   traits: z.array(z.string()),       // adjectives: "helpful", "curious", etc.
   expertise: z.array(ExpertiseDomain),
-  
+
   // Behavioral preferences
   alwaysExplain: z.boolean(),        // Always explain decisions
   askClarifying: z.boolean(),        // Ask questions when unsure
   showWork: z.boolean(),             // Show thinking process
-  
+
   // Special features
   useEmojis: z.boolean(),
   useSlang: z.boolean().optional(),  // Street slang usage
@@ -134,7 +134,7 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
     useEmojis: true,
     catchphrases: ["Let me help you with that!", "Here's what I found:"],
   },
-  
+
   friend: {
     role: "friend",
     displayName: "Your Friend",
@@ -150,7 +150,7 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
     useEmojis: true,
     catchphrases: ["Hey! 👋", "No worries, got you!", "Let's figure this out together!"],
   },
-  
+
   mentor: {
     role: "mentor",
     displayName: "Your Mentor",
@@ -166,7 +166,7 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
     useEmojis: false,
     catchphrases: ["Let me walk you through this.", "Here's an important concept:"],
   },
-  
+
   partner: {
     role: "partner",
     displayName: "Your Partner",
@@ -182,7 +182,7 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
     useEmojis: true,
     catchphrases: ["Let's tackle this!", "Here's my take:", "I think we should..."],
   },
-  
+
   expert: {
     role: "expert",
     displayName: "The Expert",
@@ -198,7 +198,7 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
     useEmojis: false,
     catchphrases: ["The optimal solution is:", "Based on my analysis:"],
   },
-  
+
   companion: {
     role: "companion",
     displayName: "Your Companion",
@@ -223,6 +223,9 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
 import os from "os"
 import path from "path"
 import fs from "fs/promises"
+import { Log } from "../../util/log"
+
+const log = Log.create({ service: "memory.personality" })
 
 const PERSONALITY_DIR = ".atomcli/personality"
 const PERSONALITY_FILE = "ai-personality.json"
@@ -242,7 +245,7 @@ export class AIPersonalityService {
   async initialize(): Promise<AIPersonality> {
     try {
       await fs.mkdir(path.dirname(this.personalityPath), { recursive: true })
-      
+
       try {
         await fs.access(this.personalityPath)
         await this.loadPersonality()
@@ -251,10 +254,10 @@ export class AIPersonalityService {
         this.personality = defaultPersonalities.assistant
         await this.savePersonality()
       }
-      
+
       return this.personality!
     } catch (error) {
-      console.error("Failed to initialize personality:", error)
+      log.error("Failed to initialize personality", { error })
       return defaultPersonalities.assistant
     }
   }
@@ -280,12 +283,12 @@ export class AIPersonalityService {
     if (!this.personality) {
       await this.initialize()
     }
-    
+
     this.personality = {
       ...this.personality!,
       ...updates,
     }
-    
+
     await this.savePersonality()
   }
 
@@ -298,7 +301,7 @@ export class AIPersonalityService {
    */
   async getGreeting(): Promise<string> {
     const p = await this.getPersonality()
-    
+
     const greetings: Record<AIRole, string[]> = {
       assistant: ["Hello! How can I help you today?", "Hi there! Ready to assist."],
       friend: ["Hey! 👋 What's up?", "Hey hey! Ready to hang out and work some magic!"],
@@ -307,7 +310,7 @@ export class AIPersonalityService {
       expert: ["Good day. What requires my expertise?", "Hello. What problem are we solving today?"],
       companion: ["Hey there! 💕 How are you doing?", "Hi! So glad you're here!"],
     }
-    
+
     const roleGreetings = greetings[p.role]
     return roleGreetings[Math.floor(Math.random() * roleGreetings.length)]
   }
@@ -322,7 +325,7 @@ export class AIPersonalityService {
     extraWarmth: boolean
   }> {
     const p = await this.getPersonality()
-    
+
     return {
       formality: p.formality,
       emojis: p.useEmojis,
@@ -336,7 +339,7 @@ export class AIPersonalityService {
    */
   async buildContext(): Promise<string> {
     const p = await this.getPersonality()
-    
+
     return `
 # AI Personality Context
 - Role: ${p.role}

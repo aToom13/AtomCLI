@@ -38,7 +38,6 @@ import { createTogetherAI } from "@ai-sdk/togetherai"
 import { createPerplexity } from "@ai-sdk/perplexity"
 import { createVercel } from "@ai-sdk/vercel"
 import { ProviderTransform } from "./transform"
-import { createAntigravity } from "./antigravity"
 import { createOllama, detectOllama, toProviderModels } from "./ollama"
 import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
 
@@ -70,8 +69,6 @@ export namespace Provider {
     "@ai-sdk/vercel": createVercel,
     // @ts-ignore (TODO: kill this code so we dont have to maintain it)
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
-    // @ts-ignore - Antigravity provider for Claude/Gemini via Google OAuth
-    "@atomcli/antigravity": createAntigravity,
     // Ollama - Local LLM provider
     "@atomcli/ollama": createOllama,
     // Kilocode - Cloud LLM provider
@@ -714,6 +711,11 @@ export namespace Provider {
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
 
+    // Clear antigravity models from the models.dev database so our native plugin can be the sole source of truth
+    if (database["antigravity"]) {
+      database["antigravity"].models = {}
+    }
+
     // Alias opencode to atomcli to support legacy default models
     if (database["opencode"]) {
       const filteredModels = pickBy(database["opencode"].models, (model) => {
@@ -816,14 +818,12 @@ export namespace Provider {
     function mergeProvider(providerID: string, provider: Partial<Info>) {
       const existing = providers[providerID]
       if (existing) {
-        // @ts-expect-error
-        providers[providerID] = mergeDeep(existing, provider)
+        providers[providerID] = mergeDeep(existing, provider) as any
         return
       }
       const match = database[providerID]
       if (match) {
-        // @ts-expect-error
-        providers[providerID] = mergeDeep(match, provider)
+        providers[providerID] = mergeDeep(match, provider) as any
         return
       }
       // Provider not in database (e.g., local Ollama) - create from scratch
@@ -914,9 +914,9 @@ export namespace Provider {
         }
         const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})
         parsedModel.variants = mapValues(
-          pickBy(merged, (v) => !v.disabled),
-          (v) => omit(v, ["disabled"]),
-        )
+          pickBy(merged, (v) => !(v as any).disabled),
+          (v) => omit(v as any, ["disabled"]),
+        ) as any
         parsed.models[modelID] = parsedModel
       }
       database[providerID] = parsed
@@ -961,16 +961,34 @@ export namespace Provider {
         if (enterpriseAuth) hasAuth = true
       }
 
+      // Antigravity models should be discovered even without auth
+      if (providerID === "antigravity") {
+        hasAuth = true
+      }
+
       if (!hasAuth) continue
       if (!plugin.auth.loader) continue
 
-      // Load for the main provider if auth exists
-      if (auth) {
+      // Load for the main provider if auth exists or for antigravity
+      if (auth || providerID === "antigravity") {
+        if (!database[plugin.auth.provider]) {
+          database[plugin.auth.provider] = {
+            id: plugin.auth.provider,
+            name: plugin.auth.provider === "antigravity" ? "Antigravity" : plugin.auth.provider,
+            env: [],
+            source: "custom",
+            options: {},
+            models: {},
+          } as any
+        }
         const options = await plugin.auth.loader(() => Auth.get(providerID) as any, database[plugin.auth.provider])
         mergeProvider(plugin.auth.provider, {
           source: "custom",
           options: options,
         })
+        if (options?.getModel) {
+          modelLoaders[plugin.auth.provider] = options.getModel
+        }
       }
 
       // If this is github-copilot plugin, also register for github-copilot-enterprise if auth exists
@@ -987,6 +1005,9 @@ export namespace Provider {
               source: "custom",
               options: enterpriseOptions,
             })
+            if (enterpriseOptions?.getModel) {
+              modelLoaders[enterpriseProviderID] = enterpriseOptions.getModel
+            }
           }
         }
       }
@@ -1049,9 +1070,9 @@ export namespace Provider {
         if (configVariants && model.variants) {
           const merged = mergeDeep(model.variants, configVariants)
           model.variants = mapValues(
-            pickBy(merged, (v) => !v.disabled),
-            (v) => omit(v, ["disabled"]),
-          )
+            pickBy(merged, (v) => !(v as any).disabled),
+            (v) => omit(v as any, ["disabled"]),
+          ) as any
         }
       }
 

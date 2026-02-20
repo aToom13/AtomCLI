@@ -29,6 +29,7 @@ import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { PromptRefProvider } from "./context/prompt"
 import { ChainProvider } from "./context/chain"
 import { FileTreeProvider } from "./context/file-tree"
+import { SpatialProvider } from "./context/spatial"
 import { SubAgentProvider } from "./context/subagent"
 import { useCommands } from "./context/use-commands"
 import { useSDKEventHandlers } from "./context/use-sdk-events"
@@ -127,23 +128,25 @@ export function tui(input: {
                             <LocalProvider>
                               <KeybindProvider>
                                 <PromptStashProvider>
-                                  <DialogProvider>
-                                    <CommandProvider>
-                                      <FrecencyProvider>
-                                        <PromptHistoryProvider>
-                                          <PromptRefProvider>
-                                            <ChainProvider>
-                                              <FileTreeProvider>
-                                                <SubAgentProvider>
-                                                  <App />
-                                                </SubAgentProvider>
-                                              </FileTreeProvider>
-                                            </ChainProvider>
-                                          </PromptRefProvider>
-                                        </PromptHistoryProvider>
-                                      </FrecencyProvider>
-                                    </CommandProvider>
-                                  </DialogProvider>
+                                  <SpatialProvider>
+                                    <DialogProvider>
+                                      <CommandProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <ChainProvider>
+                                                <FileTreeProvider>
+                                                  <SubAgentProvider>
+                                                    <App />
+                                                  </SubAgentProvider>
+                                                </FileTreeProvider>
+                                              </ChainProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </CommandProvider>
+                                    </DialogProvider>
+                                  </SpatialProvider>
                                 </PromptStashProvider>
                               </KeybindProvider>
                             </LocalProvider>

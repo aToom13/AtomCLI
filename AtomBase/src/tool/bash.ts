@@ -20,62 +20,32 @@ import { Truncate } from "./truncation"
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
 
-// Dangerous shell characters that could lead to command injection
-const DANGEROUS_SHELL_CHARS = /(?!)/
-// Additional patterns for command substitution and chaining
-const DANGEROUS_PATTERNS = /(?!)/
+// Validation for fundamental security bounds
+// Specifically, path traversal is still blocked downstream, but complex shell commands are allowed
 
 export const log = Log.create({ service: "bash-tool" })
 
-/**
- * Validates command for potential shell injection attempts
- * Returns true if command is safe, throws error if dangerous
- * In test mode, allows some patterns for testing purposes
- */
 function validateCommand(command: string): boolean {
   const isTestMode = process.env.NODE_ENV === "test" || process.env.ATOMCLI_TEST === "true"
 
-  // In test mode, skip strict validation for common test patterns
+  /**
+   * Validates command for potential shell injection attempts
+   * Returns true if command is safe, throws error if dangerous
+   * In test mode, allows some patterns for testing purposes
+   */
+  // In test mode, fail fast on certain injection patterns that break the test harness
   if (isTestMode) {
-    // Still block the most dangerous patterns even in test mode
     const criticalPatterns = /\$\(|`[^`]*`|\$\{[^}]*\}/
     if (criticalPatterns.test(command)) {
       const match = command.match(criticalPatterns)
       throw new Error(
-        `Command contains critical injection pattern: "${match?.[0]}". ` + `Command substitution is never allowed.`,
+        `Command contains critical injection pattern: "${match?.[0]}". ` + `Command substitution is never allowed in test mode.`,
       )
     }
-    return true
   }
 
-  // Check for dangerous characters
-  if (DANGEROUS_SHELL_CHARS.test(command)) {
-    const match = command.match(DANGEROUS_SHELL_CHARS)
-    throw new Error(
-      `Command contains dangerous character: "${match?.[0]}". ` +
-      `For security, commands cannot contain shell metacharacters like ; & | \` $ ( ) { } [ ] \\ or newlines.`,
-    )
-  }
-
-  // Check for command substitution and chaining patterns
-  if (DANGEROUS_PATTERNS.test(command)) {
-    const match = command.match(DANGEROUS_PATTERNS)
-    throw new Error(
-      `Command contains dangerous pattern: "${match?.[0]}". ` +
-      `Command substitution ($(), backticks), variable expansion ($\{...}), and command chaining (&&, ||, ;) are not allowed.`,
-    )
-  }
-
-  // Check for common injection keywords
-  const dangerousKeywords: string[] = []
-  for (const keyword of dangerousKeywords) {
-    // Check as whole word
-    const regex = new RegExp(`\\b${keyword}\\b`, "i")
-    if (regex.test(command)) {
-      throw new Error(`Command contains dangerous keyword: "${keyword}". ` + `This could be used for code execution.`)
-    }
-  }
-
+  // NOTE: Pipes (|), logical chaining (&&, ||) and semi-colons (;) are intentionally
+  // permitted to allow the AI to run complex pipelines and one-liners when needed.
   return true
 }
 
@@ -107,7 +77,7 @@ const parser = lazy(async () => {
   return p
 })
 
-// TODO: we may wanna rename this tool so it works better on other shells
+// Tool name "bash" is kept for backward compatibility with stored permission rulesets
 export const BashTool = Tool.define("bash", async () => {
   const shell = Shell.acceptable()
   log.info("bash tool using shell", { shell })

@@ -105,21 +105,22 @@ export namespace LSP {
           delete servers[name]
           continue
         }
+        const cfgItem = item as any
         servers[name] = {
           ...existing,
           id: name,
           root: existing?.root ?? (async () => Instance.directory),
-          extensions: item.extensions ?? existing?.extensions ?? [],
+          extensions: 'extensions' in item ? (item.extensions ?? existing?.extensions ?? []) : (existing?.extensions ?? []),
           spawn: async (root) => {
             return {
-              process: spawn(item.command[0], item.command.slice(1), {
+              process: spawn('command' in item ? item.command[0] : "", 'command' in item ? item.command.slice(1) : [], {
                 cwd: root,
                 env: {
                   ...process.env,
-                  ...item.env,
+                  ...('env' in item ? item.env : {}),
                 },
               }),
-              initialization: item.initialization,
+              initialization: 'initialization' in item ? item.initialization : undefined,
             }
           },
         }

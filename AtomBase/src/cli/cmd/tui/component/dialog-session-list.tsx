@@ -51,7 +51,7 @@ export function DialogSessionList() {
     } else {
       current.add(sessionID)
     }
-    setPinnedRaw(() => Array.from(current).join(","))
+    setPinnedRaw(Array.from(current).join(",") as any)
   }
 
   const sessions = createMemo(() => searchResults() ?? sync.data.session)

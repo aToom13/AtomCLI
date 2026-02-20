@@ -4,6 +4,8 @@ import { useRoute } from "@tui/context/route"
 import { useTheme } from "@tui/context/theme"
 import { useSubAgents, type ActiveSubAgent } from "@tui/context/subagent"
 import { useSDK } from "@tui/context/sdk"
+import { Focusable } from "@tui/context/spatial"
+import { Identifier } from "@/id/id"
 
 /**
  * SubAgentPanel — Dynamic right-side panel
@@ -55,16 +57,24 @@ export function SubAgentPanel(props: Props) {
                     </text>
                     {/* Back to orchestrator button */}
                     <Show when={subAgentCtx.parentSessionId()}>
-                        <box
-                            onMouseUp={() => {
-                                const parentId = subAgentCtx.parentSessionId()
-                                if (parentId) navigate({ type: "session", sessionID: parentId })
-                            }}
-                            paddingLeft={1}
-                            paddingRight={1}
-                        >
-                            <text fg={theme.accent}>← Ana Agent</text>
-                        </box>
+                        <Focusable id={Identifier.ascending("part")} onPress={() => {
+                            const parentId = subAgentCtx.parentSessionId()
+                            if (parentId) navigate({ type: "session", sessionID: parentId })
+                        }}>
+                            {(focused: () => boolean) => (
+                                <box
+                                    onMouseUp={() => {
+                                        const parentId = subAgentCtx.parentSessionId()
+                                        if (parentId) navigate({ type: "session", sessionID: parentId })
+                                    }}
+                                    paddingLeft={1}
+                                    paddingRight={1}
+                                    backgroundColor={focused() ? theme.primary : undefined}
+                                >
+                                    <text fg={theme.accent}>← Ana Agent</text>
+                                </box>
+                            )}
+                        </Focusable>
                     </Show>
                 </box>
 
@@ -139,54 +149,59 @@ function AgentCard(props: { agent: ActiveSubAgent }) {
             marginBottom={1}
         >
             {/* Clickable area for opening session */}
-            <box
-                flexDirection="column"
-                onMouseUp={() => navigate({ type: "session", sessionID: props.agent.sessionId })}
-            >
-                {/* Agent header */}
-                <box flexDirection="row" gap={1}>
-                    <text fg={statusColor()}>
-                        {statusIcon()}
-                    </text>
-                    <text fg={theme.accent}>
-                        @{props.agent.agentType}
-                    </text>
-                    <text fg={theme.textMuted}>{props.agent.description.slice(0, 18)}</text>
-                </box>
+            <Focusable id={`agent-open-${props.agent.sessionId}`} onPress={() => navigate({ type: "session", sessionID: props.agent.sessionId })}>
+                {(focused: () => boolean) => (
+                    <box
+                        flexDirection="column"
+                        onMouseUp={() => navigate({ type: "session", sessionID: props.agent.sessionId })}
+                        backgroundColor={focused() ? theme.primary : undefined}
+                    >
+                        {/* Agent header */}
+                        <box flexDirection="row" gap={1}>
+                            <text fg={statusColor()}>
+                                {statusIcon()}
+                            </text>
+                            <text fg={theme.accent}>
+                                @{props.agent.agentType}
+                            </text>
+                            <text fg={theme.textMuted}>{props.agent.description.slice(0, 18)}</text>
+                        </box>
 
-                {/* Current tool (only when running) */}
-                <Show when={isRunning() && lastToolPart()}>
-                    <text fg={theme.textMuted} paddingLeft={2}>
-                        └ 🔧 {lastToolPart()?.name ?? lastToolPart()?.tool ?? "working…"}
-                    </text>
-                </Show>
+                        {/* Current tool (only when running) */}
+                        <Show when={isRunning() && lastToolPart()}>
+                            <text fg={theme.textMuted} paddingLeft={2}>
+                                └ 🔧 {lastToolPart()?.name ?? lastToolPart()?.tool ?? "working…"}
+                            </text>
+                        </Show>
 
-                {/* Waiting message */}
-                <Show when={isWaiting()}>
-                    <text fg={theme.warning} paddingLeft={2}>
-                        └ görev bekliyor…
-                    </text>
-                </Show>
+                        {/* Waiting message */}
+                        <Show when={isWaiting()}>
+                            <text fg={theme.warning} paddingLeft={2}>
+                                └ görev bekliyor…
+                            </text>
+                        </Show>
 
-                {/* Done message */}
-                <Show when={isDone()}>
-                    <text fg={theme.success} paddingLeft={2}>
-                        └ tamamlandı
-                    </text>
-                </Show>
+                        {/* Done message */}
+                        <Show when={isDone()}>
+                            <text fg={theme.success} paddingLeft={2}>
+                                └ tamamlandı
+                            </text>
+                        </Show>
 
-                {/* Last text preview (for running agents without a tool) */}
-                <Show when={isRunning() && !lastToolPart() && lastTextPart()?.text}>
-                    <text fg={theme.textMuted} paddingLeft={2}>
-                        └{" "}
-                        {String(lastTextPart()?.text ?? "")
-                            .split("\n")
-                            .find((l) => l.trim())
-                            ?.slice(0, 30) ?? ""}
-                        …
-                    </text>
-                </Show>
-            </box>
+                        {/* Last text preview (for running agents without a tool) */}
+                        <Show when={isRunning() && !lastToolPart() && lastTextPart()?.text}>
+                            <text fg={theme.textMuted} paddingLeft={2}>
+                                └{" "}
+                                {String(lastTextPart()?.text ?? "")
+                                    .split("\n")
+                                    .find((l) => l.trim())
+                                    ?.slice(0, 30) ?? ""}
+                                …
+                            </text>
+                        </Show>
+                    </box>
+                )}
+            </Focusable>
 
             {/* Navigation hint and actions */}
             <box flexDirection="row" justifyContent="space-between" paddingLeft={2} paddingTop={1}>
@@ -194,16 +209,26 @@ function AgentCard(props: { agent: ActiveSubAgent }) {
                     <text fg={theme.textMuted}>→ open session</text>
                 </box>
 
-                <box
-                    onMouseUp={async () => {
-                        if (props.agent.status === "running" || props.agent.status === "waiting") {
-                            await sdk.client.session.abort({ sessionID: props.agent.sessionId }).catch(() => { })
-                        }
-                        subAgentCtx.removeAgent(props.agent.sessionId)
-                    }}
-                >
-                    <text fg={theme.error}>✖ kill</text>
-                </box>
+                <Focusable id={`agent-kill-${props.agent.sessionId}`} onPress={async () => {
+                    if (props.agent.status === "running" || props.agent.status === "waiting") {
+                        await sdk.client.session.abort({ sessionID: props.agent.sessionId }).catch(() => { })
+                    }
+                    subAgentCtx.removeAgent(props.agent.sessionId)
+                }}>
+                    {(focused: () => boolean) => (
+                        <box
+                            onMouseUp={async () => {
+                                if (props.agent.status === "running" || props.agent.status === "waiting") {
+                                    await sdk.client.session.abort({ sessionID: props.agent.sessionId }).catch(() => { })
+                                }
+                                subAgentCtx.removeAgent(props.agent.sessionId)
+                            }}
+                            backgroundColor={focused() ? theme.primary : undefined}
+                        >
+                            <text fg={theme.error}>✖ kill</text>
+                        </box>
+                    )}
+                </Focusable>
             </box>
         </box>
     )

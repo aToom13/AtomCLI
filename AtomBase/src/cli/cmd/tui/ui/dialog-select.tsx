@@ -10,6 +10,8 @@ import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useKeybind } from "@tui/context/keybind"
 import { Keybind } from "@/util/keybind"
 import { Locale } from "@/util/locale"
+import { Focusable } from "../context/spatial"
+import { Identifier } from "@/id/id"
 
 export interface DialogSelectProps<T> {
   title: string
@@ -247,32 +249,42 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                     const active = createMemo(() => isDeepEqual(option.value, selected()?.value))
                     const current = createMemo(() => isDeepEqual(option.value, props.current))
                     return (
-                      <box
-                        id={JSON.stringify(option.value)}
-                        flexDirection="row"
-                        onMouseUp={() => {
+                      <Focusable
+                        id={`dialog-select-${JSON.stringify(option.value)}`}
+                        onPress={() => {
                           option.onSelect?.(dialog)
                           props.onSelect?.(option)
                         }}
-                        onMouseOver={() => {
-                          const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
-                          if (index === -1) return
-                          moveTo(index)
-                        }}
-                        backgroundColor={active() ? (option.bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
-                        paddingLeft={current() || option.gutter ? 1 : 3}
-                        paddingRight={3}
-                        gap={1}
                       >
-                        <Option
-                          title={option.title}
-                          footer={option.footer}
-                          description={option.description !== category ? option.description : undefined}
-                          active={active()}
-                          current={current()}
-                          gutter={option.gutter}
-                        />
-                      </box>
+                        {(focused: () => boolean) => (
+                          <box
+                            id={JSON.stringify(option.value)}
+                            flexDirection="row"
+                            onMouseUp={() => {
+                              option.onSelect?.(dialog)
+                              props.onSelect?.(option)
+                            }}
+                            onMouseOver={() => {
+                              const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
+                              if (index === -1) return
+                              moveTo(index)
+                            }}
+                            backgroundColor={active() || focused() ? (option.bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
+                            paddingLeft={current() || option.gutter ? 1 : 3}
+                            paddingRight={3}
+                            gap={1}
+                          >
+                            <Option
+                              title={option.title}
+                              footer={option.footer}
+                              description={option.description !== category ? option.description : undefined}
+                              active={active() || focused()}
+                              current={current()}
+                              gutter={option.gutter}
+                            />
+                          </box>
+                        )}
+                      </Focusable>
                     )
                   }}
                 </For>

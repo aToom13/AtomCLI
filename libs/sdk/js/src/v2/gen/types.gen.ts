@@ -54,961 +54,6 @@ export type EventGlobalDisposed = {
   }
 }
 
-export type QuestionOption = {
-  /**
-   * Display text (1-5 words, concise)
-   */
-  label: string
-  /**
-   * Explanation of choice
-   */
-  description: string
-}
-
-export type QuestionInfo = {
-  /**
-   * Complete question
-   */
-  question: string
-  /**
-   * Very short label (max 12 chars)
-   */
-  header: string
-  /**
-   * Input type
-   */
-  type?: "select" | "text" | "password"
-  /**
-   * Placeholder text for input
-   */
-  placeholder?: string
-  /**
-   * Available choices (required for select type)
-   */
-  options?: Array<QuestionOption>
-  /**
-   * Allow selecting multiple choices
-   */
-  multiple?: boolean
-}
-
-export type QuestionRequest = {
-  id: string
-  sessionID: string
-  /**
-   * Questions to ask
-   */
-  questions: Array<QuestionInfo>
-  tool?: {
-    messageID: string
-    callID: string
-  }
-}
-
-export type EventQuestionAsked = {
-  type: "question.asked"
-  properties: QuestionRequest
-}
-
-export type QuestionAnswer = Array<string>
-
-export type EventQuestionReplied = {
-  type: "question.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    answers: Array<QuestionAnswer>
-  }
-}
-
-export type EventQuestionRejected = {
-  type: "question.rejected"
-  properties: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type EventTuiPromptAppend = {
-  type: "tui.prompt.append"
-  properties: {
-    text: string
-  }
-}
-
-export type EventTuiCommandExecute = {
-  type: "tui.command.execute"
-  properties: {
-    command:
-      | "session.list"
-      | "session.new"
-      | "session.share"
-      | "session.interrupt"
-      | "session.compact"
-      | "session.page.up"
-      | "session.page.down"
-      | "session.half.page.up"
-      | "session.half.page.down"
-      | "session.first"
-      | "session.last"
-      | "prompt.clear"
-      | "prompt.submit"
-      | "agent.cycle"
-      | string
-  }
-}
-
-export type EventTuiToastShow = {
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    /**
-     * Duration in milliseconds
-     */
-    duration?: number
-  }
-}
-
-export type EventTuiSessionSelect = {
-  type: "tui.session.select"
-  properties: {
-    /**
-     * Session ID to navigate to
-     */
-    sessionID: string
-  }
-}
-
-export type EventTuiChainStart = {
-  type: "tui.chain.start"
-  properties: {
-    mode?: "safe" | "autonomous"
-  }
-}
-
-export type EventTuiChainAddStep = {
-  type: "tui.chain.add_step"
-  properties: {
-    name: string
-    description: string
-    todos?: Array<{
-      id: string
-      content: string
-      status: "pending" | "in_progress" | "complete" | "failed"
-    }>
-  }
-}
-
-export type EventTuiChainUpdateStep = {
-  type: "tui.chain.update_step"
-  properties: {
-    status:
-      | "pending"
-      | "running"
-      | "coding"
-      | "searching_web"
-      | "searching_code"
-      | "reading_file"
-      | "writing_file"
-      | "running_command"
-      | "analyzing"
-      | "thinking"
-      | "complete"
-      | "failed"
-      | "retrying"
-    tool?: string
-  }
-}
-
-export type EventTuiChainCompleteStep = {
-  type: "tui.chain.complete_step"
-  properties: {
-    output?: string
-  }
-}
-
-export type EventTuiChainFailStep = {
-  type: "tui.chain.fail_step"
-  properties: {
-    error: string
-  }
-}
-
-export type EventTuiChainSetTodos = {
-  type: "tui.chain.set_todos"
-  properties: {
-    todos: Array<{
-      id: string
-      content: string
-      status: "pending" | "in_progress" | "complete" | "failed"
-    }>
-  }
-}
-
-export type EventTuiChainTodoDone = {
-  type: "tui.chain.todo_done"
-  properties: {
-    todoIndex: number
-  }
-}
-
-export type EventTuiChainClear = {
-  type: "tui.chain.clear"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventTuiChainSubplanStart = {
-  type: "tui.chain.subplan.start"
-  properties: {
-    /**
-     * Index of the parent step this sub-plan belongs to
-     */
-    stepIndex: number
-    /**
-     * Why a sub-plan is needed
-     */
-    reason: string
-    steps: Array<{
-      name: string
-      description: string
-    }>
-  }
-}
-
-export type EventTuiChainSubplanEnd = {
-  type: "tui.chain.subplan.end"
-  properties: {
-    stepIndex: number
-    success: boolean
-  }
-}
-
-export type EventTuiChainParallelUpdate = {
-  type: "tui.chain.parallel.update"
-  properties: {
-    stepIndex: number
-    status:
-      | "pending"
-      | "running"
-      | "coding"
-      | "searching_web"
-      | "searching_code"
-      | "reading_file"
-      | "writing_file"
-      | "running_command"
-      | "analyzing"
-      | "thinking"
-      | "complete"
-      | "failed"
-      | "retrying"
-  }
-}
-
-export type EventTuiFiletreeToggle = {
-  type: "tui.filetree.toggle"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventTuiFiletreeOpen = {
-  type: "tui.filetree.open"
-  properties: {
-    path: string
-    content?: string
-    language?: string
-    highlight?: {
-      startLine: number
-      endLine: number
-    }
-  }
-}
-
-export type EventTuiFiletreeClose = {
-  type: "tui.filetree.close"
-  properties: {
-    path: string
-  }
-}
-
-export type EventTuiFiletreeDirToggle = {
-  type: "tui.filetree.dir_toggle"
-  properties: {
-    path: string
-  }
-}
-
-export type EventTuiCodepanelToggle = {
-  type: "tui.codepanel.toggle"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventTuiCodepanelSave = {
-  type: "tui.codepanel.save"
-  properties: {
-    path: string
-    content: string
-  }
-}
-
-export type EventMcpToolsChanged = {
-  type: "mcp.tools.changed"
-  properties: {
-    server: string
-  }
-}
-
-export type EventLspClientDiagnostics = {
-  type: "lsp.client.diagnostics"
-  properties: {
-    serverID: string
-    path: string
-  }
-}
-
-export type EventLspUpdated = {
-  type: "lsp.updated"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type FileDiff = {
-  file: string
-  before: string
-  after: string
-  additions: number
-  deletions: number
-}
-
-export type UserMessage = {
-  id: string
-  sessionID: string
-  role: "user"
-  time: {
-    created: number
-  }
-  summary?: {
-    title?: string
-    body?: string
-    diffs: Array<FileDiff>
-  }
-  agent: string
-  model: {
-    providerID: string
-    modelID: string
-  }
-  system?: string
-  tools?: {
-    [key: string]: boolean
-  }
-  variant?: string
-}
-
-export type ProviderAuthError = {
-  name: "ProviderAuthError"
-  data: {
-    providerID: string
-    message: string
-  }
-}
-
-export type UnknownError = {
-  name: "UnknownError"
-  data: {
-    message: string
-  }
-}
-
-export type MessageOutputLengthError = {
-  name: "MessageOutputLengthError"
-  data: {
-    [key: string]: unknown
-  }
-}
-
-export type MessageAbortedError = {
-  name: "MessageAbortedError"
-  data: {
-    message: string
-  }
-}
-
-export type ApiError = {
-  name: "APIError"
-  data: {
-    message: string
-    statusCode?: number
-    isRetryable: boolean
-    responseHeaders?: {
-      [key: string]: string
-    }
-    responseBody?: string
-    metadata?: {
-      [key: string]: string
-    }
-  }
-}
-
-export type AssistantMessage = {
-  id: string
-  sessionID: string
-  role: "assistant"
-  time: {
-    created: number
-    completed?: number
-  }
-  error?: ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError | ApiError
-  parentID: string
-  modelID: string
-  providerID: string
-  mode: string
-  agent: string
-  path: {
-    cwd: string
-    root: string
-  }
-  summary?: boolean
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-  finish?: string
-}
-
-export type Message = UserMessage | AssistantMessage
-
-export type EventMessageUpdated = {
-  type: "message.updated"
-  properties: {
-    info: Message
-  }
-}
-
-export type EventMessageRemoved = {
-  type: "message.removed"
-  properties: {
-    sessionID: string
-    messageID: string
-  }
-}
-
-export type TextPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "text"
-  text: string
-  synthetic?: boolean
-  ignored?: boolean
-  time?: {
-    start: number
-    end?: number
-  }
-  metadata?: {
-    [key: string]: unknown
-  }
-}
-
-export type ReasoningPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "reasoning"
-  text: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-    end?: number
-  }
-}
-
-export type FilePartSourceText = {
-  value: string
-  start: number
-  end: number
-}
-
-export type FileSource = {
-  text: FilePartSourceText
-  type: "file"
-  path: string
-}
-
-export type Range = {
-  start: {
-    line: number
-    character: number
-  }
-  end: {
-    line: number
-    character: number
-  }
-}
-
-export type SymbolSource = {
-  text: FilePartSourceText
-  type: "symbol"
-  path: string
-  range: Range
-  name: string
-  kind: number
-}
-
-export type ResourceSource = {
-  text: FilePartSourceText
-  type: "resource"
-  clientName: string
-  uri: string
-}
-
-export type FilePartSource = FileSource | SymbolSource | ResourceSource
-
-export type FilePart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "file"
-  mime: string
-  filename?: string
-  url: string
-  source?: FilePartSource
-}
-
-export type ToolStatePending = {
-  status: "pending"
-  input: {
-    [key: string]: unknown
-  }
-  raw: string
-}
-
-export type ToolStateRunning = {
-  status: "running"
-  input: {
-    [key: string]: unknown
-  }
-  title?: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-  }
-}
-
-export type ToolStateCompleted = {
-  status: "completed"
-  input: {
-    [key: string]: unknown
-  }
-  output: string
-  title: string
-  metadata: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-    end: number
-    compacted?: number
-  }
-  attachments?: Array<FilePart>
-}
-
-export type ToolStateError = {
-  status: "error"
-  input: {
-    [key: string]: unknown
-  }
-  error: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-    end: number
-  }
-}
-
-export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
-
-export type ToolPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "tool"
-  callID: string
-  tool: string
-  state: ToolState
-  metadata?: {
-    [key: string]: unknown
-  }
-}
-
-export type StepStartPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "step-start"
-  snapshot?: string
-}
-
-export type StepFinishPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "step-finish"
-  reason: string
-  snapshot?: string
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-}
-
-export type SnapshotPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "snapshot"
-  snapshot: string
-}
-
-export type PatchPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "patch"
-  hash: string
-  files: Array<string>
-}
-
-export type AgentPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "agent"
-  name: string
-  source?: {
-    value: string
-    start: number
-    end: number
-  }
-}
-
-export type RetryPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "retry"
-  attempt: number
-  error: ApiError
-  time: {
-    created: number
-  }
-}
-
-export type CompactionPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "compaction"
-  auto: boolean
-}
-
-export type Part =
-  | TextPart
-  | {
-      id: string
-      sessionID: string
-      messageID: string
-      type: "subtask"
-      prompt: string
-      description: string
-      agent: string
-      command?: string
-    }
-  | ReasoningPart
-  | FilePart
-  | ToolPart
-  | StepStartPart
-  | StepFinishPart
-  | SnapshotPart
-  | PatchPart
-  | AgentPart
-  | RetryPart
-  | CompactionPart
-
-export type EventMessagePartUpdated = {
-  type: "message.part.updated"
-  properties: {
-    part: Part
-    delta?: string
-  }
-}
-
-export type EventMessagePartRemoved = {
-  type: "message.part.removed"
-  properties: {
-    sessionID: string
-    messageID: string
-    partID: string
-  }
-}
-
-export type EventCommandExecuted = {
-  type: "command.executed"
-  properties: {
-    name: string
-    sessionID: string
-    arguments: string
-    messageID: string
-  }
-}
-
-export type PermissionRequest = {
-  id: string
-  sessionID: string
-  permission: string
-  patterns: Array<string>
-  metadata: {
-    [key: string]: unknown
-  }
-  always: Array<string>
-  tool?: {
-    messageID: string
-    callID: string
-  }
-}
-
-export type EventPermissionAsked = {
-  type: "permission.asked"
-  properties: PermissionRequest
-}
-
-export type EventPermissionReplied = {
-  type: "permission.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    reply: "once" | "always" | "reject"
-  }
-}
-
-export type PermissionAction = "allow" | "deny" | "ask"
-
-export type PermissionRule = {
-  permission: string
-  pattern: string
-  action: PermissionAction
-}
-
-export type PermissionRuleset = Array<PermissionRule>
-
-export type Session = {
-  id: string
-  projectID: string
-  directory: string
-  parentID?: string
-  summary?: {
-    additions: number
-    deletions: number
-    files: number
-    diffs?: Array<FileDiff>
-  }
-  share?: {
-    url: string
-  }
-  title: string
-  version: string
-  time: {
-    created: number
-    updated: number
-    compacting?: number
-    archived?: number
-  }
-  permission?: PermissionRuleset
-  revert?: {
-    messageID: string
-    partID?: string
-    snapshot?: string
-    diff?: string
-  }
-}
-
-export type EventSessionCreated = {
-  type: "session.created"
-  properties: {
-    info: Session
-  }
-}
-
-export type EventSessionUpdated = {
-  type: "session.updated"
-  properties: {
-    info: Session
-  }
-}
-
-export type EventSessionDeleted = {
-  type: "session.deleted"
-  properties: {
-    info: Session
-  }
-}
-
-export type EventSessionDiff = {
-  type: "session.diff"
-  properties: {
-    sessionID: string
-    diff: Array<FileDiff>
-  }
-}
-
-export type EventSessionError = {
-  type: "session.error"
-  properties: {
-    sessionID?: string
-    error?: ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError | ApiError
-  }
-}
-
-export type Pty = {
-  id: string
-  title: string
-  command: string
-  args: Array<string>
-  cwd: string
-  status: "running" | "exited"
-  pid: number
-}
-
-export type EventPtyCreated = {
-  type: "pty.created"
-  properties: {
-    info: Pty
-  }
-}
-
-export type EventPtyUpdated = {
-  type: "pty.updated"
-  properties: {
-    info: Pty
-  }
-}
-
-export type EventPtyExited = {
-  type: "pty.exited"
-  properties: {
-    id: string
-    exitCode: number
-  }
-}
-
-export type EventPtyDeleted = {
-  type: "pty.deleted"
-  properties: {
-    id: string
-  }
-}
-
-export type Event =
-  | EventInstallationUpdated
-  | EventInstallationUpdateAvailable
-  | EventProjectUpdated
-  | EventServerInstanceDisposed
-  | EventGlobalDisposed
-  | EventQuestionAsked
-  | EventQuestionReplied
-  | EventQuestionRejected
-  | EventTuiPromptAppend
-  | EventTuiCommandExecute
-  | EventTuiToastShow
-  | EventTuiSessionSelect
-  | EventTuiChainStart
-  | EventTuiChainAddStep
-  | EventTuiChainUpdateStep
-  | EventTuiChainCompleteStep
-  | EventTuiChainFailStep
-  | EventTuiChainSetTodos
-  | EventTuiChainTodoDone
-  | EventTuiChainClear
-  | EventTuiChainSubplanStart
-  | EventTuiChainSubplanEnd
-  | EventTuiChainParallelUpdate
-  | EventTuiFiletreeToggle
-  | EventTuiFiletreeOpen
-  | EventTuiFiletreeClose
-  | EventTuiFiletreeDirToggle
-  | EventTuiCodepanelToggle
-  | EventTuiCodepanelSave
-  | EventMcpToolsChanged
-  | EventLspClientDiagnostics
-  | EventLspUpdated
-  | EventMessageUpdated
-  | EventMessageRemoved
-  | EventMessagePartUpdated
-  | EventMessagePartRemoved
-  | EventCommandExecuted
-  | EventPermissionAsked
-  | EventPermissionReplied
-  | EventSessionCreated
-  | EventSessionUpdated
-  | EventSessionDeleted
-  | EventSessionDiff
-  | EventSessionError
-  | EventPtyCreated
-  | EventPtyUpdated
-  | EventPtyExited
-  | EventPtyDeleted
-  | EventFileEdited
-  | EventSessionStatus
-  | EventSessionIdle
-  | EventSessionCompacted
-  | EventTodoUpdated
-  | EventFileWatcherUpdated
-  | EventVcsBranchUpdated
-
-export type GlobalEvent = {
-  directory: string
-  payload: Event
-}
-
-export type BadRequestError = {
-  data: unknown
-  errors: Array<{
-    [key: string]: unknown
-  }>
-  success: false
-}
-
-export type NotFoundError = {
-  name: "NotFoundError"
-  data: {
-    message: string
-  }
-}
-
 /**
  * Custom keybind configurations
  */
@@ -1717,6 +762,10 @@ export type Config = {
    */
   autoupdate?: boolean | "notify"
   /**
+   * Release channel for updates: 'stable' for production releases, 'beta' for beta versions, 'alfa' for alpha versions. Defaults to 'stable'
+   */
+  channel?: "stable" | "beta" | "alfa"
+  /**
    * Disable providers that are loaded automatically
    */
   disabled_providers?: Array<string>
@@ -1902,9 +951,1028 @@ export type Config = {
      */
     continue_loop_on_deny?: boolean
     /**
+     * Enable automatic model selection per task category in orchestrate tool
+     */
+    smart_model_routing?: boolean
+    /**
      * Timeout in milliseconds for model context protocol (MCP) requests
      */
     mcp_timeout?: number
+  }
+}
+
+export type EventConfigUpdated = {
+  type: "config.updated"
+  properties: {
+    config: Config
+  }
+}
+
+export type QuestionOption = {
+  /**
+   * Display text (1-5 words, concise)
+   */
+  label: string
+  /**
+   * Explanation of choice
+   */
+  description: string
+}
+
+export type QuestionInfo = {
+  /**
+   * Complete question
+   */
+  question: string
+  /**
+   * Very short label (max 12 chars)
+   */
+  header: string
+  /**
+   * Input type
+   */
+  type?: "select" | "text" | "password"
+  /**
+   * Placeholder text for input
+   */
+  placeholder?: string
+  /**
+   * Available choices (required for select type)
+   */
+  options?: Array<QuestionOption>
+  /**
+   * Allow selecting multiple choices
+   */
+  multiple?: boolean
+}
+
+export type QuestionRequest = {
+  id: string
+  sessionID: string
+  /**
+   * Questions to ask
+   */
+  questions: Array<QuestionInfo>
+  tool?: {
+    messageID: string
+    callID: string
+  }
+}
+
+export type EventQuestionAsked = {
+  type: "question.asked"
+  properties: QuestionRequest
+}
+
+export type QuestionAnswer = Array<string>
+
+export type EventQuestionReplied = {
+  type: "question.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+    answers: Array<QuestionAnswer>
+  }
+}
+
+export type EventQuestionRejected = {
+  type: "question.rejected"
+  properties: {
+    sessionID: string
+    requestID: string
+  }
+}
+
+export type EventTuiPromptAppend = {
+  type: "tui.prompt.append"
+  properties: {
+    text: string
+  }
+}
+
+export type EventTuiCommandExecute = {
+  type: "tui.command.execute"
+  properties: {
+    command:
+      | "session.list"
+      | "session.new"
+      | "session.share"
+      | "session.interrupt"
+      | "session.compact"
+      | "session.page.up"
+      | "session.page.down"
+      | "session.half.page.up"
+      | "session.half.page.down"
+      | "session.first"
+      | "session.last"
+      | "prompt.clear"
+      | "prompt.submit"
+      | "agent.cycle"
+      | string
+  }
+}
+
+export type EventTuiToastShow = {
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    /**
+     * Duration in milliseconds
+     */
+    duration?: number
+  }
+}
+
+export type EventTuiSessionSelect = {
+  type: "tui.session.select"
+  properties: {
+    /**
+     * Session ID to navigate to
+     */
+    sessionID: string
+  }
+}
+
+export type EventTuiChainStart = {
+  type: "tui.chain.start"
+  properties: {
+    sessionID?: string
+    mode?: "safe" | "autonomous"
+  }
+}
+
+export type EventTuiChainAddStep = {
+  type: "tui.chain.add_step"
+  properties: {
+    sessionID?: string
+    name: string
+    description: string
+    todos?: Array<{
+      id: string
+      content: string
+      status: "pending" | "in_progress" | "complete" | "failed"
+    }>
+    sessionId?: string
+    agentType?: string
+    dependsOn?: Array<string>
+  }
+}
+
+export type EventTuiChainUpdateStep = {
+  type: "tui.chain.update_step"
+  properties: {
+    sessionID?: string
+    status:
+      | "pending"
+      | "running"
+      | "coding"
+      | "searching_web"
+      | "searching_code"
+      | "reading_file"
+      | "writing_file"
+      | "running_command"
+      | "analyzing"
+      | "thinking"
+      | "complete"
+      | "failed"
+      | "retrying"
+    tool?: string
+  }
+}
+
+export type EventTuiChainCompleteStep = {
+  type: "tui.chain.complete_step"
+  properties: {
+    sessionID?: string
+    output?: string
+  }
+}
+
+export type EventTuiChainFailStep = {
+  type: "tui.chain.fail_step"
+  properties: {
+    sessionID?: string
+    error: string
+  }
+}
+
+export type EventTuiChainSetTodos = {
+  type: "tui.chain.set_todos"
+  properties: {
+    sessionID?: string
+    todos: Array<{
+      id: string
+      content: string
+      status: "pending" | "in_progress" | "complete" | "failed"
+    }>
+  }
+}
+
+export type EventTuiChainTodoDone = {
+  type: "tui.chain.todo_done"
+  properties: {
+    sessionID?: string
+    todoIndex: number
+  }
+}
+
+export type EventTuiChainClear = {
+  type: "tui.chain.clear"
+  properties: {
+    sessionID?: string
+  }
+}
+
+export type EventTuiChainSubplanStart = {
+  type: "tui.chain.subplan.start"
+  properties: {
+    sessionID?: string
+    /**
+     * Index of the parent step this sub-plan belongs to
+     */
+    stepIndex: number
+    /**
+     * Why a sub-plan is needed
+     */
+    reason: string
+    steps: Array<{
+      name: string
+      description: string
+    }>
+  }
+}
+
+export type EventTuiChainSubplanEnd = {
+  type: "tui.chain.subplan.end"
+  properties: {
+    sessionID?: string
+    stepIndex: number
+    success: boolean
+  }
+}
+
+export type EventTuiChainParallelUpdate = {
+  type: "tui.chain.parallel.update"
+  properties: {
+    sessionID?: string
+    stepIndex: number
+    status:
+      | "pending"
+      | "running"
+      | "coding"
+      | "searching_web"
+      | "searching_code"
+      | "reading_file"
+      | "writing_file"
+      | "running_command"
+      | "analyzing"
+      | "thinking"
+      | "complete"
+      | "failed"
+      | "retrying"
+  }
+}
+
+export type EventTuiFiletreeToggle = {
+  type: "tui.filetree.toggle"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventTuiFiletreeOpen = {
+  type: "tui.filetree.open"
+  properties: {
+    path: string
+    content?: string
+    language?: string
+    highlight?: {
+      startLine: number
+      endLine: number
+    }
+  }
+}
+
+export type EventTuiFiletreeClose = {
+  type: "tui.filetree.close"
+  properties: {
+    path: string
+  }
+}
+
+export type EventTuiFiletreeDirToggle = {
+  type: "tui.filetree.dir_toggle"
+  properties: {
+    path: string
+  }
+}
+
+export type EventTuiCodepanelToggle = {
+  type: "tui.codepanel.toggle"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventTuiCodepanelSave = {
+  type: "tui.codepanel.save"
+  properties: {
+    path: string
+    content: string
+  }
+}
+
+export type EventTuiSubagentActive = {
+  type: "tui.subagent.active"
+  properties: {
+    sessionId: string
+    agentType: string
+    description: string
+  }
+}
+
+export type EventTuiSubagentDone = {
+  type: "tui.subagent.done"
+  properties: {
+    sessionId: string
+    lastOutput?: string
+  }
+}
+
+export type EventTuiSubagentReactivate = {
+  type: "tui.subagent.reactivate"
+  properties: {
+    sessionId: string
+    description?: string
+  }
+}
+
+export type EventTuiSubagentRemove = {
+  type: "tui.subagent.remove"
+  properties: {
+    sessionId: string
+  }
+}
+
+export type EventMcpToolsChanged = {
+  type: "mcp.tools.changed"
+  properties: {
+    server: string
+  }
+}
+
+export type EventLspClientDiagnostics = {
+  type: "lsp.client.diagnostics"
+  properties: {
+    serverID: string
+    path: string
+  }
+}
+
+export type EventLspUpdated = {
+  type: "lsp.updated"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type FileDiff = {
+  file: string
+  before: string
+  after: string
+  additions: number
+  deletions: number
+}
+
+export type UserMessage = {
+  id: string
+  sessionID: string
+  role: "user"
+  time: {
+    created: number
+  }
+  summary?: {
+    title?: string
+    body?: string
+    diffs: Array<FileDiff>
+  }
+  agent: string
+  model: {
+    providerID: string
+    modelID: string
+  }
+  system?: string
+  tools?: {
+    [key: string]: boolean
+  }
+  variant?: string
+}
+
+export type ProviderAuthError = {
+  name: "ProviderAuthError"
+  data: {
+    providerID: string
+    message: string
+  }
+}
+
+export type UnknownError = {
+  name: "UnknownError"
+  data: {
+    message: string
+  }
+}
+
+export type MessageOutputLengthError = {
+  name: "MessageOutputLengthError"
+  data: {
+    [key: string]: unknown
+  }
+}
+
+export type MessageAbortedError = {
+  name: "MessageAbortedError"
+  data: {
+    message: string
+  }
+}
+
+export type ApiError = {
+  name: "APIError"
+  data: {
+    message: string
+    statusCode?: number
+    isRetryable: boolean
+    responseHeaders?: {
+      [key: string]: string
+    }
+    responseBody?: string
+    metadata?: {
+      [key: string]: string
+    }
+  }
+}
+
+export type AssistantMessage = {
+  id: string
+  sessionID: string
+  role: "assistant"
+  time: {
+    created: number
+    completed?: number
+  }
+  error?: ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError | ApiError
+  parentID: string
+  modelID: string
+  providerID: string
+  mode: string
+  agent: string
+  path: {
+    cwd: string
+    root: string
+  }
+  summary?: boolean
+  cost: number
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  finish?: string
+}
+
+export type Message = UserMessage | AssistantMessage
+
+export type EventMessageUpdated = {
+  type: "message.updated"
+  properties: {
+    info: Message
+  }
+}
+
+export type EventMessageRemoved = {
+  type: "message.removed"
+  properties: {
+    sessionID: string
+    messageID: string
+  }
+}
+
+export type TextPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "text"
+  text: string
+  synthetic?: boolean
+  ignored?: boolean
+  time?: {
+    start: number
+    end?: number
+  }
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type ReasoningPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "reasoning"
+  text: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+    end?: number
+  }
+}
+
+export type FilePartSourceText = {
+  value: string
+  start: number
+  end: number
+}
+
+export type FileSource = {
+  text: FilePartSourceText
+  type: "file"
+  path: string
+}
+
+export type Range = {
+  start: {
+    line: number
+    character: number
+  }
+  end: {
+    line: number
+    character: number
+  }
+}
+
+export type SymbolSource = {
+  text: FilePartSourceText
+  type: "symbol"
+  path: string
+  range: Range
+  name: string
+  kind: number
+}
+
+export type ResourceSource = {
+  text: FilePartSourceText
+  type: "resource"
+  clientName: string
+  uri: string
+}
+
+export type FilePartSource = FileSource | SymbolSource | ResourceSource
+
+export type FilePart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "file"
+  mime: string
+  filename?: string
+  url: string
+  source?: FilePartSource
+}
+
+export type ToolStatePending = {
+  status: "pending"
+  input: {
+    [key: string]: unknown
+  }
+  raw: string
+}
+
+export type ToolStateRunning = {
+  status: "running"
+  input: {
+    [key: string]: unknown
+  }
+  title?: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+  }
+}
+
+export type ToolStateCompleted = {
+  status: "completed"
+  input: {
+    [key: string]: unknown
+  }
+  output: string
+  title: string
+  metadata: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+    end: number
+    compacted?: number
+  }
+  attachments?: Array<FilePart>
+}
+
+export type ToolStateError = {
+  status: "error"
+  input: {
+    [key: string]: unknown
+  }
+  error: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+    end: number
+  }
+}
+
+export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
+
+export type ToolPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "tool"
+  callID: string
+  tool: string
+  state: ToolState
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type StepStartPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "step-start"
+  snapshot?: string
+}
+
+export type StepFinishPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "step-finish"
+  reason: string
+  snapshot?: string
+  cost: number
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+}
+
+export type SnapshotPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "snapshot"
+  snapshot: string
+}
+
+export type PatchPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "patch"
+  hash: string
+  files: Array<string>
+}
+
+export type AgentPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "agent"
+  name: string
+  source?: {
+    value: string
+    start: number
+    end: number
+  }
+}
+
+export type RetryPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "retry"
+  attempt: number
+  error: ApiError
+  time: {
+    created: number
+  }
+}
+
+export type CompactionPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "compaction"
+  auto: boolean
+}
+
+export type Part =
+  | TextPart
+  | {
+      id: string
+      sessionID: string
+      messageID: string
+      type: "subtask"
+      prompt: string
+      description: string
+      agent: string
+      command?: string
+    }
+  | ReasoningPart
+  | FilePart
+  | ToolPart
+  | StepStartPart
+  | StepFinishPart
+  | SnapshotPart
+  | PatchPart
+  | AgentPart
+  | RetryPart
+  | CompactionPart
+
+export type EventMessagePartUpdated = {
+  type: "message.part.updated"
+  properties: {
+    part: Part
+    delta?: string
+  }
+}
+
+export type EventMessagePartRemoved = {
+  type: "message.part.removed"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+  }
+}
+
+export type EventCommandExecuted = {
+  type: "command.executed"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    messageID: string
+  }
+}
+
+export type PermissionRequest = {
+  id: string
+  sessionID: string
+  permission: string
+  patterns: Array<string>
+  metadata: {
+    [key: string]: unknown
+  }
+  always: Array<string>
+  tool?: {
+    messageID: string
+    callID: string
+  }
+}
+
+export type EventPermissionAsked = {
+  type: "permission.asked"
+  properties: PermissionRequest
+}
+
+export type EventPermissionReplied = {
+  type: "permission.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+    reply: "once" | "always" | "reject"
+  }
+}
+
+export type PermissionAction = "allow" | "deny" | "ask"
+
+export type PermissionRule = {
+  permission: string
+  pattern: string
+  action: PermissionAction
+}
+
+export type PermissionRuleset = Array<PermissionRule>
+
+export type Session = {
+  id: string
+  projectID: string
+  directory: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<FileDiff>
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  version: string
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type EventSessionCreated = {
+  type: "session.created"
+  properties: {
+    info: Session
+  }
+}
+
+export type EventSessionUpdated = {
+  type: "session.updated"
+  properties: {
+    info: Session
+  }
+}
+
+export type EventSessionDeleted = {
+  type: "session.deleted"
+  properties: {
+    info: Session
+  }
+}
+
+export type EventSessionDiff = {
+  type: "session.diff"
+  properties: {
+    sessionID: string
+    diff: Array<FileDiff>
+  }
+}
+
+export type EventSessionError = {
+  type: "session.error"
+  properties: {
+    sessionID?: string
+    error?: ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError | ApiError
+  }
+}
+
+export type Pty = {
+  id: string
+  title: string
+  command: string
+  args: Array<string>
+  cwd: string
+  status: "running" | "exited"
+  pid: number
+}
+
+export type EventPtyCreated = {
+  type: "pty.created"
+  properties: {
+    info: Pty
+  }
+}
+
+export type EventPtyUpdated = {
+  type: "pty.updated"
+  properties: {
+    info: Pty
+  }
+}
+
+export type EventPtyExited = {
+  type: "pty.exited"
+  properties: {
+    id: string
+    exitCode: number
+  }
+}
+
+export type EventPtyDeleted = {
+  type: "pty.deleted"
+  properties: {
+    id: string
+  }
+}
+
+export type Event =
+  | EventInstallationUpdated
+  | EventInstallationUpdateAvailable
+  | EventProjectUpdated
+  | EventServerInstanceDisposed
+  | EventGlobalDisposed
+  | EventConfigUpdated
+  | EventQuestionAsked
+  | EventQuestionReplied
+  | EventQuestionRejected
+  | EventTuiPromptAppend
+  | EventTuiCommandExecute
+  | EventTuiToastShow
+  | EventTuiSessionSelect
+  | EventTuiChainStart
+  | EventTuiChainAddStep
+  | EventTuiChainUpdateStep
+  | EventTuiChainCompleteStep
+  | EventTuiChainFailStep
+  | EventTuiChainSetTodos
+  | EventTuiChainTodoDone
+  | EventTuiChainClear
+  | EventTuiChainSubplanStart
+  | EventTuiChainSubplanEnd
+  | EventTuiChainParallelUpdate
+  | EventTuiFiletreeToggle
+  | EventTuiFiletreeOpen
+  | EventTuiFiletreeClose
+  | EventTuiFiletreeDirToggle
+  | EventTuiCodepanelToggle
+  | EventTuiCodepanelSave
+  | EventTuiSubagentActive
+  | EventTuiSubagentDone
+  | EventTuiSubagentReactivate
+  | EventTuiSubagentRemove
+  | EventMcpToolsChanged
+  | EventLspClientDiagnostics
+  | EventLspUpdated
+  | EventMessageUpdated
+  | EventMessageRemoved
+  | EventMessagePartUpdated
+  | EventMessagePartRemoved
+  | EventCommandExecuted
+  | EventPermissionAsked
+  | EventPermissionReplied
+  | EventSessionCreated
+  | EventSessionUpdated
+  | EventSessionDeleted
+  | EventSessionDiff
+  | EventSessionError
+  | EventPtyCreated
+  | EventPtyUpdated
+  | EventPtyExited
+  | EventPtyDeleted
+  | EventFileEdited
+  | EventSessionStatus
+  | EventSessionIdle
+  | EventSessionCompacted
+  | EventTodoUpdated
+  | EventFileWatcherUpdated
+  | EventVcsBranchUpdated
+
+export type GlobalEvent = {
+  directory: string
+  payload: Event
+}
+
+export type BadRequestError = {
+  data: unknown
+  errors: Array<{
+    [key: string]: unknown
+  }>
+  success: false
+}
+
+export type NotFoundError = {
+  name: "NotFoundError"
+  data: {
+    message: string
   }
 }
 
@@ -2635,7 +2703,268 @@ export type ConfigGetResponses = {
 export type ConfigGetResponse = ConfigGetResponses[keyof ConfigGetResponses]
 
 export type ConfigUpdateData = {
-  body?: Config
+  body?: {
+    /**
+     * JSON schema reference for configuration validation
+     */
+    $schema?: string
+    /**
+     * Theme name to use for the interface
+     */
+    theme?: string
+    keybinds?: KeybindsConfig
+    logLevel?: LogLevel
+    /**
+     * TUI specific settings
+     */
+    tui?: {
+      /**
+       * TUI scroll speed
+       */
+      scroll_speed?: number
+      /**
+       * Scroll acceleration settings
+       */
+      scroll_acceleration?: {
+        /**
+         * Enable scroll acceleration
+         */
+        enabled: boolean
+      }
+      /**
+       * Control diff rendering style: 'auto' adapts to terminal width, 'stacked' always shows single column
+       */
+      diff_style?: "auto" | "stacked"
+    }
+    server?: ServerConfig
+    /**
+     * Command configuration, see https://atomcli.ai/docs/commands
+     */
+    command?: {
+      [key: string]: {
+        template: string
+        description?: string
+        agent?: string
+        model?: string
+        subtask?: boolean
+      }
+    }
+    watcher?: {
+      ignore?: Array<string>
+    }
+    plugin?: Array<string>
+    snapshot?: boolean
+    /**
+     * Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing
+     */
+    share?: "manual" | "auto" | "disabled"
+    /**
+     * @deprecated Use 'share' field instead. Share newly created sessions automatically
+     */
+    autoshare?: boolean
+    /**
+     * Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications
+     */
+    autoupdate?: boolean | "notify"
+    /**
+     * Release channel for updates: 'stable' for production releases, 'beta' for beta versions, 'alfa' for alpha versions. Defaults to 'stable'
+     */
+    channel?: "stable" | "beta" | "alfa"
+    /**
+     * Disable providers that are loaded automatically
+     */
+    disabled_providers?: Array<string>
+    /**
+     * When set, ONLY these providers will be enabled. All other providers will be ignored
+     */
+    enabled_providers?: Array<string>
+    /**
+     * Model to use in the format of provider/model, eg anthropic/claude-2
+     */
+    model?: string
+    /**
+     * Small model to use for tasks like title generation in the format of provider/model
+     */
+    small_model?: string
+    /**
+     * Fallback model configuration for automatic model switching on errors
+     */
+    fallback?: {
+      /**
+       * Enable fallback mechanism
+       */
+      enabled?: boolean
+      /**
+       * Secondary fallback model (e.g., atomcli/minimax-m2.5-free)
+       */
+      secondary?: string
+      /**
+       * Tertiary fallback model (e.g., atomcli/gpt-5-nano)
+       */
+      tertiary?: string
+    }
+    /**
+     * Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.
+     */
+    default_agent?: string
+    /**
+     * Custom username to display in conversations instead of system username
+     */
+    username?: string
+    /**
+     * @deprecated Use `agent` field instead.
+     */
+    mode?: {
+      build?: AgentConfig
+      plan?: AgentConfig
+      [key: string]: AgentConfig | undefined
+    }
+    /**
+     * Agent configuration, see https://atomcli.ai/docs/agent
+     */
+    agent?: {
+      plan?: AgentConfig
+      build?: AgentConfig
+      agent?: AgentConfig
+      general?: AgentConfig
+      explore?: AgentConfig
+      title?: AgentConfig
+      summary?: AgentConfig
+      compaction?: AgentConfig
+      [key: string]: AgentConfig | undefined
+    }
+    /**
+     * Agent execution mode: 'safe' requires confirmation per step, 'autonomous' runs fully without prompts
+     */
+    agent_mode?: "safe" | "autonomous"
+    /**
+     * Retry configuration for Agent mode
+     */
+    agent_retry?: {
+      max_retries?: number
+      ask_user_after?: number
+    }
+    /**
+     * Custom provider configurations and model overrides
+     */
+    provider?: {
+      [key: string]: ProviderConfig
+    }
+    /**
+     * MCP (Model Context Protocol) server configurations
+     */
+    mcp?: {
+      [key: string]:
+        | McpLocalConfig
+        | McpRemoteConfig
+        | {
+            enabled: boolean
+          }
+    }
+    formatter?:
+      | false
+      | {
+          [key: string]: {
+            disabled?: boolean
+            command?: Array<string>
+            environment?: {
+              [key: string]: string
+            }
+            extensions?: Array<string>
+          }
+        }
+    lsp?:
+      | false
+      | {
+          [key: string]:
+            | {
+                disabled: true
+              }
+            | {
+                command: Array<string>
+                extensions?: Array<string>
+                disabled?: boolean
+                env?: {
+                  [key: string]: string
+                }
+                initialization?: {
+                  [key: string]: unknown
+                }
+              }
+        }
+    /**
+     * Additional instruction files or patterns to include
+     */
+    instructions?: Array<string>
+    layout?: LayoutConfig
+    permission?: PermissionConfig
+    tools?: {
+      [key: string]: boolean
+    }
+    enterprise?: {
+      /**
+       * Enterprise URL
+       */
+      url?: string
+    }
+    compaction?: {
+      /**
+       * Enable automatic compaction when context is full (default: true)
+       */
+      auto?: boolean
+      /**
+       * Enable pruning of old tool outputs (default: true)
+       */
+      prune?: boolean
+    }
+    experimental?: {
+      hook?: {
+        file_edited?: {
+          [key: string]: Array<{
+            command: Array<string>
+            environment?: {
+              [key: string]: string
+            }
+          }>
+        }
+        session_completed?: Array<{
+          command: Array<string>
+          environment?: {
+            [key: string]: string
+          }
+        }>
+      }
+      /**
+       * Number of retries for chat completions on failure
+       */
+      chatMaxRetries?: number
+      disable_paste_summary?: boolean
+      /**
+       * Enable the batch tool
+       */
+      batch_tool?: boolean
+      /**
+       * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
+       */
+      openTelemetry?: boolean
+      /**
+       * Tools that should only be available to primary agents.
+       */
+      primary_tools?: Array<string>
+      /**
+       * Continue the agent loop when a tool call is denied
+       */
+      continue_loop_on_deny?: boolean
+      /**
+       * Enable automatic model selection per task category in orchestrate tool
+       */
+      smart_model_routing?: boolean
+      /**
+       * Timeout in milliseconds for model context protocol (MCP) requests
+       */
+      mcp_timeout?: number
+    }
+  }
   path?: never
   query?: {
     directory?: string
@@ -3450,6 +3779,9 @@ export type SessionUpdateData = {
     title?: string
     time?: {
       archived?: number
+    }
+    metadata?: {
+      [key: string]: unknown
     }
   }
   path: {
@@ -4353,6 +4685,10 @@ export type TuiPublishData = {
     | EventTuiFiletreeDirToggle
     | EventTuiCodepanelToggle
     | EventTuiCodepanelSave
+    | EventTuiSubagentActive
+    | EventTuiSubagentDone
+    | EventTuiSubagentReactivate
+    | EventTuiSubagentRemove
   path?: never
   query?: {
     directory?: string

@@ -23,6 +23,9 @@ export interface AntigravityAccountStore {
 
 const STORE_FILENAME = "antigravity-accounts.json"
 
+// Write lock to prevent concurrent file access
+let writeLock: Promise<void> = Promise.resolve()
+
 function getStorePath(): string {
     const configDir = path.join(os.homedir(), ".config", "atomcli")
     return path.join(configDir, STORE_FILENAME)
@@ -31,10 +34,8 @@ function getStorePath(): string {
 export async function loadAccounts(): Promise<AntigravityAccountStore | null> {
     try {
         const storePath = getStorePath()
-        if (!fs.existsSync(storePath)) {
-            return null
-        }
-        const content = fs.readFileSync(storePath, "utf8")
+        await fs.promises.access(storePath)
+        const content = await fs.promises.readFile(storePath, "utf8")
         return JSON.parse(content) as AntigravityAccountStore
     } catch {
         return null
@@ -45,11 +46,14 @@ export async function saveAccounts(store: AntigravityAccountStore): Promise<void
     const storePath = getStorePath()
     const dir = path.dirname(storePath)
 
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true })
-    }
-
-    fs.writeFileSync(storePath, JSON.stringify(store, null, 2))
+    // Serialize writes to prevent lost updates from concurrent access
+    const prev = writeLock
+    writeLock = (async () => {
+        await prev
+        await fs.promises.mkdir(dir, { recursive: true })
+        await fs.promises.writeFile(storePath, JSON.stringify(store, null, 2))
+    })()
+    await writeLock
 }
 
 export async function addAccount(
@@ -61,10 +65,10 @@ export async function addAccount(
 
     const now = Date.now()
 
-    // Check if account already exists by email
+    // Check if account already exists by email or refreshToken hash
     const existingIndex = email
         ? store.accounts.findIndex((a) => a.email === email)
-        : -1
+        : store.accounts.findIndex((a) => a.refreshToken === refreshToken)
 
     if (existingIndex >= 0) {
         // Update existing account
@@ -112,7 +116,9 @@ export async function rotateAccount(): Promise<AntigravityAccount | null> {
 
 export async function clearAccounts(): Promise<void> {
     const storePath = getStorePath()
-    if (fs.existsSync(storePath)) {
-        fs.unlinkSync(storePath)
+    try {
+        await fs.promises.unlink(storePath)
+    } catch {
+        // File doesn't exist, ignore
     }
 }

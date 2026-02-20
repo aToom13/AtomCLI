@@ -66,7 +66,9 @@ export function useTextareaKeybindings() {
 
     return [
       { name: "return", action: "submit" },
-      { name: "return", meta: true, action: "newline" },
+      { name: "return", meta: true, action: "newline" }, // Alt+Enter / Cmd+Enter
+      { name: "return", shift: true, action: "newline" }, // Shift+Enter (works on modern terminals like Kitty/WezTerm)
+      { name: "return", ctrl: true, action: "newline" }, // Ctrl+Enter
       ...TEXTAREA_ACTIONS.flatMap((action) => mapTextareaKeybindings(keybinds, action)),
     ] satisfies KeyBinding[]
   })

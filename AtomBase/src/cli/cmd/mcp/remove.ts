@@ -69,7 +69,9 @@ export const McpRemoveCommand = cmd({
                                     prompts.log.warn(`Warning: Server "${name}" also exists in ${legacyPath}.`)
                                     prompts.log.warn("You may need to manually remove it from there as well.")
                                 }
-                            } catch (e) { }
+                            } catch (e) {
+                                // Legacy config file couldn't be parsed - non-critical warning only
+                            }
                         }
 
                         prompts.outro("Done")

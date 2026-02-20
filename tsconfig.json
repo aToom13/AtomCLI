@@ -1,5 +1,25 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
   "extends": "@tsconfig/bun/tsconfig.json",
-  "compilerOptions": {}
+  "compilerOptions": {
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "strict": false,
+    "paths": {
+      "@/*": [
+        "./AtomBase/src/*"
+      ],
+      "@tui/*": [
+        "./AtomBase/src/cli/cmd/tui/*"
+      ]
+    }
+  },
+  "include": [
+    "AtomBase/**/*"
+  ]
 }

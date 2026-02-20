@@ -528,6 +528,25 @@ export function Autocomplete(props: {
         description: "exit the app",
         onSelect: () => command.trigger("app.exit"),
       },
+      {
+        display: "/smart_model",
+        description: "toggle smart model routing (auto-select best model for task)",
+        onSelect: async () => {
+          const isCurrentlySmart = (sync.data.config as any)?.experimental?.smart_model_routing === true
+          const newMode = !isCurrentlySmart
+          try {
+            await sdk.client.config.update({ body: { experimental: { smart_model_routing: newMode } } } as any)
+            sync.set("config", "experimental" as any, { ...((sync.data.config as any).experimental || {}), smart_model_routing: newMode })
+            toast.show({
+              title: "Smart Model Routing",
+              message: newMode ? "Enabled 🧠" : "Disabled 🛡️",
+              variant: "info",
+            })
+          } catch (e) {
+            // Silently fail
+          }
+        },
+      },
     )
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length
     if (!max) return results

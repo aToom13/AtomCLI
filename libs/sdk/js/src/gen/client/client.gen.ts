@@ -29,7 +29,7 @@ export const createClient = (config: Config = {}): Client => {
 
   const interceptors = createInterceptors<Request, Response, unknown, ResolvedRequestOptions>()
 
-  const beforeRequest = async (options: RequestOptions) => {
+  const beforeRequest = async (options: RequestOptions<any, any, any, any>) => {
     const opts = {
       ..._config,
       ...options,
@@ -64,7 +64,6 @@ export const createClient = (config: Config = {}): Client => {
   }
 
   const request: Client["request"] = async (options) => {
-    // @ts-expect-error
     const { opts, url } = await beforeRequest(options)
     const requestInit: ReqInit = {
       redirect: "follow",

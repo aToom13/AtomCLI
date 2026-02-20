@@ -11,7 +11,8 @@ import {
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_SCOPES,
     ANTIGRAVITY_ENDPOINT_PROD,
-    ANTIGRAVITY_HEADERS,
+    ANTIGRAVITY_OAUTH_PORT,
+    getAntigravityHeaders,
 } from "./constants"
 
 export interface AntigravityAuthorization {
@@ -53,13 +54,18 @@ function encodeState(payload: AuthState): string {
 }
 
 function decodeState(state: string): AuthState {
-    const normalized = state.replace(/-/g, "+").replace(/_/g, "/")
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=")
-    const json = Buffer.from(padded, "base64").toString("utf8")
-    const parsed = JSON.parse(json)
-    return {
-        verifier: parsed.verifier,
-        projectId: typeof parsed.projectId === "string" ? parsed.projectId : "",
+    if (!state) throw new Error("OAuth state parameter is missing")
+    try {
+        const normalized = state.replace(/-/g, "+").replace(/_/g, "/")
+        const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=")
+        const json = Buffer.from(padded, "base64").toString("utf8")
+        const parsed = JSON.parse(json)
+        return {
+            verifier: parsed.verifier,
+            projectId: typeof parsed.projectId === "string" ? parsed.projectId : "",
+        }
+    } catch (e) {
+        throw new Error(`Invalid OAuth state parameter: ${(e as Error).message}`)
     }
 }
 
@@ -98,7 +104,7 @@ async function fetchProjectID(accessToken: string): Promise<string> {
             headers: {
                 Authorization: `Bearer ${accessToken}`,
                 "Content-Type": "application/json",
-                ...ANTIGRAVITY_HEADERS,
+                ...getAntigravityHeaders(),
             },
             body: JSON.stringify({
                 metadata: {
@@ -231,7 +237,7 @@ export async function refreshToken(storedRefresh: string): Promise<AntigravityTo
 /**
  * Start a local OAuth callback server and wait for the redirect.
  */
-export function startOAuthServer(port = 51121): Promise<{ code: string; state: string } | null> {
+export function startOAuthServer(port = ANTIGRAVITY_OAUTH_PORT): Promise<{ code: string; state: string } | null> {
     return new Promise((resolve) => {
         const server = http.createServer((req, res) => {
             const url = new URL(req.url || "", `http://localhost:${port}`)

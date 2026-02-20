@@ -55,37 +55,37 @@ export const fileSearch = createProviderDefinedToolFactoryWithOutputSchema<
      * The results of the file search tool call.
      */
     results:
-      | null
-      | {
-          /**
-           * Set of 16 key-value pairs that can be attached to an object.
-           * This can be useful for storing additional information about the object
-           * in a structured format, and querying for objects via API or the dashboard.
-           * Keys are strings with a maximum length of 64 characters.
-           * Values are strings with a maximum length of 512 characters, booleans, or numbers.
-           */
-          attributes: Record<string, unknown>
+    | null
+    | {
+      /**
+       * Set of 16 key-value pairs that can be attached to an object.
+       * This can be useful for storing additional information about the object
+       * in a structured format, and querying for objects via API or the dashboard.
+       * Keys are strings with a maximum length of 64 characters.
+       * Values are strings with a maximum length of 512 characters, booleans, or numbers.
+       */
+      attributes: Record<string, unknown>
 
-          /**
-           * The unique ID of the file.
-           */
-          fileId: string
+      /**
+       * The unique ID of the file.
+       */
+      fileId: string
 
-          /**
-           * The name of the file.
-           */
-          filename: string
+      /**
+       * The name of the file.
+       */
+      filename: string
 
-          /**
-           * The relevance score of the file - a value between 0 and 1.
-           */
-          score: number
+      /**
+       * The relevance score of the file - a value between 0 and 1.
+       */
+      score: number
 
-          /**
-           * The text that was retrieved from the file.
-           */
-          text: string
-        }[]
+      /**
+       * The text that was retrieved from the file.
+       */
+      text: string
+    }[]
   },
   {
     /**
@@ -124,5 +124,5 @@ export const fileSearch = createProviderDefinedToolFactoryWithOutputSchema<
   id: "openai.file_search",
   name: "file_search",
   inputSchema: z.object({}),
-  outputSchema: fileSearchOutputSchema,
+  outputSchema: fileSearchOutputSchema as any,
 })

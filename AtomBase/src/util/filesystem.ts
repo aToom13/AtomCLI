@@ -23,7 +23,32 @@ export namespace Filesystem {
   }
 
   export function contains(parent: string, child: string) {
-    return !relative(parent, child).startsWith("..")
+    // Windows cross-drive check
+    if (process.platform === "win32") {
+      const parentRoot = require("path").parse(parent).root.toLowerCase()
+      const childRoot = require("path").parse(child).root.toLowerCase()
+      if (parentRoot !== childRoot) return false
+    }
+
+    // Resolve symlinks to canonical paths to prevent symlink escape
+    try {
+      const realParent = realpathSync(parent)
+      const realChild = realpathSync(child)
+      return !relative(realParent, realChild).startsWith("..")
+    } catch {
+      // Path doesn't exist yet (e.g., new file creation) — fall back to
+      // resolving the parent directory and checking lexically
+      try {
+        const realParent = realpathSync(parent)
+        const childDir = dirname(child)
+        const realChildDir = realpathSync(childDir)
+        const childName = child.slice(childDir.length)
+        return !relative(realParent, realChildDir + childName).startsWith("..")
+      } catch {
+        // Neither path exists — fall back to pure lexical check
+        return !relative(parent, child).startsWith("..")
+      }
+    }
   }
 
   export async function findUp(target: string, start: string, stop?: string) {

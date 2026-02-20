@@ -426,7 +426,7 @@ export class PreferencesService {
   private entryToPreference(entry: PreferenceEntry): UserPreference {
     return {
       id: entry.id,
-      userId: "default", // TODO: Make configurable
+      userId: os.userInfo().username || "default",
       category: entry.category as PreferenceCategory,
       key: entry.key,
       value: entry.value,

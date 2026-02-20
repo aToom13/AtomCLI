@@ -77,21 +77,21 @@ export const CommunicationProfile = z.object({
   length: ResponseLength.default("medium"),
   vocabulary: VocabularyStyle.default("mixed"),
   emojiUsage: EmojiPreference.default("moderate"),
-  
+
   // Phrasing preferences
   useContractions: z.boolean().default(true),
   useFirstPerson: z.boolean().default(true),
   useQuestions: z.boolean().default(true),
-  
+
   // Special
   useSlang: z.boolean().default(false),
   useTurkish: z.boolean().default(false),  // For Turkish users
   useGenZSlang: z.boolean().default(false),
-  
+
   // Personalized phrases (learned from user)
   likedPhrases: z.array(z.string()).default([]),
   dislikedPhrases: z.array(z.string()).default([]),
-  
+
   // Context modifiers
   formalGreetings: z.array(z.string()).default([
     "Hello", "Hi there", "Good day"
@@ -113,6 +113,9 @@ export type CommunicationProfile = z.infer<typeof CommunicationProfile>
 import os from "os"
 import path from "path"
 import fs from "fs/promises"
+import { Log } from "../../util/log"
+
+const log = Log.create({ service: "memory.communication" })
 
 const COMM_DIR = ".atomcli/personality"
 const COMM_FILE = "communication.json"
@@ -132,7 +135,7 @@ export class CommunicationService {
   async initialize(): Promise<CommunicationProfile> {
     try {
       await fs.mkdir(path.dirname(this.commPath), { recursive: true })
-      
+
       try {
         await fs.access(this.commPath)
         await this.loadComm()
@@ -140,10 +143,10 @@ export class CommunicationService {
         this.comm = this.createDefaultComm()
         await this.saveComm()
       }
-      
+
       return this.comm!
     } catch (error) {
-      console.error("Failed to initialize communication:", error)
+      log.error("Failed to initialize communication", { error })
       return this.createDefaultComm()
     }
   }
@@ -183,12 +186,12 @@ export class CommunicationService {
     if (!this.comm) {
       await this.initialize()
     }
-    
+
     this.comm = {
       ...this.comm!,
       ...updates,
     }
-    
+
     await this.saveComm()
   }
 
@@ -206,7 +209,7 @@ export class CommunicationService {
     formalLevel: number  // 0-1
   }> {
     const c = await this.getProfile()
-    
+
     const styles: Record<CommunicationMode, { tone: string; emojiDensity: number; questionFrequency: number; formalLevel: number }> = {
       professional: {
         tone: "professional",
@@ -245,7 +248,7 @@ export class CommunicationService {
         formalLevel: 0.5,
       },
     }
-    
+
     return styles[c.mode]
   }
 
@@ -260,9 +263,9 @@ export class CommunicationService {
   ): Promise<string> {
     const c = await this.getProfile()
     const { formality = "casual" } = options
-    
+
     let greetings: string[] = []
-    
+
     if (formality === "formal") {
       greetings = c.formalGreetings
     } else if (formality === "turkish_casual") {
@@ -270,7 +273,7 @@ export class CommunicationService {
     } else {
       greetings = c.casualGreetings
     }
-    
+
     // Add time-based
     const timeGreetings: Record<string, string[]> = {
       morning: ["Good morning", "Morning", "Günaydın", "Sabahın ışığıyla!"],
@@ -278,11 +281,11 @@ export class CommunicationService {
       evening: ["Good evening", "Evening", "İyi akşamlar"],
       night: ["Good night", "Night owl!", "Gece çalışması mı?"],
     }
-    
+
     if (options.timeOfDay && timeGreetings[options.timeOfDay]) {
       greetings = [...greetings, ...timeGreetings[options.timeOfDay]]
     }
-    
+
     return greetings[Math.floor(Math.random() * greetings.length)]
   }
 
@@ -291,7 +294,7 @@ export class CommunicationService {
    */
   async getSignOff(): Promise<string> {
     const c = await this.getProfile()
-    
+
     const signoffs: Record<CommunicationMode, string[]> = {
       professional: ["Best regards", "Regards", "Sincerely"],
       friendly: ["Cheers", "Take care", "Talk soon"],
@@ -300,7 +303,7 @@ export class CommunicationService {
       supportive: ["You've got this!", "I'm here if you need me! 💜"],
       adaptive: ["Take care!", "See you next time!", "Bye!"],
     }
-    
+
     const modeSignoffs = signoffs[c.mode]
     return modeSignoffs[Math.floor(Math.random() * modeSignoffs.length)]
   }
@@ -314,9 +317,9 @@ export class CommunicationService {
    */
   async transformText(text: string): Promise<string> {
     const c = await this.getProfile()
-    
+
     let transformed = text
-    
+
     // Contractions
     if (c.useContractions) {
       transformed = transformed
@@ -325,7 +328,7 @@ export class CommunicationService {
         .replace(/\b(I am)\b/g, "I'm")
         .replace(/\b(you are)\b/g, "you're")
     }
-    
+
     // Emoji injection based on preference
     const emojiDensity = {
       none: 0,
@@ -334,7 +337,7 @@ export class CommunicationService {
       frequent: 0.3,
       abundant: 0.5,
     }[c.emojiUsage] || 0.15
-    
+
     // Only add emojis if density > 0
     if (emojiDensity > 0 && !transformed.includes("```")) {
       // Simple emoji injection for key words
@@ -363,7 +366,7 @@ export class CommunicationService {
         "yes": "👍",
         "no": "👎",
       }
-      
+
       // Randomly add emojis based on density
       for (const [word, emoji] of Object.entries(emojiMap)) {
         if (Math.random() < emojiDensity && transformed.includes(word)) {
@@ -371,7 +374,7 @@ export class CommunicationService {
         }
       }
     }
-    
+
     return transformed
   }
 
@@ -384,9 +387,9 @@ export class CommunicationService {
   ): Promise<string> {
     const c = await this.getProfile()
     const length = targetLength || c.length
-    
+
     const wordCount = text.split(/\s+/).length
-    
+
     const targets: Record<ResponseLength, number> = {
       very_short: 10,
       short: 25,
@@ -394,12 +397,12 @@ export class CommunicationService {
       long: 100,
       very_long: 200,
     }
-    
+
     const target = targets[length]
-    
+
     // Simple adjustment - truncate or expand (very basic)
     const words = text.split(/\s+/)
-    
+
     if (wordCount > target * 1.5) {
       // Truncate
       return words.slice(0, target).join(" ") + "..."
@@ -407,7 +410,7 @@ export class CommunicationService {
       // Could expand, but for now just return as is
       return text
     }
-    
+
     return text
   }
 
@@ -420,7 +423,7 @@ export class CommunicationService {
    */
   async buildContext(): Promise<string> {
     const c = await this.getProfile()
-    
+
     return `
 # Communication Style Context
 - Mode: ${c.mode}

@@ -5,6 +5,7 @@ import { Renderable, RGBA } from "@opentui/core"
 import { createStore } from "solid-js/store"
 import { Clipboard } from "@tui/util/clipboard"
 import { useToast } from "./toast"
+import { SpatialLayer } from "../context/spatial"
 
 export function Dialog(
   props: ParentProps<{
@@ -154,9 +155,11 @@ export function DialogProvider(props: ParentProps) {
         }}
       >
         <Show when={value.stack.length}>
-          <Dialog onClose={() => value.clear()} size={value.size}>
-            {value.stack.at(-1)!.element}
-          </Dialog>
+          <SpatialLayer>
+            <Dialog onClose={() => value.clear()} size={value.size}>
+              {value.stack.at(-1)!.element}
+            </Dialog>
+          </SpatialLayer>
         </Show>
       </box>
     </ctx.Provider>

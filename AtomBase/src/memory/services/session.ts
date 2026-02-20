@@ -91,7 +91,7 @@ export class SessionService {
 
     this.currentSession = {
       id: `session_${Date.now()}`,
-      userId: "default", // TODO: Make configurable
+      userId: os.userInfo().username || "default",
       projectPath,
       startedAt: now,
       lastActive: now,
@@ -162,8 +162,8 @@ export class SessionService {
       date: startedAt.toISOString().split("T")[0],
       duration: durationMinutes,
       tasks: session.tasks.map(t => t.description),
-      filesModified: [], // TODO: Track files
-      errors: [], // TODO: Track errors
+      filesModified: this.collectModifiedFiles(session),
+      errors: this.collectErrors(session),
       learnedCount: session.learnedItems.length,
       highlights: this.extractHighlights(session),
     }
@@ -179,7 +179,7 @@ export class SessionService {
       // Ignore
     }
 
-    log.info("Ended session", { 
+    log.info("Ended session", {
       id: sessionSummary.id,
       duration: durationMinutes,
       learned: sessionSummary.learnedCount,
@@ -391,6 +391,31 @@ export class SessionService {
     return highlights
   }
 
+  /**
+   * Collect modified files from task descriptions
+   */
+  private collectModifiedFiles(session: SessionState): string[] {
+    const files = new Set<string>()
+    for (const task of session.tasks) {
+      // Extract file paths from task descriptions (common patterns like "edited foo.ts")
+      const filePattern = /(?:edited|modified|created|updated|changed)\s+(\S+\.\w+)/gi
+      let match: RegExpExecArray | null
+      while ((match = filePattern.exec(task.description)) !== null) {
+        files.add(match[1])
+      }
+    }
+    return Array.from(files)
+  }
+
+  /**
+   * Collect errors from failed tasks
+   */
+  private collectErrors(session: SessionState): string[] {
+    return session.tasks
+      .filter(t => t.status === "failed")
+      .map(t => `Task failed: ${t.description}`)
+  }
+
   // ============================================================================
   // FILE OPERATIONS
   // ============================================================================
@@ -464,8 +489,8 @@ export class SessionService {
 
     for (const session of sessions) {
       totalTasks += session.tasks.length
-      completedTasks += session.tasks.filter(t => 
-        t.toLowerCase().includes("complete") || 
+      completedTasks += session.tasks.filter(t =>
+        t.toLowerCase().includes("complete") ||
         t.toLowerCase().includes("done")
       ).length
       totalLearned += session.learnedCount

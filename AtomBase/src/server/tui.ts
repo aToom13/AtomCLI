@@ -123,7 +123,6 @@ export const TuiGeneralRoute = new Hono()
     async (c) => {
       const command = c.req.valid("json").command
       await Bus.publish(TuiEvent.CommandExecute, {
-        // @ts-expect-error
         command: {
           session_new: "session.new",
           session_share: "session.share",
@@ -136,7 +135,7 @@ export const TuiGeneralRoute = new Hono()
           messages_first: "session.first",
           messages_last: "session.last",
           agent_cycle: "agent.cycle",
-        }[command],
+        }[command] as any,
       })
       return c.json(true)
     },

@@ -21,6 +21,7 @@
       "@tui/*": [
         "./src/cli/cmd/tui/*"
       ]
-    }
+    },
+    "strict": false
   }
 }

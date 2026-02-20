@@ -6,6 +6,7 @@ import { SplitBorder } from "@tui/component/border"
 import { Locale } from "@/util/locale"
 import type { Part, UserMessage as UserMessageType } from "@atomcli/sdk/v2"
 import { useSession } from "../context"
+import { Focusable } from "../../../context/spatial"
 
 const MIME_BADGE: Record<string, string> = {
     "text/plain": "txt",
@@ -40,65 +41,61 @@ export function UserMessage(props: {
     return (
         <>
             <Show when={text()}>
-                <box
-                    id={props.message.id}
-                    border={["left"]}
-                    borderColor={color()}
-                    customBorderChars={SplitBorder.customBorderChars}
-                    marginTop={props.index === 0 ? 0 : 1}
-                >
-                    <box
-                        onMouseOver={() => {
-                            setHover(true)
-                        }}
-                        onMouseOut={() => {
-                            setHover(false)
-                        }}
-                        onMouseUp={props.onMouseUp}
-                        paddingTop={1}
-                        paddingBottom={1}
-                        paddingLeft={2}
-                        backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-                        flexShrink={0}
-                    >
-                        <text fg={theme.text}>{text()?.text}</text>
-                        <Show when={files().length}>
-                            <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
-                                <For each={files()}>
-                                    {(file) => {
-                                        const bg = createMemo(() => {
-                                            if (file.mime.startsWith("image/")) return theme.accent
-                                            if (file.mime === "application/pdf") return theme.primary
-                                            return theme.secondary
-                                        })
-                                        return (
-                                            <text fg={theme.text}>
-                                                <span style={{ bg: bg(), fg: theme.background }}> {MIME_BADGE[file.mime] ?? file.mime} </span>
-                                                <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
-                                            </text>
-                                        )
-                                    }}
-                                </For>
-                            </box>
-                        </Show>
-                        <Show
-                            when={queued()}
-                            fallback={
-                                <Show when={ctx.showTimestamps()}>
-                                    <text fg={theme.textMuted}>
-                                        <span style={{ fg: theme.textMuted }}>
-                                            {Locale.todayTimeOrDateTime(props.message.time.created)}
-                                        </span>
-                                    </text>
-                                </Show>
-                            }
+                <Focusable id={`user-msg-${props.message.id}`} onPress={() => props.onMouseUp?.()}>
+                    {(focused: () => boolean) => (
+                        <box
+                            id={props.message.id}
+                            border={["left"]}
+                            borderColor={color()}
+                            customBorderChars={SplitBorder.customBorderChars}
+                            marginTop={props.index === 0 ? 0 : 1}
                         >
-                            <text fg={theme.textMuted}>
-                                <span style={{ bg: theme.accent, fg: theme.backgroundPanel, bold: true }}> QUEUED </span>
-                            </text>
-                        </Show>
-                    </box>
-                </box>
+                            <box
+                                onMouseOver={() => setHover(true)}
+                                onMouseOut={() => setHover(false)}
+                                onMouseUp={props.onMouseUp}
+                                paddingTop={1}
+                                paddingBottom={1}
+                                paddingLeft={2}
+                                backgroundColor={hover() || focused() ? theme.backgroundElement : theme.backgroundPanel}
+                                flexShrink={0}
+                            >
+                                <text fg={theme.text}>{text()?.text}</text>
+                                <Show when={files().length}>
+                                    <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
+                                        <For each={files()}>
+                                            {(file) => {
+                                                const bg = createMemo(() => {
+                                                    if (file.mime.startsWith("image/")) return theme.accent
+                                                    if (file.mime === "application/pdf") return theme.primary
+                                                    return theme.secondary
+                                                })
+                                                return (
+                                                    <box flexDirection="row" gap={1}>
+                                                        <text bg={bg()} fg={theme.background}> {MIME_BADGE[file.mime] ?? file.mime} </text>
+                                                        <text bg={theme.backgroundElement} fg={theme.textMuted}> {file.filename} </text>
+                                                    </box>
+                                                )
+                                            }}
+                                        </For>
+                                    </box>
+                                </Show>
+                                <Show
+                                    when={queued()}
+                                    fallback={
+                                        <Show when={ctx.showTimestamps()}>
+                                            <text fg={theme.textMuted}>
+                                                {Locale.todayTimeOrDateTime(props.message.time.created)}
+                                            </text>
+                                        </Show>
+                                    }
+                                >
+                                    <text bg={theme.accent} fg={theme.backgroundPanel}> QUEUED </text>
+                                </Show>
+                            </box>
+                        </box>
+                    )}
+                </Focusable>
             </Show>
             <Show when={compaction()}>
                 <box

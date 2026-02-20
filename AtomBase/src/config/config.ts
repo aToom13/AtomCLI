@@ -125,7 +125,7 @@ export namespace Config {
       return { ...source }
     }
 
-    const merged = mergeDeep(target, source)
+    const merged: any = mergeDeep(target, source)
     if (target.plugin && source.plugin) {
       // Use faster Set-based deduplication for plugins
       merged.plugin = [...new Set([...target.plugin, ...source.plugin])]
@@ -1167,7 +1167,7 @@ export namespace Config {
             return Object.entries(data).every(([id, config]) => {
               if (config.disabled) return true
               if (serverIds.has(id)) return true
-              return Boolean(config.extensions)
+              return 'extensions' in config ? Boolean((config as any).extensions) : false
             })
           },
           {
@@ -1499,7 +1499,7 @@ export namespace Config {
 
     log.info("updating config", { filepath, config })
     const existing = existsSync(filepath) ? await loadFile(filepath) : {}
-    const merged = mergeDeep(existing, config)
+    const merged: any = mergeDeep(existing, config)
     await Bun.write(filepath, JSON.stringify(merged, null, 2))
     log.info("config updated", { filepath, experimental: merged.experimental })
 

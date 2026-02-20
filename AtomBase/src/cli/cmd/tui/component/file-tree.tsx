@@ -3,6 +3,8 @@ import { useTheme } from "@tui/context/theme"
 import { useFileTree } from "@tui/context/file-tree"
 import { useSync } from "@tui/context/sync"
 import { InputRenderable } from "@opentui/core"
+import { Focusable } from "../context/spatial"
+import { Identifier } from "@/id/id"
 import path from "path"
 import fs from "fs"
 
@@ -146,32 +148,40 @@ function FileTreeNode(props: { dirPath: string; depth: number }) {
 
     return (
         <For each={entries()}>
-            {(entry) => (
-                <box>
-                    <box
-                        flexDirection="row"
-                        gap={1}
-                        paddingLeft={indent()}
-                        onMouseUp={() => handleClick(entry)}
-                    >
-                        <Show when={entry.isDir}>
-                            <text fg={theme.textMuted}>
-                                {fileTree.isDirExpanded(entry.path) ? "▼" : "▶"}
-                            </text>
-                        </Show>
-                        <text fg={theme.text}>
-                            {getFileIcon(entry.name, entry.isDir)} {entry.name}
-                        </text>
-                    </box>
+            {(entry) => {
+                const id = `filetree-node-${entry.path}`
+                return (
+                    <box>
+                        <Focusable id={id} onPress={() => handleClick(entry)}>
+                            {(focused: () => boolean) => (
+                                <box
+                                    flexDirection="row"
+                                    gap={1}
+                                    paddingLeft={indent()}
+                                    onMouseUp={() => handleClick(entry)}
+                                    backgroundColor={focused() ? theme.primary : undefined}
+                                >
+                                    <Show when={entry.isDir}>
+                                        <text fg={theme.textMuted}>
+                                            {fileTree.isDirExpanded(entry.path) ? "▼" : "▶"}
+                                        </text>
+                                    </Show>
+                                    <text fg={theme.text}>
+                                        {getFileIcon(entry.name, entry.isDir)} {entry.name}
+                                    </text>
+                                </box>
+                            )}
+                        </Focusable>
 
-                    <Show when={entry.isDir && fileTree.isDirExpanded(entry.path)}>
-                        <FileTreeNode
-                            dirPath={entry.path}
-                            depth={props.depth + 1}
-                        />
-                    </Show>
-                </box>
-            )}
+                        <Show when={entry.isDir && fileTree.isDirExpanded(entry.path)}>
+                            <FileTreeNode
+                                dirPath={entry.path}
+                                depth={props.depth + 1}
+                            />
+                        </Show>
+                    </box>
+                )
+            }}
         </For>
     )
 }
@@ -192,22 +202,33 @@ function SearchResults(props: { results: FileEntry[] }) {
                 })
 
                 return (
-                    <box
-                        flexDirection="row"
-                        gap={1}
-                        paddingLeft={1}
-                        onMouseUp={() => {
-                            if (entry.isDir) {
-                                fileTree.toggleDir(entry.path)
-                            } else {
-                                fileTree.openFile(entry.path)
-                            }
-                        }}
-                    >
-                        <text fg={theme.text}>
-                            {getFileIcon(entry.name, entry.isDir)} <span style={{ fg: theme.textMuted }}>{relativePath()}</span>{entry.name}
-                        </text>
-                    </box>
+                    <Focusable id={`filetree-search-${entry.path}`} onPress={() => {
+                        if (entry.isDir) {
+                            fileTree.toggleDir(entry.path)
+                        } else {
+                            fileTree.openFile(entry.path)
+                        }
+                    }}>
+                        {(focused: () => boolean) => (
+                            <box
+                                flexDirection="row"
+                                gap={1}
+                                paddingLeft={1}
+                                onMouseUp={() => {
+                                    if (entry.isDir) {
+                                        fileTree.toggleDir(entry.path)
+                                    } else {
+                                        fileTree.openFile(entry.path)
+                                    }
+                                }}
+                                backgroundColor={focused() ? theme.primary : undefined}
+                            >
+                                <text fg={theme.text}>
+                                    {getFileIcon(entry.name, entry.isDir)} <span style={{ fg: theme.textMuted }}>{relativePath()}</span>{entry.name}
+                                </text>
+                            </box>
+                        )}
+                    </Focusable>
                 )
             }}
         </For>
@@ -266,20 +287,24 @@ export function FileTree() {
             border={["right"]}
         >
             {/* Hamburger Header */}
-            <box
-                flexDirection="row"
-                justifyContent="space-between"
-                paddingLeft={1}
-                paddingRight={1}
-                backgroundColor={theme.backgroundElement}
-                onMouseUp={() => fileTree.toggleFileTree()}
-            >
-                <text fg={theme.text}>☰</text>
-                <Show when={fileTree.state.visible}>
-                    <text fg={theme.textMuted}>Files</text>
-                    <text fg={theme.textMuted}>◀</text>
-                </Show>
-            </box>
+            <Focusable id={Identifier.ascending("part")} onPress={() => fileTree.toggleFileTree()}>
+                {(focused: () => boolean) => (
+                    <box
+                        flexDirection="row"
+                        justifyContent="space-between"
+                        paddingLeft={1}
+                        paddingRight={1}
+                        backgroundColor={focused() ? theme.primary : theme.backgroundElement}
+                        onMouseUp={() => fileTree.toggleFileTree()}
+                    >
+                        <text fg={theme.text}>☰</text>
+                        <Show when={fileTree.state.visible}>
+                            <text fg={theme.textMuted}>Files</text>
+                            <text fg={theme.textMuted}>◀</text>
+                        </Show>
+                    </box>
+                )}
+            </Focusable>
 
             {/* File Tree Content */}
             <Show when={fileTree.state.visible}>

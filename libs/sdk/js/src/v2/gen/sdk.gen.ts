@@ -3,6 +3,7 @@
 import { client } from "./client.gen.js"
 import { buildClientParams, type Client, type Options as Options2, type TDataShape } from "./client/index.js"
 import type {
+  AgentConfig,
   AgentPartInput,
   AppAgentsResponses,
   AppLogErrors,
@@ -11,7 +12,6 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   CommandListResponses,
-  Config as Config2,
   ConfigGetResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -37,6 +37,10 @@ import type {
   EventTuiFiletreeToggle,
   EventTuiPromptAppend,
   EventTuiSessionSelect,
+  EventTuiSubagentActive,
+  EventTuiSubagentDone,
+  EventTuiSubagentReactivate,
+  EventTuiSubagentRemove,
   EventTuiToastShow,
   FileListResponses,
   FilePartInput,
@@ -51,6 +55,9 @@ import type {
   GlobalEventResponses,
   GlobalHealthResponses,
   InstanceDisposeResponses,
+  KeybindsConfig,
+  LayoutConfig,
+  LogLevel,
   LspStatusResponses,
   McpAddErrors,
   McpAddResponses,
@@ -74,6 +81,7 @@ import type {
   PartUpdateErrors,
   PartUpdateResponses,
   PathGetResponses,
+  PermissionConfig,
   PermissionListResponses,
   PermissionReplyErrors,
   PermissionReplyResponses,
@@ -85,6 +93,7 @@ import type {
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   ProviderAuthResponses,
+  ProviderConfig,
   ProviderKeyErrors,
   ProviderKeyResponses,
   ProviderListResponses,
@@ -109,6 +118,7 @@ import type {
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
+  ServerConfig,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -564,7 +574,200 @@ export class Config extends HeyApiClient {
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
       directory?: string
-      config?: Config2
+      $schema?: string
+      theme?: string
+      keybinds?: KeybindsConfig
+      logLevel?: LogLevel
+      tui?: {
+        /**
+         * TUI scroll speed
+         */
+        scroll_speed?: number
+        /**
+         * Scroll acceleration settings
+         */
+        scroll_acceleration?: {
+          /**
+           * Enable scroll acceleration
+           */
+          enabled: boolean
+        }
+        /**
+         * Control diff rendering style: 'auto' adapts to terminal width, 'stacked' always shows single column
+         */
+        diff_style?: "auto" | "stacked"
+      }
+      server?: ServerConfig
+      command?: {
+        [key: string]: {
+          template: string
+          description?: string
+          agent?: string
+          model?: string
+          subtask?: boolean
+        }
+      }
+      watcher?: {
+        ignore?: Array<string>
+      }
+      plugin?: Array<string>
+      snapshot?: boolean
+      share?: "manual" | "auto" | "disabled"
+      autoshare?: boolean
+      autoupdate?: boolean | "notify"
+      channel?: "stable" | "beta" | "alfa"
+      disabled_providers?: Array<string>
+      enabled_providers?: Array<string>
+      model?: string
+      small_model?: string
+      fallback?: {
+        /**
+         * Enable fallback mechanism
+         */
+        enabled?: boolean
+        /**
+         * Secondary fallback model (e.g., atomcli/minimax-m2.5-free)
+         */
+        secondary?: string
+        /**
+         * Tertiary fallback model (e.g., atomcli/gpt-5-nano)
+         */
+        tertiary?: string
+      }
+      default_agent?: string
+      username?: string
+      mode?: {
+        build?: AgentConfig
+        plan?: AgentConfig
+        [key: string]: AgentConfig | undefined
+      }
+      agent?: {
+        plan?: AgentConfig
+        build?: AgentConfig
+        agent?: AgentConfig
+        general?: AgentConfig
+        explore?: AgentConfig
+        title?: AgentConfig
+        summary?: AgentConfig
+        compaction?: AgentConfig
+        [key: string]: AgentConfig | undefined
+      }
+      agent_mode?: "safe" | "autonomous"
+      agent_retry?: {
+        max_retries?: number
+        ask_user_after?: number
+      }
+      provider?: {
+        [key: string]: ProviderConfig
+      }
+      mcp?: {
+        [key: string]:
+          | McpLocalConfig
+          | McpRemoteConfig
+          | {
+              enabled: boolean
+            }
+      }
+      formatter?:
+        | false
+        | {
+            [key: string]: {
+              disabled?: boolean
+              command?: Array<string>
+              environment?: {
+                [key: string]: string
+              }
+              extensions?: Array<string>
+            }
+          }
+      lsp?:
+        | false
+        | {
+            [key: string]:
+              | {
+                  disabled: true
+                }
+              | {
+                  command: Array<string>
+                  extensions?: Array<string>
+                  disabled?: boolean
+                  env?: {
+                    [key: string]: string
+                  }
+                  initialization?: {
+                    [key: string]: unknown
+                  }
+                }
+          }
+      instructions?: Array<string>
+      layout?: LayoutConfig
+      permission?: PermissionConfig
+      tools?: {
+        [key: string]: boolean
+      }
+      enterprise?: {
+        /**
+         * Enterprise URL
+         */
+        url?: string
+      }
+      compaction?: {
+        /**
+         * Enable automatic compaction when context is full (default: true)
+         */
+        auto?: boolean
+        /**
+         * Enable pruning of old tool outputs (default: true)
+         */
+        prune?: boolean
+      }
+      experimental?: {
+        hook?: {
+          file_edited?: {
+            [key: string]: Array<{
+              command: Array<string>
+              environment?: {
+                [key: string]: string
+              }
+            }>
+          }
+          session_completed?: Array<{
+            command: Array<string>
+            environment?: {
+              [key: string]: string
+            }
+          }>
+        }
+        /**
+         * Number of retries for chat completions on failure
+         */
+        chatMaxRetries?: number
+        disable_paste_summary?: boolean
+        /**
+         * Enable the batch tool
+         */
+        batch_tool?: boolean
+        /**
+         * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
+         */
+        openTelemetry?: boolean
+        /**
+         * Tools that should only be available to primary agents.
+         */
+        primary_tools?: Array<string>
+        /**
+         * Continue the agent loop when a tool call is denied
+         */
+        continue_loop_on_deny?: boolean
+        /**
+         * Enable automatic model selection per task category in orchestrate tool
+         */
+        smart_model_routing?: boolean
+        /**
+         * Timeout in milliseconds for model context protocol (MCP) requests
+         */
+        mcp_timeout?: number
+      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -574,7 +777,42 @@ export class Config extends HeyApiClient {
         {
           args: [
             { in: "query", key: "directory" },
-            { key: "config", map: "body" },
+            { in: "body", key: "$schema" },
+            { in: "body", key: "theme" },
+            { in: "body", key: "keybinds" },
+            { in: "body", key: "logLevel" },
+            { in: "body", key: "tui" },
+            { in: "body", key: "server" },
+            { in: "body", key: "command" },
+            { in: "body", key: "watcher" },
+            { in: "body", key: "plugin" },
+            { in: "body", key: "snapshot" },
+            { in: "body", key: "share" },
+            { in: "body", key: "autoshare" },
+            { in: "body", key: "autoupdate" },
+            { in: "body", key: "channel" },
+            { in: "body", key: "disabled_providers" },
+            { in: "body", key: "enabled_providers" },
+            { in: "body", key: "model" },
+            { in: "body", key: "small_model" },
+            { in: "body", key: "fallback" },
+            { in: "body", key: "default_agent" },
+            { in: "body", key: "username" },
+            { in: "body", key: "mode" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "agent_mode" },
+            { in: "body", key: "agent_retry" },
+            { in: "body", key: "provider" },
+            { in: "body", key: "mcp" },
+            { in: "body", key: "formatter" },
+            { in: "body", key: "lsp" },
+            { in: "body", key: "instructions" },
+            { in: "body", key: "layout" },
+            { in: "body", key: "permission" },
+            { in: "body", key: "tools" },
+            { in: "body", key: "enterprise" },
+            { in: "body", key: "compaction" },
+            { in: "body", key: "experimental" },
           ],
         },
       ],
@@ -1503,6 +1741,9 @@ export class Session extends HeyApiClient {
       time?: {
         archived?: number
       }
+      metadata?: {
+        [key: string]: unknown
+      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1515,6 +1756,7 @@ export class Session extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "body", key: "title" },
             { in: "body", key: "time" },
+            { in: "body", key: "metadata" },
           ],
         },
       ],
@@ -2439,6 +2681,10 @@ export class Tui extends HeyApiClient {
         | EventTuiFiletreeDirToggle
         | EventTuiCodepanelToggle
         | EventTuiCodepanelSave
+        | EventTuiSubagentActive
+        | EventTuiSubagentDone
+        | EventTuiSubagentReactivate
+        | EventTuiSubagentRemove
     },
     options?: Options<never, ThrowOnError>,
   ) {

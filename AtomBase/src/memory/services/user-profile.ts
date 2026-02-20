@@ -142,6 +142,9 @@ export type UserProfile = z.infer<typeof UserProfile>
 import os from "os"
 import path from "path"
 import fs from "fs/promises"
+import { Log } from "../../util/log"
+
+const log = Log.create({ service: "memory.user-profile" })
 
 const USER_PROFILE_DIR = ".atomcli/personality"
 const USER_PROFILE_FILE = "user-profile.json"
@@ -172,7 +175,7 @@ export class UserProfileService {
 
       return this.profile!
     } catch (error) {
-      console.error("Failed to initialize user profile:", error)
+      log.error("Failed to initialize user profile", { error })
       return this.createDefaultProfile()
     }
   }

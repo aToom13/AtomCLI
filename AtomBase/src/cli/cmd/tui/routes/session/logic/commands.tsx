@@ -212,7 +212,7 @@ export function getSessionCommands(state: SessionState, actions: SessionActions)
             onSelect: (d: any) => {
                 batch(() => {
                     const isVisible = sidebarVisible()
-                    state.setSidebar(() => (isVisible ? "hide" : "auto"))
+                    state.setSidebar((isVisible ? "hide" : "auto") as any)
                     state.setSidebarOpen(!isVisible)
                 })
                 d.clear()

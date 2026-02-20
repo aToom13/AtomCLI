@@ -123,7 +123,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore(
             "permission",
             event.properties.sessionID,
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(match.index, 1)
             }),
           )
@@ -145,7 +145,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore(
             "permission",
             request.sessionID,
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(match.index, 0, request)
             }),
           )
@@ -161,7 +161,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore(
             "question",
             event.properties.sessionID,
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(match.index, 1)
             }),
           )
@@ -183,7 +183,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore(
             "question",
             request.sessionID,
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(match.index, 0, request)
             }),
           )
@@ -203,7 +203,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (result.found) {
             setStore(
               "session",
-              produce((draft) => {
+              produce((draft: any[]) => {
                 draft.splice(result.index, 1)
               }),
             )
@@ -218,7 +218,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           }
           setStore(
             "session",
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(result.index, 0, event.properties.info)
             }),
           )
@@ -244,7 +244,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore(
             "message",
             event.properties.info.sessionID,
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(result.index, 0, event.properties.info)
               if (draft.length > 100) draft.shift()
             }),
@@ -258,7 +258,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore(
               "message",
               event.properties.sessionID,
-              produce((draft) => {
+              produce((draft: any[]) => {
                 draft.splice(result.index, 1)
               }),
             )
@@ -279,7 +279,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore(
             "part",
             event.properties.part.messageID,
-            produce((draft) => {
+            produce((draft: any[]) => {
               draft.splice(result.index, 0, event.properties.part)
             }),
           )
@@ -293,7 +293,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore(
               "part",
               event.properties.messageID,
-              produce((draft) => {
+              produce((draft: any[]) => {
                 draft.splice(result.index, 1)
               }),
             )

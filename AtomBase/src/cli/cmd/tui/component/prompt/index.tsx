@@ -782,6 +782,14 @@ export function Prompt(props: PromptProps) {
                 // before submission keybind intercepts it
                 if (store.mode === "normal") autocomplete.onKeyDown(e)
                 if (e.defaultPrevented) return
+
+                // Handle Multiline Input: Shift+Enter or Alt+Enter inserts a new line
+                if ((e.shift || e.meta) && e.name === "return") {
+                  e.preventDefault()
+                  input.insertText("\n")
+                  return
+                }
+
                 // Handle submission locally (moved from global command to prevent interception)
                 if (keybind.match("input_submit", e)) {
                   e.preventDefault()
@@ -921,7 +929,7 @@ export function Prompt(props: PromptProps) {
 
                 const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                 if (
-                  (lineCount >= 3 || pastedContent.length > 150) &&
+                  (lineCount > 50 || pastedContent.length > 3000) &&
                   !sync.data.config.experimental?.disable_paste_summary
                 ) {
                   event.preventDefault()
@@ -1010,10 +1018,10 @@ export function Prompt(props: PromptProps) {
                 </box>
                 <box flexDirection="row" gap={1} flexShrink={0}>
                   {(() => {
-                    const retry = createMemo(() => {
+                    const retry = createMemo((): { type: "retry"; attempt: number; message: string; next: number } | undefined => {
                       const s = status()
                       if (s.type !== "retry") return
-                      return s
+                      return s as any
                     })
                     const message = createMemo(() => {
                       const r = retry()

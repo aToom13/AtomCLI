@@ -264,12 +264,12 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
             format:
               responseFormat.schema != null
                 ? {
-                    type: "json_schema",
-                    strict: strictJsonSchema,
-                    name: responseFormat.name ?? "response",
-                    description: responseFormat.description,
-                    schema: responseFormat.schema,
-                  }
+                  type: "json_schema",
+                  strict: strictJsonSchema,
+                  name: responseFormat.name ?? "response",
+                  description: responseFormat.description,
+                  schema: responseFormat.schema,
+                }
                 : { type: "json_object" },
           }),
           ...(openaiOptions?.textVerbosity && {
@@ -295,15 +295,15 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
       // model-specific settings:
       ...(modelConfig.isReasoningModel &&
         (openaiOptions?.reasoningEffort != null || openaiOptions?.reasoningSummary != null) && {
-          reasoning: {
-            ...(openaiOptions?.reasoningEffort != null && {
-              effort: openaiOptions.reasoningEffort,
-            }),
-            ...(openaiOptions?.reasoningSummary != null && {
-              summary: openaiOptions.reasoningSummary,
-            }),
-          },
-        }),
+        reasoning: {
+          ...(openaiOptions?.reasoningEffort != null && {
+            effort: openaiOptions.reasoningEffort,
+          }),
+          ...(openaiOptions?.reasoningSummary != null && {
+            summary: openaiOptions.reasoningSummary,
+          }),
+        },
+      }),
       ...(modelConfig.requiredAutoTruncation && {
         truncation: "auto",
       }),
@@ -496,9 +496,9 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
       fetch: this.config.fetch,
     })
 
-    if (response.error) {
+    if ('error' in response && (response as any).error) {
       throw new APICallError({
-        message: response.error.message,
+        message: (response as any).error?.message ?? "Unknown error",
         url,
         requestBodyValues: body,
         statusCode: 400,
@@ -803,12 +803,12 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
     const ongoingToolCalls: Record<
       number,
       | {
-          toolName: string
-          toolCallId: string
-          codeInterpreter?: {
-            containerId: string
-          }
+        toolName: string
+        toolCallId: string
+        codeInterpreter?: {
+          containerId: string
         }
+      }
       | undefined
     > = {}
 
@@ -844,7 +844,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
             // handle failed chunk parsing / validation:
             if (!chunk.success) {
               finishReason = "error"
-              controller.enqueue({ type: "error", error: chunk.error })
+              controller.enqueue({ type: "error", error: (chunk as any).error })
               return
             }
 
