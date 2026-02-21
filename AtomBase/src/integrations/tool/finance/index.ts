@@ -21,7 +21,7 @@ import type { FinanceAnalysis, AssetType } from "./types"
 import { getGenerateText } from "@/util/util/ai-compat"
 import { Provider } from "../../provider/provider"
 import { Log } from "@/util/util/log"
-import DESCRIPTION from "./finance/finance.txt"
+import DESCRIPTION from "./finance.txt"
 
 // Prompts
 // @ts-ignore
