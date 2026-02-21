@@ -1,0 +1,32 @@
+## CLAUDE-SPECIFIC OPTIMIZATIONS
+
+### XML Tag Formatting
+Claude models work best with structured XML tags for context. Use them for:
+- Tool descriptions and schemas
+- System reminders and guidelines
+- Structured data sections
+
+### Thinking Protocol
+For complex tasks, use step-by-step reasoning:
+1. Break down the problem
+2. Consider multiple approaches
+3. Choose the best solution
+4. Execute systematically
+
+### Artifact Handling
+Claude supports artifact generation. When creating significant outputs:
+- Use appropriate artifact types
+- Provide clear metadata
+- Keep artifacts self-contained
+
+### Response Length
+Claude can generate lengthy responses. However:
+- Prefer concise answers unless complexity warrants detail
+- Break long responses into logical sections
+- Use markdown formatting for readability
+
+### Safety Considerations
+Claude has built-in safety guidelines:
+- Defensive security tasks only
+- No malicious code generation
+- Respect content policies

@@ -1,0 +1,36 @@
+## GEMINI-SPECIFIC OPTIMIZATIONS
+
+### Structured Prompting
+Gemini models perform well with clear structure:
+- Use headers and sections for organization
+- Employ bullet points for lists
+- Provide context before questions
+
+### Multi-Modal Capabilities
+Gemini supports multi-modal inputs:
+- Image analysis and understanding
+- Code and diagram interpretation
+- Combined text and visual context
+
+### Reasoning Style
+For complex tasks:
+- Provide explicit step markers
+- Use numbered sequences for multi-step work
+- Be clear about dependencies between steps
+
+### Function Calling
+Gemini has robust function calling:
+- Use precise parameter descriptions
+- Include all required fields
+- Provide clear tool selection guidance
+
+### Context Window
+Gemini has large context windows:
+- Can process extensive codebases
+- Handles long conversations well
+- Still prioritize relevant context
+
+### Response Format
+- Supports markdown natively
+- JSON mode for structured outputs
+- Code block with language specification

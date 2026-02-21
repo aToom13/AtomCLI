@@ -1,0 +1,59 @@
+Comprehensive financial market analysis tool supporting multiple asset classes.
+
+🪙 CRYPTO: BTC, ETH, SOL, XRP, ADA, AVAX, DOGE...
+   - Binance + CoinGecko data
+   - Derivatives: Open Interest, Funding Rate, Long/Short Ratio
+   - Order Book analysis with wall detection
+   - Fear & Greed Index
+   - Liquidation level estimates
+
+📈 STOCKS: AAPL, TSLA, NVDA, MSFT, GOOGL, META...
+   - Yahoo Finance data
+   - P/E Ratio, EPS, Dividend Yield
+   - 52-week high/low
+
+📊 ETFs: SPY, QQQ, IWM, GLD, IBIT...
+   - Bitcoin ETFs: IBIT, FBTC, ARKB, GBTC
+   - Sector ETFs: XLF, XLK, XLE...
+
+🛢️ COMMODITIES: OIL, GOLD, GAS, SILVER, COPPER...
+   - Aliases supported: PETROL→CL=F, ALTIN→GC=F, DOGALGAZ→NG=F
+
+💱 FOREX: EURUSD, GBPUSD, USDTRY, USDJPY...
+
+📉 INDICES: SPX, NASDAQ, DXY, VIX, BIST100, DAX...
+   - Dollar Index (DXY)
+   - Turkish BIST100
+
+📊 DATA PROVIDED:
+- Price: Current price, 24h change, volume, high/low
+- Technical Analysis: RSI, MACD, Bollinger Bands, SMA, EMA, VWAP, trend
+- Crypto Extras: Derivatives, Order Book, Fear & Greed, Liquidations
+- Stock Extras: P/E, EPS, 52-week range, dividend yield
+
+⚠️ SENIOR ANALYST CHECKS (Anti-Hallucination):
+- Volume Trap detection (Price up + Volume down = Warning)
+- Funding Rate context analysis (crypto)
+- Order book wall filtering (ignores <50 BTC noise)
+- RSI divergence detection
+- Risk score calculation (0-100)
+
+USAGE EXAMPLES:
+- "Analyze BTC" → Full crypto analysis with derivatives
+- "AAPL analiz et" → Stock analysis with fundamentals
+- "OIL fiyatı" → Crude oil futures (CL=F)
+- "DXY nedir" → Dollar index analysis
+- "ALTIN teknik analiz" → Gold futures (GC=F)
+
+PARAMETERS:
+- symbol (required): Asset symbol (e.g., BTC, AAPL, OIL, EURUSD)
+- type (optional): Force asset type (crypto, stock, etf, commodity, forex, index)
+- detailed (optional, default=true): Include derivatives/order book for crypto, P/E for stocks
+
+Symbol aliases are automatically resolved:
+- OIL, PETROL, CRUDE → CL=F (WTI Crude Oil)
+- GOLD, ALTIN → GC=F (Gold Futures)
+- GAS, DOGALGAZ → NG=F (Natural Gas)
+- SPX, S&P500 → ^GSPC
+- DXY, DOLAR → DX-Y.NYB
+- BIST, BIST100 → XU100.IS
