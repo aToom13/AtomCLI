@@ -1,5 +1,5 @@
-import en from "@/locales/en.json"
-import tr from "@/locales/tr.json"
+import en from "../../locales/en.json"
+import tr from "../../locales/tr.json"
 
 type LocaleData = typeof en
 
