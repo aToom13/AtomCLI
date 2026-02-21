@@ -2,11 +2,11 @@ import { Hono } from "hono"
 import { describeRoute, resolver } from "hono-openapi"
 import z from "zod"
 import { streamSSE } from "hono/streaming"
-import { BusEvent } from "@/bus/bus-event"
-import { GlobalBus } from "@/bus/global"
-import { Instance } from "@/project/instance"
-import { Installation } from "@/installation"
-import { Log } from "@/util/log"
+import { BusEvent } from "@/core/bus/bus-event"
+import { GlobalBus } from "@/core/bus/global"
+import { Instance } from "@/services/project/instance"
+import { Installation } from "@/services/installation"
+import { Log } from "@/util/util/log"
 
 const log = Log.create({ service: "server.global" })
 

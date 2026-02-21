@@ -176,6 +176,17 @@ atomcli                      # Start interactive session
 atomcli -c                   # Continue last session
 atomcli -m anthropic/claude  # Start with specific model
 atomcli --help               # Show all options
+
+# Advanced Commands
+atomcli models               # List all available models
+atomcli stats                # Show token usage and cost statistics
+atomcli smart-model          # Manage smart model routing
+atomcli session list         # List and manage past sessions
+atomcli agent                # Create and list custom agents
+atomcli github install       # Install the GitHub agent
+atomcli acp                  # Start ACP (Agent Client Protocol) server
+atomcli export <id>          # Export session data as JSON
+atomcli import <file>        # Import session data from JSON
 ```
 
 ### Run Command (Non-Interactive)

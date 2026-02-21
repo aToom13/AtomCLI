@@ -1,8 +1,8 @@
 import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
-import { MCP } from "@/mcp"
-import { Config } from "@/config/config"
+import { MCP } from "@/integrations/mcp"
+import { Config } from "@/core/config/config"
 import { errors } from "../error"
 
 export const McpRoute = new Hono()

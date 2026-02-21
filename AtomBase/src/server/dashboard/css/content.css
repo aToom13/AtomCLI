@@ -3,6 +3,14 @@
   flex: 1;
   overflow-y: auto;
   padding: 32px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Remove padding when TUI is active so xterm scales correctly */
+.content:has(#page-chat.active) {
+  padding: 0;
+  overflow: hidden;
 }
 
 .page {

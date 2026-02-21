@@ -1,10 +1,10 @@
 import { test, expect } from "bun:test"
 import path from "path"
 import { tmpdir } from "../fixture/fixture"
-import { Instance } from "../../src/project/instance"
-import { Provider } from "../../src/provider/provider"
-import { Env } from "../../src/env"
-import { Config } from "../../src/config/config"
+import { Instance } from "@/services/project/instance"
+import { Provider } from "@/integrations/provider/provider"
+import { Env } from "@/core/env"
+import { Config } from "@/core/config/config"
 
 test("provider loaded from env variable", async () => {
   await using tmp = await tmpdir({

@@ -32,10 +32,10 @@ mock.module("opencode-antigravity-auth", () => ({ default: mockPlugin }))
 
 // Import after mocks are set up
 const { tmpdir } = await import("../fixture/fixture")
-const { Instance } = await import("../../src/project/instance")
-const { Provider } = await import("../../src/provider/provider")
-const { Env } = await import("../../src/env")
-const { Global } = await import("../../src/global")
+const { Instance } = await import("@/services/project/instance")
+const { Provider } = await import("@/integrations/provider/provider")
+const { Env } = await import("@/core/env")
+const { Global } = await import("@/core/global")
 
 test("Bedrock: config region takes precedence over AWS_REGION env var", async () => {
   await using tmp = await tmpdir({

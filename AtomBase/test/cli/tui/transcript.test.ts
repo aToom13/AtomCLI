@@ -4,7 +4,7 @@ import {
   formatMessage,
   formatPart,
   formatTranscript,
-} from "../../../src/cli/cmd/tui/util/transcript"
+} from "@/interfaces/cli/cmd/tui/util/transcript"
 import type { AssistantMessage, Part, UserMessage } from "@atomcli/sdk/v2"
 
 describe("transcript", () => {

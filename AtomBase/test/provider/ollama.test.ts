@@ -1,5 +1,5 @@
 import { test, expect, spyOn, mock, beforeAll, afterAll } from "bun:test";
-import { detectOllama } from "../../src/provider/ollama";
+import { detectOllama } from "@/integrations/provider/ollama";
 
 const ORIGINAL_FETCH = global.fetch;
 

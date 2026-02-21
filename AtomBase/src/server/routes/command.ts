@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { describeRoute, resolver } from "hono-openapi"
-import { Command } from "../../command"
+import { Command } from "@/interfaces/command"
 
 export const CommandRoute = new Hono()
     .get(

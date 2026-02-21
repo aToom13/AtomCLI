@@ -2,9 +2,9 @@ import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
 import { upgradeWebSocket } from "hono/bun"
-import { Pty } from "@/pty"
+import { Pty } from "@/interfaces/pty"
 import { errors } from "../error"
-import { Storage } from "@/storage/storage"
+import { Storage } from "@/core/storage/storage"
 
 export const PtyRoute = new Hono()
     .get(

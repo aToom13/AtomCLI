@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "bun:test"
-import { SemanticLearningService } from "../../src/memory/integration/semantic-learning"
+import { SemanticLearningService } from "@/core/memory/integration/semantic-learning"
 
 describe("SemanticLearningService", () => {
   it("should detect questions", () => {

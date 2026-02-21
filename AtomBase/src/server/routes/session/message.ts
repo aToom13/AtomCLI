@@ -2,9 +2,9 @@ import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { stream } from "hono/streaming"
 import { z } from "zod"
-import { Session } from "@/session"
-import { SessionPrompt } from "@/session/prompt"
-import { MessageV2 } from "@/session/message-v2"
+import { Session } from "@/core/session"
+import { SessionPrompt } from "@/core/session/prompt"
+import { MessageV2 } from "@/core/session/message-v2"
 import { errors } from "../../error"
 
 export const SessionMessageRoute = new Hono()

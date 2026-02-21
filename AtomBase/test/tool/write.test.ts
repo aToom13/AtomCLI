@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { WriteTool } from "../../src/tool/write"
-import { Instance } from "../../src/project/instance"
+import { WriteTool } from "@/integrations/tool/write"
+import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
-import type { PermissionNext } from "../../src/permission/next"
-import { FileTime } from "../../src/file/time"
+import type { PermissionNext } from "@/util/permission/next"
+import { FileTime } from "@/services/file/time"
 
 const ctx = {
     sessionID: "test",

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { ModelFallback } from "../../src/provider/fallback"
+import { ModelFallback } from "@/integrations/provider/fallback"
 
 describe("ModelFallback", () => {
   describe("shouldFallback", () => {

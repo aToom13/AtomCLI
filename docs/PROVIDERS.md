@@ -47,7 +47,7 @@ AtomCLI includes built-in free providers such as MiniMax, GPT, GLM (Zhipu AI), B
 AtomCLI automatically fetches available public models from [models.dev](https://models.dev) API and caches them locally. The model list is refreshed periodically to ensure you always have access to the latest free models.
 
 ```typescript
-// From src/provider/models.ts
+// From src/integrations/provider/models.ts
 const result = await fetch("https://models.dev/api.json", {
   headers: { "User-Agent": Installation.USER_AGENT },
   signal: AbortSignal.timeout(10 * 1000),

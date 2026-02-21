@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test"
-import { parseGitHubRemote } from "../../src/cli/cmd/github"
+import { parseGitHubRemote } from "@/interfaces/cli/cmd/github"
 
 test("parses https URL with .git suffix", () => {
   expect(parseGitHubRemote("https://github.com/sst/atomcli.git")).toEqual({ owner: "sst", repo: "atomcli" })

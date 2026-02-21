@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { WebFetchTool } from "../../src/tool/webfetch"
-import { Instance } from "../../src/project/instance"
+import { WebFetchTool } from "@/integrations/tool/webfetch"
+import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
-import type { PermissionNext } from "../../src/permission/next"
+import type { PermissionNext } from "@/util/permission/next"
 
 const ctx = {
     sessionID: "test",

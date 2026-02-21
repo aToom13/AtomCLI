@@ -23,12 +23,12 @@ import {
   cosineSimilarity,
   normalizeVector,
   euclideanDistance,
-} from "../../src/memory/index"
+} from "@/core/memory/index"
 
 import type {
   MemoryItem as MemoryItemType,
   UserPreference,
-} from "../../src/memory/types"
+} from "@/core/memory/types"
 
 // Test paths
 const testDir = path.join(os.tmpdir(), "atomcli-memory-test")

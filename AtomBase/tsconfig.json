@@ -18,9 +18,7 @@
       "@/*": [
         "./src/*"
       ],
-      "@tui/*": [
-        "./src/cli/cmd/tui/*"
-      ]
+      "@tui/*": ["./src/interfaces/cli/cmd/tui/*"]
     },
     "strict": false
   }

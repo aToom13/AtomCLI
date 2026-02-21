@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { AsyncQueue, work } from "../../src/util/queue"
+import { AsyncQueue, work } from "@/util/util/queue"
 
 describe("util.queue", () => {
   describe("AsyncQueue", () => {

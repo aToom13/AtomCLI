@@ -52,18 +52,18 @@ The system uses AI to extract information from conversations:
 
 ### Key Components
 
-**1. SemanticLearningService** (`src/memory/integration/semantic-learning.ts`)
+**1. SemanticLearningService** (`src/core/memory/integration/semantic-learning.ts`)
 - LLM-based information extraction
 - Question detection
 - Correction handling
 - Multi-language support
 
-**2. SessionMemoryIntegration** (`src/memory/integration/session.ts`)
+**2. SessionMemoryIntegration** (`src/core/memory/integration/session.ts`)
 - Session lifecycle management
 - Real-time learning from messages
 - Context generation for prompts
 
-**3. User Profile Service** (`src/memory/services/user-profile.ts`)
+**3. User Profile Service** (`src/core/memory/services/user-profile.ts`)
 - Stores user information
 - Tracks interactions
 - Manages preferences
@@ -144,7 +144,7 @@ Confirm name acknowledged
 
 ### 1. User Message Hook
 
-Location: `src/session/prompt.ts`
+Location: `src/core/session/prompt.ts`
 
 ```typescript
 // After creating user message
@@ -158,7 +158,7 @@ if (userText) {
 
 ### 2. AI Response Hook
 
-Location: `src/session/processor.ts`
+Location: `src/core/session/processor.ts`
 
 ```typescript
 // After AI completes text response
@@ -170,7 +170,7 @@ await SessionMemoryIntegration.learnFromResponse(
 
 ### 3. System Prompt Enhancement
 
-Location: `src/session/system.ts`
+Location: `src/core/session/system.ts`
 
 ```typescript
 // Memory context automatically included
@@ -223,12 +223,12 @@ Memory is stored locally in `~/.atomcli/personality/`:
 
 ## Performance
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Quick Question Check | <1ms | Regex-based, no LLM call |
-| Semantic Analysis | 1-2s | LLM call, only when needed |
-| Context Loading | ~10ms | Once per session |
-| Minimal Overhead | <1% | Smart caching prevents redundant API calls |
+| Operation            | Time  | Notes                                      |
+| -------------------- | ----- | ------------------------------------------ |
+| Quick Question Check | <1ms  | Regex-based, no LLM call                   |
+| Semantic Analysis    | 1-2s  | LLM call, only when needed                 |
+| Context Loading      | ~10ms | Once per session                           |
+| Minimal Overhead     | <1%   | Smart caching prevents redundant API calls |
 
 ---
 
@@ -312,14 +312,14 @@ AI: I apologize Alice! I've updated that.
 
 ## Advantages Over Regex
 
-| Feature | Regex | Semantic (LLM) |
-|---------|-------|----------------|
-| Question Detection | "what" → name | Understands questions |
-| Flexibility | Fixed patterns | Natural language |
-| Corrections | Can't detect | Detects and logs |
-| Context | None | Uses conversation history |
-| Multi-language | Pattern per language | Universal understanding |
-| Accuracy | ~60% | ~95% |
+| Feature            | Regex                | Semantic (LLM)            |
+| ------------------ | -------------------- | ------------------------- |
+| Question Detection | "what" → name        | Understands questions     |
+| Flexibility        | Fixed patterns       | Natural language          |
+| Corrections        | Can't detect         | Detects and logs          |
+| Context            | None                 | Uses conversation history |
+| Multi-language     | Pattern per language | Universal understanding   |
+| Accuracy           | ~60%                 | ~95%                      |
 
 ---
 
@@ -382,15 +382,15 @@ cat ~/.atomcli/personality/user-profile.json
 
 ## Related Files
 
-| File | Description |
-|------|-------------|
-| [semantic-learning.ts](../AtomBase/src/memory/integration/semantic-learning.ts) | LLM-based extraction |
-| [session.ts](../AtomBase/src/memory/integration/session.ts) | Session integration |
-| [user-profile.ts](../AtomBase/src/memory/services/user-profile.ts) | User profile management |
-| [preferences.ts](../AtomBase/src/memory/services/preferences.ts) | Preference learning |
-| [prompt.ts](../AtomBase/src/session/prompt.ts) | User message hook |
-| [processor.ts](../AtomBase/src/session/processor.ts) | AI response hook |
-| [system.ts](../AtomBase/src/session/system.ts) | System prompt enhancement |
+| File                                                                                 | Description               |
+| ------------------------------------------------------------------------------------ | ------------------------- |
+| [semantic-learning.ts](../AtomBase/src/core/memory/integration/semantic-learning.ts) | LLM-based extraction      |
+| [session.ts](../AtomBase/src/core/memory/integration/session.ts)                     | Session integration       |
+| [user-profile.ts](../AtomBase/src/core/memory/services/user-profile.ts)              | User profile management   |
+| [preferences.ts](../AtomBase/src/core/memory/services/preferences.ts)                | Preference learning       |
+| [prompt.ts](../AtomBase/src/core/session/prompt.ts)                                  | User message hook         |
+| [processor.ts](../AtomBase/src/core/session/processor.ts)                            | AI response hook          |
+| [system.ts](../AtomBase/src/core/session/system.ts)                                  | System prompt enhancement |
 
 ---
 

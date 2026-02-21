@@ -1,8 +1,10 @@
 // ===== PAGE LOADERS =====
 const PageLoaders = {
-  // Chat page
+  // Chat page (Now Nexus TUI)
   chat() {
-    Chat.loadSessionList();
+    if (window.Chat && window.Chat.init) {
+      window.Chat.init();
+    }
   },
 
   // Dashboard page

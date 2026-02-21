@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { describeRoute, resolver } from "hono-openapi"
-import { Agent } from "../../agent/agent"
+import { Agent } from "@/integrations/agent/agent"
 import z from "zod"
 
 export const AgentRoute = new Hono()

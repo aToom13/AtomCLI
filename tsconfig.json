@@ -14,9 +14,7 @@
       "@/*": [
         "./AtomBase/src/*"
       ],
-      "@tui/*": [
-        "./AtomBase/src/cli/cmd/tui/*"
-      ]
+      "@tui/*": ["./AtomBase/src/interfaces/cli/cmd/tui/*"]
     }
   },
   "include": [

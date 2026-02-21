@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test"
-import { AmendmentQueue } from "../../src/session/amendment"
+import { AmendmentQueue } from "@/core/session/amendment"
 
 describe("AmendmentQueue", () => {
   const sessionID = "test-session-123"

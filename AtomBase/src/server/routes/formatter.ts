@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { describeRoute, resolver } from "hono-openapi"
-import { Format } from "../../format"
+import { Format } from "@/interfaces/format"
 
 export const FormatterRoute = new Hono()
     .get(

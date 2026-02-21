@@ -39,6 +39,7 @@ await createClient({
 
 await $`bun prettier --write src/gen`
 await $`bun prettier --write src/v2`
+await $`sed -i 's/@ts-expect-error/@ts-ignore/g' src/v2/gen/client/client.gen.ts`
 await $`rm -rf dist`
 await $`bun tsc`
 await $`rm openapi.json`

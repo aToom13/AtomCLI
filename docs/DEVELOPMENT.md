@@ -45,15 +45,15 @@ AtomCLI/
 
 ### Key Directories
 
-| Directory                | Description          | Link                                |
-| ------------------------ | -------------------- | ----------------------------------- |
-| `AtomBase/src/cli/`      | CLI commands and TUI | [Browse](../AtomBase/src/cli/)      |
-| `AtomBase/src/session/`  | Session management   | [Browse](../AtomBase/src/session/)  |
-| `AtomBase/src/provider/` | AI providers         | [Browse](../AtomBase/src/provider/) |
-| `AtomBase/src/tool/`     | Agent tools          | [Browse](../AtomBase/src/tool/)     |
-| `AtomBase/src/config/`   | Configuration        | [Browse](../AtomBase/src/config/)   |
-| `AtomBase/src/mcp/`      | MCP servers          | [Browse](../AtomBase/src/mcp/)      |
-| `libs/sdk/`              | SDK package          | [Browse](../libs/sdk/)              |
+| Directory                             | Description          | Link                                             |
+| ------------------------------------- | -------------------- | ------------------------------------------------ |
+| `AtomBase/src/interfaces/cli/`        | CLI commands and TUI | [Browse](../AtomBase/src/interfaces/cli/)        |
+| `AtomBase/src/core/session/`          | Session management   | [Browse](../AtomBase/src/core/session/)          |
+| `AtomBase/src/integrations/provider/` | AI providers         | [Browse](../AtomBase/src/integrations/provider/) |
+| `AtomBase/src/integrations/tool/`     | Agent tools          | [Browse](../AtomBase/src/integrations/tool/)     |
+| `AtomBase/src/core/config/`           | Configuration        | [Browse](../AtomBase/src/core/config/)           |
+| `AtomBase/src/integrations/mcp/`      | MCP servers          | [Browse](../AtomBase/src/integrations/mcp/)      |
+| `libs/sdk/`                           | SDK package          | [Browse](../libs/sdk/)                           |
 
 ---
 
@@ -107,66 +107,66 @@ User Input
 
 ### CLI and TUI
 
-The terminal interface is implemented in `AtomBase/src/cli/`:
+The terminal interface is implemented in `AtomBase/src/interfaces/cli/`:
 
-| File                                                   | Description                                |
-| ------------------------------------------------------ | ------------------------------------------ |
-| [index.ts](../AtomBase/src/index.ts)                   | Main entry point, CLI command registration |
-| [tui/app.tsx](../AtomBase/src/cli/cmd/tui/app.tsx)     | Main TUI application component             |
-| [tui/thread.ts](../AtomBase/src/cli/cmd/tui/thread.ts) | TUI thread and worker management           |
-| [tui/worker.ts](../AtomBase/src/cli/cmd/tui/worker.ts) | Background worker for session handling     |
+| File                                                              | Description                                |
+| ----------------------------------------------------------------- | ------------------------------------------ |
+| [index.ts](../AtomBase/src/index.ts)                              | Main entry point, CLI command registration |
+| [tui/app.tsx](../AtomBase/src/interfaces/cli/cmd/tui/app.tsx)     | Main TUI application component             |
+| [tui/thread.ts](../AtomBase/src/interfaces/cli/cmd/tui/thread.ts) | TUI thread and worker management           |
+| [tui/worker.ts](../AtomBase/src/interfaces/cli/cmd/tui/worker.ts) | Background worker for session handling     |
 
 ### Session Management
 
 Sessions handle conversations and message processing:
 
-| File                                                           | Description                           |
-| -------------------------------------------------------------- | ------------------------------------- |
-| [session/index.ts](../AtomBase/src/session/index.ts)           | Session API and types                 |
-| [session/message-v2.ts](../AtomBase/src/session/message-v2.ts) | Message handling and error processing |
-| [session/retry.ts](../AtomBase/src/session/retry.ts)           | Retry logic for API calls             |
+| File                                                                | Description                           |
+| ------------------------------------------------------------------- | ------------------------------------- |
+| [session/index.ts](../AtomBase/src/core/session/index.ts)           | Session API and types                 |
+| [session/message-v2.ts](../AtomBase/src/core/session/message-v2.ts) | Message handling and error processing |
+| [session/retry.ts](../AtomBase/src/core/session/retry.ts)           | Retry logic for API calls             |
 
 ### Provider System
 
-AI provider integrations in `AtomBase/src/provider/`:
+AI provider integrations in `AtomBase/src/integrations/provider/`:
 
-| Provider   | File                                                    | Status       |
-| ---------- | ------------------------------------------------------- | ------------ |
-| Anthropic  | [anthropic.ts](../AtomBase/src/provider/anthropic.ts)   | Supported    |
-| OpenAI     | [openai.ts](../AtomBase/src/provider/openai.ts)         | Supported    |
-| Google     | [google.ts](../AtomBase/src/provider/google.ts)         | Supported    |
-| Ollama     | [ollama.ts](../AtomBase/src/provider/ollama.ts)         | Supported    |
-| OpenRouter | [openrouter.ts](../AtomBase/src/provider/openrouter.ts) | Supported    |
-| MiniMax    | [minimax.ts](../AtomBase/src/provider/minimax.ts)       | Free tier    |
-| GLM        | [glm.ts](../AtomBase/src/provider/glm.ts)               | Free tier    |
-| Kilocode   | [kilocode.ts](../AtomBase/src/provider/kilocode.ts)     | v2.1.2+      |
-| Fallback   | [fallback.ts](../AtomBase/src/provider/fallback.ts)     | v2.1.2+      |
+| Provider   | File                                                                 | Status    |
+| ---------- | -------------------------------------------------------------------- | --------- |
+| Anthropic  | [anthropic.ts](../AtomBase/src/integrations/provider/anthropic.ts)   | Supported |
+| OpenAI     | [openai.ts](../AtomBase/src/integrations/provider/openai.ts)         | Supported |
+| Google     | [google.ts](../AtomBase/src/integrations/provider/google.ts)         | Supported |
+| Ollama     | [ollama.ts](../AtomBase/src/integrations/provider/ollama.ts)         | Supported |
+| OpenRouter | [openrouter.ts](../AtomBase/src/integrations/provider/openrouter.ts) | Supported |
+| MiniMax    | [minimax.ts](../AtomBase/src/integrations/provider/minimax.ts)       | Free tier |
+| GLM        | [glm.ts](../AtomBase/src/integrations/provider/glm.ts)               | Free tier |
+| Kilocode   | [kilocode.ts](../AtomBase/src/integrations/provider/kilocode.ts)     | v2.1.2+   |
+| Fallback   | [fallback.ts](../AtomBase/src/integrations/provider/fallback.ts)     | v2.1.2+   |
 
 ### Tool System
 
-Agent tools in `AtomBase/src/tool/`:
+Agent tools in `AtomBase/src/integrations/tool/`:
 
-| Tool    | File                                          | Description           |
-| ------- | --------------------------------------------- | --------------------- |
-| Read    | [read.ts](../AtomBase/src/tool/read.ts)       | File reading          |
-| Write   | [write.ts](../AtomBase/src/tool/write.ts)     | File writing          |
-| Edit    | [edit.ts](../AtomBase/src/tool/edit.ts)       | Code editing          |
-| Glob    | [glob.ts](../AtomBase/src/tool/glob.ts)       | File pattern matching |
-| Grep    | [grep.ts](../AtomBase/src/tool/grep.ts)       | Content search        |
-| Bash    | [bash.ts](../AtomBase/src/tool/bash.ts)       | Command execution     |
-| Browser | [browser.ts](../AtomBase/src/tool/browser.ts) | Web browsing          |
+| Tool    | File                                                       | Description           |
+| ------- | ---------------------------------------------------------- | --------------------- |
+| Read    | [read.ts](../AtomBase/src/integrations/tool/read.ts)       | File reading          |
+| Write   | [write.ts](../AtomBase/src/integrations/tool/write.ts)     | File writing          |
+| Edit    | [edit.ts](../AtomBase/src/integrations/tool/edit.ts)       | Code editing          |
+| Glob    | [glob.ts](../AtomBase/src/integrations/tool/glob.ts)       | File pattern matching |
+| Grep    | [grep.ts](../AtomBase/src/integrations/tool/grep.ts)       | Content search        |
+| Bash    | [bash.ts](../AtomBase/src/integrations/tool/bash.ts)       | Command execution     |
+| Browser | [browser.ts](../AtomBase/src/integrations/tool/browser.ts) | Web browsing          |
 
 ### New Tools (v2.1.2+)
 
-| Tool       | File                                                | Description                    |
-| ---------- | --------------------------------------------------- | ------------------------------ |
-| TestGen    | [test-gen.ts](../AtomBase/src/tool/test-gen.ts)     | Automatic test generation      |
-| Docs       | [docs.ts](../AtomBase/src/tool/docs.ts)             | Documentation generation       |
-| Refactor   | [refactor.ts](../AtomBase/src/tool/refactor.ts)     | Code smell detection & fixes   |
-| Review     | [review.ts](../AtomBase/src/tool/review.ts)         | Code review & analysis         |
-| Finance    | [finance.ts](../AtomBase/src/tool/finance.ts)       | Financial market analysis      |
-| CodeSearch | [codesearch.ts](../AtomBase/src/tool/codesearch.ts) | AI code search                 |
-| WebSearch  | [websearch.ts](../AtomBase/src/tool/websearch.ts)   | Web search with Exa AI         |
+| Tool       | File                                                             | Description                  |
+| ---------- | ---------------------------------------------------------------- | ---------------------------- |
+| TestGen    | [test-gen.ts](../AtomBase/src/integrations/tool/test-gen.ts)     | Automatic test generation    |
+| Docs       | [docs.ts](../AtomBase/src/integrations/tool/docs.ts)             | Documentation generation     |
+| Refactor   | [refactor.ts](../AtomBase/src/integrations/tool/refactor.ts)     | Code smell detection & fixes |
+| Review     | [review.ts](../AtomBase/src/integrations/tool/review.ts)         | Code review & analysis       |
+| Finance    | [finance.ts](../AtomBase/src/integrations/tool/finance.ts)       | Financial market analysis    |
+| CodeSearch | [codesearch.ts](../AtomBase/src/integrations/tool/codesearch.ts) | AI code search               |
+| WebSearch  | [websearch.ts](../AtomBase/src/integrations/tool/websearch.ts)   | Web search with Exa AI       |
 
 ---
 
@@ -174,40 +174,49 @@ Agent tools in `AtomBase/src/tool/`:
 
 ### Main Commands
 
-| Command           | Description              | Source                                                 |
-| ----------------- | ------------------------ | ------------------------------------------------------ |
-| `atomcli`         | Start interactive TUI    | [tui/thread.ts](../AtomBase/src/cli/cmd/tui/thread.ts) |
-| `atomcli run`     | Run single prompt        | [run.ts](../AtomBase/src/cli/cmd/run.ts)               |
-| `atomcli upgrade` | Update to latest version | [upgrade.ts](../AtomBase/src/cli/cmd/upgrade.ts)       |
+| Command               | Description              | Source                                                                |
+| --------------------- | ------------------------ | --------------------------------------------------------------------- |
+| `atomcli`             | Start interactive TUI    | [tui/thread.ts](../AtomBase/src/interfaces/cli/cmd/tui/thread.ts)     |
+| `atomcli run`         | Run single prompt        | [run.ts](../AtomBase/src/interfaces/cli/cmd/run.ts)                   |
+| `atomcli upgrade`     | Update to latest version | [upgrade.ts](../AtomBase/src/interfaces/cli/cmd/upgrade.ts)           |
+| `atomcli acp`         | Start ACP server         | [acp.ts](../AtomBase/src/interfaces/cli/cmd/acp.ts)                   |
+| `atomcli agent`       | Create & list agents     | [agent.ts](../AtomBase/src/interfaces/cli/cmd/agent.ts)               |
+| `atomcli export`      | Export session as JSON   | [export.ts](../AtomBase/src/interfaces/cli/cmd/export.ts)             |
+| `atomcli github`      | Manage GitHub agent      | [github/index.ts](../AtomBase/src/interfaces/cli/cmd/github/index.ts) |
+| `atomcli import`      | Import JSON session      | [import.ts](../AtomBase/src/interfaces/cli/cmd/import.ts)             |
+| `atomcli models`      | List available models    | [models.ts](../AtomBase/src/interfaces/cli/cmd/models.ts)             |
+| `atomcli session`     | Manage & list sessions   | [session.ts](../AtomBase/src/interfaces/cli/cmd/session.ts)           |
+| `atomcli smart-model` | Manage smart routing     | [smart-model.ts](../AtomBase/src/interfaces/cli/cmd/smart-model.ts)   |
+| `atomcli stats`       | Show token usage & cost  | [stats.ts](../AtomBase/src/interfaces/cli/cmd/stats.ts)               |
 
 ### MCP Commands
 
-| Command               | Description          | Source                                                   |
-| --------------------- | -------------------- | -------------------------------------------------------- |
-| `atomcli mcp list`    | List MCP servers     | [mcp/list.ts](../AtomBase/src/cli/cmd/mcp/list.ts)       |
-| `atomcli mcp add`     | Add MCP server       | [mcp/add.ts](../AtomBase/src/cli/cmd/mcp/add.ts)         |
-| `atomcli mcp remove`  | Remove MCP server    | [mcp/remove.ts](../AtomBase/src/cli/cmd/mcp/remove.ts)   |
-| `atomcli mcp install` | Install MCP from URL | [mcp/install.ts](../AtomBase/src/cli/cmd/mcp/install.ts) |
+| Command               | Description          | Source                                                              |
+| --------------------- | -------------------- | ------------------------------------------------------------------- |
+| `atomcli mcp list`    | List MCP servers     | [mcp/list.ts](../AtomBase/src/interfaces/cli/cmd/mcp/list.ts)       |
+| `atomcli mcp add`     | Add MCP server       | [mcp/add.ts](../AtomBase/src/interfaces/cli/cmd/mcp/add.ts)         |
+| `atomcli mcp remove`  | Remove MCP server    | [mcp/remove.ts](../AtomBase/src/interfaces/cli/cmd/mcp/remove.ts)   |
+| `atomcli mcp install` | Install MCP from URL | [mcp/install.ts](../AtomBase/src/interfaces/cli/cmd/mcp/install.ts) |
 
 ### Skill Commands
 
-| Command                | Description           | Source                                       |
-| ---------------------- | --------------------- | -------------------------------------------- |
-| `atomcli skill list`   | List installed skills | [skill.ts](../AtomBase/src/cli/cmd/skill.ts) |
-| `atomcli skill add`    | Add skill from URL    | [skill.ts](../AtomBase/src/cli/cmd/skill.ts) |
-| `atomcli skill remove` | Remove skill          | [skill.ts](../AtomBase/src/cli/cmd/skill.ts) |
+| Command                | Description           | Source                                                  |
+| ---------------------- | --------------------- | ------------------------------------------------------- |
+| `atomcli skill list`   | List installed skills | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
+| `atomcli skill add`    | Add skill from URL    | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
+| `atomcli skill remove` | Remove skill          | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
 
 ### Developer Tools (v2.1.2+)
 
-| Command                      | Description                      | Source                                                          |
-| ---------------------------- | -------------------------------- | --------------------------------------------------------------- |
-| `atomcli test-gen`           | Generate unit tests              | [test-gen.ts](../AtomBase/src/cli/cmd/test-gen.ts)              |
-| `atomcli docs`               | Generate documentation           | [docs.ts](../AtomBase/src/cli/cmd/docs.ts)                      |
-| `atomcli security`           | Security vulnerability scan      | [security.ts](../AtomBase/src/cli/cmd/security.ts)              |
-| `atomcli perf`               | Performance analysis             | [perf.ts](../AtomBase/src/cli/cmd/perf.ts)                      |
-| `atomcli refactor`           | Code refactoring assistant       | [refactor.ts](../AtomBase/src/cli/cmd/refactor.ts)              |
-| `atomcli review`             | Code review for PRs              | [review.ts](../AtomBase/src/cli/cmd/review.ts)                  |
-| `atomcli workspace`          | Multi-project workspace manager  | [workspace.ts](../AtomBase/src/cli/cmd/workspace.ts)            |
+| Command             | Description                     | Source                                                          |
+| ------------------- | ------------------------------- | --------------------------------------------------------------- |
+| `atomcli test-gen`  | Generate unit tests             | [test-gen.ts](../AtomBase/src/interfaces/cli/cmd/test-gen.ts)   |
+| `atomcli docs`      | Generate documentation          | [docs.ts](../AtomBase/src/interfaces/cli/cmd/docs.ts)           |
+| `atomcli security`  | Security vulnerability scan     | [security.ts](../AtomBase/src/interfaces/cli/cmd/security.ts)   |
+| `atomcli perf`      | Performance analysis            | [perf.ts](../AtomBase/src/interfaces/cli/cmd/perf.ts)           |
+| `atomcli refactor`  | Code refactoring assistant      | [refactor.ts](../AtomBase/src/interfaces/cli/cmd/refactor.ts)   |
+| `atomcli review`    | Code review for PRs             | [review.ts](../AtomBase/src/interfaces/cli/cmd/review.ts)       |
+| `atomcli workspace` | Multi-project workspace manager | [workspace.ts](../AtomBase/src/interfaces/cli/cmd/workspace.ts) |
 
 ---
 
@@ -220,7 +229,7 @@ AtomCLI supports non-blocking user input during AI streaming:
 - **Amendment Queue**: Send additional instructions while AI is writing
 - **Shift+Enter**: Add amendment to queue
 - **Enter**: Force interrupt current stream
-- **Implementation**: [session/amendment.ts](../AtomBase/src/session/amendment.ts)
+- **Implementation**: [session/amendment.ts](../AtomBase/src/core/session/amendment.ts)
 
 ```typescript
 // Usage in TUI
@@ -237,7 +246,7 @@ Automatic failover when primary AI provider fails:
 - **Error Detection**: Automatic detection of rate limits, timeouts, service errors
 - **Seamless Switching**: Continue conversation without interruption
 - **Cost Tracking**: Track costs across different providers
-- **Implementation**: [provider/fallback.ts](../AtomBase/src/provider/fallback.ts)
+- **Implementation**: [provider/fallback.ts](../AtomBase/src/integrations/provider/fallback.ts)
 
 ```typescript
 // Configuration example
@@ -258,14 +267,14 @@ AtomCLI learns from errors and successful patterns:
 - **Pattern Storage**: Store successful solutions for reuse
 - **Memory Persistence**: JSON-based storage in `~/.atomcli/learning/`
 - **Research Integration**: Web research for unknown errors
-- **Implementation**: [learning/](../AtomBase/src/learning/)
+- **Implementation**: [learning/](../AtomBase/src/services/learning/)
 
-| Component | File | Description |
-| --------- | ---- | ----------- |
-| Memory | [memory.ts](../AtomBase/src/learning/memory.ts) | Persistent storage |
-| Research | [research.ts](../AtomBase/src/learning/research.ts) | Web research integration |
-| Error Analyzer | [error-analyzer.ts](../AtomBase/src/learning/error-analyzer.ts) | Error pattern analysis |
-| Integration | [integration.ts](../AtomBase/src/learning/integration.ts) | Session integration |
+| Component      | File                                                                     | Description              |
+| -------------- | ------------------------------------------------------------------------ | ------------------------ |
+| Memory         | [memory.ts](../AtomBase/src/services/learning/memory.ts)                 | Persistent storage       |
+| Research       | [research.ts](../AtomBase/src/services/learning/research.ts)             | Web research integration |
+| Error Analyzer | [error-analyzer.ts](../AtomBase/src/services/learning/error-analyzer.ts) | Error pattern analysis   |
+| Integration    | [integration.ts](../AtomBase/src/services/learning/integration.ts)       | Session integration      |
 
 ---
 
@@ -329,15 +338,15 @@ ln -sf $(pwd)/dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/atomcli
 
 ## Configuration System
 
-Configuration is managed in `AtomBase/src/config/config.ts`:
+Configuration is managed in `AtomBase/src/core/config/config.ts`:
 
 ### Config Locations
 
-| File                            | Purpose                | Schema                                        |
-| ------------------------------- | ---------------------- | --------------------------------------------- |
-| `~/.config/atomcli/config.json` | Global settings        | [config.ts](../AtomBase/src/config/config.ts) |
-| `~/.config/atomcli/mcp.json`    | MCP server configs     | Flat MCP format                               |
-| `.atomcli/atomcli.json`         | Project-level settings | Same as global                                |
+| File                            | Purpose                | Schema                                             |
+| ------------------------------- | ---------------------- | -------------------------------------------------- |
+| `~/.config/atomcli/config.json` | Global settings        | [config.ts](../AtomBase/src/core/config/config.ts) |
+| `~/.config/atomcli/mcp.json`    | MCP server configs     | Flat MCP format                                    |
+| `.atomcli/atomcli.json`         | Project-level settings | Same as global                                     |
 
 ### Key Configuration Options
 
@@ -356,7 +365,7 @@ interface Config {
 
 Adding a new provider:
 
-1. Create file in `AtomBase/src/provider/`:
+1. Create file in `AtomBase/src/integrations/provider/`:
 
 ```typescript
 // my-provider.ts
@@ -382,7 +391,7 @@ export namespace MyProvider {
 }
 ```
 
-2. Register in `AtomBase/src/provider/index.ts`
+2. Register in `AtomBase/src/integrations/provider/index.ts`
 
 3. Add to provider list in exports
 
@@ -390,7 +399,7 @@ export namespace MyProvider {
 
 ## Tool System
 
-Tools are defined in `AtomBase/src/tool/` and registered via the agent's tool configuration.
+Tools are defined in `AtomBase/src/integrations/tool/` and registered via the agent's tool configuration.
 
 ### Tool Structure
 
@@ -440,10 +449,10 @@ AtomCLI
 
 ### Key Files
 
-| File                                           | Description               |
-| ---------------------------------------------- | ------------------------- |
-| [mcp/index.ts](../AtomBase/src/mcp/index.ts)   | MCP server management     |
-| [mcp/client.ts](../AtomBase/src/mcp/client.ts) | MCP client implementation |
+| File                                                        | Description               |
+| ----------------------------------------------------------- | ------------------------- |
+| [mcp/index.ts](../AtomBase/src/integrations/mcp/index.ts)   | MCP server management     |
+| [mcp/client.ts](../AtomBase/src/integrations/mcp/client.ts) | MCP client implementation |
 
 ---
 

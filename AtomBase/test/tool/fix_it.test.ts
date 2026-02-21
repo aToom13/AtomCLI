@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { _parsers } from "../../src/tool/fix_it"
+import { _parsers } from "@/integrations/tool/fix_it"
 
 const {
     parseTSJSError,

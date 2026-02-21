@@ -479,9 +479,37 @@
 /* Content Area */
 .content {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: var(--space-xl);
   background: var(--bg);
+}
+
+/* Remove padding when TUI chat page is active */
+.content:has(#page-chat.active) {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* xterm.js full-fill overrides */
+#nexus-tui-viewport {
+  position: relative;
+}
+
+#nexus-tui-viewport .xterm {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+#nexus-tui-viewport .xterm-viewport {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+#nexus-tui-viewport .xterm-screen {
+  width: 100% !important;
+  height: 100% !important;
 }
 
 /* Page Container */
@@ -494,6 +522,11 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+#page-chat.active {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ===== MOBILE OVERLAY ===== */

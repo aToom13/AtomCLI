@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { GrepTool } from "../../src/tool/grep"
-import { Instance } from "../../src/project/instance"
+import { GrepTool } from "@/integrations/tool/grep"
+import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
 const ctx = {
@@ -10,8 +10,8 @@ const ctx = {
   callID: "",
   agent: "build",
   abort: AbortSignal.any([]),
-  metadata: () => {},
-  ask: async () => {},
+  metadata: () => { },
+  ask: async () => { },
 }
 
 const projectRoot = path.join(__dirname, "../..")
@@ -25,7 +25,7 @@ describe("tool.grep", () => {
         const result = await grep.execute(
           {
             pattern: "export",
-            path: path.join(projectRoot, "src/tool"),
+            path: path.join(projectRoot, "src/integrations/tool"),
             include: "*.ts",
           },
           ctx,

@@ -5,9 +5,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { SessionMemoryIntegration } from "../../src/memory/integration/session"
-import { getUserProfile } from "../../src/memory/services/user-profile"
-import { getPreferencesService } from "../../src/memory/services/preferences"
+import { SessionMemoryIntegration } from "@/core/memory/integration/session"
+import { getUserProfile } from "@/core/memory/services/user-profile"
+import { getPreferencesService } from "@/core/memory/services/preferences"
 import os from "os"
 import path from "path"
 import fs from "fs/promises"

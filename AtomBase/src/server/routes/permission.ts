@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { PermissionNext } from "../../permission/next"
+import { PermissionNext } from "@/util/permission/next"
 import { errors } from "../error"
 
 export const PermissionRoute = new Hono()

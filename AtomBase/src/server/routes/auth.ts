@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { Auth } from "../../auth"
+import { Auth } from "@/services/auth"
 import { errors } from "../error"
 
 export const AuthRoute = new Hono()

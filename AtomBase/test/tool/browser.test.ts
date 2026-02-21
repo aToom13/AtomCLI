@@ -1,8 +1,8 @@
 import { describe, expect, test, mock } from "bun:test"
-import { BrowserTool } from "../../src/tool/browser"
-import { Instance } from "../../src/project/instance"
+import { BrowserTool } from "@/integrations/tool/browser"
+import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
-import { Browser } from "../../src/browser"
+import { Browser } from "@/integrations/browser"
 
 const ctx = {
     sessionID: "test",

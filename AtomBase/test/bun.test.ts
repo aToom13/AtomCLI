@@ -5,7 +5,7 @@ import path from "path"
 describe("BunProc registry configuration", () => {
   test("should not contain hardcoded registry parameters", async () => {
     // Read the bun/index.ts file
-    const bunIndexPath = path.join(__dirname, "../src/bun/index.ts")
+    const bunIndexPath = path.join(__dirname, "../src/util/bun/index.ts")
     const content = await fs.readFile(bunIndexPath, "utf-8")
 
     // Verify that no hardcoded registry is present
@@ -16,7 +16,7 @@ describe("BunProc registry configuration", () => {
 
   test("should use Bun's default registry resolution", async () => {
     // Read the bun/index.ts file
-    const bunIndexPath = path.join(__dirname, "../src/bun/index.ts")
+    const bunIndexPath = path.join(__dirname, "../src/util/bun/index.ts")
     const content = await fs.readFile(bunIndexPath, "utf-8")
 
     // Verify that it uses Bun's default resolution
@@ -27,7 +27,7 @@ describe("BunProc registry configuration", () => {
 
   test("should have correct command structure without registry", async () => {
     // Read the bun/index.ts file
-    const bunIndexPath = path.join(__dirname, "../src/bun/index.ts")
+    const bunIndexPath = path.join(__dirname, "../src/util/bun/index.ts")
     const content = await fs.readFile(bunIndexPath, "utf-8")
 
     // Extract the install function

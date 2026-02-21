@@ -1,10 +1,10 @@
 import { Hono, type Context } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { AsyncQueue } from "../util/queue"
-import { Session } from "@/session"
-import { Bus } from "@/bus"
-import { TuiEvent } from "@/cli/cmd/tui/event"
+import { AsyncQueue } from "@/util/util/queue"
+import { Session } from "@/core/session"
+import { Bus } from "@/core/bus"
+import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { errors } from "./error"
 
 const TuiRequest = z.object({

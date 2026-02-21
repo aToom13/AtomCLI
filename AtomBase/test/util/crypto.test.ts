@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
-import { Crypto } from "../../src/util/crypto"
+import { Crypto } from "@/util/util/crypto"
 import fs from "fs/promises"
 import path from "path"
 import os from "os"

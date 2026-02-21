@@ -1,10 +1,10 @@
 import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { Ripgrep } from "../../file/ripgrep"
-import { File } from "../../file"
-import { LSP } from "../../lsp"
-import { Instance } from "../../project/instance"
+import { Ripgrep } from "@/services/file/ripgrep"
+import { File } from "@/services/file"
+import { LSP } from "@/integrations/lsp"
+import { Instance } from "@/services/project/instance"
 
 export const FindRoute = new Hono()
     .get(

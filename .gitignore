@@ -33,11 +33,11 @@ release_bin/
 
 # Local config and temp files
 .atomcli.json
-plans/
-scripts/
+docs/plans/
 taskdocuments/
 *.txt
 .screenshots/
+coverage/
 
 # Logs and temp
 logs/

@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { describeRoute, resolver } from "hono-openapi"
-import { LSP } from "../../lsp"
+import { LSP } from "@/integrations/lsp"
 
 export const LspRoute = new Hono()
     .get(

@@ -14,14 +14,19 @@
     href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
     rel="stylesheet" />
 
-  <link rel="stylesheet" href="/dashboard/css/main.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/layout.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/sidebar.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/topbar.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/content.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/components.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/chat.css?v=6" />
-  <link rel="stylesheet" href="/dashboard/css/responsive.css?v=6" />
+  <link rel="stylesheet" href="/dashboard/css/main.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/layout.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/sidebar.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/topbar.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/content.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/components.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/chat.css?v=7" />
+  <link rel="stylesheet" href="/dashboard/css/responsive.css?v=7" />
+
+  <!-- xterm.js for Terminal Integration -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 </head>
 
 <body>
@@ -124,33 +129,9 @@
       </header>
 
       <div class="content">
-        <!-- CHAT PAGE -->
+        <!-- CHAT PAGE (Now Nexus TUI) -->
         <div class="page active" id="page-chat">
-          <div class="chat-page">
-            <div class="chat-messages" id="chat-messages">
-              <div class="chat-empty">
-                <div class="chat-empty-icon">💬</div>
-                <div style="font-size: 18px; font-weight: 600">Start a conversation</div>
-                <div style="font-size: 13px">Select a model and type your message below</div>
-              </div>
-            </div>
-            <div class="chat-input-area">
-              <div class="chat-input-wrap">
-                <div class="chat-model-bar">
-                  <div class="model-filter-container" id="model-filter-container"></div>
-                  <div class="model-select-row">
-                    <select class="input chat-model-dropdown" id="chat-provider">
-                      <option>Loading models...</option>
-                    </select>
-                    <span class="chat-session-label" id="chat-session-info"></span>
-                  </div>
-                </div>
-                <div class="chat-compose">
-                  <textarea class="chat-input" id="chat-input" placeholder="Type your message..." rows="1"></textarea>
-                  <button class="chat-send-btn" id="chat-send-btn">Send ➤</button>
-                </div>
-              </div>
-            </div>
+          <div id="nexus-tui-viewport" style="flex: 1; width: 100%; height: 100%; overflow: hidden; background: #000;">
           </div>
         </div>
 
@@ -332,13 +313,13 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- JavaScript Files -->
-  <script src="/dashboard/js/utilities.js?v=6"></script>
-  <script src="/dashboard/js/navigation.js?v=6"></script>
-  <script src="/dashboard/js/chat.js?v=6"></script>
-  <script src="/dashboard/js/pageLoaders.js?v=6"></script>
-  <script src="/dashboard/js/sse.js?v=6"></script>
-  <script src="/dashboard/js/modal.js?v=6"></script>
-  <script src="/dashboard/js/main.js?v=6"></script>
+  <script src="/dashboard/js/utilities.js?v=7"></script>
+  <script src="/dashboard/js/navigation.js?v=7"></script>
+  <script src="/dashboard/js/chat.js?v=8"></script>
+  <script src="/dashboard/js/pageLoaders.js?v=7"></script>
+  <script src="/dashboard/js/sse.js?v=7"></script>
+  <script src="/dashboard/js/modal.js?v=7"></script>
+  <script src="/dashboard/js/main.js?v=7"></script>
 </body>
 
 </html>

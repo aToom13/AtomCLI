@@ -2,10 +2,10 @@ import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
 import { mapValues } from "remeda"
-import { Config } from "@/config/config"
-import { Provider } from "@/provider/provider"
+import { Config } from "@/core/config/config"
+import { Provider } from "@/integrations/provider/provider"
 import { errors } from "../error"
-import { Log } from "../../util/log"
+import { Log } from "@/util/util/log"
 
 const log = Log.create({ service: "config" })
 

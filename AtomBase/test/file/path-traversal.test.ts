@@ -1,8 +1,8 @@
 import { test, expect, describe } from "bun:test"
 import path from "path"
-import { Filesystem } from "../../src/util/filesystem"
-import { File } from "../../src/file"
-import { Instance } from "../../src/project/instance"
+import { Filesystem } from "@/util/util/filesystem"
+import { File } from "@/services/file"
+import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
 describe("Filesystem.contains", () => {

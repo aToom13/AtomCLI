@@ -1,10 +1,10 @@
 import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
-import { Session } from "@/session"
-import { SessionStatus } from "@/session/status"
-import { SessionPrompt } from "@/session/prompt"
-import { Todo } from "@/session/todo"
+import { Session } from "@/core/session"
+import { SessionStatus } from "@/core/session/status"
+import { SessionPrompt } from "@/core/session/prompt"
+import { Todo } from "@/core/session/todo"
 import { errors } from "../../error"
 
 export const SessionCoreRoute = new Hono()

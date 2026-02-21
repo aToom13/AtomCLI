@@ -23,7 +23,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "2.3.1-beta",
+      "version": "2.3.1",
       "bin": {
         "atomcli": "./bin/atomcli",
       },
@@ -130,7 +130,7 @@
     },
     "libs/app": {
       "name": "@atomcli/app",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "@atomcli/sdk": "workspace:*",
         "@atomcli/ui": "workspace:*",
@@ -178,7 +178,7 @@
     },
     "libs/enterprise": {
       "name": "@atomcli/enterprise",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "@atomcli/ui": "workspace:*",
         "@atomcli/util": "workspace:*",
@@ -207,7 +207,7 @@
     },
     "libs/function": {
       "name": "@atomcli/function",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "@octokit/auth-app": "8.0.1",
         "@octokit/rest": "catalog:",
@@ -223,7 +223,7 @@
     },
     "libs/plugin": {
       "name": "@atomcli/plugin",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "@atomcli/sdk": "workspace:*",
         "zod": "catalog:",
@@ -237,7 +237,7 @@
     },
     "libs/safe": {
       "name": "@atomcli/safe",
-      "version": "0.0.1",
+      "version": "2.3.1",
       "dependencies": {
         "glob": "^10.0.0",
         "minimatch": "10.2.2",
@@ -251,13 +251,14 @@
     },
     "libs/script": {
       "name": "@atomcli/script",
+      "version": "2.3.1",
       "devDependencies": {
         "@types/bun": "catalog:",
       },
     },
     "libs/sdk/js": {
       "name": "@atomcli/sdk",
-      "version": "1.1.14",
+      "version": "2.3.1",
       "devDependencies": {
         "@hey-api/openapi-ts": "0.88.1",
         "@tsconfig/node22": "catalog:",
@@ -268,7 +269,7 @@
     },
     "libs/slack": {
       "name": "@atomcli/slack",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "@atomcli/sdk": "workspace:*",
         "@slack/bolt": "^3.17.1",
@@ -281,7 +282,7 @@
     },
     "libs/ui": {
       "name": "@atomcli/ui",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "@atomcli/sdk": "workspace:*",
         "@atomcli/util": "workspace:*",
@@ -320,7 +321,7 @@
     },
     "libs/util": {
       "name": "@atomcli/util",
-      "version": "1.1.13",
+      "version": "2.3.1",
       "dependencies": {
         "zod": "catalog:",
       },

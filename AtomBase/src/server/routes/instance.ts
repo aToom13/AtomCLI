@@ -2,11 +2,11 @@
 import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { Instance } from "@/project/instance"
-import { Global } from "@/global"
-import { Worktree } from "@/worktree"
-import { Project } from "@/project/project"
-import { Vcs } from "@/project/vcs"
+import { Instance } from "@/services/project/instance"
+import { Global } from "@/core/global"
+import { Worktree } from "@/services/worktree"
+import { Project } from "@/services/project/project"
+import { Vcs } from "@/services/project/vcs"
 import { errors } from "../error"
 
 export const InstanceRoute = new Hono()

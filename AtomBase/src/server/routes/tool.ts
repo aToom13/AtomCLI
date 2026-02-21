@@ -2,7 +2,7 @@
 import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { ToolRegistry } from "@/tool/registry"
+import { ToolRegistry } from "@/integrations/tool/registry"
 import { zodToJsonSchema } from "zod-to-json-schema"
 import { errors } from "../error"
 

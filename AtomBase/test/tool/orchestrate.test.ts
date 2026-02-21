@@ -1,8 +1,8 @@
 import { describe, test, expect } from "bun:test"
-import { _internals as orchestrateInternals } from "../../src/tool/orchestrate"
-import { _internals as routerInternals } from "../../src/tool/model-router"
-import { inferCategory } from "../../src/tool/model-router"
-import type { TaskCategory } from "../../src/tool/model-router"
+import { _internals as orchestrateInternals } from "@/integrations/tool/orchestrate"
+import { _internals as routerInternals } from "@/integrations/tool/model-router"
+import { inferCategory } from "@/integrations/tool/model-router"
+import type { TaskCategory } from "@/integrations/tool/model-router"
 
 const { topologicalSort, getReadyTasks, hasFailedDependency, WORKFLOWS } = orchestrateInternals
 const { scoreModel } = routerInternals

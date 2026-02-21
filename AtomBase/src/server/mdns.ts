@@ -1,4 +1,4 @@
-import { Log } from "@/util/log"
+import { Log } from "@/util/util/log"
 import { Bonjour } from "bonjour-service"
 
 const log = Log.create({ service: "mdns" })

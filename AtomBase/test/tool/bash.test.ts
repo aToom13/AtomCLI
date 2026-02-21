@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { BashTool } from "../../src/tool/bash"
-import { Instance } from "../../src/project/instance"
+import { BashTool } from "@/integrations/tool/bash"
+import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
-import type { PermissionNext } from "../../src/permission/next"
-import { Truncate } from "../../src/tool/truncation"
+import type { PermissionNext } from "@/util/permission/next"
+import { Truncate } from "@/integrations/tool/truncation"
 
 const ctx = {
   sessionID: "test",

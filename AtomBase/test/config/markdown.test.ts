@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { ConfigMarkdown } from "../../src/config/markdown"
+import { ConfigMarkdown } from "@/core/config/markdown"
 
 const template = `This is a @valid/path/to/a/file and it should also match at
 the beginning of a line:

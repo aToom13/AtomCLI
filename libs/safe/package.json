@@ -1,27 +1,27 @@
 {
-    "name": "@atomcli/safe",
-    "version": "0.0.1",
-    "description": "Safe file system access for AtomCLI - prevents Request Entity Too Large errors",
-    "type": "module",
-    "main": "./src/index.ts",
-    "types": "./src/index.ts",
-    "exports": {
-        ".": {
-            "import": "./src/index.ts",
-            "types": "./src/index.ts"
-        }
-    },
-    "scripts": {
-        "typecheck": "tsc --noEmit"
-    },
-    "dependencies": {
-        "glob": "^10.0.0",
-        "minimatch": "10.2.2"
-    },
-    "devDependencies": {
-        "@types/bun": "1.3.4",
-        "@types/node": "22.13.9",
-        "@tsconfig/node22": "22.0.2",
-        "typescript": "5.8.2"
+  "name": "@atomcli/safe",
+  "version": "2.3.1",
+  "description": "Safe file system access for AtomCLI - prevents Request Entity Too Large errors",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
     }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "glob": "^10.0.0",
+    "minimatch": "10.2.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.4",
+    "@types/node": "22.13.9",
+    "@tsconfig/node22": "22.0.2",
+    "typescript": "5.8.2"
+  }
 }

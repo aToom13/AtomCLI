@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
-import { File } from "@/file"
+import { File } from "@/services/file"
 
 export const FileRoute = new Hono()
     .get(

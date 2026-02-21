@@ -1,15 +1,15 @@
 {
   "name": "@atomcli/enterprise",
-  "version": "1.1.13",
+  "version": "2.3.1",
   "private": true,
   "type": "module",
   "license": "MIT",
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "dev": "vite dev",
-    "build": "vite build",
-    "build:cloudflare": "ATOMCLI_DEPLOYMENT_TARGET=cloudflare vite build",
-    "start": "vite start"
+    "dev": "bun --bun vite dev",
+    "build": "bun --bun vite build",
+    "build:cloudflare": "ATOMCLI_DEPLOYMENT_TARGET=cloudflare bun --bun vite build",
+    "start": "bun --bun vite start"
   },
   "dependencies": {
     "@atomcli/util": "workspace:*",

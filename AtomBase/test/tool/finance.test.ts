@@ -11,10 +11,10 @@
  */
 
 import { describe, expect, test, beforeAll, afterAll, mock } from "bun:test"
-import { detectAssetType, getAssetTypeEmoji, getAssetTypeName } from "../../src/tool/finance/symbols"
-import { analyzeKlines } from "../../src/tool/finance/technical"
-import { applySeniorLogic, evaluateWalls, analyzeFunding } from "../../src/tool/finance/logic"
-import type { OHLC, TechnicalAnalysis } from "../../src/tool/finance/types"
+import { detectAssetType, getAssetTypeEmoji, getAssetTypeName } from "@/integrations/tool/finance/symbols"
+import { analyzeKlines } from "@/integrations/tool/finance/technical"
+import { applySeniorLogic, evaluateWalls, analyzeFunding } from "@/integrations/tool/finance/logic"
+import type { OHLC, TechnicalAnalysis } from "@/integrations/tool/finance/types"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SYMBOL DETECTION TESTS

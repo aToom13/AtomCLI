@@ -63,7 +63,7 @@ Kullanıcı İsteği
 ## Dizin Yapısı
 
 ```
-AtomBase/src/session/prompt/
+AtomBase/src/core/session/prompt/
 ├── manager.ts              # 🎯 Birleşik orkestratör (tek giriş noktası)
 │
 ├── core/                   # 📦 Temel promptlar (HER ZAMAN dahil)
