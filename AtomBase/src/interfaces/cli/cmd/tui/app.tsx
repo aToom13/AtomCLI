@@ -35,58 +35,6 @@ import { useCommands } from "./context/use-commands"
 import { useSDKEventHandlers } from "./context/use-sdk-events"
 import { useClipboard } from "./context/use-clipboard"
 
-async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      cleanup()
-      resolve("dark")
-    }, 1000)
-
-    function cleanup() {
-      clearTimeout(timeout)
-      process.stdin.removeListener("data", handler)
-      if (wasRaw !== undefined) {
-        process.stdin.setRawMode(wasRaw)
-      }
-    }
-
-    const wasRaw = process.stdin.isRaw
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(true)
-    }
-
-    function handler(data: Buffer) {
-      const response = data.toString()
-      cleanup()
-
-      // Parse the OSC 11 response
-      // Format: \033]11;rgb:RRRR/GGGG/BBBB\033\\
-      const match = response.match(/rgb:([0-9a-f]+)\/([0-9a-f]+)\/([0-9a-f]+)/i)
-      if (match) {
-        const r = parseInt(match[1].substring(0, 2), 16) / 255
-        const g = parseInt(match[2].substring(0, 2), 16) / 255
-        const b = parseInt(match[3].substring(0, 2), 16) / 255
-
-        // Calculate relative luminance
-        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-        if (luminance > 0.5) {
-          resolve("light")
-        } else {
-          resolve("dark")
-        }
-      } else {
-        resolve("dark")
-      }
-    }
-
-    process.stdin.on("data", handler)
-
-    // Send the OSC 11 query to the terminal
-    process.stdout.write("\x1b]11;?\x07")
-  })
-}
-
 import type { EventSource } from "./context/sdk"
 
 export function tui(input: {
@@ -99,7 +47,6 @@ export function tui(input: {
 }) {
   // promise to prevent immediate exit
   return new Promise<void>(async (resolve) => {
-    // const mode = await getTerminalBackgroundColor()
     const mode = "dark"
     const onExit = async () => {
       await input.onExit?.()

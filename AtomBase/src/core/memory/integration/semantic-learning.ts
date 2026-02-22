@@ -45,13 +45,34 @@ export type UserInformation = z.infer<typeof UserInformationSchema>
 export class SemanticLearningService {
   private static model: Awaited<ReturnType<typeof Provider.getModel>> | null = null
 
+  /** Fallback chain for semantic learning */
+  private static readonly FALLBACK_CHAIN = [
+    { provider: "atomcli", model: "minimax-m2.5-free" },
+    { provider: "atomcli", model: "glm-5-free" },
+    { provider: "atomcli", model: "trinity-large-preview-free" },
+    { provider: "atomcli", model: "gpt-5-nano" },
+    { provider: "atomcli", model: "big-pickle" },
+  ]
+
   /**
-   * Get or initialize the model for semantic learning
+   * Get or initialize the model for semantic learning using fallback chain
    */
   private static async getModel() {
     if (!this.model) {
-      const defaultModel = await Provider.defaultModel()
-      this.model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
+      for (const entry of this.FALLBACK_CHAIN) {
+        try {
+          this.model = await Provider.getModel(entry.provider, entry.model)
+          if (this.model) {
+            log.info("Selected semantic-learning model", { model: `${entry.provider}/${entry.model}` })
+            break
+          }
+        } catch {
+          // Try next
+        }
+      }
+      if (!this.model) {
+        throw new Error("All semantic-learning fallback models failed")
+      }
     }
     return this.model
   }
@@ -126,9 +147,9 @@ Now analyze this message:`
       // Try to parse as JSON
       try {
         // Extract JSON from markdown code blocks if present
-        const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || 
-                         responseText.match(/(\{[\s\S]*\})/)
-        
+        const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) ||
+          responseText.match(/(\{[\s\S]*\})/)
+
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[1])
           return UserInformationSchema.parse(parsed)
@@ -189,9 +210,9 @@ Now analyze:`
         model: language,
         messages: [
           { role: "system", content: systemPrompt },
-          { 
-            role: "user", 
-            content: `User said: "${userMessage}"\nAssistant replied: "${response}"\n\nWhat did the assistant confirm?` 
+          {
+            role: "user",
+            content: `User said: "${userMessage}"\nAssistant replied: "${response}"\n\nWhat did the assistant confirm?`
           },
         ],
         temperature: 0.1,
@@ -205,7 +226,7 @@ Now analyze:`
 
       // Simple extraction
       const nameMatch = responseText.match(/confirmedName[:\s]+"([^"]+)"/i)
-      
+
       return {
         confirmedName: nameMatch ? nameMatch[1] : undefined,
         acknowledgedPreferences: [],
@@ -228,7 +249,7 @@ Now analyze:`
       /biliyor musun/i,
       /söyler misin/i,
     ]
-    
+
     return questionPatterns.some(pattern => pattern.test(message.trim()))
   }
 }

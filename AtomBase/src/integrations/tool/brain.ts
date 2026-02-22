@@ -10,6 +10,7 @@ import fs from "fs/promises"
 import z from "zod"
 import { File } from "@/services/file"
 import { Log } from "@/util/util/log"
+import { bm25Search, type BM25Document } from "@/core/memory/core/bm25"
 
 // Interface for a stored document
 interface Doc {
@@ -200,24 +201,17 @@ export const BrainTool = Tool.define("brain", {
             }
         }
 
-        // Check API Key (only needed for index/search/clear)
-        if (!apiKey) {
-            if (params.action === "search" || params.action === "index") {
-                return {
-                    title: "Brain Error",
-                    output: "Error: OPENAI_API_KEY is missing. Configuring 'openai' provider in atomcli.json or env var is required for Semantic Search.",
-                    metadata: { count: 0, total: 0, error: "Missing API Key" } as BrainMetadata
-                }
-            }
+        // Initialize AI components only if API key is provided
+        let openai: any = null
+        let embed: any = null
+        let embeddingModel: any = null
+
+        if (apiKey) {
+            openai = createOpenAI({ apiKey })
+            // Dynamic import of ai package to avoid ESM resolution issues in tests
+            embed = await getEmbed()
+            embeddingModel = openai.embedding("text-embedding-3-small")
         }
-
-        const openai = createOpenAI({ apiKey })
-
-        // Dynamic import of ai package to avoid ESM resolution issues in tests
-        const embed = await getEmbed()
-
-        // Default embedding model
-        const embeddingModel = openai.embedding("text-embedding-3-small")
 
         // Load persisted memory on first run
         if (!isLoaded) {
@@ -232,24 +226,33 @@ export const BrainTool = Tool.define("brain", {
             ctx.metadata({ title: "Brain: Indexing..." })
 
             try {
-                const files = await File.search({ query: "**/*.{ts,md,json,txt}", limit: 50, type: "file" })
+                // File.search uses fuzzysort, not glob patterns. We fetch all and filter manually.
+                const allFiles = await File.search({ query: "", limit: 5000, type: "file" })
+                const allowedExts = [".ts", ".tsx", ".md", ".json", ".txt", ".js", ".jsx"]
+
+                const files = allFiles.filter(f => allowedExts.includes(path.extname(f)))
 
                 let count = 0
-                for (const filePath of files) {
+                for (const relativePath of files) {
                     try {
-                        if (filePath.includes("node_modules") || filePath.includes("dist") || filePath.includes(".git") || filePath.includes("brain-index")) continue
+                        if (relativePath.includes("node_modules") || relativePath.includes("dist") || relativePath.includes(".git") || relativePath.includes("brain-index")) continue
 
-                        // Check if file is already indexed and unchanged (mock check for now, ideally check hash/mtime)
-                        // For now we re-index to ensure freshness
+                        // Resolve absolute path (File.search returns paths relative to project root / cwd)
+                        const filePath = path.resolve(dir, relativePath)
 
-                        const content = await fs.readFile(filePath, "utf-8")
+                        const content = await fs.readFile(filePath, "utf-8").catch(() => null)
+                        if (!content) continue
                         if (content.length > 20000) continue
                         if (content.trim().length < 50) continue
 
-                        const { embedding } = await embed({
-                            model: embeddingModel,
-                            value: content,
-                        })
+                        let embedding: number[] | undefined = undefined
+                        if (apiKey && embed && embeddingModel) {
+                            const result = await embed({
+                                model: embeddingModel,
+                                value: content,
+                            })
+                            embedding = result.embedding
+                        }
 
                         const doc: Doc = {
                             id: filePath,
@@ -266,14 +269,17 @@ export const BrainTool = Tool.define("brain", {
                         } else {
                             MEMORY.push(doc)
                         }
-                        // Pre-compute and cache magnitude
-                        magnitudeCache.set(doc.id, magnitude(embedding))
+
+                        // Pre-compute and cache magnitude if we have embeddings
+                        if (embedding) {
+                            magnitudeCache.set(doc.id, magnitude(embedding))
+                        }
 
                         count++
                         if (count % 5 === 0) ctx.metadata({ title: `Brain: Indexed ${count} files...` })
                     } catch (e) {
                         const error = e instanceof Error ? e.message : String(e)
-                        log.warn(`Failed to index file: ${filePath}`, { error })
+                        log.warn(`Failed to index file: ${relativePath}`, { error })
                     }
                 }
 
@@ -305,19 +311,36 @@ export const BrainTool = Tool.define("brain", {
             if (!params.query) throw new Error("Query required for search")
 
             try {
-                const { embedding } = await embed({
-                    model: embeddingModel,
-                    value: params.query,
-                })
+                let scored: Array<{ doc: Doc; score: number }> = []
 
-                // Optimized search: compute query magnitude once, use cached doc magnitudes
-                const queryMag = magnitude(embedding)
-                const scored = MEMORY.map(doc => ({
-                    doc,
-                    score: cosineSimilarityOptimized(embedding, queryMag, doc)
-                }))
-                    .sort((a, b) => b.score - a.score)
-                    .slice(0, params.limit)
+                if (apiKey && embed && embeddingModel) {
+                    const { embedding } = await embed({
+                        model: embeddingModel,
+                        value: params.query,
+                    })
+
+                    // Optimized search: compute query magnitude once, use cached doc magnitudes
+                    const queryMag = magnitude(embedding)
+                    scored = MEMORY.map(doc => ({
+                        doc,
+                        score: cosineSimilarityOptimized(embedding, queryMag, doc)
+                    }))
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, params.limit)
+                } else {
+                    // Fallback to local BM25 search
+                    const documents: BM25Document[] = MEMORY.map(doc => ({
+                        id: doc.id,
+                        text: `${doc.title} ${doc.content}`
+                    }))
+
+                    const bm25Results = bm25Search(params.query, documents, params.limit)
+
+                    scored = bm25Results.map(result => ({
+                        doc: MEMORY.find(d => d.id === result.id)!,
+                        score: result.score
+                    }))
+                }
 
                 if (scored.length === 0) return {
                     title: "No Matches",

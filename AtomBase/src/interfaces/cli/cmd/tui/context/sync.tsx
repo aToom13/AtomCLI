@@ -29,6 +29,14 @@ import { batch, onMount } from "solid-js"
 import { Log } from "@/util/util/log"
 import type { Path } from "@atomcli/sdk"
 
+import { handleSessionEvent } from "./handlers/session"
+import { handleMessageEvent } from "./handlers/message"
+import { handlePartEvent } from "./handlers/part"
+import { handlePermissionEvent } from "./handlers/permission"
+
+import { createActor } from "xstate"
+import { chatMachine } from "./machine/chat"
+
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
@@ -58,6 +66,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         [sessionID: string]: Todo[]
       }
       message: {
+        [sessionID: string]: Message[]
+      }
+      optimistic_message: {
         [sessionID: string]: Message[]
       }
       part: {
@@ -93,6 +104,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_diff: {},
       todo: {},
       message: {},
+      optimistic_message: {},
       part: {},
       lsp: [],
       mcp: {},
@@ -104,8 +116,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     const sdk = useSDK()
 
+    const actor = createActor(chatMachine, {
+      input: { store, setStore },
+    }).start()
+
     sdk.event.listen((e) => {
       const event = e.details
+      if (
+        event.type.startsWith("session.") ||
+        event.type.startsWith("message.") ||
+        event.type.startsWith("permission.") ||
+        event.type.startsWith("question.")
+      ) {
+        actor.send({ type: event.type, payload: event })
+        return
+      }
+
       switch (event.type) {
         case "server.instance.disposed":
           bootstrap()
@@ -115,190 +141,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("config", reconcile(event.properties.config))
           break
         }
-        case "permission.replied": {
-          const requests = store.permission[event.properties.sessionID]
-          if (!requests) break
-          const match = Binary.search(requests, event.properties.requestID, (r) => r.id)
-          if (!match.found) break
-          setStore(
-            "permission",
-            event.properties.sessionID,
-            produce((draft: any[]) => {
-              draft.splice(match.index, 1)
-            }),
-          )
-          break
-        }
-
-        case "permission.asked": {
-          const request = event.properties
-          const requests = store.permission[request.sessionID]
-          if (!requests) {
-            setStore("permission", request.sessionID, [request])
-            break
-          }
-          const match = Binary.search(requests, request.id, (r) => r.id)
-          if (match.found) {
-            setStore("permission", request.sessionID, match.index, reconcile(request))
-            break
-          }
-          setStore(
-            "permission",
-            request.sessionID,
-            produce((draft: any[]) => {
-              draft.splice(match.index, 0, request)
-            }),
-          )
-          break
-        }
-
-        case "question.replied":
-        case "question.rejected": {
-          const requests = store.question[event.properties.sessionID]
-          if (!requests) break
-          const match = Binary.search(requests, event.properties.requestID, (r) => r.id)
-          if (!match.found) break
-          setStore(
-            "question",
-            event.properties.sessionID,
-            produce((draft: any[]) => {
-              draft.splice(match.index, 1)
-            }),
-          )
-          break
-        }
-
-        case "question.asked": {
-          const request = event.properties
-          const requests = store.question[request.sessionID]
-          if (!requests) {
-            setStore("question", request.sessionID, [request])
-            break
-          }
-          const match = Binary.search(requests, request.id, (r) => r.id)
-          if (match.found) {
-            setStore("question", request.sessionID, match.index, reconcile(request))
-            break
-          }
-          setStore(
-            "question",
-            request.sessionID,
-            produce((draft: any[]) => {
-              draft.splice(match.index, 0, request)
-            }),
-          )
-          break
-        }
-
         case "todo.updated":
           setStore("todo", event.properties.sessionID, event.properties.todos)
           break
-
-        case "session.diff":
-          setStore("session_diff", event.properties.sessionID, event.properties.diff)
-          break
-
-        case "session.deleted": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
-          if (result.found) {
-            setStore(
-              "session",
-              produce((draft: any[]) => {
-                draft.splice(result.index, 1)
-              }),
-            )
-          }
-          break
-        }
-        case "session.updated": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
-          if (result.found) {
-            setStore("session", result.index, reconcile(event.properties.info))
-            break
-          }
-          setStore(
-            "session",
-            produce((draft: any[]) => {
-              draft.splice(result.index, 0, event.properties.info)
-            }),
-          )
-          break
-        }
-
-        case "session.status": {
-          setStore("session_status", event.properties.sessionID, event.properties.status)
-          break
-        }
-
-        case "message.updated": {
-          const messages = store.message[event.properties.info.sessionID]
-          if (!messages) {
-            setStore("message", event.properties.info.sessionID, [event.properties.info])
-            break
-          }
-          const result = Binary.search(messages, event.properties.info.id, (m) => m.id)
-          if (result.found) {
-            setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
-            break
-          }
-          setStore(
-            "message",
-            event.properties.info.sessionID,
-            produce((draft: any[]) => {
-              draft.splice(result.index, 0, event.properties.info)
-              if (draft.length > 100) draft.shift()
-            }),
-          )
-          break
-        }
-        case "message.removed": {
-          const messages = store.message[event.properties.sessionID]
-          const result = Binary.search(messages, event.properties.messageID, (m) => m.id)
-          if (result.found) {
-            setStore(
-              "message",
-              event.properties.sessionID,
-              produce((draft: any[]) => {
-                draft.splice(result.index, 1)
-              }),
-            )
-          }
-          break
-        }
-        case "message.part.updated": {
-          const parts = store.part[event.properties.part.messageID]
-          if (!parts) {
-            setStore("part", event.properties.part.messageID, [event.properties.part])
-            break
-          }
-          const result = Binary.search(parts, event.properties.part.id, (p) => p.id)
-          if (result.found) {
-            setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
-            break
-          }
-          setStore(
-            "part",
-            event.properties.part.messageID,
-            produce((draft: any[]) => {
-              draft.splice(result.index, 0, event.properties.part)
-            }),
-          )
-          break
-        }
-
-        case "message.part.removed": {
-          const parts = store.part[event.properties.messageID]
-          const result = Binary.search(parts, event.properties.partID, (p) => p.id)
-          if (result.found)
-            setStore(
-              "part",
-              event.properties.messageID,
-              produce((draft: any[]) => {
-                draft.splice(result.index, 1)
-              }),
-            )
-          break
-        }
 
         case "lsp.updated": {
           sdk.client.lsp.status().then((x) => setStore("lsp", x.data!))
@@ -376,6 +221,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const fullSyncedSessions = new Set<string>()
+    const inflightSyncs = new Set<string>()
     const result = {
       data: store,
       set: setStore,
@@ -403,27 +249,50 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, todo, diff] = await Promise.all([
-            sdk.client.session.get({ sessionID }, { throwOnError: true }),
-            sdk.client.session.messages({ sessionID, limit: 100 }),
-            sdk.client.session.todo({ sessionID }),
-            sdk.client.session.diff({ sessionID }),
-          ])
+          if (inflightSyncs.has(sessionID)) return
+
+          inflightSyncs.add(sessionID)
+          try {
+            const [session, messages, todo, diff] = await Promise.all([
+              sdk.client.session.get({ sessionID }, { throwOnError: true }),
+              sdk.client.session.messages({ sessionID, limit: 100 }),
+              sdk.client.session.todo({ sessionID }),
+              sdk.client.session.diff({ sessionID }),
+            ])
+            setStore(
+              produce((draft) => {
+                const match = Binary.search(draft.session, sessionID, (s) => s.id)
+                if (match.found) draft.session[match.index] = session.data!
+                if (!match.found) draft.session.splice(match.index, 0, session.data!)
+                draft.todo[sessionID] = todo.data ?? []
+                draft.message[sessionID] = messages.data!.map((x) => x.info)
+                for (const message of messages.data!) {
+                  draft.part[message.info.id] = message.parts
+                }
+                draft.session_diff[sessionID] = diff.data ?? []
+              }),
+            )
+            fullSyncedSessions.add(sessionID)
+          } finally {
+            inflightSyncs.delete(sessionID)
+          }
+        },
+      },
+      optimistic: {
+        push(sessionID: string, msg: Message, parts: Part[]) {
           setStore(
             produce((draft) => {
-              const match = Binary.search(draft.session, sessionID, (s) => s.id)
-              if (match.found) draft.session[match.index] = session.data!
-              if (!match.found) draft.session.splice(match.index, 0, session.data!)
-              draft.todo[sessionID] = todo.data ?? []
-              draft.message[sessionID] = messages.data!.map((x) => x.info)
-              for (const message of messages.data!) {
-                draft.part[message.info.id] = message.parts
+              if (!draft.optimistic_message[sessionID]) {
+                draft.optimistic_message[sessionID] = []
               }
-              draft.session_diff[sessionID] = diff.data ?? []
-            }),
+              draft.optimistic_message[sessionID].push(msg)
+              draft.part[msg.id] = parts
+            })
           )
-          fullSyncedSessions.add(sessionID)
         },
+        clear(sessionID: string) {
+          setStore("optimistic_message", sessionID, [])
+        }
       },
       bootstrap,
     }

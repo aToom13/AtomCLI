@@ -2,7 +2,7 @@
   "name": "atomcli",
   "displayName": "atomcli",
   "description": "atomcli for VS Code",
-  "version": "2.3.1",
+  "version": "3.2.1-debug",
   "publisher": "sst-dev",
   "repository": {
     "type": "git",

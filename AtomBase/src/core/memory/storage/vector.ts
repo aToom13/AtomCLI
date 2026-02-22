@@ -93,7 +93,7 @@ export class ChromaStorage {
       this.initialized = true
       log.info("ChromaDB storage initialized", { path: this.persistPath })
     } catch (error) {
-      log.error("Failed to initialize ChromaDB", { error })
+      log.debug("Failed to initialize ChromaDB (optional dependency)", { error })
       throw error
     }
   }

@@ -92,13 +92,13 @@ describe("Memory Types", () => {
     expect(MemoryType.enum.error).toBe("error")
     expect(MemoryType.enum.pattern).toBe("pattern")
     expect(MemoryType.enum.solution).toBe("solution")
-    
+
     expect(PreferenceCategory.enum.code_style).toBe("code_style")
     expect(PreferenceCategory.enum.communication).toBe("communication")
-    
+
     expect(NodeType.enum.concept).toBe("concept")
     expect(NodeType.enum.file).toBe("file")
-    
+
     expect(EdgeType.enum.related_to).toBe("related_to")
     expect(EdgeType.enum.solves).toBe("solves")
   })
@@ -340,7 +340,7 @@ describe("Embedding Utilities", () => {
   it("should normalize vector", () => {
     const v = [3, 4, 0]
     const normalized = normalizeVector(v)
-    
+
     const magnitude = Math.sqrt(normalized.reduce((s, x) => s + x * x, 0))
     expect(magnitude).toBeCloseTo(1, 5)
   })
@@ -368,7 +368,7 @@ describe("Memory Config", () => {
   it("should have default values", () => {
     expect(defaultMemoryConfig.enabled).toBe(true)
     expect(defaultMemoryConfig.storage).toBe("hybrid")
-    expect(defaultMemoryConfig.embedding?.provider).toBe("openai")
+    expect(defaultMemoryConfig.embedding?.provider).toBe("local")
     expect(defaultMemoryConfig.embedding?.dimensions).toBe(512)
     expect(defaultMemoryConfig.backgroundLearning?.enabled).toBe(true)
     expect(defaultMemoryConfig.retention?.maxItems).toBe(10000)
@@ -385,7 +385,7 @@ describe("Memory Config", () => {
     }
 
     const merged = { ...defaultMemoryConfig, ...custom }
-    
+
     expect(merged.storage).toBe("json")
     expect(merged.embedding?.provider).toBe("local")
     expect(merged.embedding?.model).toBe("custom-model")

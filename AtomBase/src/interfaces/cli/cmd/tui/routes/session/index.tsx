@@ -30,6 +30,7 @@ import { Header } from "./header"
 import { SplitBorder } from "@tui/component/border"
 import { SubAgentPanel } from "./components/SubAgentPanel"
 import { useSubAgents } from "@tui/context/subagent"
+import { VirtualList } from "../../component/virtual-list"
 
 addDefaultParsers(parsers.parsers)
 
@@ -146,9 +147,9 @@ export function Session() {
   }
 
   function toBottom() {
-    setTimeout(() => {
+    queueMicrotask(() => {
       if (scroll) scroll.scrollTo(scroll.scrollHeight)
-    }, 50)
+    })
   }
 
   function moveChild(direction: number) {
@@ -240,8 +241,11 @@ export function Session() {
               flexGrow={1}
               scrollAcceleration={scrollAcceleration()}
             >
-              <For each={messages()}>
-                {(message, index) => (
+              <VirtualList
+                data={messages()}
+                scrollRef={() => scroll}
+                estimatedItemHeight={8}
+                renderItem={(message, index) => (
                   <Switch>
                     {/* Revert Banner */}
                     <Match when={message.id === revert()?.messageID}>
@@ -334,7 +338,7 @@ export function Session() {
                     </Match>
                   </Switch>
                 )}
-              </For>
+              />
             </scrollbox>
             <box flexShrink={0}>
               <Show when={permissions().length > 0}>

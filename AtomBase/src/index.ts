@@ -42,6 +42,7 @@ import { MemoryCommand } from "@/interfaces/cli/cmd/memory"
 import { FallbackCommand } from "@/interfaces/cli/cmd/fallback"
 import { AutoupdateCommand } from "@/interfaces/cli/cmd/autoupdate"
 import { SmartModelCommand } from "@/interfaces/cli/cmd/smart-model"
+import { DaemonLearnCommand } from "@/interfaces/cli/cmd/daemon-learn"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -137,9 +138,9 @@ const cli = yargs(hideBin(process.argv))
   .command(WorkspaceCommand)
   .command(SetupCommand)
   .command(MemoryCommand)
-  .command(FallbackCommand)
   .command(AutoupdateCommand)
   .command(SmartModelCommand)
+  .command(DaemonLearnCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
@@ -198,5 +199,26 @@ try {
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
   // Explicitly exit to avoid any hanging subprocesses.
+  try {
+    // Flush any pending memory processing
+    try {
+      // Don't spawn a daemon if we ARE the daemon
+      if (process.argv[2] !== "_daemon-learn") {
+        const { spawn } = await import("child_process")
+        // Start the background learner detached from the current terminal
+        const child = spawn(process.argv[0], [process.argv[1], "_daemon-learn"], {
+          detached: true,
+          stdio: "ignore"
+        })
+        // Unref allows the current CLI to exit immediately
+        child.unref()
+        Log.Default.info("memory", { msg: "Detached background learning daemon started" })
+      }
+    } catch (err) {
+      Log.Default.warn("memory", { msg: "Failed to spawn memory daemon on exit", err })
+    }
+  } catch (err) {
+    Log.Default.warn("memory", { msg: "Unexpected error during exit", err })
+  }
   process.exit()
 }

@@ -170,7 +170,7 @@ export class BackgroundLearningService {
   /**
    * Process the task queue
    */
-  private async processQueue(): Promise<void> {
+  public async processQueue(): Promise<void> {
     if (!this.isRunning) return
     if (this.processing.length >= this.config.maxConcurrent) return
 

@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/safe",
-  "version": "2.3.1",
+  "version": "3.2.1-debug",
   "description": "Safe file system access for AtomCLI - prevents Request Entity Too Large errors",
   "type": "module",
   "main": "./src/index.ts",

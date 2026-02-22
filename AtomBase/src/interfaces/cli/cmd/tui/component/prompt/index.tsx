@@ -550,6 +550,21 @@ export function Prompt(props: PromptProps) {
       })
     ) {
       let [command, ...args] = inputText.split(" ")
+
+      const partsToSync = nonTextParts
+        .filter((x) => x.type === "file")
+        .map((x) => ({
+          id: Identifier.ascending("part"),
+          ...x,
+        }))
+
+      sync.optimistic.push(sessionID, {
+        id: messageID,
+        sessionID,
+        role: "user",
+        time: { created: Date.now() },
+      } as any, partsToSync as any)
+
       sdk.client.session.command({
         sessionID,
         command: command.slice(1),
@@ -558,14 +573,28 @@ export function Prompt(props: PromptProps) {
         model: `${selectedModel.providerID}/${selectedModel.modelID}`,
         messageID,
         variant,
-        parts: nonTextParts
-          .filter((x) => x.type === "file")
-          .map((x) => ({
-            id: Identifier.ascending("part"),
-            ...x,
-          })),
+        parts: partsToSync,
       })
     } else {
+      const partsToSync = [
+        {
+          id: Identifier.ascending("part"),
+          type: "text" as const,
+          text: inputText,
+        },
+        ...nonTextParts.map((x) => ({
+          id: Identifier.ascending("part"),
+          ...x,
+        })),
+      ]
+
+      sync.optimistic.push(sessionID, {
+        id: messageID,
+        sessionID,
+        role: "user",
+        time: { created: Date.now() },
+      } as any, partsToSync as any)
+
       sdk.client.session.prompt({
         sessionID,
         ...selectedModel,
@@ -573,17 +602,7 @@ export function Prompt(props: PromptProps) {
         agent: local.agent.current().name,
         model: selectedModel,
         variant,
-        parts: [
-          {
-            id: Identifier.ascending("part"),
-            type: "text",
-            text: inputText,
-          },
-          ...nonTextParts.map((x) => ({
-            id: Identifier.ascending("part"),
-            ...x,
-          })),
-        ],
+        parts: partsToSync,
       })
     }
     history.append({

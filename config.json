@@ -1,6 +1,0 @@
-{
-  "$schema": "https://atomcli.ai/config.json",
-  "experimental": {
-    "smart_model_routing": false
-  }
-}

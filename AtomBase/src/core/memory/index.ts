@@ -89,7 +89,7 @@ export function getCapabilities(): {
 } {
   return {
     jsonStorage: true,
-    vectorStorage: true,
+    vectorStorage: false, // Explicitly false as it's an optional dependency now
     embedding: true,
     backgroundLearning: true,
     knowledgeGraph: true,
@@ -110,14 +110,14 @@ export async function initialize(config?: Partial<MemoryConfig>): Promise<{
   config: MemoryConfig
 }> {
   const memoryConfig = { ...defaultMemoryConfig, ...config }
-  
+
   const storage = await createStorage({
     type: memoryConfig.storage,
     chromaPath: memoryConfig.chroma?.persistPath,
   })
-  
+
   const embedding = createEmbeddingService(memoryConfig.embedding)
-  
+
   return {
     storage,
     embedding,
@@ -136,8 +136,8 @@ export const defaultMemoryConfig: MemoryConfig = {
     persistPath: undefined,
   },
   embedding: {
-    provider: "openai",
-    model: "text-embedding-3-small",
+    provider: "local",
+    model: "text-embedding-3-small", // Kept just in case, but provider is local
     dimensions: 512,
   },
   backgroundLearning: {
@@ -204,7 +204,7 @@ const memorySystem = {
   PreferenceCategory,
   NodeType,
   EdgeType,
-  
+
   // Enums
   AIRole,
   FormalityLevel,
@@ -219,42 +219,42 @@ const memorySystem = {
   ResponseLength,
   VocabularyStyle,
   EmojiPreference,
-  
+
   // Core
   createMemoryItem,
   createUserPreference,
-  
+
   // Storage
   createStorage,
   createVectorStorage,
   JSONStorage,
   ChromaStorage,
-  
+
   // Embedding
   createEmbeddingService,
   cosineSimilarity,
-  
+
   // Personality Services
   AIPersonalityService,
   getAIPersonality,
   defaultPersonalities,
-  
+
   // User Profile Services
   UserProfileService,
   getUserProfile,
-  
+
   // Communication Services
   CommunicationService,
   getCommunication,
-  
+
   // Prompt Context Builder
   PromptContextBuilder,
   getPromptContextBuilder,
-  
+
   // Config
   defaultMemoryConfig,
   MEMORY_SYSTEM_VERSION,
-  
+
   // Functions
   initialize,
   getMemoryDir,
@@ -279,7 +279,7 @@ export {
   FormalityLevel,
   HumorStyle,
   ProactivityLevel,
-  
+
   // User Profile
   UserProfileService,
   getUserProfile,
@@ -288,7 +288,7 @@ export {
   LearningStyle,
   WorkStyle,
   CommunicationPreference,
-  
+
   // Communication
   CommunicationService,
   getCommunication,
@@ -296,7 +296,7 @@ export {
   ResponseLength,
   VocabularyStyle,
   EmojiPreference,
-  
+
   // Prompt Context
   PromptContextBuilder,
   getPromptContextBuilder,

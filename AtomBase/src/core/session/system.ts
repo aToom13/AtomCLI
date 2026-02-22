@@ -1,3 +1,4 @@
+import { Log } from "@/util/util/log"
 import { Ripgrep } from "@/services/file/ripgrep"
 import { Global } from "../global"
 import { Filesystem } from "@/util/util/filesystem"
@@ -19,6 +20,7 @@ import type { Provider } from "@/integrations/provider/provider"
 import { Flag } from "@/interfaces/flag/flag"
 
 // Memory integration
+import memorySystem from "../memory"
 import { SessionMemoryIntegration } from "../memory/integration/session"
 
 export namespace SystemPrompt {
@@ -53,7 +55,15 @@ export namespace SystemPrompt {
     })
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
-    // Initialize memory system
+    // Initialize memory system (storage & embeddings)
+    try {
+      await memorySystem.initialize()
+    } catch (error) {
+      // Memory storage is optional — don't crash on init failure
+      Log.Default.warn("memory", { msg: "Storage initialization failed, continuing without memory storage", error })
+    }
+
+    // Initialize session integration (profiles & preferences)
     await SessionMemoryIntegration.initialize()
 
     const envBlock = [

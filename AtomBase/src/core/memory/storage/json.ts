@@ -17,6 +17,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { bm25Score } from "../core/bm25"
 
 const log = Log.create({ service: "memory.storage.json" })
 
@@ -30,10 +31,10 @@ export class JSONStorage {
   private cache: Map<string, MemoryItem> = new Map()
 
   constructor(filePath?: string) {
-    this.dirPath = filePath 
-      ? path.dirname(filePath) 
+    this.dirPath = filePath
+      ? path.dirname(filePath)
       : path.join(os.homedir(), ".atomcli", "memory")
-    this.filePath = filePath 
+    this.filePath = filePath
       || path.join(this.dirPath, "memories.json")
   }
 
@@ -47,7 +48,7 @@ export class JSONStorage {
   async initialize(): Promise<void> {
     try {
       await fs.mkdir(this.dirPath, { recursive: true })
-      
+
       try {
         await fs.access(this.filePath)
         await this.loadCache()
@@ -55,7 +56,7 @@ export class JSONStorage {
         // File doesn't exist, create empty
         await this.saveToFile([])
       }
-      
+
       log.info("JSON storage initialized", { path: this.filePath })
     } catch (error) {
       log.error("Failed to initialize JSON storage", { error })
@@ -69,12 +70,12 @@ export class JSONStorage {
   private async loadCache(): Promise<void> {
     const content = await fs.readFile(this.filePath, "utf-8")
     const items: MemoryItem[] = JSON.parse(content)
-    
+
     this.cache.clear()
     for (const item of items) {
       this.cache.set(item.id, item)
     }
-    
+
     log.info("Loaded cache", { count: this.cache.size })
   }
 
@@ -95,14 +96,14 @@ export class JSONStorage {
    */
   async create(item: MemoryItem): Promise<void> {
     await this.initialize()
-    
+
     if (this.cache.has(item.id)) {
       throw new Error(`Memory item already exists: ${item.id}`)
     }
-    
+
     this.cache.set(item.id, item)
     await this.saveToFile()
-    
+
     log.debug("Created memory item", { id: item.id, type: item.type })
   }
 
@@ -119,12 +120,12 @@ export class JSONStorage {
    */
   async update(id: string, updates: Partial<MemoryItem>): Promise<void> {
     await this.initialize()
-    
+
     const existing = this.cache.get(id)
     if (!existing) {
       throw new Error(`Memory item not found: ${id}`)
     }
-    
+
     const updated: MemoryItem = {
       ...existing,
       ...updates,
@@ -135,10 +136,10 @@ export class JSONStorage {
         updatedAt: new Date().toISOString(),
       },
     }
-    
+
     this.cache.set(id, updated)
     await this.saveToFile()
-    
+
     log.debug("Updated memory item", { id })
   }
 
@@ -147,14 +148,14 @@ export class JSONStorage {
    */
   async delete(id: string): Promise<void> {
     await this.initialize()
-    
+
     if (!this.cache.has(id)) {
       return // Silently ignore
     }
-    
+
     this.cache.delete(id)
     await this.saveToFile()
-    
+
     log.debug("Deleted memory item", { id })
   }
 
@@ -167,7 +168,7 @@ export class JSONStorage {
    */
   async createMany(items: MemoryItem[]): Promise<void> {
     await this.initialize()
-    
+
     for (const item of items) {
       if (this.cache.has(item.id)) {
         log.warn("Skipping duplicate item", { id: item.id })
@@ -175,7 +176,7 @@ export class JSONStorage {
       }
       this.cache.set(item.id, item)
     }
-    
+
     await this.saveToFile()
     log.debug("Created multiple items", { count: items.length })
   }
@@ -185,7 +186,7 @@ export class JSONStorage {
    */
   async readMany(ids: string[]): Promise<MemoryItem[]> {
     await this.initialize()
-    
+
     const results: MemoryItem[] = []
     for (const id of ids) {
       const item = this.cache.get(id)
@@ -201,11 +202,11 @@ export class JSONStorage {
    */
   async deleteMany(ids: string[]): Promise<void> {
     await this.initialize()
-    
+
     for (const id of ids) {
       this.cache.delete(id)
     }
-    
+
     await this.saveToFile()
     log.debug("Deleted multiple items", { count: ids.length })
   }
@@ -215,52 +216,36 @@ export class JSONStorage {
   // ============================================================================
 
   /**
-   * Search memory items by keyword
+   * Search memory items using BM25 scoring
    */
   async search(query: string, options?: SearchOptions): Promise<MemoryItem[]> {
     await this.initialize()
-    
-    const lowerQuery = query.toLowerCase()
+
     const results: Array<{ item: MemoryItem; score: number }> = []
 
     for (const item of this.cache.values()) {
       // Apply filters
       if (options?.type && item.type !== options.type) continue
       if (options?.context && !item.context.toLowerCase().includes(options.context.toLowerCase())) continue
-      
-      // Calculate relevance score
-      let score = 0
-      
-      // Title match (highest weight)
-      if (item.title.toLowerCase().includes(lowerQuery)) {
-        score += 10
-      }
-      
-      // Content match
-      if (item.content.toLowerCase().includes(lowerQuery)) {
-        score += 5
-      }
-      
-      // Solution match
-      if (item.solution?.toLowerCase().includes(lowerQuery)) {
-        score += 3
-      }
-      
-      // Tag match
-      if (item.tags.some(tag => tag.toLowerCase().includes(lowerQuery))) {
-        score += 4
-      }
-      
-      // Context match
-      if (item.context.toLowerCase().includes(lowerQuery)) {
-        score += 2
-      }
-      
-      // Usage count bonus
+
+      // Build searchable text from all fields
+      const searchText = [
+        item.title,
+        item.content,
+        item.solution || "",
+        item.context,
+        item.tags.join(" "),
+      ].join(" ")
+
+      // BM25 score
+      let score = bm25Score(query, searchText)
+
+      // Boost by usage and success metrics
       score += Math.min(item.metadata.usageCount * 0.1, 2)
-      
-      // Success rate bonus
-      score += item.metadata.successRate * 2
+      score += item.metadata.successRate * 0.5
+
+      // Boost by strength
+      score *= (0.5 + item.strength * 0.5)
 
       if (score > 0) {
         results.push({ item, score })
@@ -269,11 +254,11 @@ export class JSONStorage {
 
     // Sort by score descending
     results.sort((a, b) => b.score - a.score)
-    
+
     // Apply limit
     const limit = options?.limit || 10
     const limited = results.slice(0, limit)
-    
+
     return limited.map(r => r.item)
   }
 
@@ -282,16 +267,16 @@ export class JSONStorage {
    */
   async searchByType(type: MemoryType): Promise<MemoryItem[]> {
     await this.initialize()
-    
+
     const results: Array<{ item: MemoryItem; score: number }> = []
-    
+
     for (const item of this.cache.values()) {
       if (item.type === type) {
         const score = item.metadata.usageCount * 0.5 + item.metadata.successRate * 5
         results.push({ item, score })
       }
     }
-    
+
     results.sort((a, b) => b.score - a.score)
     return results.map(r => r.item)
   }
@@ -301,17 +286,17 @@ export class JSONStorage {
    */
   async searchByContext(context: string): Promise<MemoryItem[]> {
     await this.initialize()
-    
+
     const lowerContext = context.toLowerCase()
     const results: Array<{ item: MemoryItem; score: number }> = []
-    
+
     for (const item of this.cache.values()) {
       if (item.context.toLowerCase().includes(lowerContext)) {
         const score = item.metadata.usageCount * 0.5 + item.metadata.successRate * 5
         results.push({ item, score })
       }
     }
-    
+
     results.sort((a, b) => b.score - a.score)
     return results.map(r => r.item)
   }
@@ -321,15 +306,15 @@ export class JSONStorage {
    */
   async getRecent(limit: number): Promise<MemoryItem[]> {
     await this.initialize()
-    
+
     const items = Array.from(this.cache.values())
-    
+
     items.sort((a, b) => {
       const aTime = new Date(a.metadata.createdAt).getTime()
       const bTime = new Date(b.metadata.createdAt).getTime()
       return bTime - aTime
     })
-    
+
     return items.slice(0, limit)
   }
 
@@ -338,18 +323,18 @@ export class JSONStorage {
    */
   async getTopUsed(limit: number): Promise<MemoryItem[]> {
     await this.initialize()
-    
+
     const items = Array.from(this.cache.values())
-    
+
     items.sort((a, b) => {
       // Primary: usage count
       const usageDiff = b.metadata.usageCount - a.metadata.usageCount
       if (usageDiff !== 0) return usageDiff
-      
+
       // Secondary: success rate
       return b.metadata.successRate - a.metadata.successRate
     })
-    
+
     return items.slice(0, limit)
   }
 
@@ -362,9 +347,9 @@ export class JSONStorage {
    */
   async getStats(): Promise<MemoryStats> {
     await this.initialize()
-    
+
     const items = Array.from(this.cache.values())
-    
+
     // Count by type
     const memoriesByType: Record<string, number> = {}
     let totalUsage = 0

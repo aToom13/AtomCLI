@@ -172,61 +172,56 @@ export type ToolInfo = {
   subtitle?: string
 }
 
-export function getToolInfo(tool: string, input: any = {}): ToolInfo {
+export function getToolInfo(tool: string, input: Record<string, unknown> = {}): ToolInfo {
   switch (tool) {
     case "read":
       return {
         icon: "glasses",
         title: "Read",
-        subtitle: input.filePath ? getFilename(input.filePath) : undefined,
+        subtitle: typeof input["filePath"] === "string" ? getFilename(input["filePath"]) : undefined,
       }
     case "list":
       return {
         icon: "bullet-list",
         title: "List",
-        subtitle: input.path ? getFilename(input.path) : undefined,
+        subtitle: typeof input["path"] === "string" ? getFilename(input["path"]) : undefined,
       }
     case "glob":
       return {
         icon: "magnifying-glass-menu",
         title: "Glob",
-        subtitle: input.pattern,
+        subtitle: typeof input["pattern"] === "string" ? input["pattern"] : undefined,
       }
     case "grep":
       return {
         icon: "magnifying-glass-menu",
         title: "Grep",
-        subtitle: input.pattern,
+        subtitle: typeof input["pattern"] === "string" ? input["pattern"] : undefined,
       }
     case "webfetch":
       return {
         icon: "window-cursor",
         title: "Webfetch",
-        subtitle: input.url,
+        subtitle: typeof input["url"] === "string" ? input["url"] : undefined,
       }
     case "task":
       return {
         icon: "task",
-        title: `${input.subagent_type || "task"} Agent`,
-        subtitle: input.description,
+        title: `${typeof input["subagent_type"] === "string" ? input["subagent_type"] : "task"} Agent`,
+        subtitle: typeof input["description"] === "string" ? input["description"] : undefined,
       }
     case "bash":
       return {
         icon: "console",
         title: "Shell",
-        subtitle: input.description,
+        subtitle: typeof input["description"] === "string" ? input["description"] : undefined,
       }
     case "edit":
-      return {
-        icon: "code-lines",
-        title: "Edit",
-        subtitle: input.filePath ? getFilename(input.filePath) : undefined,
-      }
     case "write":
       return {
         icon: "code-lines",
-        title: "Write",
-        subtitle: input.filePath ? getFilename(input.filePath) : undefined,
+        title: tool === "edit" ? "Edit" : "Write",
+        subtitle: typeof input["filePath"] === "string" ? getFilename(input["filePath"]) : undefined,
       }
     case "todowrite":
       return {
@@ -430,9 +425,9 @@ export function Part(props: MessagePartProps) {
   )
 }
 
-export interface ToolProps {
-  input: Record<string, any>
-  metadata: Record<string, any>
+export interface ToolProps<TInput = Record<string, unknown>, TMetadata = Record<string, unknown>> {
+  input: TInput
+  metadata: TMetadata
   tool: string
   output?: string
   status?: string
@@ -503,8 +498,8 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     })
   }
 
-  const emptyInput: Record<string, any> = {}
-  const emptyMetadata: Record<string, any> = {}
+  const emptyInput: Record<string, unknown> = {}
+  const emptyMetadata: Record<string, unknown> = {}
 
   const input = () => part.state?.input ?? emptyInput
   // @ts-expect-error
@@ -606,15 +601,15 @@ ToolRegistry.register({
   name: "read",
   render(props) {
     const args: string[] = []
-    if (props.input.offset) args.push("offset=" + props.input.offset)
-    if (props.input.limit) args.push("limit=" + props.input.limit)
+    if (typeof props.input["offset"] === "number") args.push("offset=" + props.input["offset"])
+    if (typeof props.input["limit"] === "number") args.push("limit=" + props.input["limit"])
     return (
       <BasicTool
         {...props}
         icon="glasses"
         trigger={{
           title: "Read",
-          subtitle: props.input.filePath ? getFilename(props.input.filePath) : "",
+          subtitle: typeof props.input["filePath"] === "string" ? getFilename(props.input["filePath"]) : "",
           args,
         }}
       />
@@ -629,7 +624,7 @@ ToolRegistry.register({
       <BasicTool
         {...props}
         icon="bullet-list"
-        trigger={{ title: "List", subtitle: getDirectory(props.input.path || "/") }}
+        trigger={{ title: "List", subtitle: getDirectory(typeof props.input["path"] === "string" ? props.input["path"] : "/") }}
       >
         <Show when={props.output}>
           {(output) => (
@@ -652,8 +647,8 @@ ToolRegistry.register({
         icon="magnifying-glass-menu"
         trigger={{
           title: "Glob",
-          subtitle: getDirectory(props.input.path || "/"),
-          args: props.input.pattern ? ["pattern=" + props.input.pattern] : [],
+          subtitle: getDirectory(typeof props.input["path"] === "string" ? props.input["path"] : "/"),
+          args: typeof props.input["pattern"] === "string" ? ["pattern=" + props.input["pattern"]] : [],
         }}
       >
         <Show when={props.output}>
@@ -672,15 +667,15 @@ ToolRegistry.register({
   name: "grep",
   render(props) {
     const args: string[] = []
-    if (props.input.pattern) args.push("pattern=" + props.input.pattern)
-    if (props.input.include) args.push("include=" + props.input.include)
+    if (typeof props.input["pattern"] === "string") args.push("pattern=" + props.input["pattern"])
+    if (typeof props.input["include"] === "string") args.push("include=" + props.input["include"])
     return (
       <BasicTool
         {...props}
         icon="magnifying-glass-menu"
         trigger={{
           title: "Grep",
-          subtitle: getDirectory(props.input.path || "/"),
+          subtitle: getDirectory(typeof props.input["path"] === "string" ? props.input["path"] : "/"),
           args,
         }}
       >
@@ -705,8 +700,8 @@ ToolRegistry.register({
         icon="window-cursor"
         trigger={{
           title: "Webfetch",
-          subtitle: props.input.url || "",
-          args: props.input.format ? ["format=" + props.input.format] : [],
+          subtitle: typeof props.input["url"] === "string" ? props.input["url"] : "",
+          args: typeof props.input["format"] === "string" ? ["format=" + props.input["format"]] : [],
           action: (
             <div data-component="tool-action">
               <Icon name="square-arrow-top-right" size="small" />
@@ -816,9 +811,9 @@ ToolRegistry.register({
                     icon="task"
                     defaultOpen={true}
                     trigger={{
-                      title: `${props.input.subagent_type || props.tool} Agent`,
+                      title: `${typeof props.input["subagent_type"] === "string" ? props.input["subagent_type"] : props.tool} Agent`,
                       titleClass: "capitalize",
-                      subtitle: props.input.description,
+                      subtitle: typeof props.input["description"] === "string" ? props.input["description"] : undefined,
                     }}
                     onSubtitleClick={handleSubtitleClick}
                   />
@@ -846,9 +841,9 @@ ToolRegistry.register({
               icon="task"
               defaultOpen={true}
               trigger={{
-                title: `${props.input.subagent_type || props.tool} Agent`,
+                title: `${typeof props.input["subagent_type"] === "string" ? props.input["subagent_type"] : props.tool} Agent`,
                 titleClass: "capitalize",
-                subtitle: props.input.description,
+                subtitle: typeof props.input["description"] === "string" ? props.input["description"] : undefined,
               }}
               onSubtitleClick={handleSubtitleClick}
             >
@@ -892,12 +887,12 @@ ToolRegistry.register({
         icon="console"
         trigger={{
           title: "Shell",
-          subtitle: props.input.description,
+          subtitle: typeof props.input["description"] === "string" ? props.input["description"] : undefined,
         }}
       >
         <div data-component="tool-output" data-scrollable>
           <Markdown
-            text={`\`\`\`command\n$ ${props.input.command ?? props.metadata.command ?? ""}${props.output ? "\n\n" + props.output : ""}\n\`\`\``}
+            text={`\`\`\`command\n$ ${typeof props.input["command"] === "string" ? props.input["command"] : (typeof props.metadata["command"] === "string" ? props.metadata["command"] : "")}${props.output ? "\n\n" + props.output : ""}\n\`\`\``}
           />
         </div>
       </BasicTool>
@@ -909,7 +904,7 @@ ToolRegistry.register({
   name: "edit",
   render(props) {
     const diffComponent = useDiffComponent()
-    const diagnostics = createMemo(() => getDiagnostics(props.metadata.diagnostics, props.input.filePath))
+    const diagnostics = createMemo(() => getDiagnostics(props.metadata["diagnostics"] as undefined | Record<string, Diagnostic[]>, typeof props.input["filePath"] === "string" ? props.input["filePath"] : undefined))
     return (
       <BasicTool
         {...props}
@@ -919,31 +914,31 @@ ToolRegistry.register({
             <div data-slot="message-part-title-area">
               <div data-slot="message-part-title">Edit</div>
               <div data-slot="message-part-path">
-                <Show when={props.input.filePath?.includes("/")}>
-                  <span data-slot="message-part-directory">{getDirectory(props.input.filePath!)}</span>
+                <Show when={typeof props.input["filePath"] === "string" && props.input["filePath"].includes("/")}>
+                  <span data-slot="message-part-directory">{getDirectory(props.input["filePath"] as string)}</span>
                 </Show>
-                <span data-slot="message-part-filename">{getFilename(props.input.filePath ?? "")}</span>
+                <span data-slot="message-part-filename">{getFilename(typeof props.input["filePath"] === "string" ? props.input["filePath"] : "")}</span>
               </div>
             </div>
             <div data-slot="message-part-actions">
-              <Show when={props.metadata.filediff}>
-                <DiffChanges changes={props.metadata.filediff} />
+              <Show when={props.metadata["filediff"]}>
+                <DiffChanges changes={props.metadata["filediff"] as any} />
               </Show>
             </div>
           </div>
         }
       >
-        <Show when={props.metadata.filediff?.path || props.input.filePath}>
+        <Show when={(props.metadata["filediff"] as any)?.path || props.input["filePath"]}>
           <div data-component="edit-content">
             <Dynamic
               component={diffComponent}
               before={{
-                name: props.metadata?.filediff?.file || props.input.filePath,
-                contents: props.metadata?.filediff?.before || props.input.oldString,
+                name: (props.metadata["filediff"] as any)?.file || props.input["filePath"],
+                contents: (props.metadata["filediff"] as any)?.before || props.input["oldString"],
               }}
               after={{
-                name: props.metadata?.filediff?.file || props.input.filePath,
-                contents: props.metadata?.filediff?.after || props.input.newString,
+                name: (props.metadata["filediff"] as any)?.file || props.input["filePath"],
+                contents: (props.metadata["filediff"] as any)?.after || props.input["newString"],
               }}
             />
           </div>
@@ -958,7 +953,7 @@ ToolRegistry.register({
   name: "write",
   render(props) {
     const codeComponent = useCodeComponent()
-    const diagnostics = createMemo(() => getDiagnostics(props.metadata.diagnostics, props.input.filePath))
+    const diagnostics = createMemo(() => getDiagnostics(props.metadata["diagnostics"] as undefined | Record<string, Diagnostic[]>, typeof props.input["filePath"] === "string" ? props.input["filePath"] : undefined))
     return (
       <BasicTool
         {...props}
@@ -968,10 +963,10 @@ ToolRegistry.register({
             <div data-slot="message-part-title-area">
               <div data-slot="message-part-title">Write</div>
               <div data-slot="message-part-path">
-                <Show when={props.input.filePath?.includes("/")}>
-                  <span data-slot="message-part-directory">{getDirectory(props.input.filePath!)}</span>
+                <Show when={typeof props.input["filePath"] === "string" && props.input["filePath"].includes("/")}>
+                  <span data-slot="message-part-directory">{getDirectory(props.input["filePath"] as string)}</span>
                 </Show>
-                <span data-slot="message-part-filename">{getFilename(props.input.filePath ?? "")}</span>
+                <span data-slot="message-part-filename">{getFilename(typeof props.input["filePath"] === "string" ? props.input["filePath"] : "")}</span>
               </div>
             </div>
             <div data-slot="message-part-actions">{/* <DiffChanges diff={diff} /> */}</div>
@@ -983,9 +978,9 @@ ToolRegistry.register({
             <Dynamic
               component={codeComponent}
               file={{
-                name: props.input.filePath,
-                contents: props.input.content,
-                cacheKey: checksum(props.input.content),
+                name: props.input["filePath"] as string,
+                contents: props.input["content"] as string,
+                cacheKey: checksum(props.input["content"] as string),
               }}
               overflow="scroll"
             />
@@ -1004,7 +999,7 @@ ToolRegistry.register({
       const meta = props.metadata?.todos
       if (Array.isArray(meta)) return meta
 
-      const input = props.input.todos
+      const input = props.input["todos"]
       if (Array.isArray(input)) return input
 
       return []

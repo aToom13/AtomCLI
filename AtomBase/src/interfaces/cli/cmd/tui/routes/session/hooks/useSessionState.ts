@@ -26,7 +26,11 @@ export function useSessionState() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
 
-  const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  const messages = createMemo(() => {
+    const remote = sync.data.message[route.sessionID] ?? []
+    const optimistic = sync.data.optimistic_message[route.sessionID] ?? []
+    return [...remote, ...optimistic]
+  })
 
   const permissions = createMemo(() => {
     if (session()?.parentID) return []

@@ -4,6 +4,7 @@ import { useDialog, type DialogContext } from "./dialog"
 import { For } from "solid-js"
 import { Locale } from "@/util/util/locale"
 import { Button } from "./button"
+import { useKeyboard } from "@opentui/solid"
 
 export type DialogConfirmProps = {
   title: string
@@ -15,13 +16,25 @@ export type DialogConfirmProps = {
 export function DialogConfirm(props: DialogConfirmProps) {
   const { theme } = useTheme()
   const dialog = useDialog()
+
+  useKeyboard((e) => {
+    if (e.name === "return" || e.name === "enter") {
+      props.onConfirm?.()
+      dialog.clear()
+    }
+  })
+
   return (
-    <box paddingLeft={2} paddingRight={2} gap={1}>
+    <box
+      paddingLeft={2}
+      paddingRight={2}
+      gap={1}
+    >
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           {props.title}
         </text>
-        <text fg={theme.textMuted}>esc</text>
+        <text fg={theme.textMuted}>enter to confirm / esc</text>
       </box>
       <box paddingBottom={1}>
         <text fg={theme.textMuted}>{props.message}</text>
