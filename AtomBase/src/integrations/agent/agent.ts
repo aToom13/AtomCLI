@@ -110,6 +110,23 @@ export namespace Agent {
         native: true,
         // prompt is handled by PromptManager (includes agent/agent.txt)
       },
+      checker: {
+        name: "checker",
+        description: `Security and optimization auditor. Analyzes code for vulnerabilities (injection, access control, data exposure, misconfigurations, race conditions) and performance issues (bottlenecks, memory leaks, N+1 queries, dead code, missing caching). Reports findings with severity, evidence, and recommended fixes — never modifies code directly.`,
+        options: {},
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            question: "allow",
+            edit: {
+              "*": "deny",
+            },
+          }),
+          user,
+        ),
+        mode: "all",
+        native: true,
+      },
       general: {
         name: "general",
         description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,

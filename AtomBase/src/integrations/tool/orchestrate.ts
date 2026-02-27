@@ -671,6 +671,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             const promptText = `<system_notification>\nBackground execution for workflow ${params.workflowId} completed.\nResults:\n${parts.join("\n")}\n</system_notification>\n\nPlease summarize these results to the user.`
             await SessionPrompt.prompt({
               sessionID: ctx.sessionID,
+              agent: ctx.agent,
               parts: [{ type: "text", text: promptText }],
             }).catch((err) => {
               log.error("failed to send result prompt back to orchestrator", { error: err.message })

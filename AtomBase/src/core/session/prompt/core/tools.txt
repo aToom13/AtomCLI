@@ -590,7 +590,7 @@ CodeSearch({ query: "prisma many-to-many relations" })
 
 ### TodoWrite Tool
 
-**Purpose:** Create and manage task lists.
+**Purpose:** Create and manage task lists. See `<chain_system>` in extensions for detailed Chain + TodoWrite workflow.
 
 **Parameters:**
 | Parameter | Type | Required | Description |
@@ -607,32 +607,10 @@ CodeSearch({ query: "prisma many-to-many relations" })
 }
 ```
 
-**Usage:**
-```typescript
-// Create initial task list
-TodoWrite([
-  { id: "1", content: "🔍 Analyze requirements", status: "in_progress" },
-  { id: "2", content: "📝 Implement feature", status: "pending" },
-  { id: "3", content: "✅ Add tests", status: "pending" },
-  { id: "4", content: "📋 Verify completion", status: "pending" }
-])
-
-// Update progress
-TodoWrite([
-  { id: "1", content: "🔍 Analyze requirements", status: "completed" },
-  { id: "2", content: "📝 Implement feature", status: "in_progress" },
-  { id: "3", content: "✅ Add tests", status: "pending" },
-  { id: "4", content: "📋 Verify completion", status: "pending" }
-])
-```
-
 **Critical Rules:**
 - ✅ Only ONE task should be `in_progress` at a time
 - ✅ Mark `completed` IMMEDIATELY after finishing
-- ✅ Update after EVERY significant action
-- ✅ Use for 3+ step tasks
-- ❌ Don't batch updates at the end
-- ❌ Don't forget to update
+- ✅ Always use TOGETHER with Chain (chainupdate) — see extensions
 
 ---
 

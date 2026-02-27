@@ -92,32 +92,31 @@ await LearnTool({
 })
 ```
 
-## 🎯 Example: YouTube Video Analysis
+## 🎯 Example: TypeScript Migration
 
-**User: "Analyze this YouTube video"**
+**User: "Migrate this Express app to use TypeScript strict mode"**
 
 ```typescript
 // STEP 1: Check if I know how to do this
 const knowledge = await LearnTool({
   action: "find_knowledge",
-  query: "YouTube video analysis transcript",
-  context: "video"
+  query: "TypeScript strict mode migration Express",
+  context: "typescript"
 })
 
-// If found: "I know from before that I should use yt-dlp for transcripts..."
+// If found: "I know from before that strict mode requires explicit null checks..."
 // Apply that knowledge immediately!
 
 // STEP 2: Execute with learned method
-// Use yt-dlp to get transcript
 
 // STEP 3: If error occurs
 await LearnTool({
   action: "record_error",
-  title: "YouTube transcript extraction failed",
-  context: "video",
-  errorType: "Error",
-  errorMessage: "No subtitles available",
-  solution: "Check available subs first with --list-subs"
+  title: "TypeScript strict mode implicit any errors",
+  context: "typescript",
+  errorType: "TSError",
+  errorMessage: "Parameter 'req' implicitly has an 'any' type",
+  solution: "Import Request type from express: import { Request } from 'express'"
 })
 
 // STEP 4: Fix and retry with learned solution

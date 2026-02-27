@@ -9,9 +9,69 @@ import { Identifier } from "@/core/id/id"
 import { Agent } from "../agent/agent"
 import { SessionPrompt } from "@/core/session/prompt"
 import { iife } from "@/util/util/iife"
-import { defer } from "@/util/util/defer"
+
 import { Config } from "@/core/config/config"
 import { PermissionNext } from "@/util/permission/next"
+
+// ─── Batching: Collect results from multiple background tasks, send ONE notification ───
+const BATCH_WINDOW_MS = 3000 // Wait 3s for more results before sending
+
+interface PendingResult {
+  description: string
+  agentType: string
+  sessionId: string
+  text: string
+}
+
+// Key: parentSessionID → collected results + flush timer
+const PENDING_RESULTS: Map<string, {
+  results: PendingResult[]
+  timer: ReturnType<typeof setTimeout>
+  agent: string // parent agent mode to preserve
+}> = new Map()
+
+function flushResults(parentSessionID: string) {
+  const pending = PENDING_RESULTS.get(parentSessionID)
+  if (!pending || pending.results.length === 0) return
+  PENDING_RESULTS.delete(parentSessionID)
+
+  const parts: string[] = [
+    `<system_notification>`,
+    `${pending.results.length} background task(s) completed:`,
+    ``,
+  ]
+
+  for (const r of pending.results) {
+    parts.push(`### ${r.description} (@${r.agentType})`)
+    parts.push(`Session: ${r.sessionId}`)
+    const truncated = r.text.length > 2000 ? r.text.slice(0, 2000) + "\n... (truncated)" : r.text
+    parts.push(truncated)
+    parts.push(``)
+  }
+
+  parts.push(`</system_notification>`)
+  parts.push(``)
+  parts.push(`Please summarize these results to the user.`)
+
+  SessionPrompt.prompt({
+    sessionID: parentSessionID,
+    agent: pending.agent,
+    parts: [{ type: "text", text: parts.join("\n") }],
+  }).catch(() => { /* parent may be busy */ })
+}
+
+function addPendingResult(parentSessionID: string, parentAgent: string, result: PendingResult) {
+  let pending = PENDING_RESULTS.get(parentSessionID)
+  if (!pending) {
+    pending = { results: [], timer: setTimeout(() => flushResults(parentSessionID), BATCH_WINDOW_MS), agent: parentAgent }
+    PENDING_RESULTS.set(parentSessionID, pending)
+  } else {
+    // Reset timer — wait for more results
+    clearTimeout(pending.timer)
+    pending.timer = setTimeout(() => flushResults(parentSessionID), BATCH_WINDOW_MS)
+  }
+  pending.results.push(result)
+}
 
 const parameters = z.object({
   action: z.enum(["run", "abort"]).optional().describe("Defaults to run. Set to abort to kill a session_id"),
@@ -178,61 +238,74 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         providerID: msg.info.providerID,
       }
 
-      function cancel() {
-        SessionPrompt.cancel(session.id)
-      }
-      ctx.abort.addEventListener("abort", cancel)
-      using _ = defer(() => ctx.abort.removeEventListener("abort", cancel))
       const promptParts = await SessionPrompt.resolvePromptParts(params.prompt)
 
-      const result = await SessionPrompt.prompt({
-        messageID,
-        sessionID: session.id,
-        model: {
-          modelID: model.modelID,
-          providerID: model.providerID,
-        },
-        agent: agent.name,
-        tools: {
-          todowrite: false,
-          todoread: false,
-          task: false,
-          ...Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
-        },
-        parts: promptParts,
-      })
-      unsub()
-      const messages = await Session.messages({ sessionID: session.id })
-      const summary = messages
-        .filter((x) => x.info.role === "assistant")
-        .flatMap((msg) => msg.parts.filter((x: any) => x.type === "tool") as MessageV2.ToolPart[])
-        .map((part) => ({
-          id: part.id,
-          tool: part.tool,
-          state: {
-            status: part.state.status,
-            title: part.state.status === "completed" ? part.state.title : undefined,
-          },
-        }))
-      const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
+      // ─── NON-BLOCKING: Start sub-agent in background, return immediately ───
+      // The main agent gets control back right away.
+      // When the sub-agent finishes, results are delivered via system_notification.
 
-      // Notify TUI that sub-agent finished (mark as waiting, keep visible, pass output for context)
-      try {
-        await Bus.publish(TuiEvent.SubAgentDone, {
-          sessionId: session.id,
-          lastOutput: text.slice(0, 2000), // Truncate for UI but full text goes to orchestrator
-        })
-      } catch { /* TUI may not be available */ }
+      const runInBackground = async () => {
+        try {
+          const result = await SessionPrompt.prompt({
+            messageID,
+            sessionID: session.id,
+            model: {
+              modelID: model.modelID,
+              providerID: model.providerID,
+            },
+            agent: agent.name,
+            tools: {
+              todowrite: false,
+              todoread: false,
+              task: false,
+              ...Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
+            },
+            parts: promptParts,
+          })
 
+          unsub()
+          const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
+
+          // Notify TUI that sub-agent finished
+          try {
+            await Bus.publish(TuiEvent.SubAgentDone, {
+              sessionId: session.id,
+              lastOutput: text.slice(0, 2000),
+            })
+          } catch { /* TUI may not be available */ }
+
+          // Add to batch — will be flushed after 3s window with other results
+          addPendingResult(ctx.sessionID, ctx.agent, {
+            description: params.description!,
+            agentType: params.subagent_type!,
+            sessionId: session.id,
+            text,
+          })
+        } catch (e) {
+          unsub()
+          // Sub-agent failed — notify parent
+          try {
+            await Bus.publish(TuiEvent.SubAgentDone, {
+              sessionId: session.id,
+              lastOutput: `Error: ${(e as Error).message}`,
+            })
+          } catch { /* TUI may not be available */ }
+        }
+      }
+
+      // Detach execution — do NOT await
+      setTimeout(runInBackground, 0)
+
+      // Return immediately — main agent is free to continue
       return {
         title: params.description,
         metadata: {
-          summary,
+          summary: [],
           sessionId: session.id,
           error: false,
           aborted: 0,
         },
-        output: text,
+        output: `Task "${params.description}" started in background (@${params.subagent_type}, session: ${session.id}). You will be notified when it completes. Continue chatting with the user.`,
       }
     },
   }

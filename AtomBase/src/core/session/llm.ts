@@ -59,7 +59,7 @@ export namespace LLM {
     system.push(
       [
         // Always include PromptManager system prompt (core + provider + agent prompts)
-        ...SystemPrompt.provider(input.model),
+        ...SystemPrompt.provider(input.model, input.agent.name),
         // Append agent-specific prompt as additional context (if any)
         ...(input.agent.prompt ? [input.agent.prompt] : []),
         // any custom prompt passed into this call

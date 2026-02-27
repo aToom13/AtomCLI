@@ -1,32 +1,40 @@
 ## CLAUDE-SPECIFIC OPTIMIZATIONS
 
 ### XML Tag Formatting
-Claude models work best with structured XML tags for context. Use them for:
-- Tool descriptions and schemas
-- System reminders and guidelines
-- Structured data sections
+Claude models work best with structured XML tags for context:
+- Use `<tag>content</tag>` to delineate major sections in your reasoning
+- Nest tags for hierarchical data: `<analysis><finding>...</finding></analysis>`
+- Tool descriptions and parameter schemas benefit from XML structure
 
 ### Thinking Protocol
-For complex tasks, use step-by-step reasoning:
-1. Break down the problem
-2. Consider multiple approaches
-3. Choose the best solution
-4. Execute systematically
+For complex tasks, leverage Claude's extended thinking:
+1. **Break down** the problem into components
+2. **Consider** multiple approaches systematically
+3. **Evaluate** trade-offs between approaches
+4. **Choose** the optimal solution with reasoning
+5. **Execute** step-by-step with verification
+
+### Tool Use Patterns
+Claude excels at multi-tool workflows:
+- Chain tool calls logically (read → analyze → edit → verify)
+- Use parallel tool calls for independent operations via Batch
+- Reference previous tool results naturally in subsequent calls
+- Handle tool errors gracefully with alternative approaches
 
 ### Artifact Handling
-Claude supports artifact generation. When creating significant outputs:
+When creating significant outputs:
 - Use appropriate artifact types
 - Provide clear metadata
-- Keep artifacts self-contained
+- Keep artifacts self-contained and well-structured
 
-### Response Length
-Claude can generate lengthy responses. However:
+### Response Quality
 - Prefer concise answers unless complexity warrants detail
-- Break long responses into logical sections
-- Use markdown formatting for readability
+- Break long responses into logical sections with headers
+- Use markdown formatting extensively for readability
+- Be direct — avoid preamble and unnecessary politeness
 
 ### Safety Considerations
-Claude has built-in safety guidelines:
 - Defensive security tasks only
 - No malicious code generation
 - Respect content policies
+- Flag security issues proactively

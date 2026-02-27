@@ -1,4 +1,4 @@
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { useLocal } from "@tui/context/local"
 import { useTheme } from "@tui/context/theme"
@@ -22,16 +22,38 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
     const sync = useSync()
     const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
 
-    const final = createMemo(() => {
+    // Whether the message is done (finished, aborted, or errored)
+    const isDone = createMemo(() => {
+        if (props.message.error) return true
         return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
     })
 
-    const duration = createMemo(() => {
-        if (!final()) return 0
-        if (!props.message.time.completed) return 0
+    // Find the parent user message creation time
+    const userCreated = createMemo(() => {
         const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-        if (!user || !user.time) return 0
-        return props.message.time.completed - user.time.created
+        return user?.time?.created ?? 0
+    })
+
+    // Live ticking timer — updates every second while the message is in progress
+    const [now, setNow] = createSignal(Date.now())
+    const timer = setInterval(() => {
+        if (!isDone()) setNow(Date.now())
+    }, 1000)
+    onCleanup(() => clearInterval(timer))
+
+    const duration = createMemo(() => {
+        const start = userCreated()
+        if (!start) return 0
+        if (isDone() && props.message.time.completed) {
+            // Final: show exact completed duration
+            return props.message.time.completed - start
+        }
+        if (isDone()) {
+            // Aborted/errored: freeze at current time
+            return now() - start
+        }
+        // Live: show ticking elapsed time
+        return now() - start
     })
 
     return (
@@ -66,7 +88,7 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
                 </box>
             </Show>
             <Switch>
-                <Match when={props.last || final() || props.message.error?.name === "MessageAbortedError"}>
+                <Match when={props.last || isDone() || props.message.error?.name === "MessageAbortedError"}>
                     <box paddingLeft={3}>
                         <text marginTop={1}>
                             <span
@@ -81,7 +103,7 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
                             </span>{" "}
                             <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
                             <span style={{ fg: theme.textMuted }}> · {props.message.modelID}</span>
-                            <Show when={duration()}>
+                            <Show when={duration() > 0}>
                                 <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
                             </Show>
                             <Show when={props.message.error?.name === "MessageAbortedError"}>

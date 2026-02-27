@@ -7,7 +7,7 @@
  * Architecture:
  *
  *   prompt/
- *   ├── core/           8 base .txt prompts (always included)
+ *   ├── core/           9 base .txt prompts (always included)
  *   ├── provider/       4 provider-specific .txt prompts
  *   ├── agent/          4 agent-mode .txt prompts
  *   ├── runtime/        Special-purpose runtime injections
@@ -41,6 +41,7 @@ import PROMPT_CODE_EDITING from "./core/code-editing.txt"
 import PROMPT_GIT_SAFETY from "./core/git-safety.txt"
 import PROMPT_EXTENSIONS from "./core/extensions.txt"
 import PROMPT_SELF_LEARNING from "./core/self-learning.txt"
+import PROMPT_CONTEXT from "./core/context.txt"
 
 // ─── Provider-Specific Prompts ───────────────────────────────
 
@@ -55,6 +56,7 @@ import PROMPT_AGENT from "./agent/agent.txt"
 import PROMPT_EXPLORE from "./agent/explore.txt"
 import PROMPT_PLAN from "./agent/plan.txt"
 import PROMPT_BUILD from "./agent/build.txt"
+import PROMPT_CHECKER from "./agent/checker.txt"
 
 // ─── Learning System ─────────────────────────────────────────
 
@@ -63,7 +65,7 @@ import { Learning } from "@/services/learning"
 // ─── Types ───────────────────────────────────────────────────
 
 export type ProviderType = "anthropic" | "gemini" | "openai" | "generic"
-export type AgentType = "agent" | "explore" | "plan" | "build"
+export type AgentType = "agent" | "explore" | "plan" | "build" | "checker"
 
 export interface BuildOptions {
     /** Model API ID (e.g., "claude-3-5-sonnet", "gemini-2.0-flash") */
@@ -102,6 +104,7 @@ const AGENT_PROMPTS: Record<AgentType, string> = {
     explore: PROMPT_EXPLORE,
     plan: PROMPT_PLAN,
     build: PROMPT_BUILD,
+    checker: PROMPT_CHECKER,
 }
 
 /**
@@ -117,6 +120,7 @@ const CORE_PROMPTS = [
     PROMPT_CODE_EDITING,
     PROMPT_GIT_SAFETY,
     PROMPT_EXTENSIONS,
+    PROMPT_CONTEXT,
 ]
 
 // ─── Read-Before-Edit Emphasis ───────────────────────────────
@@ -194,47 +198,100 @@ Use when a request can be broken into **multiple independent subtasks**:
 ### Task vs Orchestrate
 - **Task**: Single focused subtask, blocking (waits for result)
 - **Orchestrate**: Multiple subtasks, non-blocking (background execution)
+
+---
+
+## ⚠️ CRITICAL: Agent Lifecycle Management — REUSE vs CREATE vs KILL
+
+**NEVER pile up agents!** Active Agents panel must stay clean. Before creating ANY sub-agent,
+you MUST check existing active agents and make the correct lifecycle decision.
+
+### The Decision Rule
+
+\`\`\`
+New task arrives
+     │
+     ▼
+Is there an active agent suitable for this task?
+├── YES → Is the task related to that agent's current context?
+│         ├── YES → ✅ REUSE (send message to existing session)
+│         └── NO  → 💀 KILL old, then 🆕 CREATE new
+└── NO  → 🆕 CREATE new agent
+\`\`\`
+
+### 🔄 REUSE — Send to existing agent session
+
+**REUSE when:**
+- Follow-up task is for the **same agent type** (e.g., checker → checker)
+- New task is **related to or continues** the previous work
+- Agent already has **relevant context** from its previous task
+- User says "ask the same one", "tell it to...", "now have it do X"
+
+**How:**
+\`\`\`json
+{ "action": "send", "sessionId": "<existing-session-id>", "message": "Now do X..." }
+\`\`\`
+
+### 🆕 CREATE — Only when no suitable agent exists
+
+**CREATE when:**
+- No active agent of the needed type exists
+- Task requires a **fundamentally different specialization**
+- Previous agent's context is completely irrelevant
+
+**Before creating, ALWAYS check:**
+1. Is there an active agent of this type? → REUSE it
+2. Are there old agents that should be killed first? → KILL then CREATE
+
+### 💀 KILL — Abort agents no longer needed
+
+**KILL when:**
+- Agent's task is **fully complete** and no follow-up expected
+- User moves to a **completely different topic**
+- Agent has been idle and a new workflow starts
+- Creating a NEW agent of the **same type** → KILL old first!
+
+**How:**
+\`\`\`json
+{ "action": "abort", "sessionId": "<session-id-to-kill>" }
+\`\`\`
+
+### ❌ FORBIDDEN: Agent Pile-Up
+
+\`\`\`
+WRONG (pile-up — creates 18 agents!):
+  User: "Run all agents"           → Create 6 agents
+  User: "Now have them explain"    → Create 6 MORE (12 total!)
+  User: "Ask them how they are"    → Create 6 MORE (18 total!)
+
+CORRECT (clean — max 6 agents):
+  User: "Run all agents"           → Create 6 agents
+  User: "Now have them explain"    → REUSE same 6 sessions
+  User: "Ask them how they are"    → REUSE same 6 sessions
+\`\`\`
+
+### 🧹 Cleanup Rules
+
+1. **After workflow completes**: If no follow-up expected, KILL all sub-agents
+2. **Before new workflow**: KILL leftover agents from previous workflows
+3. **On topic change**: KILL agents from the old topic
+4. **Maximum active agents**: Keep at most 6-8. Kill oldest if more needed
 </orchestrate_guide>
 `.trim()
 
-// ─── TodoWrite Details ───────────────────────────────────────
+
+// ─── TodoWrite Details (compact — full guide is in extensions.txt) ────
 
 const TODOWRITE_DETAILS = `
-<chain_todo_guide>
-## 📋 Chain + TodoWrite — Visual Progress + Task Tracking
+<chain_todo_reminder>
+## ⚠️ CRITICAL: Always use Chain + TodoWrite + SequentialThinking TOGETHER
 
-You have TWO complementary tools for task management:
+- **Chain** (chainupdate): Visual progress bar. Update FREQUENTLY — user watches this.
+- **TodoWrite**: Task state management. Only ONE in_progress at a time.
+- **SequentialThinking**: Use for complex reasoning and trade-off analysis.
 
-### 🔗 Chain (chainupdate) — What the USER sees
-Visual progress bar at the top of the terminal. **Always use for user visibility.**
-\`\`\`
-chainupdate [action=start]                        → Start progress bar
-chainupdate [action=update, status=doing_X]       → Show current action
-chainupdate [action=complete]                     → Advance progress
-chainupdate [action=clear]                        → Clear when done
-\`\`\`
-
-### 📋 TodoWrite — Task state tracking
-Structured task list with states. **Use for planning and state management.**
-\`\`\`typescript
-TodoWrite([
-  { id: "1", content: "🔍 Analyze", status: "in_progress" },  // ⚠️ ONLY ONE!
-  { id: "2", content: "📝 Implement", status: "pending" },
-  { id: "3", content: "✅ Verify", status: "pending" }
-])
-\`\`\`
-
-### 🔄 Use BOTH Together
-1. **Start**: \`chainupdate [action=start]\` + TodoWrite with plan
-2. **Progress**: \`chainupdate [action=update]\` for visual + TodoWrite for state
-3. **Step done**: \`chainupdate [action=complete]\` + TodoWrite mark completed
-4. **Finish**: \`chainupdate [action=clear]\` + TodoWrite all completed
-
-### Rules
-- Only ONE \`in_progress\` task at a time
-- Mark \`in_progress\` BEFORE starting, \`completed\` IMMEDIATELY after
-- Chain = user visibility, TodoWrite = state tracking
-</chain_todo_guide>
+See \`<chain_system>\` in extensions for the complete integrated workflow.
+</chain_todo_reminder>
 `.trim()
 
 // ─── Dynamic Context Generator ──────────────────────────────

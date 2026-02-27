@@ -19,11 +19,40 @@ test("returns default native agents when no config", async () => {
       const names = agents.map((a) => a.name)
       expect(names).toContain("build")
       expect(names).toContain("plan")
+      expect(names).toContain("checker")
       expect(names).toContain("general")
       expect(names).toContain("explore")
       expect(names).toContain("compaction")
       expect(names).toContain("title")
       expect(names).toContain("summary")
+    },
+  })
+})
+
+test("checker agent has mode 'all' and is native", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const checker = await Agent.get("checker")
+      expect(checker).toBeDefined()
+      expect(checker?.mode).toBe("all")
+      expect(checker?.native).toBe(true)
+    },
+  })
+})
+
+test("checker agent denies edits (read-only auditor)", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const checker = await Agent.get("checker")
+      expect(checker).toBeDefined()
+      expect(evalPerm(checker, "edit")).toBe("deny")
+      // Read and search tools should be allowed
+      expect(evalPerm(checker, "read")).toBe("allow")
+      expect(evalPerm(checker, "grep")).toBe("allow")
     },
   })
 })

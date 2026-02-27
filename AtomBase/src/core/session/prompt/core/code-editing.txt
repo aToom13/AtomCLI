@@ -28,63 +28,99 @@
 
 ---
 
-## BEFORE EDITING - COMPREHENSIVE CHECKLIST
+## BEFORE EDITING - KNOWLEDGE BUILDING
+
+### ⚠️ CRITICAL: Build Deep Understanding BEFORE Making Changes
+
+Before touching ANY code, you must build a comprehensive understanding of:
+
+#### 1. Project Purpose & Architecture
 
 ```
-☐ Have I Read the file?
-☐ Do I understand the imports and dependencies?
-☐ Do I know the existing code patterns?
-☐ Have I identified ALL locations to change?
-☐ Do I know what tests cover this code?
-☐ Are there related files that need updates?
-☐ Have I checked the file's linting rules?
-☐ Do I understand the file's purpose?
+☐ What is this project?
+☐ What problem does it solve?
+☐ What is the expected behavior?
+☐ What has been built so far?
+☐ What tech stack is used?
 ```
 
-### What to Look For When Reading
+#### 2. Library & Framework Analysis
 
-**Imports Section:**
+```
+☐ What libraries are installed? (package.json, requirements.txt, Cargo.toml)
+☐ What version of each library is used?
+☐ Are any libraries deprecated or outdated?
+☐ How are key libraries imported and used?
+☐ What internal utilities/helpers already exist?
+☐ What external APIs are being called?
+```
+
 ```typescript
-// What libraries are used?
-import { something } from 'library';
-
-// What internal modules are imported?
-import { helper } from '../utils/helper';
-
-// What patterns are used? (default vs named exports)
-import DefaultExport from './module';
-import { namedExport } from './module';
+// ALWAYS verify library availability
+Grep({ pattern: "\"axios\"", include: "**/package.json" })
+// Check current version
+Read({ filePath: "/project/package.json" })
+// Find how it's used in the project
+Grep({ pattern: "import.*from.*axios", include: "**/*.ts" })
 ```
 
-**Code Conventions:**
+#### 3. Code Structure & Dependencies
+
+```
+☐ What is the file/folder organization pattern?
+☐ What are the key modules and how do they relate?
+☐ What files import from the area I'm changing?
+☐ What shared types, interfaces, or classes exist?
+☐ Are there circular dependencies to be aware of?
+☐ What event/data flows pass through this area?
+```
+
 ```typescript
-// Naming: camelCase? snake_case? PascalCase?
-const myVariable = 1;
-const my_variable = 1;
-const MyVariable = 1;
+// Map dependencies before editing
+Grep({ pattern: "from.*'./auth'|from.*\"./auth\"", include: "**/*.ts" })
+// Understand exports
+Grep({ pattern: "export", include: "src/auth/**/*.ts" })
+```
 
-// Formatting: semicolons? tabs? spaces?
-const a = 1;  // with semicolon
-const b = 1   // without semicolon
+#### 4. Error Root Cause Analysis (for bug fixes)
 
-// Quotes: single? double?
+```
+☐ What exactly is failing? (error message, stack trace)
+☐ What is the expected behavior vs actual behavior?
+☐ What changed recently that could cause this? (git log)
+☐ Where in the code path does the failure occur?
+☐ What are the inputs/outputs at each step?
+☐ Are there related issues or known gotchas?
+```
+
+```bash
+# Check recent changes that might cause the bug
+git log --oneline -10
+git diff HEAD~5 -- src/affected-area/
+```
+
+#### 5. Conventions & Patterns
+
+```typescript
+// What naming convention?
+const myVariable = 1;   // camelCase?
+const my_variable = 1;  // snake_case?
+const MyVariable = 1;   // PascalCase?
+
+// What formatting?
+const a = 1;   // with semicolon?
+const b = 1    // without semicolon?
+
+// What quotes?
 const str1 = 'single';
 const str2 = "double";
-```
 
-**Existing Patterns:**
-```typescript
-// Error handling pattern
+// What error handling pattern?
 try {
   await something();
 } catch (error) {
   logger.error(error);
   throw new CustomError(error);
-}
-
-// Function signature pattern
-function processData(input: DataType): ResultType {
-  // ...
 }
 ```
 
@@ -136,13 +172,23 @@ CORRECT:
   // Find all occurrences first
 ```
 
+**❌ DON'T ASSUME** the bug is where you think:
+```
+WRONG:
+  Jump straight to editing the file where the error appears
+  // The root cause might be elsewhere!
+
+CORRECT:
+  Trace the code path from input to error
+  Check what calls this function
+  Check what data flows into it
+```
+
 ---
 
 ## EDIT PATTERNS BY SIZE
 
 ### Small Changes (<5 lines)
-
-For simple changes, use minimal context:
 
 ```typescript
 // Changing a single value
@@ -151,14 +197,6 @@ Edit({
   oldString: "const MAX_RETRIES = 3;",
   newString: "const MAX_RETRIES = 5;"
 })
-
-// Adding an import
-Edit({
-  filePath: "/project/src/handler.ts",
-  oldString: "import { Request } from 'express';",
-  newString: `import { Request } from 'express';
-import { validateInput } from './validators';`
-})
 ```
 
 ### Medium Changes (5-20 lines)
@@ -166,7 +204,6 @@ import { validateInput } from './validators';`
 Include surrounding context for uniqueness:
 
 ```typescript
-// Modifying a function
 Edit({
   filePath: "/project/src/auth.ts",
   oldString: `async function validateToken(token: string): Promise<boolean> {
@@ -198,7 +235,6 @@ MultiEdit({
   file_path: "/project/src/api.ts",
   edits: [
     { oldString: "...", newString: "..." },
-    { oldString: "...", newString: "..." },
     { oldString: "...", newString: "..." }
   ]
 })
@@ -207,20 +243,6 @@ MultiEdit({
 Write({
   filePath: "/project/src/api.ts",
   content: `// Complete new file content...`
-})
-```
-
-### Bulk Replacements
-
-For renaming across a file:
-
-```typescript
-// Rename variable/function throughout file
-Edit({
-  filePath: "/project/src/utils.ts",
-  oldString: "oldFunctionName",
-  newString: "newFunctionName",
-  replaceAll: true
 })
 ```
 
@@ -244,12 +266,6 @@ async function fetchUser(id: string): Promise<User | null> {
     throw new FetchError(`Failed to fetch user ${id}`, error);
   }
 }
-
-// BAD: No error handling
-async function fetchUser(id: string): Promise<User> {
-  const response = await api.get(`/users/${id}`);
-  return response.data;
-}
 ```
 
 **✓ Type Annotations:**
@@ -258,38 +274,23 @@ async function fetchUser(id: string): Promise<User> {
 function processData(input: InputType): OutputType {
   // ...
 }
-
-// BAD: Missing types
-function processData(input) {
-  // ...
-}
 ```
 
 **✓ Edge Case Handling:**
 ```typescript
-// GOOD: Handle edge cases
 function formatName(name: string | null | undefined): string {
   if (!name || name.trim() === '') {
     return 'Unknown';
   }
   return name.trim();
 }
-
-// BAD: Assumes valid input
-function formatName(name: string): string {
-  return name.trim();
-}
 ```
 
 **✓ Input Validation:**
 ```typescript
-// GOOD: Validate input
 function createUser(data: UserInput): User {
   if (!data.email || !isValidEmail(data.email)) {
     throw new ValidationError('Invalid email');
-  }
-  if (!data.name || data.name.length < 2) {
-    throw new ValidationError('Name too short');
   }
   // ...
 }
@@ -314,15 +315,7 @@ const displayIndex = index + 1;
 import { something } from 'library';  // never used
 
 // BAD: Commented out code
-// function oldWay() {
-//   // old implementation
-// }
-
-// BAD: Unreachable code
-function example() {
-  return true;
-  console.log('never reached');  // dead code
-}
+// function oldWay() { ... }
 ```
 
 **✗ Hardcoded Values:**
@@ -333,12 +326,6 @@ if (retries > 3) { ... }
 // GOOD: Named constant
 const MAX_RETRIES = 3;
 if (retries > MAX_RETRIES) { ... }
-
-// BAD: Hardcoded URL
-fetch('https://api.example.com/users');
-
-// GOOD: From config
-fetch(`${config.apiUrl}/users`);
 ```
 
 ---
@@ -347,71 +334,16 @@ fetch(`${config.apiUrl}/users`);
 
 ### ✓ DO Add Comments When:
 
-**Complex Logic:**
-```typescript
-// Use Fisher-Yates shuffle for O(n) in-place randomization
-// This is preferred over sort(() => Math.random() - 0.5) which has O(n log n)
-// complexity and non-uniform distribution
-function shuffle<T>(array: T[]): T[] {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
-  }
-  return array;
-}
-```
-
-**Workarounds:**
-```typescript
-// WORKAROUND: Chrome bug #123456 - force reflow before animation
-// See: https://bugs.chromium.org/p/chromium/issues/detail?id=123456
-element.offsetHeight;
-element.classList.add('animate');
-```
-
-**API Documentation (JSDoc):**
-```typescript
-/**
- * Fetches user data from the API.
- * 
- * @param id - The user's unique identifier
- * @returns The user object or null if not found
- * @throws {FetchError} If the API request fails
- * 
- * @example
- * const user = await fetchUser('123');
- * console.log(user.name);
- */
-async function fetchUser(id: string): Promise<User | null> {
-  // ...
-}
-```
-
-**Non-Obvious Business Logic:**
-```typescript
-// Users created before 2020 use legacy pricing model
-// See: JIRA-1234 for migration plan
-if (user.createdAt < new Date('2020-01-01')) {
-  return calculateLegacyPrice(user);
-}
-```
+- **Complex Logic:** Explain algorithms, non-obvious math
+- **Workarounds:** Reference bug numbers, explain why
+- **API Documentation:** JSDoc for public functions
+- **Business Logic:** Rules that aren't obvious from code
 
 ### ✗ DON'T Add Comments When:
 
-**Code is Self-Explanatory:**
-```typescript
-// BAD: Comment restates code
-// Check if user is admin
-if (user.isAdmin) { ... }
-
-// BAD: Obvious loop
-// Loop through all users
-for (const user of users) { ... }
-
-// BAD: Obvious variable
-// Store the user's name
-const userName = user.name;
-```
+- Code is self-explanatory (`if (user.isAdmin)` needs no comment)
+- Comment restates what code does
+- Variable/function name already describes purpose
 
 ---
 
@@ -419,30 +351,10 @@ const userName = user.name;
 
 ### Before Using a Library
 
-1. **Check if it's installed:**
-```typescript
-Grep({ pattern: "\"axios\"", include: "**/package.json" })
-```
-
-2. **Use existing versions:**
-```typescript
-// Check current version in package.json
-Read({ filePath: "/project/package.json" })
-```
-
-3. **Prefer project's existing libraries:**
-```
-If project uses `axios` → don't add `fetch` wrapper
-If project uses `lodash` → use lodash methods
-If project uses `date-fns` → don't add `moment`
-```
-
-4. **Document new dependencies:**
-```typescript
-// If you must add a dependency, explain why
-Bash({ command: "npm install zod" })
-// "Adding zod for runtime type validation"
-```
+1. **Check if it's installed:** `Grep({ pattern: "\"axios\"", include: "**/package.json" })`
+2. **Use existing versions:** Read package.json
+3. **Prefer project's existing libraries:** Don't introduce `moment` if `date-fns` exists
+4. **Document new dependencies:** Explain why if adding
 
 ---
 
@@ -451,58 +363,29 @@ Bash({ command: "npm install zod" })
 ### When to Add Tests
 
 ✅ New feature implementation
-✅ Bug fix (regression test to prevent recurrence)
+✅ Bug fix (regression test)
 ✅ User explicitly requests tests
 ✅ Complex logic that could break
 
 ### Test Structure
 
+Follow existing test patterns. Typical:
 ```typescript
-// Follow existing test patterns in the project
-// Look at: **/*.test.ts, **/*.spec.ts, **/test/**
-
-// Typical structure:
 describe('UserService', () => {
   describe('createUser', () => {
-    it('should create a user with valid input', async () => {
-      // Arrange
-      const input = { name: 'Test', email: 'test@example.com' };
-      
-      // Act
-      const result = await userService.createUser(input);
-      
-      // Assert
-      expect(result.name).toBe('Test');
-      expect(result.id).toBeDefined();
+    it('should create with valid input', async () => {
+      // Arrange → Act → Assert
     });
-    
-    it('should throw ValidationError for invalid email', async () => {
-      const input = { name: 'Test', email: 'invalid' };
-      
-      await expect(userService.createUser(input))
-        .rejects.toThrow(ValidationError);
+    it('should throw for invalid email', async () => {
+      // ...
     });
   });
 });
 ```
 
-### Edge Cases to Test
-
-```typescript
-it('should handle null input', () => { ... });
-it('should handle empty string', () => { ... });
-it('should handle empty array', () => { ... });
-it('should handle maximum values', () => { ... });
-it('should handle minimum values', () => { ... });
-it('should handle special characters', () => { ... });
-it('should handle concurrent calls', () => { ... });
-```
-
 ---
 
 ## MULTI-FILE CHANGES
-
-When changes span multiple files:
 
 ### 1. Plan the Order
 
@@ -516,26 +399,25 @@ Dependencies first:
 6. Tests (*.test.ts)
 ```
 
-### 2. Track in TodoWrite
+### 2. Verify Incrementally
 
-```typescript
-TodoWrite([
-  { id: "1", content: "📝 Update types.ts", status: "in_progress" },
-  { id: "2", content: "📝 Update service.ts", status: "pending" },
-  { id: "3", content: "📝 Update api.ts", status: "pending" },
-  { id: "4", content: "📝 Update component.tsx", status: "pending" },
-  { id: "5", content: "✅ Update tests", status: "pending" },
-  { id: "6", content: "📋 Verify build", status: "pending" }
-])
-```
+After each file: `npm run typecheck && npm run lint`
 
-### 3. Verify Incrementally
+---
 
-After each file, check:
-```bash
-npm run typecheck  # Types still valid?
-npm run lint       # No lint errors?
-```
+## SAFE vs RISKY REFACTORING
+
+### Safe (Proceed Independently)
+- Variable/function renames (within file)
+- Extract function/method
+- Add types, error handling, logging
+
+### Risky (Ask First)
+- Changing public API signatures
+- Deleting "unused" code
+- Database schema changes
+- Architecture changes
+- Modifying configuration files
 
 ---
 
@@ -548,16 +430,9 @@ Error: "oldString not found"
 
 Recovery steps:
 1. Re-read the file (might have changed)
-   Read({ filePath: "..." })
-
 2. Check exact whitespace (tabs vs spaces!)
-   Look at indentation carefully
-
-3. Search for the string
-   Grep({ pattern: "unique part of string" })
-
+3. Search for the string: Grep({ pattern: "unique part" })
 4. Try smaller context
-   Use a more unique portion of the string
 ```
 
 ### If Edit Matches Multiple
@@ -567,39 +442,9 @@ Error: "oldString found multiple times"
 
 Recovery steps:
 1. Add more context to make unique
-   Include surrounding lines
-
 2. Use replaceAll: true if ALL should change
-   Edit({ ..., replaceAll: true })
-
-3. Do multiple targeted edits
-   Edit for first occurrence with unique context
-   Then edit for second occurrence
+3. Do multiple targeted edits with unique context
 ```
-
----
-
-## SAFE vs RISKY REFACTORING
-
-### Safe (Proceed Independently)
-
-- Variable/function renames (within file)
-- Extract function/method
-- Move code to new file
-- Add types to existing code
-- Add error handling
-- Add logging
-- Improve formatting
-
-### Risky (Ask First)
-
-- Changing public API signatures
-- Deleting "unused" code
-- Database schema changes
-- Architecture changes
-- Changing shared types
-- Modifying configuration files
-- Changes affecting other teams
 </code_editing>
 
 ---
@@ -659,25 +504,16 @@ npm run build       # Verify production build
 
 **Python:**
 ```bash
-ruff check .        # Linting (or: flake8, pylint)
+ruff check .        # Linting
 mypy .              # Type checking
 pytest              # Run tests
-python -m py_compile file.py  # Syntax check
 ```
 
 **Rust:**
 ```bash
-cargo check         # Type checking (fast)
+cargo check         # Type checking
 cargo clippy        # Linting
 cargo test          # Run tests
 cargo build         # Full build
-```
-
-**Go:**
-```bash
-go vet ./...        # Static analysis
-golint ./...        # Linting
-go test ./...       # Run tests
-go build ./...      # Build
 ```
 </verification>
