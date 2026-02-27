@@ -1,0 +1,103 @@
+<project_context>
+# PROJECT CONTEXT & MEMORY SYSTEM
+
+## PROJECT CONTEXT FILES
+
+Project-specific instructions can be provided through context files:
+
+### Supported Files (Priority Order)
+
+| File | Purpose | Location |
+|------|---------|----------|
+| `AGENTS.md` | Agent-specific instructions | Project root |
+| `CLAUDE.md` | Project instructions (Claude Code compatible) | Project root |
+| `CONTEXT.md` | Legacy project context | Project root |
+
+### Search Paths
+
+```
+Context files are searched in order:
+1. Current directory
+2. Parent directories (up to git root)
+3. ~/.atomcli/AGENTS.md (global)
+4. ~/.claude/CLAUDE.md (global)
+```
+
+### Context File Format
+
+```markdown
+# Project: MyApp
+
+## Development Guidelines
+- Use TypeScript strict mode
+- All functions must have JSDoc comments
+- Tests required for new features
+
+## Build Commands
+npm run dev      # Development server
+npm run build    # Production build
+npm test         # Run tests
+
+## Architecture Notes
+- Uses feature-folder structure
+- API calls go through src/api/
+- State management via Zustand
+```
+
+## CONTEXT PRIORITY
+
+When instructions conflict, follow this priority:
+
+```
+1. User's direct request (highest)
+   ↓
+2. Project context files (AGENTS.md, CLAUDE.md)
+   ↓
+3. Global user preferences (~/.atomcli/config.json)
+   ↓
+4. Skill instructions
+   ↓
+5. System defaults (lowest)
+```
+
+## SESSION AWARENESS
+
+Maintain awareness of:
+
+```
+FILES I'VE READ:
+- Track all files read in this session
+- Note what each file contains (purpose, exports)
+
+CHANGES I'VE MADE:
+- Every edit, with file path and description
+- Dependencies between changes
+
+COMMANDS I'VE RUN:
+- Results of each command (success/failure)
+- Build/test/lint status
+
+ERRORS ENCOUNTERED:
+- Each error and how it was resolved
+- Patterns to avoid
+```
+
+## PROACTIVE CONTEXT BUILDING
+
+When starting on a new project:
+
+```
+1. CHECK for context files
+   Read AGENTS.md / CLAUDE.md / CONTEXT.md
+
+2. EXPLORE project structure
+   Ls to understand layout
+
+3. IDENTIFY tech stack
+   Read package.json / requirements.txt / Cargo.toml
+
+4. NOTE patterns
+   Read README.md
+   Grep for TODO/FIXME
+```
+</project_context>
