@@ -284,8 +284,11 @@ export namespace Session {
     }),
     async (input) => {
       const result = [] as MessageV2.WithParts[]
-      for await (const msg of MessageV2.stream(input.sessionID)) {
-        if (input.limit && result.length >= input.limit) break
+      for await (const msg of MessageV2.stream(
+        input.limit
+          ? { sessionID: input.sessionID, limit: input.limit }
+          : input.sessionID,
+      )) {
         result.push(msg)
       }
       result.reverse()

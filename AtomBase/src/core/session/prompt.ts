@@ -22,7 +22,8 @@ import PROMPT_PLAN from "../session/prompt/runtime/plan-mode.txt"
 import BUILD_SWITCH from "../session/prompt/runtime/build-switch.txt"
 import MAX_STEPS from "../session/prompt/runtime/max-steps.txt"
 import { defer } from "@/util/util/defer"
-import { clone } from "remeda"
+import { LearningIntegration } from "@/services/learning/integration"
+import { SessionMemoryIntegration } from "../memory/integration/session"
 import { ToolRegistry } from "@/integrations/tool/registry"
 import { MCP } from "@/integrations/mcp"
 import { LSP } from "@/integrations/lsp"
@@ -53,7 +54,7 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
-  export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  export const OUTPUT_TOKEN_MAX = LLM.OUTPUT_TOKEN_MAX
 
   const state = Instance.state(
     () => {
@@ -534,11 +535,6 @@ export namespace SessionPrompt {
       let currentModel = model
       let fallbackModel: Provider.Model | undefined
 
-      // If we have a fallback model from previous iteration in this turn, use it
-      if (fallbackModel) {
-        currentModel = fallbackModel
-      }
-
       const processor = SessionProcessor.create({
         assistantMessage: (await Session.updateMessage({
           id: Identifier.ascending("message"),
@@ -590,26 +586,32 @@ export namespace SessionPrompt {
         })
       }
 
-      const sessionMessages = clone(msgs)
-
-      // Ephemerally wrap queued user messages with a reminder to stay on track
-      if (step > 1 && lastFinished) {
-        for (const msg of sessionMessages) {
-          if (msg.info.role !== "user" || msg.info.id <= lastFinished.id) continue
-          for (const part of msg.parts) {
-            if (part.type !== "text" || part.ignored || part.synthetic) continue
-            if (!part.text.trim()) continue
-            part.text = [
-              "<system-reminder>",
-              "The user sent the following message:",
-              part.text,
-              "",
-              "Please address this message and continue with your tasks.",
-              "</system-reminder>",
-            ].join("\n")
+      // F8: targeted shallow copy — only clone messages/parts that will be mutated
+      const sessionMessages = (step > 1 && lastFinished)
+        ? msgs.map(msg => {
+          if (msg.info.role !== "user" || msg.info.id <= lastFinished.id) return msg
+          // Check if any text parts need wrapping
+          const needsWrap = msg.parts.some(p => p.type === "text" && !p.ignored && !p.synthetic && p.text.trim())
+          if (!needsWrap) return msg
+          return {
+            ...msg,
+            parts: msg.parts.map(part => {
+              if (part.type !== "text" || part.ignored || part.synthetic || !part.text.trim()) return part
+              return {
+                ...part,
+                text: [
+                  "<system-reminder>",
+                  "The user sent the following message:",
+                  part.text,
+                  "",
+                  "Please address this message and continue with your tasks.",
+                  "</system-reminder>",
+                ].join("\n"),
+              }
+            }),
           }
-        }
-      }
+        })
+        : [...msgs]
 
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
 
@@ -625,7 +627,7 @@ export namespace SessionPrompt {
           .join(" ")
 
         if (userText) {
-          const { LearningIntegration } = await import("@/services/learning/integration")
+          // F13: static import — no dynamic import() in hot path
           memoryContext = await LearningIntegration.recall(userText, {
             sessionID: sessionID,
             technology: "general" // Could be refined based on context
@@ -643,7 +645,7 @@ export namespace SessionPrompt {
         agent,
         abort,
         sessionID,
-        system: [...environment, ...custom],
+        system,
         messages: [
           ...(await MessageV2.toModelMessage(sessionMessages)),
           ...(isLastStep
@@ -1273,7 +1275,7 @@ export namespace SessionPrompt {
 
     // Learn from user message (non-blocking to prevent hanging the prompt response)
     try {
-      const { SessionMemoryIntegration } = await import("../memory/integration/session")
+      // F13: static import — no dynamic import() in hot path
       const textParts = parts.filter(p => p.type === "text" && !("synthetic" in p && p.synthetic))
       const userText = textParts.map(p => (p as any).text).join(" ")
       if (userText) {

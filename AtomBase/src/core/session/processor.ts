@@ -17,6 +17,7 @@ import { PermissionNext } from "@/util/permission/next"
 import { Question } from "@/interfaces/question"
 import { AmendmentQueue } from "./amendment"
 import { ModelFallback } from "@/integrations/provider/fallback"
+import { SessionMemoryIntegration } from "../memory/integration/session"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -383,16 +384,13 @@ export namespace SessionProcessor {
                     if (value.providerMetadata) currentText.metadata = value.providerMetadata
                     await Session.updatePart(currentText)
 
-                    // Learn from assistant response with user message context
-                    try {
-                      const { SessionMemoryIntegration } = await import("../memory/integration/session")
-                      await SessionMemoryIntegration.learnFromResponse(
-                        currentText.text,
-                        userMessageText // Pass user message for context
-                      )
-                    } catch (error) {
-                      log.error("Failed to learn from assistant response", { error })
-                    }
+                    // Learn from assistant response — fire-and-forget.
+                    // This is a background memory operation (LLM API call) and must NOT
+                    // block the stream finish path, which is what drives the UI response timer.
+                    SessionMemoryIntegration.learnFromResponse(
+                      currentText.text,
+                      userMessageText
+                    ).catch(error => log.error("Failed to learn from assistant response", { error }))
                   }
                   currentText = undefined
                   break

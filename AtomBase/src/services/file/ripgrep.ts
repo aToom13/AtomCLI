@@ -162,34 +162,32 @@ export namespace Ripgrep {
           })
       }
       if (config.extension === "zip") {
-        if (config.extension === "zip") {
-          const zipFileReader = new ZipReader(new BlobReader(new Blob([await Bun.file(archivePath).arrayBuffer()])))
-          const entries = await zipFileReader.getEntries()
-          let rgEntry: any
-          for (const entry of entries) {
-            if (entry.filename.endsWith("rg.exe")) {
-              rgEntry = entry
-              break
-            }
+        const zipFileReader = new ZipReader(new BlobReader(new Blob([await Bun.file(archivePath).arrayBuffer()])))
+        const entries = await zipFileReader.getEntries()
+        let rgEntry: any
+        for (const entry of entries) {
+          if (entry.filename.endsWith("rg.exe")) {
+            rgEntry = entry
+            break
           }
-
-          if (!rgEntry) {
-            throw new ExtractionFailedError({
-              filepath: archivePath,
-              stderr: "rg.exe not found in zip archive",
-            })
-          }
-
-          const rgBlob = await rgEntry.getData(new BlobWriter())
-          if (!rgBlob) {
-            throw new ExtractionFailedError({
-              filepath: archivePath,
-              stderr: "Failed to extract rg.exe from zip archive",
-            })
-          }
-          await Bun.write(filepath, await rgBlob.arrayBuffer())
-          await zipFileReader.close()
         }
+
+        if (!rgEntry) {
+          throw new ExtractionFailedError({
+            filepath: archivePath,
+            stderr: "rg.exe not found in zip archive",
+          })
+        }
+
+        const rgBlob = await rgEntry.getData(new BlobWriter())
+        if (!rgBlob) {
+          throw new ExtractionFailedError({
+            filepath: archivePath,
+            stderr: "Failed to extract rg.exe from zip archive",
+          })
+        }
+        await Bun.write(filepath, await rgBlob.arrayBuffer())
+        await zipFileReader.close()
       }
       await fs.unlink(archivePath)
       if (!platformKey.endsWith("-win32")) await fs.chmod(filepath, 0o755)
@@ -205,17 +203,30 @@ export namespace Ripgrep {
     return filepath
   }
 
+  // Default max depth to prevent infinite symlink recursion and runaway scanning.
+  // Agent can drill into any directory by calling the tool again with a specific subdirectory.
+  const DEFAULT_MAX_DEPTH = 5
+
+  // Default timeout for file listing operations (ms)
+  const FILES_TIMEOUT_MS = 30_000
+
   export async function* files(input: {
     cwd: string
     glob?: string[]
     hidden?: boolean
     follow?: boolean
     maxDepth?: number
+    timeout?: number
   }) {
     const args = [await filepath(), "--files", "--glob=!.git/*"]
     if (input.follow !== false) args.push("--follow")
     if (input.hidden !== false) args.push("--hidden")
-    if (input.maxDepth !== undefined) args.push(`--max-depth=${input.maxDepth}`)
+
+    // Apply depth limit: prevents infinite symlink loops (e.g., .venv/bin/python → /usr/lib/...)
+    // Agent can drill deeper by calling the tool with a specific subdirectory as cwd
+    const depth = input.maxDepth ?? DEFAULT_MAX_DEPTH
+    args.push(`--max-depth=${depth}`)
+
     if (input.glob) {
       for (const g of input.glob) {
         args.push(`--glob=${g}`)
@@ -239,6 +250,16 @@ export namespace Ripgrep {
       maxBuffer: 1024 * 1024 * 20,
     })
 
+    // Timeout: kill process if it runs too long (prevents zombie rg processes)
+    const timeout = input.timeout ?? FILES_TIMEOUT_MS
+    const timer = setTimeout(() => {
+      log.warn("ripgrep files timeout, killing process", { cwd: input.cwd, timeout })
+      try { proc.kill() } catch { /* already exited */ }
+    }, timeout)
+    // Prevent this timer from holding the event loop open after all work is done.
+    // The finally block always calls clearTimeout(timer), so this is safe.
+    timer.unref()
+
     const reader = proc.stdout.getReader()
     const decoder = new TextDecoder()
     let buffer = ""
@@ -260,6 +281,7 @@ export namespace Ripgrep {
 
       if (buffer) yield buffer
     } finally {
+      clearTimeout(timer)
       reader.releaseLock()
       // Kill the process if it's still running to prevent zombie processes
       // This happens when the iterator is abandoned early (e.g., break in for await)
@@ -278,20 +300,23 @@ export namespace Ripgrep {
     interface Node {
       path: string[]
       children: Node[]
+      childMap: Map<string, Node>
     }
 
     function getPath(node: Node, parts: string[], create: boolean) {
       if (parts.length === 0) return node
       let current = node
       for (const part of parts) {
-        let existing = current.children.find((x) => x.path.at(-1) === part)
+        let existing = current.childMap.get(part)
         if (!existing) {
           if (!create) return
           existing = {
             path: current.path.concat(part),
             children: [],
+            childMap: new Map(),
           }
           current.children.push(existing)
+          current.childMap.set(part, existing)
         }
         current = existing
       }
@@ -301,6 +326,7 @@ export namespace Ripgrep {
     const root: Node = {
       path: [],
       children: [],
+      childMap: new Map(),
     }
     for (const file of files) {
       if (file.includes(".atomcli")) continue
@@ -324,6 +350,7 @@ export namespace Ripgrep {
     const result: Node = {
       path: [],
       children: [],
+      childMap: new Map(),
     }
 
     let processed = 0
@@ -352,6 +379,7 @@ export namespace Ripgrep {
             compare.children.push({
               path: compare.path.concat(`[${diff} truncated]`),
               children: [],
+              childMap: new Map(),
             })
           }
         }
@@ -403,14 +431,23 @@ export namespace Ripgrep {
       return []
     }
 
-    // Handle both Unix (\n) and Windows (\r\n) line endings
-    const lines = result.text().trim().split(/\r?\n/).filter(Boolean)
-    // Parse JSON lines from ripgrep output
+    // Single-pass: parse, filter, and extract in one loop
+    const text = result.text().trim()
+    if (!text) return []
 
-    return lines
-      .map((line) => JSON.parse(line))
-      .map((parsed) => Result.parse(parsed))
-      .filter((r) => r.type === "match")
-      .map((r) => r.data)
+    const results: any[] = []
+    for (const line of text.split(/\r?\n/)) {
+      if (!line) continue
+      try {
+        const parsed = JSON.parse(line)
+        if (parsed.type === "match") {
+          results.push(parsed.data)
+        }
+      } catch {
+        // Skip malformed lines — rg output can include binary noise or
+        // partial reads; a bad line must not abort the entire search.
+      }
+    }
+    return results
   }
 }

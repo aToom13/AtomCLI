@@ -554,15 +554,28 @@ export namespace MessageV2 {
     return convertToModelMessages(result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")))
   }
 
-  export const stream = fn(Identifier.schema("session"), async function* (sessionID) {
-    const list = await Array.fromAsync(await Storage.list(["message", sessionID]))
-    for (let i = list.length - 1; i >= 0; i--) {
-      yield await get({
-        sessionID,
-        messageID: list[i][2],
-      })
-    }
-  })
+  export const stream = fn(
+    z.union([
+      Identifier.schema("session"),
+      z.object({
+        sessionID: Identifier.schema("session"),
+        limit: z.number().optional(),
+      }),
+    ]),
+    async function* (input) {
+      const sessionID = typeof input === "string" ? input : input.sessionID
+      const limit = typeof input === "string" ? undefined : input.limit
+      const allKeys = await Array.fromAsync(await Storage.list(["message", sessionID]))
+      // When limit is specified, only take the N newest (from the end)
+      const keys = limit ? allKeys.slice(-limit) : allKeys
+      for (let i = keys.length - 1; i >= 0; i--) {
+        yield await get({
+          sessionID,
+          messageID: keys[i][2],
+        })
+      }
+    },
+  )
 
   export const parts = fn(Identifier.schema("message"), async (messageID) => {
     const result = [] as MessageV2.Part[]

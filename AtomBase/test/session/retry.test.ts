@@ -14,7 +14,14 @@ describe("session.retry.delay", () => {
   test("caps delay at 30 seconds when headers missing", () => {
     const error = apiError()
     const delays = Array.from({ length: 10 }, (_, index) => SessionRetry.delay(index + 1, error))
-    expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
+    // F17: jitter adds ±25%, so check range instead of exact values
+    const expected = [2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000]
+    for (let i = 0; i < delays.length; i++) {
+      const low = expected[i] * 0.75
+      const high = Math.min(expected[i] * 1.25, 30000)
+      expect(delays[i]).toBeGreaterThanOrEqual(low)
+      expect(delays[i]).toBeLessThanOrEqual(high)
+    }
   })
 
   test("prefers retry-after-ms when shorter than exponential", () => {

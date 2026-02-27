@@ -128,7 +128,14 @@ export namespace Provider {
     // Ollama - Auto-detect running instances and available models
     ollama: async () => {
       const baseURL = Env.get("OLLAMA_HOST") ?? "http://localhost:11434"
-      const { running, models } = await detectOllama(baseURL)
+      // F3: timeout Ollama probe to avoid blocking cold start
+      const OLLAMA_DETECT_TIMEOUT_MS = 2_000
+      const { running, models } = await Promise.race([
+        detectOllama(baseURL),
+        new Promise<{ running: false; models: never[] }>((resolve) =>
+          setTimeout(() => resolve({ running: false, models: [] }), OLLAMA_DETECT_TIMEOUT_MS),
+        ),
+      ])
 
       if (!running) {
         return {

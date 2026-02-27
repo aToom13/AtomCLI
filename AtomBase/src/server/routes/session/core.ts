@@ -4,6 +4,7 @@ import z from "zod"
 import { Session } from "@/core/session"
 import { SessionStatus } from "@/core/session/status"
 import { SessionPrompt } from "@/core/session/prompt"
+import { SessionSummary } from "@/core/session/summary"
 import { Todo } from "@/core/session/todo"
 import { errors } from "../../error"
 
@@ -215,6 +216,9 @@ export const SessionCoreRoute = new Hono()
         ),
         async (c) => {
             const sessionID = c.req.valid("param").sessionID
+            // Cancel any pending summarize debounce before removing the session
+            // to prevent the timer firing on a deleted session after cleanup.
+            SessionSummary.cancelPendingSummarize(sessionID)
             await Session.remove(sessionID)
             return c.json(true)
         },

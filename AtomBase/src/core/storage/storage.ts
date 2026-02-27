@@ -11,6 +11,68 @@ import z from "zod"
 export namespace Storage {
   const log = Log.create({ service: "storage" })
 
+  // ── LRU Read Cache ────────────────────────────────────────
+  const CACHE_MAX_SIZE = 2000
+  const readCache = new Map<string, any>()
+
+  function cacheKey(key: string[]): string {
+    return key.join("\0")
+  }
+
+  /** Returns true for primitive values that are inherently immutable — no clone needed. */
+  function isPrimitive(v: any): boolean {
+    return v === null || typeof v !== "object" && typeof v !== "function"
+  }
+
+  function cacheGet(key: string[]): any | undefined {
+    const k = cacheKey(key)
+    const v = readCache.get(k)
+    if (v === undefined) return undefined
+    // LRU: delete + re-insert to move to end
+    readCache.delete(k)
+    readCache.set(k, v)
+    // Security: return a deep clone so callers cannot alias (and silently mutate)
+    // the cached object without going through Storage.write / Storage.update.
+    return isPrimitive(v) ? v : structuredClone(v)
+  }
+
+  function cacheSet(key: string[], value: any): void {
+    const k = cacheKey(key)
+    // Security: store a deep clone so the caller's reference cannot alias the cache
+    // after this call — mutations to their copy won't corrupt cached state.
+    const stored = isPrimitive(value) ? value : structuredClone(value)
+    readCache.delete(k)
+    readCache.set(k, stored)
+    if (readCache.size > CACHE_MAX_SIZE) {
+      const first = readCache.keys().next().value
+      if (first !== undefined) readCache.delete(first)
+    }
+  }
+
+  function cacheDelete(key: string[]): void {
+    readCache.delete(cacheKey(key))
+  }
+
+  // ── List Cache (prefix-based invalidation) ────────────────
+  const LIST_CACHE_MAX_SIZE = 200
+  const listCache = new Map<string, string[][]>()
+
+  function listCacheKey(prefix: string[]): string {
+    return prefix.join("\0")
+  }
+
+  function listCacheInvalidate(key: string[]): void {
+    for (const [k] of listCache) {
+      const prefixParts = k.split("\0")
+      if (
+        key.length >= prefixParts.length &&
+        prefixParts.every((p, i) => p === key[i])
+      ) {
+        listCache.delete(k)
+      }
+    }
+  }
+
   type Migration = (dir: string) => Promise<void>
 
   export const NotFoundError = NamedError.create(
@@ -161,16 +223,21 @@ export namespace Storage {
     const dir = await state().then((x) => x.dir)
     const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
-      await fs.unlink(target).catch(() => {})
+      await fs.unlink(target).catch(() => { })
+      cacheDelete(key)
+      listCacheInvalidate(key)
     })
   }
 
   export async function read<T>(key: string[]) {
+    const cached = cacheGet(key)
+    if (cached !== undefined) return cached as T
     const dir = await state().then((x) => x.dir)
     const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
       using _ = await Lock.read(target)
       const result = await Bun.file(target).json()
+      cacheSet(key, result)
       return result as T
     })
   }
@@ -183,6 +250,7 @@ export namespace Storage {
       const content = await Bun.file(target).json()
       fn(content)
       await Bun.write(target, JSON.stringify(content, null, 2))
+      cacheSet(key, content)
       return content as T
     })
   }
@@ -193,6 +261,8 @@ export namespace Storage {
     return withErrorHandling(async () => {
       using _ = await Lock.write(target)
       await Bun.write(target, JSON.stringify(content, null, 2))
+      cacheSet(key, content)
+      listCacheInvalidate(key)
     })
   }
 
@@ -209,6 +279,9 @@ export namespace Storage {
 
   const glob = new Bun.Glob("**/*")
   export async function list(prefix: string[]) {
+    const lk = listCacheKey(prefix)
+    const cached = listCache.get(lk)
+    if (cached !== undefined) return cached
     const dir = await state().then((x) => x.dir)
     try {
       const result = await Array.fromAsync(
@@ -218,6 +291,11 @@ export namespace Storage {
         }),
       ).then((results) => results.map((x) => [...prefix, ...x.slice(0, -5).split(path.sep)]))
       result.sort()
+      listCache.set(lk, result)
+      if (listCache.size > LIST_CACHE_MAX_SIZE) {
+        const first = listCache.keys().next().value
+        if (first !== undefined) listCache.delete(first)
+      }
       return result
     } catch {
       return []

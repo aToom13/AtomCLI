@@ -85,14 +85,16 @@ export namespace Server {
               path: c.req.path,
             })
           }
-          const timer = log.time("request", {
-            method: c.req.method,
-            path: c.req.path,
-          })
-          await next()
+          // F21: only create timer when logging is active
+          let timer: ReturnType<typeof log.time> | undefined
           if (!skipLogging) {
-            timer.stop()
+            timer = log.time("request", {
+              method: c.req.method,
+              path: c.req.path,
+            })
           }
+          await next()
+          timer?.stop()
         })
         .use(
           cors({

@@ -209,7 +209,12 @@ export namespace File {
     const project = Instance.project
     if (project.vcs !== "git") return []
 
-    const diffOutput = await $`git diff --numstat HEAD`.cwd(Instance.directory).quiet().nothrow().text()
+    // F10: parallelize all 3 git commands
+    const [diffOutput, untrackedOutput, deletedOutput] = await Promise.all([
+      $`git diff --numstat HEAD`.cwd(Instance.directory).quiet().nothrow().text(),
+      $`git ls-files --others --exclude-standard`.cwd(Instance.directory).quiet().nothrow().text(),
+      $`git diff --name-only --diff-filter=D HEAD`.cwd(Instance.directory).quiet().nothrow().text(),
+    ])
 
     const changedFiles: Info[] = []
 
@@ -226,36 +231,27 @@ export namespace File {
       }
     }
 
-    const untrackedOutput = await $`git ls-files --others --exclude-standard`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
-
     if (untrackedOutput.trim()) {
       const untrackedFiles = untrackedOutput.trim().split("\n")
-      for (const filepath of untrackedFiles) {
-        try {
-          const content = await Bun.file(path.join(Instance.directory, filepath)).text()
-          const lines = content.split("\n").length
-          changedFiles.push({
-            path: filepath,
-            added: lines,
-            removed: 0,
-            status: "added",
-          })
-        } catch {
-          continue
-        }
-      }
+      await Promise.all(
+        untrackedFiles.map(async (filepath) => {
+          try {
+            // F27: run in parallel
+            // Security: use native Bun I/O — no shell, no redirect, no RCE via crafted filenames
+            const text = await Bun.file(path.join(Instance.directory, filepath)).text()
+            const lines = text ? text.split("\n").length - 1 : 0
+            changedFiles.push({
+              path: filepath,
+              added: lines,
+              removed: 0,
+              status: "added",
+            })
+          } catch {
+            return
+          }
+        })
+      )
     }
-
-    // Get deleted files
-    const deletedOutput = await $`git diff --name-only --diff-filter=D HEAD`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
 
     if (deletedOutput.trim()) {
       const deletedFiles = deletedOutput.trim().split("\n")
@@ -263,7 +259,7 @@ export namespace File {
         changedFiles.push({
           path: filepath,
           added: 0,
-          removed: 0, // Could get original line count but would require another git command
+          removed: 0,
           status: "deleted",
         })
       }

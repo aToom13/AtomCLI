@@ -76,6 +76,7 @@ interface WorkflowState {
   results: Record<string, TaskResult>
   status: "planned" | "running" | "completed" | "failed"
   createdAt: number
+  sessionMapKeys: string[] // F24: track keys for O(1) cleanup
 }
 
 interface TaskResult {
@@ -91,6 +92,7 @@ interface TaskResult {
 
 // In-memory workflow store (per session)
 const WORKFLOWS: Map<string, WorkflowState> = new Map()
+const MAX_WORKFLOWS = 100
 
 // Track agent-type to session-id mapping for session reuse across workflow runs
 // Key: "parentSessionId:agentType:taskId" → sessionId
@@ -98,12 +100,53 @@ const AGENT_SESSION_MAP: Map<string, string> = new Map()
 
 // Cleanup completed/failed workflows older than 1 hour to prevent memory leaks
 const WORKFLOW_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Purge all AGENT_SESSION_MAP entries that belong to a workflow.
+ *
+ * Fast path: sessionMapKeys was populated during execution — O(k) deletes.
+ * Fallback:  workflow was evicted before any task ran (sessionMapKeys is empty).
+ *            In that case we scan the map for keys whose task-id segment matches
+ *            one of this workflow's task ids.  The key format is
+ *            "parentSessionId:agentType:taskId", so we split on ":" and check
+ *            the third segment.  This keeps the scan bounded to the size of
+ *            AGENT_SESSION_MAP × workflow.tasks, not the whole key space.
+ */
+function purgeSessionMapForWorkflow(wf: WorkflowState): void {
+  if (wf.sessionMapKeys.length > 0) {
+    // Fast path: we already know the exact keys
+    for (const key of wf.sessionMapKeys) {
+      AGENT_SESSION_MAP.delete(key)
+    }
+    return
+  }
+  // Fallback: scan for zombie entries (workflow cancelled before execution)
+  const taskIds = new Set(wf.tasks.map((t) => t.id))
+  for (const key of AGENT_SESSION_MAP.keys()) {
+    // key = "parentSessionId:agentType:taskId"
+    const taskId = key.split(":")[2]
+    if (taskId !== undefined && taskIds.has(taskId)) {
+      AGENT_SESSION_MAP.delete(key)
+    }
+  }
+}
+
 function cleanupOldWorkflows() {
   const now = Date.now()
   for (const [id, wf] of WORKFLOWS.entries()) {
     if ((wf.status === "completed" || wf.status === "failed") && now - wf.createdAt > WORKFLOW_TTL_MS) {
+      purgeSessionMapForWorkflow(wf)
       WORKFLOWS.delete(id)
     }
+  }
+  // Enforce max size: evict oldest workflows if over limit
+  while (WORKFLOWS.size > MAX_WORKFLOWS) {
+    const oldest = WORKFLOWS.keys().next().value
+    if (oldest !== undefined) {
+      const wf = WORKFLOWS.get(oldest)
+      if (wf) purgeSessionMapForWorkflow(wf)
+      WORKFLOWS.delete(oldest)
+    } else break
   }
 }
 
@@ -191,12 +234,6 @@ function shouldSkipDueToFailedDependency(task: TaskNode, workflow: WorkflowState
   })
 }
 
-/**
- * Legacy function for backwards compatibility
- */
-function hasFailedDependency(task: TaskNode, workflow: WorkflowState): boolean {
-  return shouldSkipDueToFailedDependency(task, workflow)
-}
 
 // ─── Tool Definition ─────────────────────────────────────────
 
@@ -267,8 +304,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           results: Object.fromEntries(tasks.map((t) => [t.id, { status: "pending" as const }])),
           status: "planned",
           createdAt: Date.now(),
+          sessionMapKeys: [], // F24: populated during execution
         }
         WORKFLOWS.set(workflowId, workflow)
+        cleanupOldWorkflows()
 
         // Publish Chain UI events for real-time progress tracking
         try {
@@ -510,6 +549,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       })
                       // Store mapping for future reuse
                       AGENT_SESSION_MAP.set(sessionKey, session.id)
+                      workflow.sessionMapKeys.push(sessionKey) // F24: tract key for O(1) cleanup
 
                       // Notify TUI: new sub-agent active
                       try {
@@ -824,6 +864,6 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 export const _internals = {
   topologicalSort,
   getReadyTasks,
-  hasFailedDependency,
+  hasFailedDependency: shouldSkipDueToFailedDependency,
   WORKFLOWS,
 }

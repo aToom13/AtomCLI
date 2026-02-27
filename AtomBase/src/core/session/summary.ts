@@ -20,19 +20,51 @@ import { Agent } from "@/integrations/agent/agent"
 export namespace SessionSummary {
   const log = Log.create({ service: "session.summary" })
 
+  // F11: Debounce summarization per session — only run after 5s idle
+  const DEBOUNCE_MS = 5_000
+  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
   export const summarize = fn(
     z.object({
       sessionID: z.string(),
       messageID: z.string(),
     }),
     async (input) => {
-      const all = await Session.messages({ sessionID: input.sessionID })
-      await Promise.all([
-        summarizeSession({ sessionID: input.sessionID, messages: all }),
-        summarizeMessage({ messageID: input.messageID, messages: all }),
-      ])
+      // Clear any pending debounce for this session
+      const existing = debounceTimers.get(input.sessionID)
+      if (existing) clearTimeout(existing)
+
+      // Schedule summarization after debounce period
+      debounceTimers.set(
+        input.sessionID,
+        setTimeout(async () => {
+          debounceTimers.delete(input.sessionID)
+          try {
+            const all = await Session.messages({ sessionID: input.sessionID })
+            await Promise.all([
+              summarizeSession({ sessionID: input.sessionID, messages: all }),
+              summarizeMessage({ messageID: input.messageID, messages: all }),
+            ])
+          } catch (err) {
+            log.error("summarize failed", { error: (err as Error).message })
+          }
+        }, DEBOUNCE_MS),
+      )
     },
   )
+
+  /**
+   * Cancel any pending debounce timer for the given session.
+   * Call this from the session teardown path to prevent the timer from firing
+   * on a closed session and leaking async work after cleanup.
+   */
+  export function cancelPendingSummarize(sessionID: string): void {
+    const timer = debounceTimers.get(sessionID)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      debounceTimers.delete(sessionID)
+    }
+  }
 
   async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {
     const files = new Set(

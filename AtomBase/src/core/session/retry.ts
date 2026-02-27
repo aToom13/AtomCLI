@@ -54,7 +54,9 @@ export namespace SessionRetry {
       }
     }
 
-    return Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS)
+    const base = RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
+    const jitter = base * (0.75 + Math.random() * 0.5) // F17: ±25% jitter
+    return Math.min(jitter, RETRY_MAX_DELAY_NO_HEADERS)
   }
 
   // HTTP status codes that should trigger retry/fallback

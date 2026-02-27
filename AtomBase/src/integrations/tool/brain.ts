@@ -70,8 +70,12 @@ class JsonStorage implements BrainStorage {
     }
 }
 
-// In-memory cache
-const MEMORY: Doc[] = []
+// In-memory cache: insertion-ordered Map<id, Doc>.
+// - O(1) dedup: MEMORY.set(id, doc) replaces in-place.
+// - O(1) eviction: delete the first key via Map iteration order.
+// - No auxiliary index map or index-rebuild loop needed.
+const MAX_MEMORY_DOCS = 5000
+const MEMORY = new Map<string, Doc>()
 const storage = new JsonStorage()
 let isLoaded = false
 
@@ -113,20 +117,6 @@ function cosineSimilarityOptimized(queryVec: number[], queryMag: number, doc: Do
     return dotProduct / (queryMag * docMag)
 }
 
-// Legacy fallback for standalone use
-function cosineSimilarity(vecA: number[], vecB: number[]) {
-    if (!vecA || !vecB || vecA.length !== vecB.length) return 0
-    let dotProduct = 0.0
-    let normA = 0.0
-    let normB = 0.0
-    for (let i = 0; i < vecA.length; i++) {
-        dotProduct += vecA[i] * vecB[i]
-        normA += vecA[i] * vecA[i]
-        normB += vecB[i] * vecB[i]
-    }
-    if (normA === 0 || normB === 0) return 0
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
-}
 
 // Metadata type definition
 type BrainMetadata = {
@@ -216,7 +206,9 @@ export const BrainTool = Tool.define("brain", {
         // Load persisted memory on first run
         if (!isLoaded) {
             const docs = await storage.load()
-            MEMORY.push(...docs)
+            for (const doc of docs) {
+                MEMORY.set(doc.id, doc)
+            }
             isLoaded = true
         }
 
@@ -262,12 +254,15 @@ export const BrainTool = Tool.define("brain", {
                             embeddings: embedding,
                         }
 
-                        // Update or Add
-                        const existingIdx = MEMORY.findIndex(d => d.id === filePath)
-                        if (existingIdx >= 0) {
-                            MEMORY[existingIdx] = doc
-                        } else {
-                            MEMORY.push(doc)
+                        // O(1) upsert: Map.set replaces existing entry in-place
+                        MEMORY.set(filePath, doc)
+
+                        // O(1) eviction: delete the insertion-order first key
+                        // No index rebuild — Map handles ordering internally.
+                        while (MEMORY.size > MAX_MEMORY_DOCS) {
+                            const oldestId = MEMORY.keys().next().value!
+                            MEMORY.delete(oldestId)
+                            magnitudeCache.delete(oldestId)
                         }
 
                         // Pre-compute and cache magnitude if we have embeddings
@@ -284,15 +279,15 @@ export const BrainTool = Tool.define("brain", {
                 }
 
                 // Persist to JSON
-                await storage.save(MEMORY)
+                await storage.save([...MEMORY.values()])
 
-                log.info("Indexing completed", { count, total: MEMORY.length })
+                log.info("Indexing completed", { count, total: MEMORY.size })
                 return {
                     title: "Brain Indexing Complete",
-                    output: `Indexed ${count} files from ${dir}. Total Knowledge Base: ${MEMORY.length} documents.`,
+                    output: `Indexed ${count} files from ${dir}. Total Knowledge Base: ${MEMORY.size} documents.`,
                     metadata: {
                         count,
-                        total: MEMORY.length
+                        total: MEMORY.size
                     } as BrainMetadata
                 }
 
@@ -321,7 +316,7 @@ export const BrainTool = Tool.define("brain", {
 
                     // Optimized search: compute query magnitude once, use cached doc magnitudes
                     const queryMag = magnitude(embedding)
-                    scored = MEMORY.map(doc => ({
+                    scored = [...MEMORY.values()].map(doc => ({
                         doc,
                         score: cosineSimilarityOptimized(embedding, queryMag, doc)
                     }))
@@ -329,7 +324,7 @@ export const BrainTool = Tool.define("brain", {
                         .slice(0, params.limit)
                 } else {
                     // Fallback to local BM25 search
-                    const documents: BM25Document[] = MEMORY.map(doc => ({
+                    const documents: BM25Document[] = [...MEMORY.values()].map(doc => ({
                         id: doc.id,
                         text: `${doc.title} ${doc.content}`
                     }))
@@ -337,7 +332,7 @@ export const BrainTool = Tool.define("brain", {
                     const bm25Results = bm25Search(params.query, documents, params.limit)
 
                     scored = bm25Results.map(result => ({
-                        doc: MEMORY.find(d => d.id === result.id)!,
+                        doc: MEMORY.get(result.id)!,
                         score: result.score
                     }))
                 }
@@ -373,7 +368,7 @@ export const BrainTool = Tool.define("brain", {
         }
 
         if (params.action === "clear") {
-            MEMORY.length = 0
+            MEMORY.clear()
             isLoaded = false
             magnitudeCache.clear()
             try {

@@ -128,10 +128,13 @@ export const EditTool = Tool.define("edit", {
       await Bus.publish(FileEvent.Edited, {
         file: filePath,
       })
-      contentNew = await file.text()
-      diff = trimDiff(
-        createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
-      )
+      const writtenContent = await file.text()
+      if (writtenContent.length !== contentNew.length) {
+        contentNew = writtenContent
+        diff = trimDiff(
+          createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
+        )
+      }
       FileTime.read(ctx.sessionID, filePath)
     })
 
@@ -180,7 +183,14 @@ export const EditTool = Tool.define("edit", {
   },
 })
 
-export type Replacer = (content: string, find: string) => Generator<string, void, unknown>
+export interface EditContext {
+  content: string
+  contentLines: string[]
+  find: string
+  findLines: string[]
+}
+
+export type Replacer = (ctx: EditContext) => Generator<string, void, unknown>
 
 // Similarity thresholds for block anchor fallback matching
 const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0
@@ -194,26 +204,30 @@ function levenshtein(a: string, b: string): number {
   if (a === "" || b === "") {
     return Math.max(a.length, b.length)
   }
-  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
-    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
-  )
+
+  // Single-row DP: only need previous row values
+  const len = b.length
+  const row = new Array<number>(len + 1)
+  for (let j = 0; j <= len; j++) row[j] = j
 
   for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
+    let prev = row[0]
+    row[0] = i
+    for (let j = 1; j <= len; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost)
+      const val = Math.min(row[j] + 1, row[j - 1] + 1, prev + cost)
+      prev = row[j]
+      row[j] = val
     }
   }
-  return matrix[a.length][b.length]
+  return row[len]
 }
 
-export const SimpleReplacer: Replacer = function* (_content, find) {
+export const SimpleReplacer: Replacer = function* ({ find }) {
   yield find
 }
 
-export const LineTrimmedReplacer: Replacer = function* (content, find) {
-  const originalLines = content.split("\n")
-  const searchLines = find.split("\n")
+export const LineTrimmedReplacer: Replacer = function* ({ content, contentLines: originalLines, findLines: searchLines }) {
 
   if (searchLines[searchLines.length - 1] === "") {
     searchLines.pop()
@@ -251,9 +265,7 @@ export const LineTrimmedReplacer: Replacer = function* (content, find) {
   }
 }
 
-export const BlockAnchorReplacer: Replacer = function* (content, find) {
-  const originalLines = content.split("\n")
-  const searchLines = find.split("\n")
+export const BlockAnchorReplacer: Replacer = function* ({ content, contentLines: originalLines, findLines: searchLines }) {
 
   if (searchLines.length < 3) {
     return
@@ -386,12 +398,11 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
   }
 }
 
-export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) {
+export const WhitespaceNormalizedReplacer: Replacer = function* ({ content, contentLines: lines, find }) {
   const normalizeWhitespace = (text: string) => text.replace(/\s+/g, " ").trim()
   const normalizedFind = normalizeWhitespace(find)
 
   // Handle single line matches
-  const lines = content.split("\n")
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (normalizeWhitespace(line) === normalizedFind) {
@@ -430,7 +441,7 @@ export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) 
   }
 }
 
-export const IndentationFlexibleReplacer: Replacer = function* (content, find) {
+export const IndentationFlexibleReplacer: Replacer = function* ({ content, find }) {
   const removeIndentation = (text: string) => {
     const lines = text.split("\n")
     const nonEmptyLines = lines.filter((line) => line.trim().length > 0)
@@ -458,7 +469,7 @@ export const IndentationFlexibleReplacer: Replacer = function* (content, find) {
   }
 }
 
-export const EscapeNormalizedReplacer: Replacer = function* (content, find) {
+export const EscapeNormalizedReplacer: Replacer = function* ({ content, find }) {
   const unescapeString = (str: string): string => {
     return str.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (match, capturedChar) => {
       switch (capturedChar) {
@@ -507,7 +518,7 @@ export const EscapeNormalizedReplacer: Replacer = function* (content, find) {
   }
 }
 
-export const MultiOccurrenceReplacer: Replacer = function* (content, find) {
+export const MultiOccurrenceReplacer: Replacer = function* ({ content, find }) {
   // This replacer yields all exact matches, allowing the replace function
   // to handle multiple occurrences based on replaceAll parameter
   let startIndex = 0
@@ -521,7 +532,7 @@ export const MultiOccurrenceReplacer: Replacer = function* (content, find) {
   }
 }
 
-export const TrimmedBoundaryReplacer: Replacer = function* (content, find) {
+export const TrimmedBoundaryReplacer: Replacer = function* ({ content, find }) {
   const trimmedFind = find.trim()
 
   if (trimmedFind === find) {
@@ -547,48 +558,45 @@ export const TrimmedBoundaryReplacer: Replacer = function* (content, find) {
   }
 }
 
-export const ContextAwareReplacer: Replacer = function* (content, find) {
-  const findLines = find.split("\n")
-  if (findLines.length < 3) {
+export const ContextAwareReplacer: Replacer = function* ({ content, contentLines: originalLines, findLines: searchLines }) {
+  if (searchLines.length < 3) {
     // Need at least 3 lines to have meaningful context
     return
   }
 
   // Remove trailing empty line if present
-  if (findLines[findLines.length - 1] === "") {
-    findLines.pop()
+  if (searchLines[searchLines.length - 1] === "") {
+    searchLines.pop()
   }
 
-  const contentLines = content.split("\n")
-
   // Extract first and last lines as context anchors
-  const firstLine = findLines[0].trim()
-  const lastLine = findLines[findLines.length - 1].trim()
+  const firstLine = searchLines[0].trim()
+  const lastLine = searchLines[searchLines.length - 1].trim()
 
   // Find blocks that start and end with the context anchors
-  for (let i = 0; i < contentLines.length; i++) {
-    if (contentLines[i].trim() !== firstLine) continue
+  for (let i = 0; i < originalLines.length; i++) {
+    if (originalLines[i].trim() !== firstLine) continue
 
     // Look for the matching last line
-    for (let j = i + 2; j < contentLines.length; j++) {
-      if (contentLines[j].trim() === lastLine) {
+    for (let j = i + 2; j < originalLines.length; j++) {
+      if (originalLines[j].trim() === lastLine) {
         // Found a potential context block
-        const blockLines = contentLines.slice(i, j + 1)
+        const blockLines = originalLines.slice(i, j + 1)
         const block = blockLines.join("\n")
 
         // Check if the middle content has reasonable similarity
         // (simple heuristic: at least 50% of non-empty lines should match when trimmed)
-        if (blockLines.length === findLines.length) {
+        if (blockLines.length === searchLines.length) {
           let matchingLines = 0
           let totalNonEmptyLines = 0
 
           for (let k = 1; k < blockLines.length - 1; k++) {
             const blockLine = blockLines[k].trim()
-            const findLine = findLines[k].trim()
+            const searchLine = searchLines[k].trim()
 
-            if (blockLine.length > 0 || findLine.length > 0) {
+            if (blockLine.length > 0 || searchLine.length > 0) {
               totalNonEmptyLines++
-              if (blockLine === findLine) {
+              if (blockLine === searchLine) {
                 matchingLines++
               }
             }
@@ -648,6 +656,15 @@ export function replace(content: string, oldString: string, newString: string, r
 
   let notFound = true
 
+  const contentLines = content.split("\n")
+  const findLines = oldString.split("\n")
+  const ctx: EditContext = {
+    content,
+    contentLines,
+    find: oldString,
+    findLines,
+  }
+
   for (const replacer of [
     SimpleReplacer,
     LineTrimmedReplacer,
@@ -659,7 +676,7 @@ export function replace(content: string, oldString: string, newString: string, r
     ContextAwareReplacer,
     MultiOccurrenceReplacer,
   ]) {
-    for (const search of replacer(content, oldString)) {
+    for (const search of replacer(ctx)) {
       const index = content.indexOf(search)
       if (index === -1) continue
       notFound = false

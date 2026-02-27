@@ -91,6 +91,7 @@ describe("orchestrate - getReadyTasks", () => {
             },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         const ready = getReadyTasks(workflow)
@@ -111,6 +112,7 @@ describe("orchestrate - getReadyTasks", () => {
             },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         const ready = getReadyTasks(workflow)
@@ -133,6 +135,7 @@ describe("orchestrate - getReadyTasks", () => {
             },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         const ready = getReadyTasks(workflow)
@@ -151,6 +154,7 @@ describe("orchestrate - getReadyTasks", () => {
             },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         const ready = getReadyTasks(workflow)
@@ -167,6 +171,7 @@ describe("orchestrate - hasFailedDependency", () => {
             results: { a: { status: "failed" as const } },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         expect(hasFailedDependency(task, workflow)).toBe(true)
@@ -180,6 +185,7 @@ describe("orchestrate - hasFailedDependency", () => {
             results: { b: { status: "skipped" as const } },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         expect(hasFailedDependency(task, workflow)).toBe(true)
@@ -193,6 +199,7 @@ describe("orchestrate - hasFailedDependency", () => {
             results: { a: { status: "completed" as const } },
             status: "running" as const,
             createdAt: Date.now(),
+            sessionMapKeys: [],
         }
 
         expect(hasFailedDependency(task, workflow)).toBe(false)
