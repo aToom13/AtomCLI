@@ -236,15 +236,39 @@ export function Session() {
                   foregroundColor: theme.border,
                 },
               }}
+              maxHeight="100%"
+              viewportCulling={false}
               stickyScroll={autoFollow()}
               stickyStart="bottom"
+              scrollX={false}
               flexGrow={1}
               scrollAcceleration={scrollAcceleration()}
             >
               <VirtualList
                 data={messages()}
                 scrollRef={() => scroll}
-                estimatedItemHeight={8}
+                itemHeight={(message) => {
+                  const parts = sync.data.part[message.id] ?? []
+                  let lines = 4 // base: role header + margins
+                  for (const p of parts) {
+                    if (!p) continue
+                    if (p.type === "text" && p.text) {
+                      const textLines = String(p.text).split("\n")
+                      for (const l of textLines) {
+                        lines += Math.max(1, Math.ceil(l.length / (contentWidth() || 80)))
+                      }
+                      lines += 3 // paddingLeft + marginTop + borders from TextPart wrapper
+                    } else if (p.type === "tool") {
+                      lines += 10 // tool header + status + borders + padding + output preview
+                    } else if (p.type === "reasoning") {
+                      lines += 4 // thinking block + borders
+                    } else {
+                      lines += 3
+                    }
+                  }
+                  lines += 3 // footer: agent info bar with mode/model/duration
+                  return Math.max(10, lines)
+                }}
                 renderItem={(message, index) => (
                   <Switch>
                     {/* Revert Banner */}

@@ -166,8 +166,8 @@ export namespace ToolRegistry {
     const result = await Promise.all(
       tools
         .filter((t) => {
-          // Enable websearch/codesearch for zen users OR via enable flag
-          if (t.id === "codesearch" || t.id === "websearch") {
+          // Enable codesearch for zen users OR via enable flag
+          if (t.id === "codesearch") {
             return providerID === "atomcli" || Flag.ATOMCLI_ENABLE_EXA
           }
           return true

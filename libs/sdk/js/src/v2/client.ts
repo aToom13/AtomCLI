@@ -7,10 +7,23 @@ export { type Config as AtomcliClientConfig, AtomcliClient }
 
 export function createAtomcliClient(config?: Config & { directory?: string }) {
   if (!config?.fetch) {
-    const customFetch: any = (req: any) => {
+    const customFetch: any = async (req: any) => {
       // @ts-ignore
       req.timeout = false
-      return fetch(req)
+      const res = await fetch(req)
+      // Wrap the json method to gracefully handle aborts
+      const originalJson = res.json.bind(res)
+      res.json = async () => {
+        try {
+          return await originalJson()
+        } catch (e: any) {
+          if (e.message?.includes("Unexpected end of JSON input")) {
+            return {}
+          }
+          throw e
+        }
+      }
+      return res
     }
     config = {
       ...config,
