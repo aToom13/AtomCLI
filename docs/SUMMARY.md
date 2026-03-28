@@ -2,7 +2,7 @@
 
 ## Overview
 
-**AtomCLI** is an autonomous AI coding agent framework built with TypeScript and Bun runtime. Version: 2.3.0
+**AtomCLI** is an autonomous AI coding agent framework built with TypeScript and Bun runtime. Version: 3.2.4-EarlyBeta
 
 ## Architecture
 
@@ -20,6 +20,7 @@
 | `file`        | File operations - ripgrep, watching, ignore patterns                     |
 | `skill`       | Extensible skill system                                                  |
 | `storage`     | Persistent storage layer                                                 |
+| `companion`   | Mobile pairing, QR discovery, WebSocket bridge, push notifications       |
 
 ### Entry Point
 
@@ -29,18 +30,20 @@
 
 - **Multi-Provider LLM Support** - Integrates with 20+ providers via `@ai-sdk/*`
 - **Multi-Agent Collaboration** - Event-driven team workflows
+- **Mobile Companion App** - Remote session monitoring, permission approval, and chat via Flutter app
 - **Session-Based Context** - Conversation management with summarization
 - **Browser Automation** - Built-in Playwright support
-- **File Watching** - Parcel watcher + chokidar for cross-platform monitoring
+- **File Watching** - Parcel watcher for cross-platform monitoring
 - **i18n Support** - English and Turkish locales
 
 ## Tech Stack
 
-- **Runtime**: Bun
-- **UI**: @opentui/core, SolidJS, React 19
+- **Runtime**: Bun 1.3
+- **UI**: @opentui/core, SolidJS
 - **API Server**: Hono
 - **MCP**: @modelcontextprotocol/sdk
-- **Git**: @octokit/rest, @octokit/graphql
+- **Mobile**: Flutter (companion app)
+- **Web Dashboard**: SolidJS + Vite + Nitro (enterprise)
 
 ## Usage
 

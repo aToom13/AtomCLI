@@ -29,7 +29,17 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v2.3.0)
+## What's New (v3.2.4-EarlyBeta)
+
+### Companion Mobile App (Early Beta)
+
+- **Mobile Remote Control**: Pair your phone with AtomCLI via QR code to monitor sessions, approve permissions, and chat with AI from your mobile device.
+- **Real-Time Session Monitoring**: View active workflows, task status, and AI responses from the companion app.
+- **Remote Permission Approval**: Approve or deny tool permissions and file edits directly from your phone.
+- **Push Notifications**: Receive alerts when AI needs input, a task completes, or errors occur via ntfy.sh integration.
+- **Secure Pairing**: End-to-end encrypted communication using public key cryptography. Devices are authenticated via short-lived pairing tokens.
+
+> **Note**: The companion app is in early beta. Expect rough edges and breaking changes. The Flutter app supports Android and iOS.
 
 ### Agent Teams & Sub-Agents
 
@@ -71,7 +81,7 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
 - **Streaming Interrupt** - Send amendments while AI is writing (Shift+Enter)
 - **Model Fallback** - Automatic failover when primary model fails
 
-### Developer Tools (v2.1.4+)
+### Developer Tools
 
 - **`atomcli test-gen`** - Automatically generate unit tests for source files
 - **`atomcli docs`** - Generate JSDoc comments and API documentation
@@ -341,14 +351,19 @@ Add API keys for providers:
 
 ## Supported Platforms
 
-| Platform | Architecture     | Status    |
-| -------- | ---------------- | --------- |
-| Linux    | x64              | Supported |
-| Linux    | ARM64            | Supported |
-| Linux    | x64 (musl)       | Supported |
-| macOS    | x64              | Supported |
-| macOS    | ARM64 (M1/M2/M3) | Supported |
-| Windows  | x64 (via WSL)    | Supported |
+| Platform | Architecture        | Variant          | Status    |
+| -------- | ------------------- | ---------------- | --------- |
+| Linux    | x64                 | glibc            | Supported |
+| Linux    | ARM64               | glibc            | Supported |
+| Linux    | x64                 | glibc (baseline) | Supported |
+| Linux    | x64                 | musl (Alpine)    | Supported |
+| Linux    | ARM64               | musl (Alpine)    | Supported |
+| Linux    | x64                 | musl (baseline)  | Supported |
+| macOS    | ARM64 (M1/M2/M3/M4) | -                | Supported |
+| macOS    | x64 (Intel)         | -                | Supported |
+| macOS    | x64 (Intel)         | baseline         | Supported |
+| Windows  | x64                 | -                | Supported |
+| Windows  | x64                 | baseline         | Supported |
 
 ---
 
@@ -366,17 +381,25 @@ AtomCLI is built with:
 
 ```
 AtomCLI/
-├── AtomBase/           # Main application source
+├── AtomBase/                # Main application source
 │   ├── src/
-│   │   ├── cli/        # CLI commands and TUI
-│   │   ├── session/    # Session and message handling
-│   │   ├── tool/       # AI tool implementations
-│   │   ├── provider/   # AI provider integrations
-│   │   └── config/     # Configuration management
-│   └── dist/           # Compiled binaries
-├── libs/sdk/           # JavaScript SDK
-├── docs/               # Documentation
-└── install.sh          # Installation script
+│   │   ├── interfaces/      # CLI commands and TUI
+│   │   ├── core/            # Session, config, memory
+│   │   ├── integrations/    # Tools, providers, agents, MCP
+│   │   ├── server/          # HTTP server and API routes
+│   │   └── services/        # File, auth, learning services
+│   └── dist/                # Compiled binaries
+├── companion/               # Flutter mobile companion app (Android/iOS)
+├── libs/
+│   ├── companion/           # @atomcli/companion - pairing & bridge logic
+│   ├── sdk/                 # JavaScript/TypeScript SDK
+│   ├── enterprise/          # Web dashboard (SolidJS + Vite)
+│   ├── ui/                  # Shared UI components
+│   ├── util/                # Utility functions
+│   └── plugin/              # Plugin system
+├── .atomcli/                # Bundled skills & agents (included in releases)
+├── docs/                    # Documentation
+└── install.sh               # Installation script
 ```
 
 ---
@@ -385,7 +408,7 @@ AtomCLI/
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) v1.0 or later
+- [Bun](https://bun.sh/) v1.3 or later
 - Git
 
 ### Building from Source

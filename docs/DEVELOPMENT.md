@@ -26,34 +26,41 @@ This is the central documentation hub for AtomCLI development. Use the navigatio
 AtomCLI/
 ├── AtomBase/                    # Main application
 │   ├── src/                     # Source code
-│   │   ├── cli/                 # CLI and TUI implementation
-│   │   ├── session/             # Session and message handling
-│   │   ├── provider/            # AI provider integrations
-│   │   ├── tool/                # AI tool implementations
-│   │   ├── config/              # Configuration management
-│   │   ├── mcp/                 # MCP server management
-│   │   └── server/              # HTTP server and routes
+│   │   ├── interfaces/          # CLI commands and TUI
+│   │   ├── core/                # Session, config, memory, storage
+│   │   ├── integrations/        # Tools, providers, agents, MCP, skills
+│   │   ├── server/              # HTTP server and API routes
+│   │   └── services/            # File, auth, learning, project services
 │   ├── script/                  # Build and utility scripts
-│   └── dist/                    # Compiled binaries
+│   └── dist/                    # Compiled binaries (wiped on every build)
+├── companion/                   # Flutter mobile companion app (Android/iOS)
 ├── libs/                        # Shared libraries
+│   ├── companion/               # @atomcli/companion - pairing & bridge logic
 │   ├── sdk/                     # JavaScript/TypeScript SDK
+│   ├── enterprise/              # Web dashboard (SolidJS + Vite SSR)
+│   ├── ui/                      # Shared UI components
 │   ├── util/                    # Utility functions
-│   └── ui/                      # UI components
+│   ├── plugin/                  # Plugin system
+│   ├── script/                  # Shared build scripts
+│   └── app/                     # App shell (SolidJS)
+├── .atomcli/                    # Bundled skills/agents (included in releases)
 ├── docs/                        # Documentation
 └── install.sh                   # Installation script
 ```
 
 ### Key Directories
 
-| Directory                             | Description          | Link                                             |
-| ------------------------------------- | -------------------- | ------------------------------------------------ |
-| `AtomBase/src/interfaces/cli/`        | CLI commands and TUI | [Browse](../AtomBase/src/interfaces/cli/)        |
-| `AtomBase/src/core/session/`          | Session management   | [Browse](../AtomBase/src/core/session/)          |
-| `AtomBase/src/integrations/provider/` | AI providers         | [Browse](../AtomBase/src/integrations/provider/) |
-| `AtomBase/src/integrations/tool/`     | Agent tools          | [Browse](../AtomBase/src/integrations/tool/)     |
-| `AtomBase/src/core/config/`           | Configuration        | [Browse](../AtomBase/src/core/config/)           |
-| `AtomBase/src/integrations/mcp/`      | MCP servers          | [Browse](../AtomBase/src/integrations/mcp/)      |
-| `libs/sdk/`                           | SDK package          | [Browse](../libs/sdk/)                           |
+| Directory                             | Description            | Link                                             |
+| ------------------------------------- | ---------------------- | ------------------------------------------------ |
+| `AtomBase/src/interfaces/cli/`        | CLI commands and TUI   | [Browse](../AtomBase/src/interfaces/cli/)        |
+| `AtomBase/src/core/session/`          | Session management     | [Browse](../AtomBase/src/core/session/)          |
+| `AtomBase/src/integrations/provider/` | AI providers           | [Browse](../AtomBase/src/integrations/provider/) |
+| `AtomBase/src/integrations/tool/`     | Agent tools            | [Browse](../AtomBase/src/integrations/tool/)     |
+| `AtomBase/src/core/config/`           | Configuration          | [Browse](../AtomBase/src/core/config/)           |
+| `AtomBase/src/integrations/mcp/`      | MCP servers            | [Browse](../AtomBase/src/integrations/mcp/)      |
+| `libs/companion/`                     | Mobile companion logic | [Browse](../libs/companion/)                     |
+| `libs/enterprise/`                    | Web dashboard          | [Browse](../libs/enterprise/)                    |
+| `libs/sdk/`                           | SDK package            | [Browse](../libs/sdk/)                           |
 
 ---
 
@@ -139,8 +146,8 @@ AI provider integrations in `AtomBase/src/integrations/provider/`:
 | OpenRouter | [openrouter.ts](../AtomBase/src/integrations/provider/openrouter.ts) | Supported |
 | MiniMax    | [minimax.ts](../AtomBase/src/integrations/provider/minimax.ts)       | Free tier |
 | GLM        | [glm.ts](../AtomBase/src/integrations/provider/glm.ts)               | Free tier |
-| Kilocode   | [kilocode.ts](../AtomBase/src/integrations/provider/kilocode.ts)     | v2.1.2+   |
-| Fallback   | [fallback.ts](../AtomBase/src/integrations/provider/fallback.ts)     | v2.1.2+   |
+| Kilocode   | [kilocode.ts](../AtomBase/src/integrations/provider/kilocode.ts)     | Supported |
+| Fallback   | [fallback.ts](../AtomBase/src/integrations/provider/fallback.ts)     | Supported |
 
 ### Tool System
 
@@ -156,7 +163,7 @@ Agent tools in `AtomBase/src/integrations/tool/`:
 | Bash    | [bash.ts](../AtomBase/src/integrations/tool/bash.ts)       | Command execution     |
 | Browser | [browser.ts](../AtomBase/src/integrations/tool/browser.ts) | Web browsing          |
 
-### New Tools (v2.1.2+)
+### Additional Tools
 
 | Tool       | File                                                             | Description                  |
 | ---------- | ---------------------------------------------------------------- | ---------------------------- |
@@ -206,7 +213,7 @@ Agent tools in `AtomBase/src/integrations/tool/`:
 | `atomcli skill add`    | Add skill from URL    | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
 | `atomcli skill remove` | Remove skill          | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
 
-### Developer Tools (v2.1.2+)
+### Developer Tools
 
 | Command             | Description                     | Source                                                          |
 | ------------------- | ------------------------------- | --------------------------------------------------------------- |
@@ -220,7 +227,7 @@ Agent tools in `AtomBase/src/integrations/tool/`:
 
 ---
 
-## Advanced Features (v2.1.2+)
+## Advanced Features
 
 ### Streaming Interrupt System
 
@@ -282,9 +289,8 @@ AtomCLI learns from errors and successful patterns:
 
 ### Prerequisites
 
-- [Bun](https://bun.sh/) v1.0+
+- [Bun](https://bun.sh/) v1.3+
 - [Git](https://git-scm.com/)
-- Node.js 18+ (for some dependencies)
 
 ### Setup
 
@@ -313,15 +319,24 @@ bun run dev --print-logs
 ### Building
 
 ```bash
-# Build all platforms
+# Build all platforms (11 targets)
 bun run build
 
+# Build only current platform
+cd AtomBase && bun run build --single
+
 # Output in dist/ directory:
-# - atomcli-linux-x64/
-# - atomcli-linux-arm64/
-# - atomcli-darwin-x64/
-# - atomcli-darwin-arm64/
+# - atomcli-linux-x64/           (glibc)
+# - atomcli-linux-arm64/         (glibc)
+# - atomcli-linux-x64-baseline/  (glibc, no AVX2)
+# - atomcli-linux-x64-musl/      (Alpine)
+# - atomcli-linux-arm64-musl/    (Alpine)
+# - atomcli-linux-x64-baseline-musl/
+# - atomcli-darwin-arm64/        (Apple Silicon)
+# - atomcli-darwin-x64/          (Intel)
+# - atomcli-darwin-x64-baseline/ (Intel, no AVX2)
 # - atomcli-windows-x64/
+# - atomcli-windows-x64-baseline/
 ```
 
 ### Installing Local Build
@@ -352,10 +367,10 @@ Configuration is managed in `AtomBase/src/core/config/config.ts`:
 
 ```typescript
 interface Config {
-  model?: string              // Default model (provider/model)
-  autoupdate?: boolean | "notify"  // Update behavior
-  disabled_providers?: string[]    // Providers to disable
-  enabled_providers?: string[]     // Providers to enable (exclusive)
+  model?: string // Default model (provider/model)
+  autoupdate?: boolean | "notify" // Update behavior
+  disabled_providers?: string[] // Providers to disable
+  enabled_providers?: string[] // Providers to enable (exclusive)
 }
 ```
 
@@ -377,11 +392,11 @@ export namespace MyProvider {
     name: "My Provider",
     models: [...],
   }
-  
+
   export async function* models(info: Provider.Context) {
     yield* info.provider.defaultModels().values()
   }
-  
+
   export function create(ctx: Provider.Context) {
     return createOpenAI({
       baseURL: "https://api.myprovider.com/v1",
@@ -420,6 +435,7 @@ export const MyTool = Tool.define({
 ### Tool Context
 
 Tools receive a context with:
+
 - `cwd` - Current working directory
 - `session` - Active session
 - `permissions` - Permission state

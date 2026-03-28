@@ -1,331 +1,331 @@
 # Prompt System Architecture
 
-AtomCLI'nin en kritik bileşenlerinden biri olan **Prompt Sistemi**, AI modellerine gönderilen tüm sistem talimatlarını oluşturur, düzenler ve yönetir.
+The **Prompt System** is one of AtomCLI's most critical components. It generates, organizes, and manages all system instructions sent to AI models.
 
-## 📋 İçindekiler
+## Table of Contents
 
-- [Genel Bakış](#genel-bakış)
-- [Dizin Yapısı](#dizin-yapısı)
-- [manager.ts — Birleşik Orkestratör](#managerts--birleşik-orkestratör)
-- [Modül Katmanları](#modül-katmanları)
-  - [1. Core (Temel Promptlar)](#1-core-temel-promptlar)
-  - [2. Provider (Sağlayıcıya Özel)](#2-provider-sağlayıcıya-özel)
-  - [3. Agent (Ajan Modu)](#3-agent-ajan-modu)
-  - [4. Runtime (Çalışma Zamanı)](#4-runtime-çalışma-zamanı)
-  - [5. Inline Emphasis (Satır İçi Vurgular)](#5-inline-emphasis-satır-içi-vurgular)
-- [Prompt Nasıl Oluşturulur?](#prompt-nasıl-oluşturulur)
-- [Özelleştirme](#özelleştirme)
-  - [Yeni .txt Dosyası Ekleme](#yeni-txt-dosyası-ekleme)
-  - [Custom Section Ekleme (Dinamik)](#custom-section-ekleme-dinamik)
-  - [Proje Kuralları (AGENTS.md)](#proje-kuralları-agentsmd)
-- [Token İstatistikleri](#token-i̇statistikleri)
-- [İlgili Dökümanlar](#i̇lgili-dökümanlar)
-
----
-
-## Genel Bakış
-
-```
-Kullanıcı İsteği
-     │
-     ▼
-┌──────────────┐
-│  system.ts   │ ← Giriş noktası
-│  provider()  │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│  manager.ts  │ ← Birleşik orkestratör
-│              │
-│  ┌────────┐  │
-│  │ Core   │──┼── 8 temel .txt dosyası (her zaman dahil)
-│  ├────────┤  │
-│  │Provider│──┼── Model'e göre otomatik seçilen .txt
-│  ├────────┤  │
-│  │ Agent  │──┼── Ajan moduna göre seçilen .txt
-│  ├────────┤  │
-│  │Emphasis│──┼── Read-before-edit, orchestrate, todowrite
-│  ├────────┤  │
-│  │Dynamic │──┼── User profile, learning memory
-│  ├────────┤  │
-│  │Custom  │──┼── Kullanıcının eklediği ekstra bölümler
-│  └────────┘  │
-└──────┬───────┘
-       │
-       ▼
-  LLM'e gönderilen
-  tek bir string
-```
+- [Overview](#overview)
+- [Directory Structure](#directory-structure)
+- [manager.ts -- Unified Orchestrator](#managerts----unified-orchestrator)
+- [Module Layers](#module-layers)
+  - [1. Core (Base Prompts)](#1-core-base-prompts)
+  - [2. Provider (Model-Specific)](#2-provider-model-specific)
+  - [3. Agent (Agent Mode)](#3-agent-agent-mode)
+  - [4. Runtime (Runtime Injection)](#4-runtime-runtime-injection)
+  - [5. Inline Emphasis](#5-inline-emphasis)
+- [How Prompts Are Built](#how-prompts-are-built)
+- [Customization](#customization)
+  - [Adding a New .txt File](#adding-a-new-txt-file)
+  - [Adding Custom Sections (Dynamic)](#adding-custom-sections-dynamic)
+  - [Project Rules (AGENTS.md)](#project-rules-agentsmd)
+- [Token Statistics](#token-statistics)
+- [Related Documentation](#related-documentation)
 
 ---
 
-## Dizin Yapısı
+## Overview
+
+```
+User Request
+     |
+     v
++--------------+
+|  system.ts   | <- Entry point
+|  provider()  |
++------+-------+
+       |
+       v
++--------------+
+|  manager.ts  | <- Unified orchestrator
+|              |
+|  +--------+  |
+|  | Core   |--+-- 8 base .txt files (always included)
+|  +--------+  |
+|  |Provider|--+-- Model-specific .txt (auto-detected)
+|  +--------+  |
+|  | Agent  |--+-- Agent mode .txt (selected)
+|  +--------+  |
+|  |Emphasis|--+-- Read-before-edit, orchestrate, todowrite
+|  +--------+  |
+|  |Dynamic |--+-- User profile, learning memory
+|  +--------+  |
+|  |Custom  |--+-- User-added extra sections
+|  +--------+  |
++------+-------+
+       |
+       v
+  Single string sent to LLM
+```
+
+---
+
+## Directory Structure
 
 ```
 AtomBase/src/core/session/prompt/
-├── manager.ts              # 🎯 Birleşik orkestratör (tek giriş noktası)
-│
-├── core/                   # 📦 Temel promptlar (HER ZAMAN dahil)
-│   ├── identity.txt        #   AI kimliği, kişilik, uzmanlık alanları
-│   ├── self-learning.txt   #   Öğrenme sistemi talimatları
-│   ├── tools.txt           #   Araç kullanım rehberi (Read, Edit, Bash, vb.)
-│   ├── workflow.txt        #   5 aşamalı iş akışı
-│   ├── communication.txt   #   İletişim stili kuralları
-│   ├── code-editing.txt    #   Kod düzenleme kuralları ve en iyi pratikler
-│   ├── git-safety.txt      #   Git güvenlik protokolü
-│   └── extensions.txt      #   Skill sistemi ve MCP rehberi
-│
-├── provider/               # 🏢 Sağlayıcıya özel optimizasyonlar
-│   ├── anthropic.txt       #   Claude modelleri için
-│   ├── gemini.txt          #   Gemini modelleri için
-│   ├── openai.txt          #   GPT/O-serisi modelleri için
-│   └── generic.txt         #   Diğer tüm modeller için
-│
-├── agent/                  # 🤖 Ajan modu davranışları
-│   ├── agent.txt           #   Varsayılan otonom mod
-│   ├── explore.txt         #   Salt okunur keşif modu
-│   ├── plan.txt            #   Planlama modu (düzenleme yasağı)
-│   └── build.txt           #   Uygulama modu
-│
-└── runtime/                # ⚡ Çalışma zamanı enjeksiyonları
-    ├── max-steps.txt       #   Adım limiti uyarısı
-    ├── plan-mode.txt       #   Plan modu sistem hatırlatıcısı
-    ├── build-switch.txt    #   Plan→Build geçiş bildirimi
-    ├── anthropic-spoof.txt #   Claude Code spoof başlığı
-    ├── plan-reminder-anthropic.txt  # Anthropic plan iş akışı
-    └── legacy-instructions.txt      # Eski codex talimatları (geriye dönük uyum)
+|-- manager.ts              # Unified orchestrator (single entry point)
+|
+|-- core/                   # Base prompts (ALWAYS included)
+|   |-- identity.txt        #   AI identity, personality, expertise areas
+|   |-- self-learning.txt   #   Learning system instructions
+|   |-- tools.txt           #   Tool usage guide (Read, Edit, Bash, etc.)
+|   |-- workflow.txt        #   5-stage workflow
+|   |-- communication.txt   #   Communication style rules
+|   |-- code-editing.txt    #   Code editing rules and best practices
+|   |-- git-safety.txt      #   Git safety protocol
+|   +-- extensions.txt      #   Skill system and MCP guide
+|
+|-- provider/               # Model-specific optimizations
+|   |-- anthropic.txt       #   For Claude models
+|   |-- gemini.txt          #   For Gemini models
+|   |-- openai.txt          #   For GPT/O-series models
+|   +-- generic.txt         #   For all other models
+|
+|-- agent/                  # Agent mode behaviors
+|   |-- agent.txt           #   Default autonomous mode
+|   |-- explore.txt         #   Read-only exploration mode
+|   |-- plan.txt            #   Planning mode (editing prohibited)
+|   +-- build.txt           #   Application mode
+|
++-- runtime/                # Runtime injections
+    |-- max-steps.txt       #   Step limit warning
+    |-- plan-mode.txt       #   Plan mode system reminder
+    |-- build-switch.txt    #   Plan->Build transition notice
+    |-- anthropic-spoof.txt #   Claude Code spoof header
+    |-- plan-reminder-anthropic.txt  # Anthropic plan workflow
+    +-- legacy-instructions.txt      # Legacy codex instructions (backward compat)
 ```
 
 ---
 
-## manager.ts — Birleşik Orkestratör
+## manager.ts -- Unified Orchestrator
 
-`manager.ts`, tüm prompt üretim mantığını tek dosyada barındıran ana orkestratördür.
+`manager.ts` is the main orchestrator that contains all prompt generation logic in a single file.
 
 ### API
 
 ```typescript
 import { PromptManager } from "./prompt/manager"
 
-// Senkron build (hızlı, user profile/memory yok)
+// Synchronous build (fast, no user profile/memory)
 const prompt = PromptManager.build({
   modelId: "claude-3-5-sonnet",
   agent: "agent",
-  customSections: ["Ekstra kural: Her zaman Türkçe yanıt ver."]
+  customSections: ["Extra rule: Always respond in English."],
 })
 
-// Asenkron build (user profile + learning memory dahil)
+// Asynchronous build (includes user profile + learning memory)
 const prompt = await PromptManager.buildAsync({
   modelId: "gemini-2.0-flash",
   agent: "explore",
   includeLearningMemory: true,
-  includeUserProfile: true
+  includeUserProfile: true,
 })
 
-// İstatistik
+// Statistics
 const stats = PromptManager.getStats({ modelId: "claude-3-5-sonnet" })
-console.log(stats.totalTokens)    // ~25000
-console.log(stats.sections)       // Her bölümün token sayısı
+console.log(stats.totalTokens) // ~25000
+console.log(stats.sections) // Token count per section
 ```
 
 ### BuildOptions
 
-| Parametre               | Tip         | Varsayılan  | Açıklama                   |
-| ----------------------- | ----------- | ----------- | -------------------------- |
-| `modelId`               | `string`    | **zorunlu** | Model API ID'si            |
-| `agent`                 | `AgentType` | `"agent"`   | Ajan modu                  |
-| `customSections`        | `string[]`  | `[]`        | Ekstra prompt bölümleri    |
-| `includeLearningMemory` | `boolean`   | `true`      | Öğrenme hafızası dahil mi  |
-| `includeUserProfile`    | `boolean`   | `true`      | Kullanıcı profili dahil mi |
+| Parameter               | Type        | Default   | Description             |
+| ----------------------- | ----------- | --------- | ----------------------- |
+| `modelId`               | `string`    | required  | Model API ID            |
+| `agent`                 | `AgentType` | `"agent"` | Agent mode              |
+| `customSections`        | `string[]`  | `[]`      | Extra prompt sections   |
+| `includeLearningMemory` | `boolean`   | `true`    | Include learning memory |
+| `includeUserProfile`    | `boolean`   | `true`    | Include user profile    |
 
-### Geriye Dönük Uyumluluk
+### Backward Compatibility
 
 ```typescript
-// Eski PromptBuilder hâlâ çalışır (alias)
+// Legacy PromptBuilder still works (alias)
 import { PromptBuilder } from "./prompt/manager"
-PromptBuilder.build({ ... })  // PromptManager.build ile aynı
+PromptBuilder.build({ ... })  // Same as PromptManager.build
 ```
 
 ---
 
-## Modül Katmanları
+## Module Layers
 
-### 1. Core (Temel Promptlar)
+### 1. Core (Base Prompts)
 
-Bu 8 dosya **her istekte** dahil edilir, sırası önemlidir:
+These 8 files are included in **every request**, order matters:
 
-| Sıra | Dosya               | İçerik                                                | ~Token |
-| ---- | ------------------- | ----------------------------------------------------- | ------ |
-| 1    | `identity.txt`      | AI kimliği, uzmanlık, kişilik, ajan döngüsü           | ~4700  |
-| 2    | `self-learning.txt` | Hafıza sistemi talimatları                            | ~1200  |
-| 3    | `tools.txt`         | 17 araç detaylı kullanım rehberi                      | ~4800  |
-| 4    | `workflow.txt`      | 5 aşamalı iş akışı (Anla→Planla→Uygula→Doğrula→Bitir) | ~3200  |
-| 5    | `communication.txt` | İletişim kuralları (direkt, özlü, teknik)             | ~2900  |
-| 6    | `code-editing.txt`  | Kod düzenleme en iyi pratikleri                       | ~3700  |
-| 7    | `git-safety.txt`    | Git güvenlik protokolü                                | ~2400  |
-| 8    | `extensions.txt`    | Skill ve MCP kullanım rehberi                         | ~3100  |
+| Order | File                | Content                                                    | ~Tokens |
+| ----- | ------------------- | ---------------------------------------------------------- | ------- |
+| 1     | `identity.txt`      | AI identity, expertise, personality, agent loop            | ~4700   |
+| 2     | `self-learning.txt` | Memory system instructions                                 | ~1200   |
+| 3     | `tools.txt`         | 17 tools detailed usage guide                              | ~4800   |
+| 4     | `workflow.txt`      | 5-stage workflow (Understand->Plan->Apply->Verify->Finish) | ~3200   |
+| 5     | `communication.txt` | Communication rules (direct, concise, technical)           | ~2900   |
+| 6     | `code-editing.txt`  | Code editing best practices                                | ~3700   |
+| 7     | `git-safety.txt`    | Git safety protocol                                        | ~2400   |
+| 8     | `extensions.txt`    | Skill and MCP usage guide                                  | ~3100   |
 
-### 2. Provider (Sağlayıcıya Özel)
+### 2. Provider (Model-Specific)
 
-Model ID'sine göre **otomatik algılanır**:
+Auto-detected based on model ID:
 
-```typescript
-"claude-3-5-sonnet"  → anthropic.txt
-"gemini-2.0-flash"   → gemini.txt
-"gpt-4o"             → openai.txt
-"llama-3.1"          → generic.txt
+```
+"claude-3-5-sonnet"  -> anthropic.txt
+"gemini-2.0-flash"   -> gemini.txt
+"gpt-4o"             -> openai.txt
+"llama-3.1"          -> generic.txt
 ```
 
-Algılama kuralları:
-- `claude` içeriyorsa → `anthropic`
-- `gemini` içeriyorsa → `gemini`
-- `gpt`, `o1`, `o3`, `o4` içeriyorsa → `openai`
-- Diğer her şey → `generic`
+Detection rules:
 
-### 3. Agent (Ajan Modu)
+- Contains `claude` -> `anthropic`
+- Contains `gemini` -> `gemini`
+- Contains `gpt`, `o1`, `o3`, `o4` -> `openai`
+- Everything else -> `generic`
 
-| Mod       | Dosya         | Davranış                              |
-| --------- | ------------- | ------------------------------------- |
-| `agent`   | `agent.txt`   | Tam otonom, tüm araçlar açık          |
-| `explore` | `explore.txt` | Salt okunur, sadece Read/Grep/Glob/Ls |
-| `plan`    | `plan.txt`    | Sadece planla, düzenleme yasak        |
-| `build`   | `build.txt`   | Planı uygula, tam yetki               |
+### 3. Agent (Agent Mode)
 
-### 4. Runtime (Çalışma Zamanı)
+| Mode      | File          | Behavior                            |
+| --------- | ------------- | ----------------------------------- |
+| `agent`   | `agent.txt`   | Fully autonomous, all tools enabled |
+| `explore` | `explore.txt` | Read-only, only Read/Grep/Glob/Ls   |
+| `plan`    | `plan.txt`    | Plan only, editing prohibited       |
+| `build`   | `build.txt`   | Execute plan, full permissions      |
 
-Bu dosyalar **sürekli dahil edilmez**, sadece belirli anlarda enjekte edilir:
+### 4. Runtime (Runtime Injection)
 
-| Dosya                     | Ne Zaman                        | Nereden     |
-| ------------------------- | ------------------------------- | ----------- |
-| `max-steps.txt`           | Adım limiti aşıldığında         | `prompt.ts` |
-| `plan-mode.txt`           | Plan moduna geçildiğinde        | `prompt.ts` |
-| `build-switch.txt`        | Plan→Build geçişinde            | `prompt.ts` |
-| `anthropic-spoof.txt`     | Anthropic modelleri için başlık | `system.ts` |
-| `legacy-instructions.txt` | Eski codex talimatları          | `system.ts` |
+These files are **not always included**, only injected at specific moments:
 
-### 5. Inline Emphasis (Satır İçi Vurgular)
+| File                      | When                        | Source      |
+| ------------------------- | --------------------------- | ----------- |
+| `max-steps.txt`           | Step limit exceeded         | `prompt.ts` |
+| `plan-mode.txt`           | Plan mode activated         | `prompt.ts` |
+| `build-switch.txt`        | Plan->Build transition      | `prompt.ts` |
+| `anthropic-spoof.txt`     | Header for Anthropic models | `system.ts` |
+| `legacy-instructions.txt` | Legacy codex instructions   | `system.ts` |
 
-`manager.ts` içinde doğrudan tanımlı, **her zaman dahil** edilen kritik bölümler:
+### 5. Inline Emphasis
 
-| Bölüm                       | Amaç                                                |
-| --------------------------- | --------------------------------------------------- |
-| `READ_BEFORE_EDIT_EMPHASIS` | ⛔ "Düzenlemeden ÖNCE MUTLAKA oku" kuralının vurgusu |
-| `ORCHESTRATE_DETAILS`       | 🎯 Orchestrate aracı kullanım rehberi                |
-| `TODOWRITE_DETAILS`         | 📋 TodoWrite görev yönetimi rehberi                  |
+Defined directly in `manager.ts`, **always included** alongside .txt files:
 
-Bunlar `.txt` dosyalarındaki temel talimatlara **ek olarak** dahil edilir, kritik kuralları pekiştirmek için.
+| Section                     | Purpose                                      |
+| --------------------------- | -------------------------------------------- |
+| `READ_BEFORE_EDIT_EMPHASIS` | Emphasizes "ALWAYS read before editing" rule |
+| `ORCHESTRATE_DETAILS`       | Orchestrate tool usage guide                 |
+| `TODOWRITE_DETAILS`         | TodoWrite task management guide              |
+
+These are included **in addition to** the base .txt files to reinforce critical rules.
 
 ---
 
-## Prompt Nasıl Oluşturulur?
+## How Prompts Are Built
 
-`PromptManager.build()` çağrıldığında oluşan birleştirme sırası:
+When `PromptManager.build()` is called, the assembly order is:
 
 ```
-1.  core/identity.txt              ← Kim olduğu
-2.  core/self-learning.txt         ← Öğrenme sistemi
-3.  core/tools.txt                 ← Araç kullanımı
-4.  core/workflow.txt              ← İş akışı
-5.  core/communication.txt         ← İletişim
-6.  core/code-editing.txt          ← Kod düzenleme
-7.  core/git-safety.txt            ← Git güvenliği
-8.  core/extensions.txt            ← Skills + MCP
-9.  [user_context]                 ← Kullanıcı profili (async)
-10. [learning_memory]              ← Öğrenme hafızası (async)
-11. READ_BEFORE_EDIT_EMPHASIS      ← Kritik kural vurgusu
-12. ORCHESTRATE_DETAILS            ← Orchestrate rehberi
-13. TODOWRITE_DETAILS              ← TodoWrite rehberi
-14. provider/{detected}.txt         ← Sağlayıcıya özel
-15. agent/{selected}.txt            ← Ajan moduna özel
-16. customSections[]                ← Kullanıcı ekstraları
+1.  core/identity.txt              <- Who it is
+2.  core/self-learning.txt         <- Learning system
+3.  core/tools.txt                 <- Tool usage
+4.  core/workflow.txt              <- Workflow
+5.  core/communication.txt         <- Communication
+6.  core/code-editing.txt          <- Code editing
+7.  core/git-safety.txt            <- Git safety
+8.  core/extensions.txt            <- Skills + MCP
+9.  [user_context]                 <- User profile (async)
+10. [learning_memory]              <- Learning memory (async)
+11. READ_BEFORE_EDIT_EMPHASIS      <- Critical rule emphasis
+12. ORCHESTRATE_DETAILS            <- Orchestrate guide
+13. TODOWRITE_DETAILS              <- TodoWrite guide
+14. provider/{detected}.txt        <- Provider-specific
+15. agent/{selected}.txt           <- Agent mode-specific
+16. customSections[]               <- User extras
 ```
 
-Her bölüm `\n\n---\n\n` ile ayrılır.
+Each section is separated by `\n\n---\n\n`.
 
 ---
 
-## Özelleştirme
+## Customization
 
-### Yeni .txt Dosyası Ekleme
+### Adding a New .txt File
 
-1. Dosyayı uygun dizine koyun:
-   - Temel (her zaman dahil) → `core/`
-   - Sağlayıcıya özel → `provider/`
-   - Ajan moduna özel → `agent/`
-   - Çalışma zamanı enjeksiyonu → `runtime/`
+1. Place the file in the appropriate directory:
+   - Base (always included) -> `core/`
+   - Provider-specific -> `provider/`
+   - Agent mode-specific -> `agent/`
+   - Runtime injection -> `runtime/`
 
-2. `manager.ts` içinde import edin:
+2. Import it in `manager.ts`:
+
    ```typescript
    import MY_NEW_PROMPT from "./core/my-new-rules.txt"
    ```
 
-3. Uygun diziye ekleyin:
+3. Add it to the appropriate array:
    ```typescript
    const CORE_PROMPTS = [
-     ...mevcut_promptlar,
-     MY_NEW_PROMPT,  // ← yeni eklenen
+     ...existing_prompts,
+     MY_NEW_PROMPT, // <- newly added
    ]
    ```
 
-### Custom Section Ekleme (Dinamik)
+### Adding Custom Sections (Dynamic)
 
-Kod tarafından çalışma zamanında ekstra bölümler ekleyin:
+Add extra sections at runtime via code:
 
 ```typescript
 const prompt = PromptManager.build({
   modelId: "claude-3-5-sonnet",
   customSections: [
-    "Bu projede TailwindCSS v4 kullanılıyor. Her zaman Tailwind classlarını tercih et.",
-    await fs.readFile("./my-extra-rules.txt", "utf-8"),  // Dosyadan oku
-  ]
+    "This project uses TailwindCSS v4. Always prefer Tailwind classes.",
+    await fs.readFile("./my-extra-rules.txt", "utf-8"), // Read from file
+  ],
 })
 ```
 
-### Proje Kuralları (AGENTS.md)
+### Project Rules (AGENTS.md)
 
-`system.ts → custom()` fonksiyonu, proje kökündeki kural dosyalarını otomatik okur:
+The `system.ts -> custom()` function automatically reads rule files from the project root:
 
 ```
-Arama sırası:
-1. ./AGENTS.md (proje kökü)
+Search order:
+1. ./AGENTS.md (project root)
 2. ./CLAUDE.md
 3. ./CONTEXT.md (deprecated)
 4. ~/.atomcli/AGENTS.md (global)
 5. ~/.claude/CLAUDE.md (global)
 ```
 
-Bu dosyalar `customSections` olarak PromptManager'a eklenir.
+These files are added as `customSections` to the PromptManager.
 
 ---
 
-## Token İstatistikleri
+## Token Statistics
 
-Tipik bir prompt'un bölüm başına yaklaşık token dağılımı:
+Approximate token distribution per section in a typical prompt:
 
 ```
-identity         ████████████████████░░░░  ~4,700  (19%)
-tools            ████████████████████░░░░  ~4,800  (19%)
-workflow         █████████████░░░░░░░░░░░  ~3,200  (13%)
-code-editing     ███████████████░░░░░░░░░  ~3,700  (15%)
-communication    ████████████░░░░░░░░░░░░  ~2,900  (12%)
-extensions       ████████████░░░░░░░░░░░░  ~3,100  (12%)
-git-safety       █████████░░░░░░░░░░░░░░░  ~2,400  (10%)
-self-learning    █████░░░░░░░░░░░░░░░░░░░  ~1,200  ( 5%)
-emphasis/extras  ██████░░░░░░░░░░░░░░░░░░  ~1,500  ( 6%)
-provider+agent   ███░░░░░░░░░░░░░░░░░░░░░  ~  500  ( 2%)
-─────────────────────────────────────────────────────
-TOPLAM           ████████████████████████  ~28,000
+identity         [####################....]  ~4,700  (19%)
+tools            [####################....]  ~4,800  (19%)
+workflow         [###############.........]  ~3,200  (13%)
+code-editing     [################........]  ~3,700  (15%)
+communication    [############............]  ~2,900  (12%)
+extensions       [############............]  ~3,100  (12%)
+git-safety       [###########.............]  ~2,400  (10%)
+self-learning    [######..................]  ~1,200  ( 5%)
+emphasis/extras  [#######.................]  ~1,500  ( 6%)
+provider+agent   [###.....................]  ~  500  ( 2%)
+-------------------------------------------------------------
+TOTAL            [######################..]  ~28,000
 ```
 
-`PromptManager.getStats()` ile gerçek zamanlı istatistik alabilirsiniz.
+Use `PromptManager.getStats()` to get real-time statistics.
 
 ---
 
-## İlgili Dökümanlar
+## Related Documentation
 
-- [Development Guide](./DEVELOPMENT.md) — Proje geliştirme rehberi
-- [Providers](./PROVIDERS.md) — AI sağlayıcı yapılandırması
-- [MCP Guide](./MCP-GUIDE.md) — MCP sunucu entegrasyonu
-- [Skills Guide](./SKILLS-GUIDE.md) — Beceri sistemi rehberi
-- [Memory Integration](./MEMORY-INTEGRATION.md) — Hafıza sistemi entegrasyonu
+- [Development Guide](./DEVELOPMENT.md) - Project development guide
+- [Providers](./PROVIDERS.md) - AI provider configuration
+- [MCP Guide](./MCP-GUIDE.md) - MCP server integration
+- [Skills Guide](./SKILLS-GUIDE.md) - Skill system guide

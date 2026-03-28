@@ -64,11 +64,13 @@ Antigravity provides access to premium models (Claude, Gemini) through Google OA
 **Available Models**: Claude (Anthropic), Gemini (Google)
 
 **How to Use**:
+
 1. Select an Antigravity model in the model selector
 2. Complete the Google OAuth authentication
 3. Start using premium models for free
 
 **Features**:
+
 - Access to Claude and Gemini models
 - No API key required
 - Rate limited for fair usage
@@ -240,7 +242,7 @@ These providers require API keys with paid usage.
 }
 ```
 
-### Kilocode (v2.1.2+)
+### Kilocode
 
 **Models**: Various premium models via Kilocode API or web
 
@@ -291,12 +293,14 @@ Kilocode is a unified AI API that provides access to multiple top-tier models th
 ```
 
 **Features**:
+
 - Single API key for multiple models
 - Built-in retry and fallback mechanisms
 - Usage analytics and cost tracking
 - Enterprise-grade SLA
 
 **Best For**:
+
 - Teams needing multiple model access
 - Production applications requiring high availability
 - Cost-conscious users wanting optimized pricing
@@ -393,6 +397,7 @@ Kilocode is a unified AI API that provides access to multiple top-tier models th
 Run models locally on your machine.
 
 **Setup**:
+
 1. Install Ollama: [ollama.ai](https://ollama.ai/)
 2. Pull a model: `ollama pull llama3.1`
 3. Start Ollama: `ollama serve`
@@ -404,12 +409,14 @@ atomcli -m ollama/llama3.1
 ```
 
 **Popular Models**:
+
 - `llama3.1` - Meta's Llama 3.1
 - `codellama` - Code-focused Llama
 - `mistral` - Mistral 7B
 - `deepseek-coder` - DeepSeek Coder
 
 **Custom Ollama URL**:
+
 ```json
 {
   "providers": {
@@ -528,6 +535,7 @@ All providers support environment variables:
 ### Rate Limits
 
 Free tiers have rate limits. Solutions:
+
 - Wait and retry
 - Switch to paid API key
 - Use local Ollama
