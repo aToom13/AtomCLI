@@ -142,7 +142,7 @@ export namespace PermissionNext {
               id,
               ...request,
             }
-            // Auto-reject after 20s if user doesn't respond
+            // Auto-reject after 5 min if user doesn't respond (extended for mobile use)
             const autoRejectTimer = setTimeout(() => {
               if (s.pending[id]) {
                 delete s.pending[id]
@@ -157,7 +157,7 @@ export namespace PermissionNext {
                 })
                 reject(new RejectedError())
               }
-            }, 20_000)
+            }, 300_000)
             s.pending[id] = {
               info,
               resolve: () => { clearTimeout(autoRejectTimer); resolve() },

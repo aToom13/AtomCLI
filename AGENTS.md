@@ -18,12 +18,14 @@
 ## Validation before finishing
 
 From `AtomBase/`:
+
 ```sh
 bun run typecheck                                          # uses tsgo
 MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
 ```
 
 From root (all packages):
+
 ```sh
 bun turbo typecheck
 bun turbo test
@@ -64,6 +66,44 @@ bun turbo test
 - **Config schema** (`Config.Info` in `config.ts`) must stay backward-compatible. New fields must be optional with defaults. Never rename or remove existing fields.
 - **`WORKFLOWS` map** in `orchestrate.ts` is bounded to `MAX_WORKFLOWS = 100` with 1-hour TTL cleanup. Do not remove this bound.
 - **Subagent permissions** in `OrchestrateTool` must always deny `todowrite`, `todoread`, and `task` for sub-agents.
+
+## MANDATORY: Chain + TodoWrite Usage
+
+**Every multi-step task MUST use Chain (chainupdate) AND TodoWrite together.**
+
+### Rules
+
+1. **Chain first, always.** Before creating any TodoWrite list, call `chainupdate [action=start]`.
+2. **Update Chain frequently.** After every significant tool call, update Chain status:
+   ```
+   chainupdate [action=update, status=analyzing]
+   chainupdate [action=update, status=implementing]
+   chainupdate [action=complete]
+   ```
+3. **Mark Chain steps done.** When a logical step finishes, call `chainupdate [action=complete]`.
+4. **Clear on finish.** When ALL work is done, call `chainupdate [action=clear]`.
+5. **TodoWrite requires Chain.** Never call `TodoWrite` without an active Chain. If you need a task list, start Chain first.
+
+### Forbidden Patterns
+
+- ❌ `TodoWrite([...])` without prior `chainupdate [action=start]`
+- ❌ Calling `chainupdate [action=clear]` before all steps are done
+- ❌ Skipping Chain updates between steps
+- ❌ Completing work without marking Chain step done
+
+### Example Flow
+
+```
+1. chainupdate [action=start]                    # ALWAYS FIRST
+2. chainupdate [action=update, status=reading_requirements]
+3. TodoWrite([{ id: "1", content: "🔍 Analyze", status: "in_progress" }])
+4. ... do analysis ...
+5. chainupdate [action=update, status=implementing]
+6. chainupdate [action=complete]
+7. TodoWrite([{ id: "1", ..., status: "completed" }])
+8. ... next task ...
+9. chainupdate [action=clear]                    # LAST when done
+```
 
 ## Known gotchas
 

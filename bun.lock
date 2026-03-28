@@ -29,7 +29,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "3.2.3-debug",
+      "version": "3.2.4-EarlyBeta",
       "bin": {
         "atomcli": "./bin/atomcli",
       },
@@ -56,6 +56,7 @@
         "@ai-sdk/togetherai": "1.0.30",
         "@ai-sdk/vercel": "1.0.31",
         "@ai-sdk/xai": "2.0.42",
+        "@atomcli/companion": "workspace:*",
         "@atomcli/plugin": "workspace:*",
         "@atomcli/script": "workspace:*",
         "@atomcli/sdk": "workspace:*",
@@ -97,6 +98,7 @@
         "opentui-spinner": "0.0.6",
         "partial-json": "0.1.7",
         "playwright": "1.58.0",
+        "qrcode-terminal": "0.12.0",
         "react": "19.2.3",
         "react-dom": "19.2.3",
         "remeda": "catalog:",
@@ -139,7 +141,7 @@
     },
     "libs/app": {
       "name": "@atomcli/app",
-      "version": "3.2.3-debug",
+      "version": "3.2.4-EarlyBeta",
       "dependencies": {
         "@atomcli/sdk": "workspace:*",
         "@atomcli/ui": "workspace:*",
@@ -185,10 +187,26 @@
         "vite-plugin-solid": "catalog:",
       },
     },
+    "libs/companion": {
+      "name": "@atomcli/companion",
+      "version": "3.2.4-EarlyBeta",
+      "devDependencies": {
+        "@types/bun": "1.3.4",
+        "@types/node": "catalog:",
+        "@types/qrcode-terminal": "0.12.2",
+        "typescript": "catalog:",
+      },
+      "peerDependencies": {
+        "@atomcli/util": "workspace:*",
+        "qrcode-terminal": "^0.12.0",
+        "zod": "catalog:",
+      },
+    },
     "libs/enterprise": {
       "name": "@atomcli/enterprise",
-      "version": "3.2.3-debug",
+      "version": "3.2.4-EarlyBeta",
       "dependencies": {
+        "@atomcli/companion": "workspace:*",
         "@atomcli/ui": "workspace:*",
         "@atomcli/util": "workspace:*",
         "@pierre/diffs": "catalog:",
@@ -446,6 +464,8 @@
     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
 
     "@atomcli/app": ["@atomcli/app@workspace:libs/app"],
+
+    "@atomcli/companion": ["@atomcli/companion@workspace:libs/companion"],
 
     "@atomcli/enterprise": ["@atomcli/enterprise@workspace:libs/enterprise"],
 
@@ -1350,6 +1370,8 @@
     "@types/node": ["@types/node@22.13.9", "", { "dependencies": { "undici-types": "~6.20.0" } }, "sha512-acBjXdRJ3A6Pb3tqnw9HZmyR3Fiol3aGxRCK1x3d+6CDAMjl7I649wpSd+yNURCjbOUGu9tqtLKnTGxmK6CyGw=="],
 
     "@types/promise.allsettled": ["@types/promise.allsettled@1.0.6", "", {}, "sha512-wA0UT0HeT2fGHzIFV9kWpYz5mdoyLxKrTgMdZQM++5h6pYAFH73HXcQhefg24nD1yivUFEn5KU+EF4b+CXJ4Wg=="],
+
+    "@types/qrcode-terminal": ["@types/qrcode-terminal@0.12.2", "", {}, "sha512-v+RcIEJ+Uhd6ygSQ0u5YYY7ZM+la7GgPbs0V/7l/kFs2uO4S8BcIUEMoP7za4DNIqNnUD5npf0A/7kBhrCKG5Q=="],
 
     "@types/qs": ["@types/qs@6.14.0", "", {}, "sha512-eOunJqu0K1923aExK6y8p6fsihYEn/BYuQ4g0CxAAgFc4b/ZLN4CrsRZ55srTdqoiLzU2B2evC+apEIxprEzkQ=="],
 
@@ -2352,6 +2374,8 @@
     "proxy-from-env": ["proxy-from-env@1.1.0", "", {}, "sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg=="],
 
     "punycode": ["punycode@1.3.2", "", {}, "sha512-RofWgt/7fL5wP1Y7fxE7/EmTLzQVnB0ycyibJ0OOHIlJqTNzglYFxVwETOcIoJqJmpDXJ9xImDv+Fq34F/d4Dw=="],
+
+    "qrcode-terminal": ["qrcode-terminal@0.12.0", "", { "bin": { "qrcode-terminal": "./bin/qrcode-terminal.js" } }, "sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ=="],
 
     "qs": ["qs@6.14.1", "", { "dependencies": { "side-channel": "^1.1.0" } }, "sha512-4EK3+xJl8Ts67nLYNwqw/dsFVnCf+qR7RgXSK9jEEm9unao3njwMDdmsdvoKBKHzxd7tCYz5e5M+SnMjdtXGQQ=="],
 

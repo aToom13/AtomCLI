@@ -37,6 +37,8 @@ import { PermissionRoute } from "./routes/permission"
 import { LspRoute } from "./routes/lsp"
 import { FormatterRoute } from "./routes/formatter"
 import { DashboardRoute } from "./routes/dashboard"
+import { CompanionRoute, CompanionPairRoute } from "./companion"
+import { MobileBridge } from "@atomcli/companion"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -169,6 +171,8 @@ export namespace Server {
         .route("/lsp", LspRoute)
         .route("/formatter", FormatterRoute)
         .route("/dashboard", DashboardRoute)
+        .route("/", CompanionPairRoute)
+        .route("/", CompanionRoute)
         .all("/*", async (c) => {
           const path = c.req.path
           const response = await proxy(`https://app.atomcli.ai${path}`, {
@@ -217,7 +221,9 @@ export namespace Server {
         return undefined
       }
     }
-    const server = opts.port === 0 ? (tryServe(4096) ?? tryServe(0)) : tryServe(opts.port)
+    const server = opts.port === 0
+      ? (tryServe(4096) ?? tryServe(0))
+      : (tryServe(opts.port) ?? tryServe(0))
     if (!server) throw new Error(`Failed to start server on port ${opts.port}`)
 
     _url = server.url

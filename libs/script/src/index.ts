@@ -9,8 +9,10 @@ if (!expectedBunVersion) {
   throw new Error("packageManager field not found in root package.json")
 }
 
-if (process.versions.bun !== expectedBunVersion) {
-  throw new Error(`This script requires bun@${expectedBunVersion}, but you are using bun@${process.versions.bun}`)
+const expectedMajorMinor = expectedBunVersion.split(".").slice(0, 2).join(".")
+const actualMajorMinor = process.versions.bun.split(".").slice(0, 2).join(".")
+if (expectedMajorMinor !== actualMajorMinor) {
+  throw new Error(`This script requires bun@${expectedMajorMinor}.x, but you are using bun@${process.versions.bun}`)
 }
 
 // Read AtomBase version as the source of truth
@@ -25,7 +27,10 @@ const env = {
 }
 
 // Get short commit hash
-const COMMIT_HASH = await $`git rev-parse --short HEAD`.text().then(x => x.trim()).catch(() => "unknown")
+const COMMIT_HASH = await $`git rev-parse --short HEAD`
+  .text()
+  .then((x) => x.trim())
+  .catch(() => "unknown")
 
 const CHANNEL = await (async () => {
   if (env.ATOMCLI_CHANNEL) return env.ATOMCLI_CHANNEL

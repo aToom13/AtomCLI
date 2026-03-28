@@ -33,8 +33,9 @@ export namespace FileWatcher {
   }
 
   const watcher = lazy(() => {
+    const libc = typeof ATOMCLI_LIBC !== "undefined" ? ATOMCLI_LIBC : "glibc"
     const binding = require(
-      `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? `-${ATOMCLI_LIBC || "glibc"}` : ""}`,
+      `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? `-${libc}` : ""}`,
     )
     return createWrapper(binding) as typeof import("@parcel/watcher")
   })

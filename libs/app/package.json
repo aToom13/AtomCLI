@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/app",
-  "version": "3.2.3-debug",
+  "version": "3.2.4-EarlyBeta",
   "description": "",
   "type": "module",
   "exports": {

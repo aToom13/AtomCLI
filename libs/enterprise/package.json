@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/enterprise",
-  "version": "3.2.3-debug",
+  "version": "3.2.4-EarlyBeta",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@atomcli/util": "workspace:*",
+    "@atomcli/companion": "workspace:*",
     "@atomcli/ui": "workspace:*",
     "aws4fetch": "^1.0.20",
     "@pierre/diffs": "catalog:",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "3.2.3-debug",
+  "version": "3.2.4-EarlyBeta",
   "name": "atomcli",
   "type": "module",
   "license": "MIT",
@@ -70,6 +70,7 @@
     "@ai-sdk/togetherai": "1.0.30",
     "@ai-sdk/vercel": "1.0.31",
     "@ai-sdk/xai": "2.0.42",
+    "@atomcli/companion": "workspace:*",
     "@atomcli/plugin": "workspace:*",
     "@atomcli/script": "workspace:*",
     "@atomcli/sdk": "workspace:*",
@@ -111,6 +112,7 @@
     "opentui-spinner": "0.0.6",
     "partial-json": "0.1.7",
     "playwright": "1.58.0",
+    "qrcode-terminal": "0.12.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "remeda": "catalog:",

@@ -26,6 +26,11 @@ export default defineConfig({
       baseURL: process.env.ATOMCLI_BASE_URL,
     }),
   ],
+  build: {
+    rollupOptions: {
+      external: ["qrcode-terminal"],
+    },
+  },
   server: {
     host: "0.0.0.0",
     allowedHosts: true,

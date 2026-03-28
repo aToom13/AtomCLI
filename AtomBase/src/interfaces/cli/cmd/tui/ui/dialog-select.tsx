@@ -131,23 +131,41 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     moveTo(next)
   }
 
+  // Recursively search the renderable tree for an element matching the given id.
+  // scroll.getChildren() only returns shallow (direct) children, but the option
+  // box with id=JSON.stringify(value) is nested one level deeper inside the
+  // Focusable wrapper box. This deep search finds it regardless of nesting.
+  function findByIdDeep(
+    children: ReturnType<typeof scroll.getChildren>,
+    id: string,
+  ): ReturnType<typeof scroll.getChildren>[number] | undefined {
+    for (const child of children) {
+      if (child.id === id) return child
+      const nested = (child as any).getChildren?.()
+      if (nested?.length) {
+        const found = findByIdDeep(nested, id)
+        if (found) return found
+      }
+    }
+    return undefined
+  }
+
   function moveTo(next: number) {
     setStore("selected", next)
     props.onMove?.(selected()!)
     if (!scroll) return
-    const target = scroll.getChildren().find((child) => {
-      return child.id === JSON.stringify(selected()?.value)
-    })
+    // The option box id=JSON.stringify(value) is inside a Focusable wrapper —
+    // shallow getChildren() never finds it. Use recursive deep search instead.
+    const target = findByIdDeep(scroll.getChildren(), JSON.stringify(selected()?.value))
     if (!target) return
-    const y = target.y - scroll.y
-    if (y >= scroll.height) {
-      scroll.scrollBy(y - scroll.height + 1)
-    }
-    if (y < 0) {
-      scroll.scrollBy(y)
-      if (isDeepEqual(flat()[0].value, selected()?.value)) {
-        scroll.scrollTo(0)
-      }
+    // Same proven scroll logic as SpatialProvider.navigate():
+    // target.y and viewport.y are both absolute rendered screen coordinates.
+    const vTop = scroll.viewport.y
+    const vBottom = scroll.viewport.y + scroll.viewport.height
+    if (target.y < vTop) {
+      scroll.scrollTo(scroll.scrollTop - (vTop - target.y))
+    } else if (target.y + target.height > vBottom) {
+      scroll.scrollTo(scroll.scrollTop + (target.y + target.height - vBottom))
     }
   }
 

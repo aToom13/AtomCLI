@@ -3,8 +3,10 @@
   "version": "3.2.1-debug",
   "private": true,
   "type": "module",
+  "main": "src/index.ts",
   "license": "MIT",
   "exports": {
+    ".": "./src/index.ts",
     "./*": "./src/*.ts"
   },
   "scripts": {

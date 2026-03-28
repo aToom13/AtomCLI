@@ -1,9 +1,12 @@
+
 import { cmd } from "@/interfaces/cli/cmd/cmd"
 import { tui } from "./app"
 import { Rpc } from "@/util/util/rpc"
 import { type rpc } from "./worker"
 import path from "path"
 import { UI } from "@/interfaces/cli/ui"
+import { MobileBridge } from "@atomcli/companion"
+import { GlobalBus } from "@/core/bus/global"
 import { iife } from "@/util/util/iife"
 import { Log } from "@/util/util/log"
 import { withNetworkOptions, resolveNetworkOptions } from "@/interfaces/cli/network"
@@ -44,7 +47,7 @@ function createEventSource(client: RpcClient, directory: string): EventSource {
       const recentEvents = new Set<string>()
       let cleanupTimer: Timer | undefined
 
-      const makeEventKey = (event: Event) => `${event.type}:${JSON.stringify(event.properties ?? {})}`
+      const makeEventKey = (event: Event) => `${event.type}:${JSON.stringify(event.properties ?? {})} `
 
       const trackAndHandle = (event: Event) => {
         const key = makeEventKey(event)
@@ -172,7 +175,9 @@ export const TuiThreadCommand = cmd({
       process.argv.includes("--port") ||
       process.argv.includes("--hostname") ||
       process.argv.includes("--mdns") ||
+      process.argv.includes("--companion") ||
       networkOpts.mdns ||
+      networkOpts.companion ||
       networkOpts.port !== 0 ||
       networkOpts.hostname !== "127.0.0.1"
 
@@ -187,6 +192,16 @@ export const TuiThreadCommand = cmd({
       // Start HTTP server for external access
       const server = await client.call("server", networkOpts)
       url = server.url
+
+      // If companion mode is enabled, show pairing QR code
+      if (networkOpts.companion) {
+        const { CompanionAuth, CompanionDiscovery } = await import("@atomcli/companion")
+        const { MobileBridge } = await import("@atomcli/companion")
+        MobileBridge.initialize(GlobalBus)
+        const serverUrl = new URL(server.url)
+        const pairingToken = CompanionAuth.issueToken()
+        await CompanionDiscovery.printCompanionInfo(parseInt(serverUrl.port), pairingToken)
+      }
     } else {
       // Use direct RPC communication (no HTTP)
       url = "http://atomcli.internal"

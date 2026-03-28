@@ -5341,3 +5341,38 @@ export type FormatterStatusResponses = {
 }
 
 export type FormatterStatusResponse = FormatterStatusResponses[keyof FormatterStatusResponses]
+
+export type CompanionPairData = {
+  body?: {
+    pairing_token: string
+    public_key: string
+    device_name: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/companion/pair"
+}
+
+export type CompanionPairErrors = {
+  /**
+   * Invalid token
+   */
+  401: {
+    error: string
+  }
+}
+
+export type CompanionPairError = CompanionPairErrors[keyof CompanionPairErrors]
+
+export type CompanionPairResponses = {
+  /**
+   * Device paired
+   */
+  200: {
+    status: "ok"
+  }
+}
+
+export type CompanionPairResponse = CompanionPairResponses[keyof CompanionPairResponses]

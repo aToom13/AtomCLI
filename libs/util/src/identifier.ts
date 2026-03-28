@@ -20,7 +20,7 @@ export namespace Identifier {
     let result = ""
     const bytes = randomBytes(length)
     for (let i = 0; i < length; i++) {
-      result += chars[bytes[i] % 62]
+      result += chars[bytes[i]! % 62]
     }
     return result
   }

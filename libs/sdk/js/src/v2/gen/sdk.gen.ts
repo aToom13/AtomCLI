@@ -12,6 +12,8 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   CommandListResponses,
+  CompanionPairErrors,
+  CompanionPairResponses,
   ConfigGetResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -3138,6 +3140,45 @@ export class Formatter extends HeyApiClient {
   }
 }
 
+export class Companion extends HeyApiClient {
+  /**
+   * Pair a mobile device
+   */
+  public pair<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      pairing_token?: string
+      public_key?: string
+      device_name?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "pairing_token" },
+            { in: "body", key: "public_key" },
+            { in: "body", key: "device_name" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CompanionPairResponses, CompanionPairErrors, ThrowOnError>({
+      url: "/companion/pair",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class AtomcliClient extends HeyApiClient {
   public static readonly __registry = new HeyApiRegistry<AtomcliClient>()
 
@@ -3193,4 +3234,6 @@ export class AtomcliClient extends HeyApiClient {
   lsp = new Lsp({ client: this.client })
 
   formatter = new Formatter({ client: this.client })
+
+  companion = new Companion({ client: this.client })
 }
