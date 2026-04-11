@@ -88,7 +88,8 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
 
 - **Interactive TUI** - Beautiful terminal interface with mouse support, syntax highlighting, and multi-panel layouts
 - **Multi-Provider Support** - Works with OpenAI, Anthropic, Google, Ollama, OpenRouter, and more
-- **Free Models Available** - Use built-in free providers (MiniMax, GLM, Kimi, GPT, ex.) without API keys
+- **Free Models Available** - Use built-in free providers (MiniMax, GLM, Kimi, GPT, and more) without API keys
+- **Antigravity Support** - Access Claude Sonnet and Gemini models for free via Google OAuth through the Antigravity plugin
 - **Unified Memory** - Persistent cross-session memory with offline semantic search (Turkish↔English). Stores preferences, decisions, and project context in `~/.atomcli/memory.jsonl`
 - **Code Intelligence** - File editing, code generation, debugging, and refactoring capabilities
 - **Session Management** - Save and continue conversations, branch sessions, and manage history
@@ -108,7 +109,7 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
 
 ### Extensibility
 
-- **MCP Support** - Extend capabilities with Model Context Protocol servers for memory, filesystem access, and custom tools
+- **MCP Support** - Extend capabilities with Model Context Protocol servers for custom tools and integrations
 - **Skills System** - Add specialized behaviors and workflows from GitHub repositories or local files
 - **Custom Agents** - Configure different agent personas for various development tasks
 
@@ -148,7 +149,7 @@ For development or custom setups:
 git clone https://github.com/aToom13/AtomCLI.git
 cd AtomCLI && bun install
 cd AtomBase && bun run build
-cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
+cp dist/atomcli-linux-x64/bin/atomcli ~/.atomcli/bin/
 ```
 
 ### Setup (Optional Dependencies)
@@ -177,16 +178,42 @@ atomcli upgrade
 
 AtomCLI automatically checks for updates on startup and notifies you when a new version is available.
 
-For manual update:
+For a manual update via the installer, use the `--update` flag. The installer will fetch the available release list from GitHub and let you pick a version interactively (defaults to latest after 30 seconds):
 
 ```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update
+
+# Windows (PowerShell — run in a new terminal, not piped)
+irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 -OutFile update.ps1
+.\update.ps1 -Update
+```
+
+You can also build and install directly from the latest source:
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --source
+
+# Windows
+.\update.ps1 -Source
 ```
 
 ### Uninstalling
 
 ```bash
 atomcli --uninstall
+```
+
+Or via the installer script:
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --uninstall
+
+# Windows (PowerShell — run in a new terminal, not piped)
+irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 -OutFile uninstall.ps1
+.\uninstall.ps1 -Uninstall
 ```
 
 ---
@@ -225,25 +252,6 @@ cat file.ts | atomcli run "review this code"             # Pipe input
 atomcli run --json "list all functions"                  # JSON output mode
 ```
 
-### Flow Command (Autonomous Dev Loop)
-
-Run an autonomous agent that plans, executes, verifies, and iterates:
-
-```bash
-atomcli flow run ralph --loop "build a REST API for users"        # Autonomous loop
-atomcli flow run ralph --loop "refactor the auth module"          # Multi-step tasks
-atomcli flow run ralph --loop "add unit tests for utils.ts"       # Test generation
-```
-
-The flow command uses the **Ralph loop** — an autonomous development cycle:
-
-1. **Planner** → Analyzes the task and generates execution steps
-2. **Executor** → Executes each step using the AI agent (code, commands, etc.)
-3. **Verifier** → Validates the work done
-4. **Decision** → Determines if the step passed or needs retry
-
-> **Note:** The flow command uses your default configured model. You can change it in `~/.config/atomcli/config.json` with the `"model"` field.
-
 ### Session Workflow
 
 AtomCLI provides a conversational interface where you can:
@@ -264,13 +272,14 @@ _Multi-panel layout with file tree, task list, and live coding_
 
 ### Keyboard Shortcuts
 
-| Key        | Action                               |
-| ---------- | ------------------------------------ |
-| `Tab`      | Switch agent                         |
-| `Ctrl+P`   | Open command palette                 |
-| `Ctrl+C`   | Cancel current operation             |
-| `Ctrl+↑/↓` | Navigate task sessions (Orchestrate) |
-| `Esc`      | Close dialogs                        |
+| Key           | Action                               |
+| ------------- | ------------------------------------ |
+| `Tab`         | Switch agent                         |
+| `Ctrl+P`      | Open command palette                 |
+| `Ctrl+C`      | Cancel current operation             |
+| `Shift+Enter` | Send amendment while AI is writing   |
+| `Ctrl+↑/↓`    | Navigate task sessions (Orchestrate) |
+| `Esc`         | Close dialogs                        |
 
 ---
 
@@ -327,13 +336,13 @@ Skills are stored in `~/.atomcli/skills/` and can be enabled/disabled per sessio
 
 ### Config Files
 
-| File                       | Purpose                           |
-| -------------------------- | --------------------------------- |
-| `~/.atomcli/atomcli.json`  | Global settings + MCP config      |
+| File                              | Purpose                                 |
+| --------------------------------- | --------------------------------------- |
+| `~/.atomcli/atomcli.json`         | Global settings + MCP config            |
 | `<project>/.atomcli/atomcli.json` | Project-level config (overrides global) |
-| `~/.atomcli/memory.jsonl`  | Persistent memory (JSONL)         |
-| `~/.atomcli/skills/`       | Installed skills                  |
-| `~/.atomcli/data/`         | Sessions, cache, tool output      |
+| `~/.atomcli/memory.jsonl`         | Persistent memory (JSONL)               |
+| `~/.atomcli/skills/`              | Installed skills                        |
+| `~/.atomcli/data/`                | Sessions, cache, tool output            |
 
 ### Example Configuration
 

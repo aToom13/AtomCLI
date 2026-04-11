@@ -124,7 +124,12 @@ check_dependencies() {
         success "git $(git --version | cut -d' ' -f3)"
     else
         error "git not found"
-        deps_ok=false
+        if [ "$OS_TYPE" = "darwin" ] && has brew; then
+            warn "Attempting to install git via Homebrew..."
+            brew install git >/dev/null 2>&1 && success "git installed via brew" || { error "brew install git failed"; deps_ok=false; }
+        else
+            deps_ok=false
+        fi
     fi
     
     # Check curl or wget
@@ -134,7 +139,12 @@ check_dependencies() {
         success "wget $(wget --version | head -1 | cut -d' ' -f3)"
     else
         error "curl or wget not found"
-        deps_ok=false
+        if [ "$OS_TYPE" = "darwin" ] && has brew; then
+            warn "Attempting to install curl via Homebrew..."
+            brew install curl >/dev/null 2>&1 && success "curl installed via brew" || { error "brew install curl failed"; deps_ok=false; }
+        else
+            deps_ok=false
+        fi
     fi
     
     # Check Node.js (optional but recommended for MCP)
@@ -338,7 +348,10 @@ EOF
     echo -e "${DIM}    (First-time install can take 10-20 minutes on slow connections)${NC}"
     echo ""
     
-    local tmp_dir=$(mktemp -d)
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    # Ensure temp dir is always cleaned up, even on error or set -e exit
+    trap 'rm -rf "$tmp_dir" 2>/dev/null; trap - EXIT' EXIT INT TERM
     cd "$tmp_dir"
     
     step "Cloning repository..."
@@ -526,6 +539,7 @@ EOF
     # Cleanup
     cd /
     rm -rf "$tmp_dir"
+    trap - EXIT INT TERM
     
     success "Installed AtomCLI to $INSTALL_DIR"
     
@@ -622,18 +636,35 @@ setup_path() {
         return 0
     fi
     
-    # Add to shell config
+    # Add to shell config — fish uses its own syntax
     if [ -n "$shell_rc" ]; then
-        echo "" >> "$shell_rc"
-        echo "# AtomCLI" >> "$shell_rc"
-        echo "$path_line" >> "$shell_rc"
+        case "$SHELL" in
+            */fish)
+                mkdir -p "$(dirname "$shell_rc")"
+                echo "" >> "$shell_rc"
+                echo "# AtomCLI" >> "$shell_rc"
+                echo "fish_add_path \"$INSTALL_DIR\"" >> "$shell_rc"
+                ;;
+            *)
+                echo "" >> "$shell_rc"
+                echo "# AtomCLI" >> "$shell_rc"
+                echo "$path_line" >> "$shell_rc"
+                ;;
+        esac
         success "Added to PATH in $shell_rc"
     fi
     
-    # Also add Bun to PATH if needed
-    if [ "$BUN_INSTALLED" = false ]; then
-        echo "export BUN_INSTALL=\"\$HOME/.bun\"" >> "$shell_rc"
-        echo "export PATH=\"\$BUN_INSTALL/bin:\$PATH\"" >> "$shell_rc"
+    # Also add Bun to PATH if needed (bash/zsh/profile only)
+    if [ "$BUN_INSTALLED" = false ] && [ -n "$shell_rc" ]; then
+        case "$SHELL" in
+            */fish)
+                echo "fish_add_path \"$HOME/.bun/bin\"" >> "$shell_rc"
+                ;;
+            *)
+                echo "export BUN_INSTALL=\"\$HOME/.bun\"" >> "$shell_rc"
+                echo "export PATH=\"\$BUN_INSTALL/bin:\$PATH\"" >> "$shell_rc"
+                ;;
+        esac
     fi
     
     export PATH="$INSTALL_DIR:$PATH"
@@ -745,8 +776,6 @@ setup_optional_features() {
     echo -e "${YELLOW}│${NC}  ${BOLD}🔧 MCP Servers (Model Context Protocol)${NC}      ${YELLOW}│${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────┤${NC}"
     echo -e "${YELLOW}│${NC}  ${DIM}Extend AtomCLI with external tools:${NC}          ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${DIM}• Filesystem - file operations${NC}               ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${DIM}• Memory - persistent context${NC}                ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}  ${DIM}• Sequential Thinking - complex reasoning${NC}    ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}                                                 ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}  ${DIM}(Requires Node.js 18+)${NC}                       ${YELLOW}│${NC}"
@@ -904,25 +933,15 @@ EOF
             
             config.mcp = config.mcp || {};
             
-            config.mcp['filesystem'] = {
-                type: 'local',
-                command: ['npx', '-y', '@modelcontextprotocol/server-filesystem', process.env.HOME],
-                enabled: true
-            };
-            config.mcp['memory'] = {
-                type: 'local',
-                command: ['npx', '-y', '@modelcontextprotocol/server-memory'],
-                enabled: true
-            };
             config.mcp['sequential-thinking'] = {
                 type: 'local',
                 command: ['npx', '-y', '@modelcontextprotocol/server-sequential-thinking'],
                 enabled: true
             };
             fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
-        " 2>/dev/null && success "Installed 3 MCP servers to mcp.json" || warn "Could not configure MCPs automatically"
+        " 2>/dev/null && success "Installed MCP server: sequential-thinking" || warn "Could not configure MCPs automatically"
         
-        info "MCP servers: filesystem, memory, sequential-thinking"
+        info "MCP server: sequential-thinking"
     fi
 }
 
@@ -931,11 +950,24 @@ verify_installation() {
     echo ""
     step "Verifying installation..."
     
-    if [ -x "$INSTALL_DIR/atomcli" ]; then
-        local version=$("$INSTALL_DIR/atomcli" --version 2>/dev/null || echo "installed")
+    if [ ! -x "$INSTALL_DIR/atomcli" ]; then
+        error "Installation verification failed: binary not found or not executable"
+        exit 1
+    fi
+    
+    local version
+    version=$("$INSTALL_DIR/atomcli" --version 2>/dev/null)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ] && [ -n "$version" ]; then
         success "AtomCLI ${version} ready!"
+    elif [ $exit_code -eq 0 ]; then
+        success "AtomCLI installed and responding"
     else
-        error "Installation verification failed"
+        # Binary exists but crashed — likely a runtime dependency issue
+        error "Binary found but failed to run (exit code: $exit_code)"
+        info "This may be a libc mismatch (musl vs glibc) or missing dependency."
+        info "Try building from source: curl -fsSL <url> | bash -s -- --source"
         exit 1
     fi
 }
@@ -1138,12 +1170,12 @@ select_version() {
         local hint=""
         [ "$i" -eq 1 ] && hint=" ${GREEN}(Latest)${NC}"
         echo -e "  ${CYAN}${i})${NC} v${v}${hint}"
-        ((i++))
+        i=$((i+1))
     done
     echo ""
     echo -e "  ${CYAN}${i})${NC} 🔧 Build from Source ${DIM}(clone & compile main branch)${NC}"
     local source_option=$i
-    ((i++))
+    i=$((i+1))
     echo -e "  ${CYAN}${i})${NC} Cancel"
     local cancel_option=$i
     echo ""
@@ -1235,6 +1267,7 @@ update() {
     # Setup path/config again to ensure they are correct (idempotent)
     setup_path
     setup_config
+    setup_optional_features
     
     verify_installation
     echo ""
@@ -1285,4 +1318,3 @@ case "${1:-}" in
         main_install
         ;;
 esac
-
