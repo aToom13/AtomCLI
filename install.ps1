@@ -86,11 +86,12 @@ function Stop-Spinner {
 function Invoke-WithSpinner {
     param(
         [string]$Message,
-        [scriptblock]$Action
+        [scriptblock]$Action,
+        [array]$ArgumentList = @()
     )
     $chars = @('|','/','-','\')
     $i = 0
-    $job = Start-Job -ScriptBlock $Action
+    $job = Start-Job -ScriptBlock $Action -ArgumentList $ArgumentList
     while ($job.State -eq 'Running') {
         Write-Host "`r$($chars[$i % 4]) $Message   " -NoNewline -ForegroundColor Blue
         Start-Sleep -Milliseconds 120
