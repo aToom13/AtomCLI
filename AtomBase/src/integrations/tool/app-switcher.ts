@@ -163,7 +163,7 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
               if (classMatch) {
                 output += `**Class:** ${classMatch[1]}\n`
               }
-            } catch { }
+            } catch { /* xprop optional — class info not critical */ }
           } catch {
             // Fallback to wmctrl
             const windows = execFileSync("wmctrl", ["-l"], { encoding: "utf-8" })

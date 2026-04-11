@@ -1,7 +1,7 @@
 import { QuestionTool } from "./question"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
-import { GlobTool } from "./glob"
+import { FindTool } from "./find"
 import { GrepTool } from "./grep"
 import { BatchTool } from "./batch"
 import { ReadTool } from "./read"
@@ -14,8 +14,7 @@ import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import { SkillAddTool } from "./skilladd"
 import { McpAddTool } from "./mcpadd"
-import { BrainTool } from "./brain"
-import { LearnTool } from "./learn"
+import { MemoryTool } from "./memory"
 import { TestGenTool } from "./test-gen"
 import { DocsTool } from "./docs"
 import { RefactorTool } from "./refactor"
@@ -42,10 +41,8 @@ import { ScreenCaptureTool } from "./screen-capture"
 import { AppSwitcherTool } from "./app-switcher"
 import { FileWatcherTool } from "./file-watcher"
 import { SelfMaintenanceTool } from "./self-maintenance"
-import { ListTool } from "./ls"
-import { PatchTool } from "./patch"
-import { MultiEditTool } from "./multiedit"
-import { FixItTool } from "./fix_it"
+
+
 import { OrchestrateTool } from "./orchestrate"
 
 export namespace ToolRegistry {
@@ -114,11 +111,11 @@ export namespace ToolRegistry {
     const config = await Config.get()
 
     return [
-      InvalidTool,
+
       ...(Flag.ATOMCLI_CLIENT === "cli" ? [QuestionTool] : []),
       BashTool,
       ReadTool,
-      GlobTool,
+      FindTool,
       GrepTool,
       EditTool,
       WriteTool,
@@ -133,8 +130,7 @@ export namespace ToolRegistry {
       SkillTool,
       SkillAddTool,
       McpAddTool,
-      BrainTool,
-      LearnTool,
+      MemoryTool,
       SysadminTool,
       BrowserTool,
       SystemHealthTool,
@@ -142,10 +138,7 @@ export namespace ToolRegistry {
       AppSwitcherTool,
       FileWatcherTool,
       SelfMaintenanceTool,
-      ListTool,
-      PatchTool,
-      MultiEditTool,
-      FixItTool,
+
       OrchestrateTool,
       TestGenTool,
       DocsTool,

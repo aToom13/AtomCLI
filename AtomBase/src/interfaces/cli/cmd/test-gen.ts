@@ -10,7 +10,6 @@
 
 import { cmd } from "./cmd"
 import { Log } from "@/util/util/log"
-import { Glob } from "@/integrations/tool/glob"
 import { Read } from "@/integrations/tool/read"
 import { Agent } from "@/integrations/agent/agent"
 import { Provider } from "@/integrations/provider/provider"

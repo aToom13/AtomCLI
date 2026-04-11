@@ -1,16 +1,21 @@
 import { createMemo, Show } from "solid-js"
-import type { GlobTool } from "@/integrations/tool/glob"
+import type { FindTool } from "@/integrations/tool/find"
 import type { GrepTool } from "@/integrations/tool/grep"
-import type { ListTool } from "@/integrations/tool/ls"
 import type { ReadTool } from "@/integrations/tool/read"
 import { InlineTool, type ToolProps } from "./Shared"
 import { input, normalizePath } from "./utils"
 
-export function Glob(props: ToolProps<typeof GlobTool>) {
+export function Find(props: ToolProps<typeof FindTool>) {
+    const isTree = createMemo(() => props.input.mode === "tree")
     return (
-        <InlineTool icon="✱" pending="Finding files..." complete={props.input.pattern} part={props.part}>
-            Glob "{props.input.pattern}" <Show when={props.input.path}>in {normalizePath(props.input.path)} </Show>
-            <Show when={props.metadata.count}>({props.metadata.count} matches)</Show>
+        <InlineTool icon={isTree() ? "→" : "✱"} pending={isTree() ? "Listing directory..." : "Finding files..."} complete={isTree() ? props.input.path !== undefined : props.input.pattern} part={props.part}>
+            <Show when={isTree()}>
+                Find {props.input.path ? normalizePath(props.input.path) : ""}
+            </Show>
+            <Show when={!isTree()}>
+                Find "{props.input.pattern}" <Show when={props.input.path}>in {normalizePath(props.input.path)} </Show>
+                <Show when={props.metadata.count}>({props.metadata.count} matches)</Show>
+            </Show>
         </InlineTool>
     )
 }
@@ -28,20 +33,6 @@ export function Grep(props: ToolProps<typeof GrepTool>) {
         <InlineTool icon="✱" pending="Searching content..." complete={props.input.pattern} part={props.part}>
             Grep "{props.input.pattern}" <Show when={props.input.path}>in {normalizePath(props.input.path)} </Show>
             <Show when={props.metadata.matches}>({props.metadata.matches} matches)</Show>
-        </InlineTool>
-    )
-}
-
-export function List(props: ToolProps<typeof ListTool>) {
-    const dir = createMemo(() => {
-        if (props.input.path) {
-            return normalizePath(props.input.path)
-        }
-        return ""
-    })
-    return (
-        <InlineTool icon="→" pending="Listing directory..." complete={props.input.path !== undefined} part={props.part}>
-            List {dir()}
         </InlineTool>
     )
 }

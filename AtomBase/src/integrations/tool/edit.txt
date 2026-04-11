@@ -8,3 +8,5 @@ Usage:
 - The edit will FAIL if `oldString` is not found in the file with an error "oldString not found in content".
 - The edit will FAIL if `oldString` is found multiple times in the file with an error "oldString found multiple times and requires more code context to uniquely identify the intended match". Either provide a larger string with more surrounding context to make it unique or use `replaceAll` to change every instance of `oldString`. 
 - Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
+
+Multi-edit: Use `operations` array for multiple edits to the same file in one call. Each operation is applied in sequence on the result of the previous one. Plan edits carefully — earlier edits change the text that later edits search against.

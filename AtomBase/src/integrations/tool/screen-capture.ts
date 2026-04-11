@@ -120,9 +120,7 @@ export const ScreenCaptureTool = Tool.define("screen_capture", {
             for (const line of xrandr.trim().split("\n")) {
               output += `- ${line}\n`
             }
-          } catch {
-            output += "xrandr not available or no displays found.\n"
-          }
+          } catch { /* xrandr optional — display info not critical */ }
         } catch (e) {
           output += `Error: ${(e as Error).message}`
         }
@@ -156,9 +154,7 @@ export const ScreenCaptureTool = Tool.define("screen_capture", {
           } else {
             output += "No windows found or wmctrl not available.\n"
           }
-        } catch {
-          output += "wmctrl not available. Install with: sudo apt install wmctrl\n"
-        }
+        } catch { /* wmctrl optional — falls back to "not available" message above */ }
 
         return {
           title: "Window List",

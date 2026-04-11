@@ -6,6 +6,9 @@ import { Log } from "@/util/util/log"
 
 const log = Log.create({ service: "chainupdate" })
 
+// Track active chains per session to detect and handle duplicate starts
+const ACTIVE_CHAINS = new Map<string, { startedAt: number; steps: number }>()
+
 const DESCRIPTION = `Manage the task chain progress bar in the UI. Shows your work plan and real-time progress to the user.
 
 **RULES — FOLLOW THESE STRICTLY:**
@@ -138,7 +141,16 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
     })
 
     switch (params.action) {
-      case "start":
+      case "start": {
+        // Duplicate start detection
+        const existingChain = ACTIVE_CHAINS.get(ctx.sessionID)
+        if (existingChain) {
+          log.warn("chain:duplicate-start", {
+            sessionID: ctx.sessionID,
+            existingSteps: existingChain.steps,
+            ageMs: Date.now() - existingChain.startedAt,
+          })
+        }
         // ALWAYS clear first to prevent accumulation of old steps
         await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
 
@@ -175,11 +187,14 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
           }
           await Bus.publish(TuiEvent.ChainUpdateStep, { status: "running", sessionID: ctx.sessionID })
         }
+        // Track this chain
+        ACTIVE_CHAINS.set(ctx.sessionID, { startedAt: Date.now(), steps: params.steps?.length ?? 0 })
         return {
           title: `Chain started with ${params.steps?.length ?? 0} steps`,
           output: `Chain initialized. Update status frequently, mark todos done, and use sub_plan for issues.`,
           metadata: {},
         }
+      }
 
       case "add_step":
         if (params.step_name) {
@@ -312,6 +327,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
 
       case "clear":
         await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+        ACTIVE_CHAINS.delete(ctx.sessionID)
         return {
           title: "Chain cleared",
           output: "Task chain cleared",

@@ -29,7 +29,28 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v3.2.4-EarlyBeta)
+## What's New (v3.2.4-Beta)
+
+### Unified Memory System
+
+- **Single `memory` tool** replaces the previous fragmented `brain`, `learn`, and MCP memory servers.
+- **JSONL storage** at `~/.atomcli/memory.jsonl` — append-only, fault-tolerant, no database required.
+- **Offline semantic search** via a Turkish↔English alias expansion system — queries like "kullanıcı adı" and "username" resolve to the same results without any embedding API.
+- **Automatic migration** of legacy data on first use.
+- **Proactive recall** — relevant memories are injected into the system prompt automatically before each response.
+
+### Tool Consolidation
+
+- **`find`** unifies the old `glob` and directory listing tools into a single interface.
+- **`edit`** supports batched multi-edit operations via an `operations[]` array, replacing the old `multiedit` tool.
+- **Removed** `fix_it`, `patch`, `glob`, `list`, `brain`, and `learn` tools — all functionality is covered by the remaining focused tools.
+- Smaller system prompt overhead per session.
+
+### SubAgent Architecture
+
+- Centralized `SubAgent.spawn()` utility used by both `task` and `orchestrate` tools.
+- Eliminates ~90 lines of duplicated sub-agent lifecycle management.
+- Consistent context injection, permission enforcement, and error handling across all agent types.
 
 ### Companion Mobile App (Early Beta)
 
@@ -40,13 +61,6 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
 - **Secure Pairing**: End-to-end encrypted communication using public key cryptography. Devices are authenticated via short-lived pairing tokens.
 
 > **Note**: The companion app is in early beta. Expect rough edges and breaking changes. The Flutter app supports Android and iOS.
-
-### Agent Teams & Sub-Agents
-
-- **Multi-Agent Orchestration**: Decompose complex tasks and spawn specialized sub-agents dynamically.
-- **Independent Task Chains**: Each sub-agent maintains its own isolated UI chain and todo list.
-- **Event-Driven Progress**: Real-time visual tracking of sub-agent status, dependencies, and waiting states.
-- **Intelligent Session Reuse**: Agents yield context to the orchestrator upon completion and reactivate seamlessly when needed.
 
 ### Orchestrate Improvements
 
@@ -75,7 +89,7 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
 - **Interactive TUI** - Beautiful terminal interface with mouse support, syntax highlighting, and multi-panel layouts
 - **Multi-Provider Support** - Works with OpenAI, Anthropic, Google, Ollama, OpenRouter, and more
 - **Free Models Available** - Use built-in free providers (MiniMax, GLM, Kimi, GPT, ex.) without API keys
-- **Semantic Memory System** - AI learns your preferences, coding style, and project context automatically
+- **Unified Memory** - Persistent cross-session memory with offline semantic search (Turkish↔English). Stores preferences, decisions, and project context in `~/.atomcli/memory.jsonl`
 - **Code Intelligence** - File editing, code generation, debugging, and refactoring capabilities
 - **Session Management** - Save and continue conversations, branch sessions, and manage history
 - **Streaming Interrupt** - Send amendments while AI is writing (Shift+Enter)
@@ -272,17 +286,16 @@ atomcli mcp add <name>       # Add a new MCP server
 atomcli mcp remove <name>    # Remove an MCP server
 ```
 
-### Common MCP Servers
+### Bundled MCP Server
 
-- **memory-bank** - Persistent memory across sessions
-- **filesystem** - Enhanced file system operations
-- **sequential-thinking** - Step-by-step reasoning
+- **sequential-thinking** - Step-by-step structured reasoning (included by default)
 
-### Adding via Chat
+> **Note:** The `memory` and `filesystem` MCP servers previously bundled with AtomCLI have been replaced by the native `memory` tool and built-in file tools (`read`, `write`, `edit`, `find`, `grep`). These provide the same functionality without external processes.
+
+### Adding Custom MCP Servers
 
 ```
-> Add memory-bank MCP
-> Add filesystem MCP for /home/user/projects
+> Add <name> MCP server
 ```
 
 ---
@@ -314,11 +327,13 @@ Skills are stored in `~/.atomcli/skills/` and can be enabled/disabled per sessio
 
 ### Config Files
 
-| File                            | Purpose                      |
-| ------------------------------- | ---------------------------- |
-| `~/.config/atomcli/config.json` | Global settings              |
-| `~/.config/atomcli/mcp.json`    | MCP server configurations    |
-| `~/.atomcli/`                   | Local data, sessions, skills |
+| File                       | Purpose                           |
+| -------------------------- | --------------------------------- |
+| `~/.atomcli/atomcli.json`  | Global settings + MCP config      |
+| `<project>/.atomcli/atomcli.json` | Project-level config (overrides global) |
+| `~/.atomcli/memory.jsonl`  | Persistent memory (JSONL)         |
+| `~/.atomcli/skills/`       | Installed skills                  |
+| `~/.atomcli/data/`         | Sessions, cache, tool output      |
 
 ### Example Configuration
 
@@ -384,11 +399,9 @@ AtomCLI/
 ├── AtomBase/                # Main application source
 │   ├── src/
 │   │   ├── interfaces/      # CLI commands and TUI
-│   │   ├── core/            # Session, config, memory
+│   │   ├── core/            # Session, config, prompt system
 │   │   ├── integrations/    # Tools, providers, agents, MCP
-│   │   ├── server/          # HTTP server and API routes
-│   │   └── services/        # File, auth, learning services
-│   └── dist/                # Compiled binaries
+│   │   └── services/        # File, auth, patch services
 ├── companion/               # Flutter mobile companion app (Android/iOS)
 ├── libs/
 │   ├── companion/           # @atomcli/companion - pairing & bridge logic

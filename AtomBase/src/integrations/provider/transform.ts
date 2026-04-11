@@ -544,6 +544,18 @@ export namespace ProviderTransform {
         return {
           ["openrouter" as string]: options,
         }
+      case "@atomcli/ollama":
+        // createOllama uses createOpenAICompatible({ name: "ollama" }),
+        // so the providerOptions namespace is "ollama" (not "openaiCompatible").
+        // Ollama's API expects Ollama params nested under "options" in the body:
+        //   { "options": { "num_ctx": 131072 } }
+        // The SDK spreads providerOptions["ollama"] directly into the request body,
+        // so wrapping in { options } produces the correct Ollama body format.
+        return {
+          ollama: {
+            options,
+          },
+        }
       default:
         return {
           [model.providerID]: options,

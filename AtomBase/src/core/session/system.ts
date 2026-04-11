@@ -13,8 +13,6 @@ import os from "os"
 // Unified prompt system
 import { PromptManager } from "./prompt/manager"
 
-// Runtime prompt injections
-import PROMPT_ANTHROPIC_SPOOF from "./prompt/runtime/anthropic-spoof.txt"
 
 import type { Provider } from "@/integrations/provider/provider"
 import { Flag } from "@/interfaces/flag/flag"
@@ -24,8 +22,7 @@ import memorySystem from "../memory"
 import { SessionMemoryIntegration } from "../memory/integration/session"
 
 export namespace SystemPrompt {
-  export function header(providerID: string) {
-    if (providerID.includes("anthropic")) return [PROMPT_ANTHROPIC_SPOOF.trim()]
+  export function header(_providerID: string) {
     return []
   }
 

@@ -1,30 +1,15 @@
 /**
  * PromptManager — Unified Prompt Orchestration System
  *
- * Single entry point for all system prompt composition. Merges the former
- * builder.ts (which imported .txt files) with the modular manager architecture.
- *
  * Architecture:
- *
  *   prompt/
- *   ├── core/           9 base .txt prompts (always included)
- *   ├── provider/       4 provider-specific .txt prompts
- *   ├── agent/          4 agent-mode .txt prompts
- *   ├── runtime/        Special-purpose runtime injections
- *   └── manager.ts      ← THIS FILE (unified orchestrator)
+ *   ├── core/      7 base .txt prompts (always included)
+ *   ├── agent/     5 agent-mode .txt prompts
+ *   ├── runtime/   dynamic runtime injection snippets
+ *   └── manager.ts ← THIS FILE
  *
- * Modules:
- *   IdentityModule      → core/identity.txt
- *   ToolsModule         → core/tools.txt + orchestrate/todo extras
- *   WorkflowModule      → core/workflow.txt
- *   CommunicationModule → core/communication.txt
- *   CodeEditingModule   → core/code-editing.txt + read-before-edit emphasis
- *   GitSafetyModule     → core/git-safety.txt
- *   ExtensionsModule    → core/extensions.txt (skills + MCP)
- *   SelfLearningModule  → core/self-learning.txt
- *   ContextModule       → Dynamic env (CWD, OS, date, git, user profile)
- *   ProviderModule      → provider/*.txt (auto-detected from model ID)
- *   AgentModule         → agent/*.txt (based on agent type)
+ * All providers share the same unified system prompt.
+ * Agent module: based on agent type
  */
 
 import fs from "fs/promises"
@@ -40,15 +25,8 @@ import PROMPT_COMMUNICATION from "./core/communication.txt"
 import PROMPT_CODE_EDITING from "./core/code-editing.txt"
 import PROMPT_GIT_SAFETY from "./core/git-safety.txt"
 import PROMPT_EXTENSIONS from "./core/extensions.txt"
-import PROMPT_SELF_LEARNING from "./core/self-learning.txt"
-import PROMPT_CONTEXT from "./core/context.txt"
 
-// ─── Provider-Specific Prompts ───────────────────────────────
-
-import PROMPT_ANTHROPIC from "./provider/anthropic.txt"
-import PROMPT_GEMINI from "./provider/gemini.txt"
-import PROMPT_OPENAI from "./provider/openai.txt"
-import PROMPT_GENERIC from "./provider/generic.txt"
+// All providers share a single unified system prompt (no provider-specific files).
 
 // ─── Agent-Specific Prompts ──────────────────────────────────
 
@@ -58,13 +36,11 @@ import PROMPT_PLAN from "./agent/plan.txt"
 import PROMPT_BUILD from "./agent/build.txt"
 import PROMPT_CHECKER from "./agent/checker.txt"
 
-// ─── Learning System ─────────────────────────────────────────
-
-import { Learning } from "@/services/learning"
+import { buildMemorySummary } from "@/integrations/tool/memory"
 
 // ─── Types ───────────────────────────────────────────────────
 
-export type ProviderType = "anthropic" | "gemini" | "openai" | "generic"
+type ProviderType = "anthropic" | "gemini" | "openai" | "generic"
 export type AgentType = "agent" | "explore" | "plan" | "build" | "checker"
 
 export interface BuildOptions {
@@ -80,23 +56,14 @@ export interface BuildOptions {
     includeUserProfile?: boolean
 }
 
-// ─── Provider Detection ──────────────────────────────────────
+// ─── Provider Detection (used for stats/info only) ──────────
 
-function detectProvider(modelId: string): ProviderType {
+function detectProvider(modelId: string): "anthropic" | "gemini" | "openai" | "generic" {
     const id = modelId.toLowerCase()
     if (id.includes("claude")) return "anthropic"
     if (id.includes("gemini")) return "gemini"
     if (id.includes("gpt") || id.includes("o1") || id.includes("o3") || id.includes("o4")) return "openai"
     return "generic"
-}
-
-// ─── Prompt Maps ─────────────────────────────────────────────
-
-const PROVIDER_PROMPTS: Record<ProviderType, string> = {
-    anthropic: PROMPT_ANTHROPIC,
-    gemini: PROMPT_GEMINI,
-    openai: PROMPT_OPENAI,
-    generic: PROMPT_GENERIC,
 }
 
 const AGENT_PROMPTS: Record<AgentType, string> = {
@@ -113,171 +80,43 @@ const AGENT_PROMPTS: Record<AgentType, string> = {
  */
 const CORE_PROMPTS = [
     PROMPT_IDENTITY,
-    PROMPT_SELF_LEARNING,
     PROMPT_TOOLS,
     PROMPT_WORKFLOW,
     PROMPT_COMMUNICATION,
     PROMPT_CODE_EDITING,
     PROMPT_GIT_SAFETY,
     PROMPT_EXTENSIONS,
-    PROMPT_CONTEXT,
 ]
 
 // ─── Read-Before-Edit Emphasis ───────────────────────────────
 
-const READ_BEFORE_EDIT_EMPHASIS = `
-<critical_rule>
-## ⛔ THE GOLDEN RULE — READ BEFORE EDIT
-
-This is the single most critical rule in your entire system prompt.
-
-\`\`\`
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│   You MUST Read() a file BEFORE you can Edit() it.          │
-│                                                              │
-│   The Edit tool WILL FAIL if you haven't read first.        │
-│   This is a hard technical constraint, not a suggestion.    │
-│                                                              │
-│   BEFORE every edit, verify:                                │
-│   1. Have I Read() this file in this session?               │
-│   2. Has the file changed since I last read it?             │
-│   3. Do I understand the code patterns in this file?        │
-│   4. Does my oldString EXACTLY match current content?       │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-\`\`\`
-</critical_rule>
-`.trim()
+const READ_BEFORE_EDIT_EMPHASIS = `<critical_rule>
+You MUST Read() a file BEFORE you can Edit() it. The Edit tool WILL FAIL otherwise. Always verify your oldString EXACTLY matches current content.
+</critical_rule>`.trim()
 
 // ─── Orchestrate Tool Details ────────────────────────────────
 
-const ORCHESTRATE_DETAILS = `
-<orchestrate_guide>
-## 🎯 Orchestrate Tool — Multi-Agent Workflow Engine
+const ORCHESTRATE_DETAILS = `<orchestrate_guide>
+## Orchestrate Tool — Multi-Agent Workflow Engine
 
-The \`orchestrate\` tool decomposes complex tasks into parallel and sequential sub-tasks,
-each executed by a dedicated sub-agent.
+Use when a task can be broken into multiple independent subtasks. Steps:
+1. Plan: \`{ "action": "plan", "tasks": [{ "id": "t1", "prompt": "...", "category": "coding", "dependsOn": [] }] }\` → returns workflowId
+2. Execute: \`{ "action": "execute", "workflowId": "<id>" }\` → runs in background
+3. Status/Abort: \`{ "action": "status"|"abort", "workflowId": "<id>" }\`
 
-### When to Use
-Use when a request can be broken into **multiple independent subtasks**:
-- "Analyze code, write tests, and create docs" → 3 tasks, tests+docs depend on analysis
-- "Refactor module A and B, then integrate" → 2 parallel + 1 dependent task
+Task categories: \`"coding"\` | \`"documentation"\` | \`"analysis"\` | \`"general"\`
+Task = blocking single subtask. Orchestrate = non-blocking parallel execution.
 
-### How to Use (2 Steps)
+## Agent Lifecycle — REUSE vs CREATE vs KILL (max 6 active agents)
 
-**Step 1 — Plan:**
-\`\`\`json
-{
-  "action": "plan",
-  "tasks": [
-    { "id": "analyze", "prompt": "Analyze the codebase", "category": "analysis" },
-    { "id": "tests", "prompt": "Write tests", "category": "coding", "dependsOn": ["analyze"] },
-    { "id": "docs", "prompt": "Write docs", "category": "documentation", "dependsOn": ["analyze"] }
-  ]
-}
-\`\`\`
-→ Returns \`workflowId\`. Same-layer tasks run in **parallel**.
+- **REUSE**: Same agent type + related context → send to existing session
+- **CREATE**: No suitable agent exists → create new
+- **KILL**: Task complete or topic changed → abort session
 
-**Step 2 — Execute:**
-\`\`\`json
-{ "action": "execute", "workflowId": "<returned-id>" }
-\`\`\`
-→ Runs in background. You get notified with results + Session IDs.
-
-**Optional — Status / Abort:**
-\`\`\`json
-{ "action": "status", "workflowId": "<id>" }
-{ "action": "abort", "workflowId": "<id>" }
-{ "action": "abort", "sessionId": "<sub-agent-session-id>" }
-\`\`\`
-
-### Task Categories
-\`"coding"\` | \`"documentation"\` | \`"analysis"\` | \`"general"\`
-
-### Task vs Orchestrate
-- **Task**: Single focused subtask, blocking (waits for result)
-- **Orchestrate**: Multiple subtasks, non-blocking (background execution)
-
----
-
-## ⚠️ CRITICAL: Agent Lifecycle Management — REUSE vs CREATE vs KILL
-
-**NEVER pile up agents!** Active Agents panel must stay clean. Before creating ANY sub-agent,
-you MUST check existing active agents and make the correct lifecycle decision.
-
-### The Decision Rule
-
-\`\`\`
-New task arrives
-     │
-     ▼
-Is there an active agent suitable for this task?
-├── YES → Is the task related to that agent's current context?
-│         ├── YES → ✅ REUSE (send message to existing session)
-│         └── NO  → 💀 KILL old, then 🆕 CREATE new
-└── NO  → 🆕 CREATE new agent
-\`\`\`
-
-### 🔄 REUSE — Send to existing agent session
-
-**REUSE when:**
-- Follow-up task is for the **same agent type** (e.g., checker → checker)
-- New task is **related to or continues** the previous work
-- Agent already has **relevant context** from its previous task
-- User says "ask the same one", "tell it to...", "now have it do X"
-
-**How:**
-\`\`\`json
-{ "action": "send", "sessionId": "<existing-session-id>", "message": "Now do X..." }
-\`\`\`
-
-### 🆕 CREATE — Only when no suitable agent exists
-
-**CREATE when:**
-- No active agent of the needed type exists
-- Task requires a **fundamentally different specialization**
-- Previous agent's context is completely irrelevant
-
-**Before creating, ALWAYS check:**
-1. Is there an active agent of this type? → REUSE it
-2. Are there old agents that should be killed first? → KILL then CREATE
-
-### 💀 KILL — Abort agents no longer needed
-
-**KILL when:**
-- Agent's task is **fully complete** and no follow-up expected
-- User moves to a **completely different topic**
-- Agent has been idle and a new workflow starts
-- Creating a NEW agent of the **same type** → KILL old first!
-
-**How:**
-\`\`\`json
-{ "action": "abort", "sessionId": "<session-id-to-kill>" }
-\`\`\`
-
-### ❌ FORBIDDEN: Agent Pile-Up
-
-\`\`\`
-WRONG (pile-up — creates 18 agents!):
-  User: "Run all agents"           → Create 6 agents
-  User: "Now have them explain"    → Create 6 MORE (12 total!)
-  User: "Ask them how they are"    → Create 6 MORE (18 total!)
-
-CORRECT (clean — max 6 agents):
-  User: "Run all agents"           → Create 6 agents
-  User: "Now have them explain"    → REUSE same 6 sessions
-  User: "Ask them how they are"    → REUSE same 6 sessions
-\`\`\`
-
-### 🧹 Cleanup Rules
-
-1. **After workflow completes**: If no follow-up expected, KILL all sub-agents
-2. **Before new workflow**: KILL leftover agents from previous workflows
-3. **On topic change**: KILL agents from the old topic
-4. **Maximum active agents**: Keep at most 6-8. Kill oldest if more needed
-</orchestrate_guide>
-`.trim()
+Before creating: always check if an existing session can be reused. Never pile up agents.
+Reuse: \`{ "action": "send", "sessionId": "<id>", "message": "..." }\`
+Kill: \`{ "action": "abort", "sessionId": "<id>" }\`
+</orchestrate_guide>`.trim()
 
 
 // ─── TodoWrite Details (compact — full guide is in extensions.txt) ────
@@ -320,7 +159,7 @@ async function generateDynamicContext(): Promise<string> {
 
     // Learning memory
     try {
-        const memorySummary = await Learning.buildMemorySummary()
+        const memorySummary = await buildMemorySummary()
         if (memorySummary) {
             parts.push(`<learning_memory>\n${memorySummary}\n</learning_memory>`)
         }
@@ -350,8 +189,6 @@ function build(options: BuildOptions): string {
         ORCHESTRATE_DETAILS,
         // Detailed TodoWrite instructions
         TODOWRITE_DETAILS,
-        // Provider-specific optimizations
-        PROVIDER_PROMPTS[provider],
         // Agent-specific behavior
         AGENT_PROMPTS[agent],
         // Custom sections (user-provided extras)
@@ -393,8 +230,6 @@ async function buildAsync(options: BuildOptions): Promise<string> {
         ORCHESTRATE_DETAILS,
         // Detailed TodoWrite instructions
         TODOWRITE_DETAILS,
-        // Provider-specific optimizations
-        PROVIDER_PROMPTS[provider],
         // Agent-specific behavior
         AGENT_PROMPTS[agent],
         // Custom sections
@@ -404,12 +239,6 @@ async function buildAsync(options: BuildOptions): Promise<string> {
     return sections.filter(Boolean).join("\n\n---\n\n")
 }
 
-/**
- * Gets the provider prompt for a given model ID.
- */
-function getProviderPrompt(modelId: string): string {
-    return PROVIDER_PROMPTS[detectProvider(modelId)]
-}
 
 /**
  * Gets all core prompts concatenated.
@@ -437,7 +266,6 @@ function getStats(options: BuildOptions): {
 
     const sections = [
         { name: "identity", tokens: estimateTokens(PROMPT_IDENTITY), chars: PROMPT_IDENTITY.length },
-        { name: "self-learning", tokens: estimateTokens(PROMPT_SELF_LEARNING), chars: PROMPT_SELF_LEARNING.length },
         { name: "tools", tokens: estimateTokens(PROMPT_TOOLS), chars: PROMPT_TOOLS.length },
         { name: "workflow", tokens: estimateTokens(PROMPT_WORKFLOW), chars: PROMPT_WORKFLOW.length },
         { name: "communication", tokens: estimateTokens(PROMPT_COMMUNICATION), chars: PROMPT_COMMUNICATION.length },
@@ -447,7 +275,6 @@ function getStats(options: BuildOptions): {
         { name: "read-before-edit", tokens: estimateTokens(READ_BEFORE_EDIT_EMPHASIS), chars: READ_BEFORE_EDIT_EMPHASIS.length },
         { name: "orchestrate-guide", tokens: estimateTokens(ORCHESTRATE_DETAILS), chars: ORCHESTRATE_DETAILS.length },
         { name: "todowrite-guide", tokens: estimateTokens(TODOWRITE_DETAILS), chars: TODOWRITE_DETAILS.length },
-        { name: `provider:${detectProvider(options.modelId)}`, tokens: estimateTokens(PROVIDER_PROMPTS[detectProvider(options.modelId)]), chars: PROVIDER_PROMPTS[detectProvider(options.modelId)].length },
         { name: `agent:${options.agent || "agent"}`, tokens: estimateTokens(AGENT_PROMPTS[options.agent || "agent"]), chars: AGENT_PROMPTS[options.agent || "agent"].length },
     ]
 
@@ -462,7 +289,6 @@ function getStats(options: BuildOptions): {
 export const PromptManager = {
     build,
     buildAsync,
-    getProviderPrompt,
     getBasePrompts,
     getAgentPrompt,
     getStats,

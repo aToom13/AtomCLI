@@ -58,17 +58,41 @@ export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
   parameters: z.object({
     filePath: z.string().describe("The absolute path to the file to modify"),
-    oldString: z.string().describe("The text to replace"),
-    newString: z.string().describe("The text to replace it with (must be different from oldString)"),
+    oldString: z.string().optional().describe("The text to replace (required unless using operations)"),
+    newString: z.string().optional().describe("The text to replace it with (required unless using operations)"),
     replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
+    operations: z
+      .array(
+        z.object({
+          oldString: z.string().describe("The text to replace"),
+          newString: z.string().describe("The text to replace it with"),
+          replaceAll: z.boolean().optional().describe("Replace all occurrences (default false)"),
+        }),
+      )
+      .optional()
+      .describe("Array of edit operations to apply sequentially on the same file. Use instead of oldString/newString for multiple edits."),
   }),
   async execute(params, ctx) {
     if (!params.filePath) {
       throw new Error("filePath is required")
     }
 
-    if (params.oldString === params.newString) {
-      throw new Error("oldString and newString must be different")
+    // Build operations list: either from `operations` array or from single oldString/newString
+    const ops = params.operations
+      ? params.operations
+      : (params.oldString !== undefined && params.newString !== undefined)
+        ? [{ oldString: params.oldString, newString: params.newString, replaceAll: params.replaceAll }]
+        : null
+
+    if (!ops || ops.length === 0) {
+      throw new Error("Either (oldString + newString) or operations array is required")
+    }
+
+    // Validate all operations
+    for (const op of ops) {
+      if (op.oldString === op.newString) {
+        throw new Error("oldString and newString must be different")
+      }
     }
 
     // Validate file path to prevent path traversal
@@ -79,41 +103,45 @@ export const EditTool = Tool.define("edit", {
       await assertExternalDirectory(ctx, filePath)
     }
 
-    let diff = ""
-    let contentOld = ""
-    let contentNew = ""
-    await FileTime.withLock(filePath, async () => {
-      if (params.oldString === "") {
-        contentNew = params.newString
-        diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-        await ctx.ask({
-          permission: "edit",
-          patterns: [path.relative(Instance.worktree, filePath)],
-          always: ["*"],
-          metadata: {
-            filepath: filePath,
-            diff,
-          },
-        })
-        await Bun.write(filePath, params.newString)
-        await Bus.publish(FileEvent.Edited, {
-          file: filePath,
-        })
-        FileTime.read(ctx.sessionID, filePath)
-        return
-      }
+    // Single operation — use original fast path
+    if (ops.length === 1) {
+      const op = ops[0]
+      return executeSingleEdit(filePath, op.oldString, op.newString, op.replaceAll, ctx)
+    }
 
-      const file = Bun.file(filePath)
-      const stats = await file.stat().catch(() => { })
-      if (!stats) throw new Error(`File ${filePath} not found`)
-      if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
-      await FileTime.assert(ctx.sessionID, filePath)
-      contentOld = await file.text()
-      contentNew = replace(contentOld, params.oldString, params.newString, params.replaceAll)
+    // Multiple operations — apply sequentially
+    const results = []
+    for (const op of ops) {
+      const result = await executeSingleEdit(filePath, op.oldString, op.newString, op.replaceAll, ctx)
+      results.push(result)
+    }
 
-      diff = trimDiff(
-        createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
-      )
+    const lastResult = results.at(-1)!
+    return {
+      title: path.relative(Instance.worktree, filePath),
+      metadata: {
+        ...lastResult.metadata,
+        results: results.map((r) => r.metadata),
+      },
+      output: lastResult.output,
+    }
+  },
+})
+
+async function executeSingleEdit(
+  filePath: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean | undefined,
+  ctx: Tool.Context,
+) {
+  let diff = ""
+  let contentOld = ""
+  let contentNew = ""
+  await FileTime.withLock(filePath, async () => {
+    if (oldString === "") {
+      contentNew = newString
+      diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
       await ctx.ask({
         permission: "edit",
         patterns: [path.relative(Instance.worktree, filePath)],
@@ -123,65 +151,92 @@ export const EditTool = Tool.define("edit", {
           diff,
         },
       })
-
-      await file.write(contentNew)
+      await Bun.write(filePath, newString)
       await Bus.publish(FileEvent.Edited, {
         file: filePath,
       })
-      const writtenContent = await file.text()
-      if (writtenContent.length !== contentNew.length) {
-        contentNew = writtenContent
-        diff = trimDiff(
-          createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
-        )
-      }
       FileTime.read(ctx.sessionID, filePath)
+      return
+    }
+
+    const file = Bun.file(filePath)
+    const stats = await file.stat().catch(() => { })
+    if (!stats) throw new Error(`File ${filePath} not found`)
+    if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
+    await FileTime.assert(ctx.sessionID, filePath)
+    contentOld = await file.text()
+    contentNew = replace(contentOld, oldString, newString, replaceAll)
+
+    diff = trimDiff(
+      createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
+    )
+    await ctx.ask({
+      permission: "edit",
+      patterns: [path.relative(Instance.worktree, filePath)],
+      always: ["*"],
+      metadata: {
+        filepath: filePath,
+        diff,
+      },
     })
 
-    const filediff: Snapshot.FileDiff = {
+    await file.write(contentNew)
+    await Bus.publish(FileEvent.Edited, {
       file: filePath,
-      before: contentOld,
-      after: contentNew,
-      additions: 0,
-      deletions: 0,
-    }
-    for (const change of diffLines(contentOld, contentNew)) {
-      if (change.added) filediff.additions += change.count || 0
-      if (change.removed) filediff.deletions += change.count || 0
-    }
-
-    ctx.metadata({
-      metadata: {
-        diff,
-        filediff,
-        diagnostics: {},
-      },
     })
-
-    let output = ""
-    await LSP.touchFile(filePath, true)
-    const diagnostics = await LSP.diagnostics()
-    const normalizedFilePath = Filesystem.normalizePath(filePath)
-    const issues = diagnostics[normalizedFilePath] ?? []
-    const errors = issues.filter((item) => item.severity === 1)
-    if (errors.length > 0) {
-      const limited = errors.slice(0, MAX_DIAGNOSTICS_PER_FILE)
-      const suffix =
-        errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
-      output += `\nThis file has errors, please fix\n<file_diagnostics>\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</file_diagnostics>\n`
+    const writtenContent = await file.text()
+    if (writtenContent.length !== contentNew.length) {
+      contentNew = writtenContent
+      diff = trimDiff(
+        createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
+      )
     }
+    FileTime.read(ctx.sessionID, filePath)
+  })
 
-    return {
-      metadata: {
-        diagnostics,
-        diff,
-        filediff,
-      },
-      title: `${path.relative(Instance.worktree, filePath)}`,
-      output,
-    }
-  },
-})
+  const filediff: Snapshot.FileDiff = {
+    file: filePath,
+    before: contentOld,
+    after: contentNew,
+    additions: 0,
+    deletions: 0,
+  }
+  for (const change of diffLines(contentOld, contentNew)) {
+    if (change.added) filediff.additions += change.count || 0
+    if (change.removed) filediff.deletions += change.count || 0
+  }
+
+  ctx.metadata({
+    metadata: {
+      diff,
+      filediff,
+      diagnostics: {},
+    },
+  })
+
+  let output = ""
+  await LSP.touchFile(filePath, true)
+  const diagnostics = await LSP.diagnostics()
+  const normalizedFilePath = Filesystem.normalizePath(filePath)
+  const issues = diagnostics[normalizedFilePath] ?? []
+  const errors = issues.filter((item) => item.severity === 1)
+  if (errors.length > 0) {
+    const limited = errors.slice(0, MAX_DIAGNOSTICS_PER_FILE)
+    const suffix =
+      errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
+    output += `\nThis file has errors, please fix\n<file_diagnostics>\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</file_diagnostics>\n`
+  }
+
+  return {
+    metadata: {
+      diagnostics,
+      diff,
+      filediff,
+    },
+    title: `${path.relative(Instance.worktree, filePath)}`,
+    output,
+  }
+}
 
 export interface EditContext {
   content: string

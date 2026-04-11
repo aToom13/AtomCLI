@@ -143,14 +143,22 @@ function parseOllamaModel(info: OllamaModelInfo): OllamaModel {
     const name = info.name.split(":")[0]
     const tag = info.name.includes(":") ? info.name.split(":")[1] : "latest"
 
+    // Try to extract param size from tag if Ollama didn't fill details
+    // e.g. "26b" → 26, "e4b" → 4 (embedded/quantized 4B), "70b" → 70
+    const paramSizeFromTag = (() => {
+        const m = tag.match(/^e?(\d+)b$/i)
+        if (m) return `${m[1]}B`
+        return undefined
+    })()
+
     // Estimate context length based on model family
-    const contextLength = estimateContextLength(name, info.details?.parameter_size)
+    const contextLength = estimateContextLength(name, info.details?.parameter_size ?? paramSizeFromTag)
 
     return {
         id: info.name,
         name: formatModelName(name, tag),
         family: info.details?.family ?? name,
-        parameterSize: info.details?.parameter_size ?? "unknown",
+        parameterSize: info.details?.parameter_size ?? paramSizeFromTag ?? "unknown",
         quantization: info.details?.quantization_level ?? tag,
         contextLength,
     }
@@ -173,16 +181,24 @@ function estimateContextLength(modelName: string, paramSize?: string): number {
     if (name.includes("llama2") || name.includes("llama-2")) return 4096
     if (name.includes("mistral")) return 32768
     if (name.includes("mixtral")) return 32768
+    if (name.includes("gemma4") || name.includes("gemma-4")) return 131072  // Gemma 4 — 128K context
+    if (name.includes("gemma3") || name.includes("gemma-3")) return 131072  // Gemma 3 — 128K context
     if (name.includes("gemma2") || name.includes("gemma-2")) return 8192
     if (name.includes("gemma")) return 8192
     if (name.includes("phi3") || name.includes("phi-3")) return 128000
+    if (name.includes("phi4") || name.includes("phi-4")) return 16000
     if (name.includes("phi")) return 4096
+    if (name.includes("qwen2.5") || name.includes("qwen-2.5")) return 131072
     if (name.includes("qwen2") || name.includes("qwen-2")) return 32768
     if (name.includes("qwen")) return 32768
     if (name.includes("codellama")) return 16384
     if (name.includes("deepseek")) return 128000
     if (name.includes("command-r")) return 128000
     if (name.includes("yi")) return 200000
+    if (name.includes("minimax")) return 1000000  // MiniMax — very large context
+    if (name.includes("glm")) return 128000
+    if (name.includes("kimi")) return 131072
+    if (name.includes("gpt-oss")) return 128000
 
     // Default based on parameter size
     if (paramSize) {
@@ -192,7 +208,7 @@ function estimateContextLength(modelName: string, paramSize?: string): number {
         if (size >= 7) return 8192
     }
 
-    return 4096 // Safe default
+    return 8192 // Raised default — modern models typically have 8K+ context
 }
 
 /**
@@ -204,8 +220,10 @@ function detectVision(model: OllamaModel): boolean {
     const visionModels = [
         "llava", "bakllava", "moondream", "llama3.2-vision",
         "llama-3.2-vision", "minicpm-v", "cogvlm",
-        "internvl", "qwen2-vl", "qwen2.5-vl", "gemma3",
-        "gemma-3",
+        "internvl", "qwen2-vl", "qwen2.5-vl",
+        "gemma4", "gemma-4",   // Gemma 4 — all variants are multimodal
+        "gemma3", "gemma-3",   // Gemma 3 — multimodal
+        "kimi",                 // Kimi-K2 vision capable
     ]
     return visionModels.some(v => name.includes(v))
 }
@@ -229,11 +247,16 @@ function supportsTools(model: OllamaModel): boolean {
         "command-r",
         "phi3", "phi-3", "phi4", "phi-4",
         "gemma2", "gemma-2", "gemma3", "gemma-3",
+        "gemma4", "gemma-4",  // ← Gemma 4 — full tool calling support
         "granite",
         "nemotron",
         "hermes",
         "yi",
         "internlm",
+        "minimax",   // Cloud proxy models
+        "glm",
+        "kimi",
+        "gpt-oss",
     ]
 
     // Models known to NOT support tool calling
@@ -316,7 +339,12 @@ export function toProviderModels(models: OllamaModel[]): Record<string, OllamaPr
                 interleaved: false,
             },
             headers: {},
-            options: {},
+            // num_ctx tells Ollama to load the model with the correct context window.
+            // Without this, Ollama defaults to 4096 tokens which causes silent failures
+            // when the system prompt is large — the model has no room left to generate output.
+            options: {
+                num_ctx: model.contextLength,
+            },
             release_date: new Date().toISOString().split("T")[0],
         }
     }

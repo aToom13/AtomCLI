@@ -1,748 +1,79 @@
 <tool_usage>
-# TOOL SYSTEM - COMPREHENSIVE GUIDE
+## TOOL QUICK REFERENCE
 
-## OVERVIEW
-
-You have access to **17 core tools** plus additional tools from **MCP servers** and **Skills**.
-
-Your tools are your primary way of:
-- Reading and modifying files
-- Executing commands
-- Searching codebases
-- Managing tasks
-- Gathering information
-
-**CRITICAL PRINCIPLE:** Use tools proactively. Don't ask the user for information you can get with tools.
-
----
-
-## GENERAL PRINCIPLES
-
-### 1. USE THE RIGHT TOOL
-
-Every task has an optimal tool. Using the wrong tool wastes time and tokens.
-
-| Need | ✅ Correct Tool | ❌ Wrong Approach |
-|------|----------------|------------------|
-| Read file contents | **Read** | cat, head, tail, less |
-| Edit existing file | **Edit** | sed, awk, vim, echo > |
+| Need | Tool | NOT |
+|------|------|-----|
+| Read file | **Read** | cat, head, tail |
+| Edit existing file | **Edit** | sed, awk, vim |
 | Create new file | **Write** | echo >, cat <<EOF |
-| Find files by name | **Glob** | find, ls -R |
-| Search file contents | **Grep** | grep, rg, ag, ack |
-| List directory | **Ls** | ls in Bash |
+| Find files by name | **Find** | find, ls -R |
+| Search file contents | **Grep** | grep, rg |
+| List directory | **Find** (tree) | ls in Bash |
 | Change directory | workdir param | cd command |
-| Run commands | **Bash** | - |
-| Parallel operations | **Batch** | Sequential calls |
+| Parallel ops | **Batch** | sequential calls |
 
-### 2. ALWAYS READ BEFORE EDIT
+## CRITICAL RULES
 
-**This is non-negotiable.** The Edit tool WILL FAIL if you haven't read the file.
+**1. READ BEFORE EDIT** — The Edit tool WILL FAIL if you haven't read the file first. This is a hard technical constraint.
 
-```
-WRONG:
-  Edit({ filePath: "file.ts", oldString: "foo", newString: "bar" })
-  ❌ Error: File not read
+**2. PARALLEL with Batch** — Use Batch for 2-10 independent operations (2-5x faster). Never batch dependent ops (read + edit of same file).
 
-CORRECT:
-  Read({ filePath: "file.ts" })
-  // Now you can edit
-  Edit({ filePath: "file.ts", oldString: "foo", newString: "bar" })
-  ✓ Success
-```
+**3. PROACTIVE tool usage** — Don't ask for info you can get with tools. When user says "fix auth bug", use Grep to find it, Read to understand it, Edit to fix it.
 
-### 3. PARALLEL EXECUTION WITH BATCH
+**4. workdir not cd** — Always pass `workdir` param to Bash, never use `cd`.
 
-Use Batch for **independent operations** to save time (2-5x faster).
+## FILE TOOLS
 
-**GOOD for Batch:**
-```typescript
-Batch([
-  { tool: "read", parameters: { filePath: "/src/a.ts" } },
-  { tool: "read", parameters: { filePath: "/src/b.ts" } },
-  { tool: "read", parameters: { filePath: "/src/c.ts" } },
-])
-// 3 files read in ~1 round trip instead of 3
-```
+**Read** — `{ filePath, offset?, limit? }` — Returns file with line numbers. MUST call before Edit.
 
-**BAD for Batch:**
-```typescript
-// DON'T - these are dependent
-Batch([
-  { tool: "read", parameters: { filePath: "/file.ts" } },
-  { tool: "edit", parameters: { filePath: "/file.ts", ... } },  // Needs read first!
-])
-```
+**Write** — `{ filePath, content }` — Creates file + parent dirs. Use for NEW files only. Read first if file exists.
 
-### 4. PROACTIVE TOOL USAGE
+**Edit** — `{ filePath, oldString, newString, replaceAll? }` — Exact string replacement. oldString must match EXACTLY (whitespace matters!). If fails: re-read file, check whitespace, add more context for uniqueness. Use `operations` array for multiple edits in one call.
 
-**DO NOT** ask the user for things you can get with tools:
+**Find** — `{ mode?: "pattern"|"tree", pattern?, path?, ignore? }` — Pattern mode: find files by glob (`**/*.ts`). Tree mode: list directory structure.
 
-```
-User: "Can you help me fix the auth bug?"
+**Grep** — `{ pattern, include? }` — Search file contents with regex. Returns `file:line: content` format.
 
-WRONG:
-  "Can you show me the auth code?"
-  "What file is the bug in?"
-  "Can you run the tests?"
+## TERMINAL
 
-CORRECT:
-  Grep({ pattern: "auth", include: "**/*.ts" })  // Find auth code
-  Read({ filePath: "/src/auth/handler.ts" })      // Read it
-  Bash({ command: "npm test -- --grep auth" })    // Run tests
-```
+**Bash** — `{ command, workdir?, timeout?, description? }` — Persistent session. Forbidden: cat/head/tail/sed/awk/find/grep (use native tools instead). Chain with `&&`. Use `--no-pager` for git.
 
----
-
-## FILE OPERATIONS
-
-### Read Tool
-
-**Purpose:** Read file contents from the filesystem.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| filePath | string | ✓ | - | Absolute path to file |
-| offset | number | | 0 | Starting line (1-indexed) |
-| limit | number | | all | Maximum lines to return |
-
-**Behavior:**
-- Returns file contents with line numbers
-- Large files are automatically truncated
-- Creates reference for subsequent Edit calls
-- Supports text files and some binary inspection
-
-**Usage Examples:**
-```typescript
-// Read entire file
-Read({ filePath: "/project/src/main.ts" })
-
-// Read specific lines
-Read({ filePath: "/project/src/main.ts", offset: 100, limit: 50 })
-// Returns lines 100-149
-
-// Read from line 500 to end
-Read({ filePath: "/project/src/main.ts", offset: 500 })
-```
-
-**Critical Rules:**
-- ✅ ALWAYS use absolute paths
-- ✅ MUST be called before Edit on a file
-- ✅ Re-read after Edit if making multiple changes
-- ❌ Don't use for binary files (images, etc.)
-- ❌ Don't use cat/head/tail in Bash instead
-
----
-
-### Write Tool
-
-**Purpose:** Create new files.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| filePath | string | ✓ | Absolute path for new file |
-| content | string | ✓ | Complete file contents |
-
-**Behavior:**
-- Creates parent directories automatically
-- Overwrites existing files (be careful!)
-- Sets appropriate file permissions
-
-**Usage Examples:**
-```typescript
-// Create new TypeScript file
-Write({
-  filePath: "/project/src/utils/helpers.ts",
-  content: `export function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0];
-}
-
-export function capitalize(str: string): string {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}`
-})
-
-// Create configuration file
-Write({
-  filePath: "/project/.env.example",
-  content: `DATABASE_URL=postgres://localhost:5432/mydb
-API_KEY=your-api-key-here
-NODE_ENV=development`
-})
-```
-
-**Critical Rules:**
-- ✅ **MUST Read file first** if it exists (tool will error otherwise!)
-- ✅ Use Edit for modifying existing files
-- ✅ Include all necessary imports/headers
-- ✅ Follow project conventions
-- ❌ Don't use echo > or cat <<EOF in Bash
-
----
-
-### Edit Tool
-
-**Purpose:** Make exact string replacements in files.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| filePath | string | ✓ | - | Absolute path to file |
-| oldString | string | ✓ | - | Exact content to replace |
-| newString | string | ✓ | - | Replacement content |
-| replaceAll | boolean | | false | Replace all occurrences |
-
-**Behavior:**
-- Finds and replaces exact string match
-- Fails if oldString not found
-- Fails if oldString found multiple times (without replaceAll)
-- Returns updated file view
-
-**Usage Examples:**
-```typescript
-// Single replacement
-Edit({
-  filePath: "/project/src/config.ts",
-  oldString: "const DEBUG = false;",
-  newString: "const DEBUG = true;"
-})
-
-// Add import statement
-Edit({
-  filePath: "/project/src/handler.ts",
-  oldString: "import { Request } from 'express';",
-  newString: `import { Request } from 'express';
-import { validateUser } from './auth';`
-})
-
-// Rename variable everywhere in file
-Edit({
-  filePath: "/project/src/utils.ts",
-  oldString: "oldVariableName",
-  newString: "newVariableName",
-  replaceAll: true
-})
-```
-
-**Critical Rules:**
-- ✅ MUST Read file first (tool will error otherwise!)
-- ✅ oldString must EXACTLY match (including whitespace!)
-- ✅ Include enough context for unique match
-- ✅ Use replaceAll: true for bulk operations
-- ❌ Don't use sed/awk in Bash
-
-**Error Recovery:**
-```
-If Edit fails:
-1. Re-read the file (might have changed)
-2. Check exact whitespace/indentation (tabs vs spaces!)
-3. Search for the string - maybe it's slightly different
-4. Use a smaller/larger context for uniqueness
-```
-
----
-
-### MultiEdit Tool
-
-**Purpose:** Multiple edits in one file atomically.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| file_path | string | ✓ | Absolute path to file |
-| edits | array | ✓ | Array of {oldString, newString} |
-
-**Usage:**
-```typescript
-MultiEdit({
-  file_path: "/project/src/api.ts",
-  edits: [
-    { oldString: "v1/users", newString: "v2/users" },
-    { oldString: "v1/posts", newString: "v2/posts" },
-    { oldString: "v1/comments", newString: "v2/comments" }
-  ]
-})
-```
-
-**When to Use:**
-- Multiple related changes in same file
-- API version updates
-- Coordinated refactoring
-
----
-
-### Ls Tool
-
-**Purpose:** List directory contents.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| path | string | ✓ | Directory path |
-| ignore | array | | Glob patterns to ignore |
-
-**Usage:**
-```typescript
-// List project root
-Ls({ path: "/project" })
-
-// List excluding node_modules
-Ls({ path: "/project", ignore: ["node_modules", ".git"] })
-```
-
-**Returns:**
-```
-src/
-├── components/
-├── utils/
-├── index.ts
-└── config.ts
-package.json
-README.md
-```
-
----
-
-### Glob Tool
-
-**Purpose:** Find files by pattern across the project.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| pattern | string | ✓ | Glob pattern to match |
-
-**Common Patterns:**
-```typescript
-// All TypeScript files
-Glob({ pattern: "**/*.ts" })
-
-// All test files
-Glob({ pattern: "**/*.test.ts" })
-Glob({ pattern: "**/*.spec.ts" })
-Glob({ pattern: "**/test/**/*.ts" })
-
-// Config files
-Glob({ pattern: "**/package.json" })
-Glob({ pattern: "**/tsconfig*.json" })
-
-// Specific directory
-Glob({ pattern: "src/components/**/*.tsx" })
-
-// Multiple extensions
-Glob({ pattern: "**/*.{ts,tsx}" })
-```
-
----
-
-### Grep Tool
-
-**Purpose:** Search file contents with regex.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| pattern | string | ✓ | Regex search pattern |
-| include | string | | Glob filter for files |
-
-**Usage:**
-```typescript
-// Find all TODO comments
-Grep({ pattern: "TODO:", include: "**/*.ts" })
-
-// Find function definitions
-Grep({ pattern: "function\\s+handleAuth", include: "**/*.ts" })
-
-// Find imports of specific module
-Grep({ pattern: "from ['\"]@auth", include: "**/*.ts" })
-
-// Find console.log (for cleanup)
-Grep({ pattern: "console\\.log\\(", include: "**/*.{ts,js}" })
-```
-
-**Returns:**
-```
-src/auth/handler.ts:42: // TODO: Add rate limiting
-src/auth/handler.ts:87: // TODO: Validate token expiry
-src/utils/logger.ts:15: // TODO: Add log levels
-```
-
----
-
-## TERMINAL OPERATIONS
-
-### Bash Tool
-
-**Purpose:** Execute shell commands in a persistent session.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| command | string | ✓ | - | Shell command(s) |
-| workdir | string | | cwd | Working directory |
-| timeout | number | | 120000 | Timeout in ms |
-| description | string | | - | Brief description |
-
-**Key Behaviors:**
-- **Persistent session** - Environment variables, aliases preserved
-- **Output truncation** - Large outputs are truncated
-- **Background processes** - Long commands can run async
-
-**Usage Examples:**
-```typescript
-// Run tests
-Bash({
-  command: "npm test",
-  workdir: "/project",
-  description: "Run test suite"
-})
-
-// Install dependencies
-Bash({
-  command: "npm install axios",
-  workdir: "/project",
-  description: "Install axios package"
-})
-
-// Git operations
-Bash({
-  command: "git status && git diff --cached",
-  workdir: "/project",
-  description: "Check git state"
-})
-
-// Build project
-Bash({
-  command: "npm run build",
-  workdir: "/project",
-  timeout: 300000,  // 5 minutes for builds
-  description: "Build for production"
-})
-```
-
-**Critical Rules:**
-- ✅ Use `workdir` parameter (NOT cd command)
-- ✅ Use `--no-pager` for git commands
-- ✅ Chain commands with && for sequential execution
-- ✅ Use timeout for long-running commands
-- ❌ DON'T use for file operations (use Read/Edit/Write)
-- ❌ DON'T use interactive flags (-i)
-
-**Forbidden Commands:**
-```
-❌ cat, head, tail    → Use Read
-❌ sed, awk           → Use Edit
-❌ echo > file        → Use Write
-❌ find               → Use Glob
-❌ grep, rg, ag       → Use Grep
-❌ cd                 → Use workdir param
-❌ vim, nano, emacs   → Use Edit
-```
-
-**Chain vs Parallel:**
-```typescript
-// Sequential (use && in single Bash call)
-Bash({ command: "npm install && npm test && npm build" })
-
-// Parallel (use Batch with multiple Bash calls)
-Batch([
-  { tool: "bash", parameters: { command: "npm run lint" } },
-  { tool: "bash", parameters: { command: "npm run typecheck" } },
-])
-```
-
----
-
-### Batch Tool
-
-**Purpose:** Execute 1-10 tools in parallel.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| tools | array | ✓ | Array of tool invocations |
-
-**Format:**
-```typescript
-Batch([
-  { tool: "toolName", parameters: { ... } },
-  { tool: "toolName", parameters: { ... } },
-  // up to 10 tools
-])
-```
-
-**Benefits:** 2-5x efficiency for independent operations.
-
-**Good Use Cases:**
-```typescript
-// Read multiple files
-Batch([
-  { tool: "read", parameters: { filePath: "/src/a.ts" } },
-  { tool: "read", parameters: { filePath: "/src/b.ts" } },
-  { tool: "read", parameters: { filePath: "/src/c.ts" } },
-])
-
-// Multiple searches
-Batch([
-  { tool: "grep", parameters: { pattern: "TODO" } },
-  { tool: "grep", parameters: { pattern: "FIXME" } },
-  { tool: "glob", parameters: { pattern: "**/*.test.ts" } },
-])
-
-// Parallel lint + typecheck
-Batch([
-  { tool: "bash", parameters: { command: "npm run lint" } },
-  { tool: "bash", parameters: { command: "npm run typecheck" } },
-])
-```
-
-**Bad Use Cases:**
-```typescript
-// DON'T - Sequential dependency
-Batch([
-  { tool: "read", parameters: { filePath: "/file.ts" } },
-  { tool: "edit", parameters: { filePath: "/file.ts", ... } },  // Needs read first!
-])
-
-// DON'T - Destructive parallel
-Batch([
-  { tool: "bash", parameters: { command: "rm -rf dist" } },
-  { tool: "bash", parameters: { command: "npm run build" } },  // Race condition!
-])
-```
-
----
+**Batch** — `{ tools: [{tool, parameters}] }` — 1-10 tools in parallel.
 
 ## CODE INTELLIGENCE
 
-### LSP Tool
+**LSP** — `{ operation: "definition"|"references"|"hover"|"completion", filePath, line, character }` — Language server ops (0-indexed!).
 
-**Purpose:** Language server operations for code navigation.
-
-**Operations:**
-| Operation | Description | Use Case |
-|-----------|-------------|----------|
-| definition | Go to definition | "Where is this defined?" |
-| references | Find all references | "Where is this used?" |
-| hover | Get type/docs info | "What type is this?" |
-| completion | Get completions | "What can I type here?" |
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| operation | string | ✓ | One of: definition, references, hover, completion |
-| filePath | string | ✓ | Absolute file path |
-| line | number | ✓ | Line number (0-indexed!) |
-| character | number | ✓ | Character position (0-indexed!) |
-
-**Usage:**
-```typescript
-// Find where a function is defined
-LSP({
-  operation: "definition",
-  filePath: "/project/src/api.ts",
-  line: 42,
-  character: 15  // Position of function name
-})
-
-// Find all usages of a function
-LSP({
-  operation: "references",
-  filePath: "/project/src/utils.ts",
-  line: 10,
-  character: 17
-})
-
-// Get type information
-LSP({
-  operation: "hover",
-  filePath: "/project/src/types.ts",
-  line: 25,
-  character: 12
-})
-```
-
----
-
-### CodeSearch Tool
-
-**Purpose:** Search programming documentation via Exa API.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| query | string | ✓ | Documentation search query |
-| tokenCount | number | | Max tokens in response |
-
-**Usage:**
-```typescript
-// Search for API documentation
-CodeSearch({ query: "React useEffect cleanup function" })
-
-// Search for library usage
-CodeSearch({ query: "prisma many-to-many relations" })
-```
-
----
+**CodeSearch** — `{ query, tokenCount? }` — Search programming docs via Exa.
 
 ## TASK MANAGEMENT
 
-### TodoWrite Tool
+**TodoWrite** — `{ todos: [{id, content, status, priority?}] }` — Task state. One `in_progress` at a time. Use TOGETHER with chainupdate.
 
-**Purpose:** Create and manage task lists. See `<chain_system>` in extensions for detailed Chain + TodoWrite workflow.
+**TodoRead** — No params. Returns current task list.
 
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| todos | array | ✓ | Array of task objects |
+**Task** — `{ subagent_type: "general"|"explore", description, prompt }` — Launch specialized subagent. Blocking.
 
-**Task Object:**
-```typescript
-{
-  id: string,        // Unique identifier ("1", "2", "2.1")
-  content: string,   // Task description with emoji
-  status: "pending" | "in_progress" | "completed" | "cancelled",
-  priority?: "high" | "medium" | "low"
-}
-```
+**Question** — `{ question, options?, multiple? }` — Ask user when genuinely blocked. NOT for confirmations or things tools can answer.
 
-**Critical Rules:**
-- ✅ Only ONE task should be `in_progress` at a time
-- ✅ Mark `completed` IMMEDIATELY after finishing
-- ✅ Always use TOGETHER with Chain (chainupdate) — see extensions
+## WEB
 
----
+**WebSearch** — `{ query, type?: "keyword"|"neural", results? }` — Search via Exa AI.
 
-### TodoRead Tool
+**WebFetch** — `{ url, format?: "markdown"|"text"|"html" }` — Fetch and parse URL content.
 
-**Purpose:** Read current task list.
+## MEMORY
 
-**Parameters:** None
+**Memory** — `{ action: "save"|"search"|"list" }` — Persistent cross-session memory. Replaces brain + learn tools.
 
-**Usage:**
-```typescript
-TodoRead()
-// Returns current task list state
-```
+**MANDATORY: Before answering questions about the user personally** (name, preferences, past projects, decisions, configs, habits) — ALWAYS call `memory({ action: "search", query: "..." })` first. Never guess or rely on in-context assumptions.
 
----
+| Trigger | Action |
+|---------|--------|
+| "Adım ne?", "kim olduğumu biliyor musun?" | `memory search "user name identity"` |
+| "Hangi projeyi tercih etmişim?" | `memory search "project preference"` |
+| "Bunu daha önce nasıl yapmıştık?" | `memory search "<topic>"` |
+| Yeni öğrenilen bilgi / kullanıcı tercihi | `memory save "<fact>"` |
 
-### Task Tool
-
-**Purpose:** Launch specialized subagents for complex work.
-
-**Subagent Types:**
-| Type | Purpose | Allowed Tools |
-|------|---------|---------------|
-| general | Multi-step research and implementation | Most tools |
-| explore | Read-only codebase exploration | Read, Grep, Glob, Ls |
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| subagent_type | string | ✓ | "general" or "explore" |
-| description | string | ✓ | Brief task description |
-| prompt | string | ✓ | Detailed instructions |
-
-**Usage:**
-```typescript
-// Research task
-Task({
-  subagent_type: "explore",
-  description: "Analyze authentication flow",
-  prompt: "Find all files related to authentication. Trace the flow from login to session creation. Document the key functions and their responsibilities."
-})
-
-// Implementation task
-Task({
-  subagent_type: "general",
-  description: "Add rate limiting",
-  prompt: "Add rate limiting to all API endpoints. Use existing patterns if found. Add appropriate tests."
-})
-```
-
----
-
-### Question Tool
-
-**Purpose:** Ask user for input when genuinely blocked.
-
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| question | string | ✓ | Question to ask |
-| options | array | | Multiple choice options |
-| multiple | boolean | | Allow multiple selections |
-
-**When to Use:**
-- ✅ Genuinely blocked, cannot proceed
-- ✅ Ambiguous requirements with no clear answer
-- ✅ Need credentials or permissions
-- ✅ Multiple valid approaches, user preference matters
-
-**When NOT to Use:**
-- ❌ Can find answer via tools
-- ❌ Obvious next step exists
-- ❌ Just asking for confirmation
-- ❌ Being polite/thorough
-
-**Usage:**
-```typescript
-// Choice between approaches
-Question({
-  question: "Which database would you like to use?",
-  options: ["PostgreSQL", "MySQL", "SQLite", "MongoDB"]
-})
-
-// Need credentials
-Question({
-  question: "What is your OpenAI API key? (needed for embeddings)"
-})
-```
-
----
-
-## WEB OPERATIONS
-
-### WebSearch Tool
-
-**Purpose:** Search the web via Exa AI.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| query | string | ✓ | - | Search query |
-| type | string | | "keyword" | "keyword" or "neural" |
-| results | number | | 5 | Number of results |
-
-**Usage:**
-```typescript
-// Search for documentation
-WebSearch({ query: "Next.js 14 server actions tutorial" })
-
-// Search for error solutions
-WebSearch({ query: "TypeError: Cannot read property 'map' of undefined React" })
-```
-
----
-
-### WebFetch Tool
-
-**Purpose:** Fetch and parse URL content.
-
-**Parameters:**
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| url | string | ✓ | - | URL to fetch |
-| format | string | | "markdown" | "markdown", "text", or "html" |
-
-**Usage:**
-```typescript
-// Fetch documentation
-WebFetch({ url: "https://docs.example.com/api", format: "markdown" })
-
-// Fetch API response
-WebFetch({ url: "https://api.example.com/health", format: "text" })
-```
+**Rule:** If memory returns no results → answer from context. If results exist → use them as ground truth.
 </tool_usage>

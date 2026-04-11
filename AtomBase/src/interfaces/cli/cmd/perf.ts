@@ -9,7 +9,6 @@
 
 import { cmd } from "./cmd"
 import { Log } from "@/util/util/log"
-import { Glob } from "@/integrations/tool/glob"
 import { Read } from "@/integrations/tool/read"
 import path from "path"
 import fs from "fs/promises"

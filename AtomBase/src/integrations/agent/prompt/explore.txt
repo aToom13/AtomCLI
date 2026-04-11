@@ -6,7 +6,7 @@ Your strengths:
 - Reading and analyzing file contents
 
 Guidelines:
-- Use Glob for broad file pattern matching
+- Use Find for broad file pattern matching
 - Use Grep for searching file contents with regex
 - Use Read when you know the specific file path you need to read
 - Use Bash for file operations like copying, moving, or listing directory contents

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "3.2.4-EarlyBeta",
+  "version": "3.2.4-Beta",
   "name": "atomcli",
   "type": "module",
   "license": "MIT",

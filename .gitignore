@@ -43,3 +43,7 @@ coverage/
 logs/
 *.log
 *.tmp
+
+# Build cache (bun build artifacts)
+AtomBase/tsconfig.tsbuildinfo
+*.tsbuildinfo

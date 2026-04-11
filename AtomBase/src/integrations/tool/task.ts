@@ -5,10 +5,10 @@ import { Session } from "@/core/session"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { MessageV2 } from "@/core/session/message-v2"
-import { Identifier } from "@/core/id/id"
 import { Agent } from "../agent/agent"
 import { SessionPrompt } from "@/core/session/prompt"
 import { iife } from "@/util/util/iife"
+import { SubAgent } from "./subagent"
 
 import { Config } from "@/core/config/config"
 import { PermissionNext } from "@/util/permission/next"
@@ -140,11 +140,19 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       const parentSession = await Session.get(ctx.sessionID).catch(() => null)
       const parentPermissions = parentSession?.permission ?? []
 
+      // Build permissions using shared utility
+      const experimentalPermissions = (config.experimental?.primary_tools ?? []).map((t) => ({
+        pattern: "*",
+        action: "allow" as const,
+        permission: t,
+      }))
+      const permissions = SubAgent.buildPermissions(parentPermissions, experimentalPermissions)
+
+      // Create/reuse session (done before background detach for part tracking)
       const session = await iife(async () => {
         if (params.session_id) {
           const found = await Session.get(params.session_id).catch(() => { })
           if (found) {
-            // Reactivate existing session - notify TUI
             try {
               await Bus.publish(TuiEvent.SubAgentReactivate, {
                 sessionId: found.id,
@@ -154,40 +162,10 @@ export const TaskTool = Tool.define("task", async (ctx) => {
             return found
           }
         }
-
-        // Base permissions for subagents (deny tools that shouldn't be nested)
-        const subagentBasePermissions: PermissionNext.Rule[] = [
-          {
-            permission: "todowrite",
-            pattern: "*",
-            action: "deny" as const,
-          },
-          {
-            permission: "todoread",
-            pattern: "*",
-            action: "deny" as const,
-          },
-          {
-            permission: "task",
-            pattern: "*",
-            action: "deny" as const,
-          },
-        ]
-
-        // Inherit parent permissions (but subagent base permissions take precedence)
-        const inheritedPermissions = PermissionNext.merge(parentPermissions, subagentBasePermissions)
-
-        // Add experimental primary_tools if configured
-        const experimentalPermissions = (config.experimental?.primary_tools ?? []).map((t) => ({
-          pattern: "*",
-          action: "allow" as const,
-          permission: t,
-        }))
-
         return await Session.create({
           parentID: ctx.sessionID,
           title: params.description + ` (@${agent.name} subagent)`,
-          permission: PermissionNext.merge(inheritedPermissions, experimentalPermissions),
+          permission: permissions,
         })
       })
       const msg = await MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID })
@@ -209,11 +187,9 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         })
       } catch { /* TUI may not be available */ }
 
-      const messageID = Identifier.ascending("message")
       const parts: Record<string, { id: string; tool: string; state: { status: string; title?: string } }> = {}
       const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (evt) => {
         if (evt.properties.part.sessionID !== session.id) return
-        if (evt.properties.part.messageID === messageID) return
         if (evt.properties.part.type !== "tool") return
         const part = evt.properties.part
         parts[part.id] = {
@@ -241,45 +217,27 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       const promptParts = await SessionPrompt.resolvePromptParts(params.prompt)
 
       // ─── NON-BLOCKING: Start sub-agent in background, return immediately ───
-      // The main agent gets control back right away.
-      // When the sub-agent finishes, results are delivered via system_notification.
-
       const runInBackground = async () => {
         try {
-          const result = await SessionPrompt.prompt({
-            messageID,
-            sessionID: session.id,
-            model: {
-              modelID: model.modelID,
-              providerID: model.providerID,
-            },
-            agent: agent.name,
-            tools: {
-              todowrite: false,
-              todoread: false,
-              task: false,
-              ...Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
-            },
+          const result = await SubAgent.spawn({
+            parentSessionID: ctx.sessionID,
+            agent,
+            model,
             parts: promptParts,
+            permissions,
+            description: params.description!,
+            sessionId: session.id, // Reuse the session we already created
+            deniedTools: Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
           })
 
           unsub()
-          const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
-
-          // Notify TUI that sub-agent finished
-          try {
-            await Bus.publish(TuiEvent.SubAgentDone, {
-              sessionId: session.id,
-              lastOutput: text.slice(0, 2000),
-            })
-          } catch { /* TUI may not be available */ }
 
           // Add to batch — will be flushed after 3s window with other results
           addPendingResult(ctx.sessionID, ctx.agent, {
             description: params.description!,
             agentType: params.subagent_type!,
-            sessionId: session.id,
-            text,
+            sessionId: result.sessionId,
+            text: result.output,
           })
         } catch (e) {
           unsub()
@@ -310,3 +268,4 @@ export const TaskTool = Tool.define("task", async (ctx) => {
     },
   }
 })
+

@@ -22,13 +22,13 @@ import PROMPT_PLAN from "../session/prompt/runtime/plan-mode.txt"
 import BUILD_SWITCH from "../session/prompt/runtime/build-switch.txt"
 import MAX_STEPS from "../session/prompt/runtime/max-steps.txt"
 import { defer } from "@/util/util/defer"
-import { LearningIntegration } from "@/services/learning/integration"
+import { recall } from "@/integrations/tool/memory"
 import { SessionMemoryIntegration } from "../memory/integration/session"
 import { ToolRegistry } from "@/integrations/tool/registry"
 import { MCP } from "@/integrations/mcp"
 import { LSP } from "@/integrations/lsp"
 import { ReadTool } from "@/integrations/tool/read"
-import { ListTool } from "@/integrations/tool/ls"
+import { FindTool } from "@/integrations/tool/find"
 import { FileTime } from "@/services/file/time"
 import { Flag } from "@/interfaces/flag/flag"
 import { ulid } from "ulid"
@@ -628,7 +628,7 @@ export namespace SessionPrompt {
 
         if (userText) {
           // F13: static import — no dynamic import() in hot path
-          memoryContext = await LearningIntegration.recall(userText, {
+          memoryContext = await recall(userText, {
             sessionID: sessionID,
             technology: "general" // Could be refined based on context
           })
@@ -1121,7 +1121,7 @@ export namespace SessionPrompt {
                   metadata: async () => { },
                   ask: async () => { },
                 }
-                const result = await ListTool.init().then((t) => t.execute(args, listCtx))
+                const result = await FindTool.init().then((t) => t.execute({ mode: "tree", path: filepath }, listCtx))
                 return [
                   {
                     id: Identifier.ascending("part"),
@@ -1129,7 +1129,7 @@ export namespace SessionPrompt {
                     sessionID: input.sessionID,
                     type: "text",
                     synthetic: true,
-                    text: `Called the list tool with the following input: ${JSON.stringify(args)}`,
+                    text: `Called the find tool with the following input: ${JSON.stringify({ mode: "tree", path: filepath })}`,
                   },
                   {
                     id: Identifier.ascending("part"),
@@ -1303,7 +1303,7 @@ export namespace SessionPrompt {
         messageID: userMessage.info.id,
         sessionID: userMessage.info.sessionID,
         type: "text",
-        // TODO (for mr dax): update to use the anthropic full fledged one (see plan-reminder-anthropic.txt)
+        // TODO: consider expanding using the full plan reminder (see runtime/plan-reminder.txt)
         text: PROMPT_PLAN,
         synthetic: true,
       })

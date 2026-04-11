@@ -186,14 +186,11 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
               <Match when={props.request.permission === "read"}>
                 <TextBody icon="→" title={`Read ` + normalizePath(input().filePath as string)} />
               </Match>
-              <Match when={props.request.permission === "glob"}>
-                <TextBody icon="✱" title={`Glob "` + (input().pattern ?? "") + `"`} />
+              <Match when={props.request.permission === "find"}>
+                <TextBody icon="✱" title={`Find "` + (input().pattern ?? "") + `"`} />
               </Match>
               <Match when={props.request.permission === "grep"}>
                 <TextBody icon="✱" title={`Grep "` + (input().pattern ?? "") + `"`} />
-              </Match>
-              <Match when={props.request.permission === "list"}>
-                <TextBody icon="→" title={`List ` + normalizePath(input().path as string)} />
               </Match>
               <Match when={props.request.permission === "bash"}>
                 <TextBody

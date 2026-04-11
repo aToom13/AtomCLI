@@ -229,7 +229,20 @@ export namespace LLM {
               return args.params
             },
           },
-          extractReasoningMiddleware({ tagName: "think", startWithReasoning: false }),
+          // Skip extractReasoningMiddleware for Ollama.
+          //
+          // Ollama's @ai-sdk/openai-compatible natively converts delta.reasoning →
+          // reasoning-start/delta/end events. The middleware's wrapStream intercepts
+          // text-start and delays it until text-end arrives (flush). But Ollama sends
+          // text-delta events during the stream body — BEFORE the flush. processor.ts's
+          // text-delta handler checks `if (currentText)` which is undefined because
+          // text-start was delayed → ALL text is silently dropped.
+          //
+          // For Ollama, the SDK natively handles reasoning, so no middleware needed.
+          // For other providers (Claude, GPT, etc.), keep the middleware for <think> tag support.
+          ...(input.model.api.npm === "@atomcli/ollama"
+            ? []
+            : [extractReasoningMiddleware({ tagName: "think", startWithReasoning: false })]),
         ],
       }),
       experimental_telemetry: { isEnabled: cfg.experimental?.openTelemetry },

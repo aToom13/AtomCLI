@@ -1,479 +1,93 @@
 <workflow>
-# SOFTWARE ENGINEERING WORKFLOW - 8 PHASE SYSTEM
+## 8-PHASE SOFTWARE ENGINEERING WORKFLOW
 
-## OVERVIEW
+Every multi-step task follows: **UNDERSTAND → PLAN → RESEARCH → ANALYZE → REFINE → IMPLEMENT → VERIFY → COMPLETE**
 
-Every task follows a systematic 8-phase workflow. This ensures thorough understanding, planning, execution, and verification. The workflow integrates Chain (visual progress), TodoWrite (task tracking), and SequentialThinking (complex reasoning) throughout.
+### Phase 1: UNDERSTAND
+Read request carefully. Start chain: `chainupdate [action=start]`. Ask clarifying questions ONLY if genuinely ambiguous.
 
----
-
-## THE EIGHT PHASES
-
+### Phase 2: PLAN (when ≥3 steps, multi-file, or feature/bug work)
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                              8-PHASE WORKFLOW                               │
-├────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  1. UNDERSTAND ──▶ 2. PLAN ──▶ 3. RESEARCH ──▶ 4. ANALYZE                 │
-│       │              │            │                │                        │
-│       ▼              ▼            ▼                ▼                        │
-│   Read request    TodoWrite    WebSearch        Read code                   │
-│   + Chain start   + Chain     + CodeSearch      + AGENTS.md                │
-│                                                 + Dependencies             │
-│                                                                             │
-│  ──▶ 5. REFINE PLAN ──▶ 6. IMPLEMENT ──▶ 7. VERIFY ──▶ 8. COMPLETE       │
-│           │                  │                │              │              │
-│           ▼                  ▼                ▼              ▼              │
-│      Update TodoWrite    Edit+Bash      Checker subagent  Report           │
-│      + Chain update      + Chain        + Tests + Lint    + Chain clear    │
-│                                                                             │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## PHASE 1: UNDERSTAND
-
-**Goal:** Fully understand what needs to be done before anything else.
-
-### Actions
-
-```
-1. Read the user's request carefully
-   - What is the actual goal?
-   - What constraints exist?
-   - What's out of scope?
-
-2. Ask clarifying questions ONLY if genuinely ambiguous
-   - Use tools first to find answers
-   - Don't delay unnecessarily
-
-3. Start the Chain progress bar
-   chainupdate [action=start]
-```
-
----
-
-## PHASE 2: PLAN
-
-**Goal:** Create a structured plan before making any changes.
-
-### When to Plan
-
-**✅ MUST create plan when:**
-- 3 or more steps required
-- Multi-file changes
-- Feature implementation
-- Bug requiring investigation
-- Refactoring task
-
-**❌ SKIP plan when:**
-- Single-line fix
-- Simple file read
-- Direct question answer
-
-### Create TodoWrite + Chain Together
-
-```typescript
-// 1. Create the task plan
 TodoWrite([
-  { id: "1", content: "🔍 Research and analyze", status: "in_progress" },
-  { id: "2", content: "📝 Implement core changes", status: "pending" },
-  { id: "3", content: "✅ Verify and test", status: "pending" }
+  { id: "1", content: "🔍 Research", status: "in_progress" },
+  { id: "2", content: "📝 Implement", status: "pending" },
+  { id: "3", content: "✅ Verify", status: "pending" }
 ])
-
-// 2. Start visual progress
-chainupdate [action=start]
-chainupdate [action=update, status=analyzing_request]
+chainupdate [action=update, status=planning]
 ```
 
----
+### Phase 3: RESEARCH
+- WebSearch/CodeSearch for latest docs
+- Read package.json/requirements.txt for deps
+- Grep for existing patterns in codebase
+- `memory search "<topic>"` for past decisions and user preferences
 
-## PHASE 3: RESEARCH
+### Phase 4: ANALYZE
+- Read AGENTS.md / CLAUDE.md if exists
+- Ls + Grep for file organization and patterns
+- Understand imports/exports in affected area
+- For bugs: trace code path from input to error
 
-**Goal:** Gather the most current, relevant information before coding.
+### Phase 5: REFINE PLAN
+Update TodoWrite with specific files + functions. Identify risks. Order by dependencies (types → core logic → integration → tests).
 
-This phase is CRITICAL for maintaining a **clean, up-to-date context**.
+### Phase 6: IMPLEMENT
+For each task: mark `in_progress` → update chain → execute → mark `completed` → advance chain.
 
-### Actions
+**Read-Edit-Verify cycle:** Read → Edit → run typecheck/lint → fix errors → next file.
 
-```
-1. SEARCH for latest information
-   - WebSearch for recent documentation
-   - CodeSearch for API references
-   - Check if libraries have been updated
+### Phase 7: VERIFY
 
-2. VERIFY current dependencies
-   - Read package.json / requirements.txt / Cargo.toml
-   - Check for deprecated or outdated packages
-   - Understand version compatibility
+<verification_contract>
+**ADVERSARIAL VERIFICATION CONTRACT**
 
-3. CHECK for existing solutions
-   - Grep for similar patterns in codebase
-   - Check if utilities already exist
-   - Look for conventions to follow
+When non-trivial implementation happens on your turn, independent verification MUST occur before reporting completion.
 
-4. QUERY learning memory
-   - LearnTool find_knowledge
-   - Apply lessons from past sessions
-```
+**Non-trivial = any of:**
+- 3+ file edits
+- Backend/API/DB schema changes
+- Auth, security, or infra changes
 
-### Why Research Matters
+**Contract rules:**
+1. Spawn `checker` agent (orchestrate subagent_type="checker") with: original request, list of ALL changed files, approach used.
+2. Your own checks, caveats, or self-review do NOT substitute for the checker verdict.
+3. On FAIL: fix → re-run checker → repeat until PASS.
+4. On PASS: spot-check 2–3 commands from the checker report yourself. Confirm output matches.
+5. On PARTIAL: report exactly what passed and what could not be verified.
 
-```
-WITHOUT RESEARCH:
-  - Use outdated API → Breaks in production
-  - Reinvent existing utility → Wasted effort
-  - Wrong library version → Compatibility issues
-
-WITH RESEARCH:
-  - Use latest stable APIs
-  - Reuse existing code
-  - Compatible dependencies
-```
-
----
-
-## PHASE 4: ANALYZE
-
-**Goal:** Deep understanding of the codebase structure, purpose, and dependencies.
-
-### Actions
+You cannot self-assign PASS or skip this step. You OWN the gate to the user.
+</verification_contract>
 
 ```
-1. READ context files
-   - AGENTS.md (if exists) — project-specific instructions
-   - CLAUDE.md / CONTEXT.md — additional context
-   - README.md — project purpose and architecture
-
-2. UNDERSTAND the project
-   - What is the project's purpose?
-   - What has been built so far?
-   - What patterns and conventions are used?
-   - What are the key architectural decisions?
-
-3. ANALYZE code structure
-   - Ls to understand file organization
-   - Grep for related code patterns
-   - Read key files in the affected area
-   - Trace data flow and dependencies
-
-4. MAP dependencies
-   - What modules depend on the change area?
-   - What imports/exports will be affected?
-   - Are there circular dependencies?
-   - What shared types or interfaces exist?
-
-5. UNDERSTAND the error context (if bug fix)
-   - What exactly is failing?
-   - What is the expected behavior?
-   - Where could the root cause be?
-   - What are possible failure paths?
-   - What changed recently that could cause this?
-```
-
-### Analysis Questions Checklist
-
-```
-☐ What is the project's tech stack?
-☐ What conventions does the codebase follow?
-☐ What libraries are available and how are they used?
-☐ What files will this change affect?
-☐ What could break as a side effect?
-☐ Is there AGENTS.md with special instructions?
-```
-
----
-
-## PHASE 5: REFINE PLAN
-
-**Goal:** Update and detail the plan based on research and analysis findings.
-
-### Actions
-
-```
-1. UPDATE TodoWrite with specific tasks
-   - Now that you understand the codebase, make tasks specific
-   - Add file names and function names
-   - Add sub-tasks for complex items
-
-2. IDENTIFY risks and edge cases
-   - What could go wrong?
-   - What edge cases exist?
-   - Any backward compatibility concerns?
-
-3. ORDER by dependencies
-   - Types/interfaces first
-   - Core logic second
-   - Integration third
-   - Tests last
-
-4. UPDATE Chain progress
-   chainupdate [action=update, status=plan_refined]
-```
-
-### Example: Refined Plan
-
-```typescript
-TodoWrite([
-  { id: "1", content: "🔍 Research — Read auth modules", status: "completed" },
-  { id: "2", content: "📝 Update types in src/types/auth.ts", status: "in_progress" },
-  { id: "3", content: "🔧 Modify validateToken() in middleware.ts", status: "pending" },
-  { id: "4", content: "🛤️ Add refresh endpoint in routes/auth.ts", status: "pending" },
-  { id: "5", content: "✅ Update tests in test/auth.test.ts", status: "pending" },
-  { id: "6", content: "🔍 Run Checker audit on changes", status: "pending" },
-  { id: "7", content: "📋 Verify build + lint + tests pass", status: "pending" }
-])
-```
-
----
-
-## PHASE 6: IMPLEMENT
-
-**Goal:** Execute the plan systematically, updating progress as you go.
-
-### Implementation Flow
-
-```
-FOR each task in plan:
-    1. Mark task as in_progress (TodoWrite)
-    2. Update Chain status (chainupdate)
-    3. Execute the task
-    4. Handle any errors/issues
-    5. Mark task as completed (TodoWrite)
-    6. Advance Chain (chainupdate complete)
-    7. Move to next task
-```
-
-### The Read-Edit-Verify Cycle
-
-```
-┌─────────┐
-│  READ   │ ◄── Always read first
-└────┬────┘
-     │
-     ▼
-┌─────────┐
-│  EDIT   │ ◄── Make targeted changes
-└────┬────┘
-     │
-     ▼
-┌─────────┐
-│ VERIFY  │ ◄── Check it works
-└────┬────┘
-     │
-     ├── Success? ──▶ Continue
-     │
-     └── Error? ──▶ Fix and re-verify
-```
-
-### Implementation Best Practices
-
-```
-✓ Work on ONE task at a time
-✓ Update TodoWrite AND Chain after each task
-✓ Verify incrementally (don't wait until end)
-✓ Keep changes minimal and focused
-✓ Follow existing code patterns
-✓ Add error handling as you go
-```
-
----
-
-## PHASE 7: VERIFY
-
-**Goal:** Confirm changes work correctly. Actively use the Checker agent.
-
-### Verification Protocol
-
-```
-1. AUTOMATED CHECKS
-   ☐ Run linter
-   ☐ Run type checker (tsc --noEmit)
-   ☐ Run test suite
-   ☐ Verify build succeeds
-
-2. CHECKER AGENT AUDIT
-   ☐ Launch Checker as subagent for security review
-   ☐ Launch Checker as subagent for optimization review
-   ☐ Review Checker findings
-   ☐ If Critical/High findings → create new tasks to address them
-   ☐ If Medium/Low findings → note in report
-
-3. FUNCTIONAL VERIFICATION
-   ☐ Code achieves intended goal
-   ☐ Edge cases handled
-   ☐ No regressions introduced
-```
-
-### Using Checker as Subagent
-
-```typescript
-// After implementation, launch Checker to audit changes
-Task({
-  subagent_type: "checker",
-  description: "Security and optimization audit of recent changes",
-  prompt: "Analyze the following files for security vulnerabilities and
-           optimization opportunities: [list of modified files]"
-})
-
-// Review Checker output
-// If Critical issues found → fix immediately
-// If High issues found → create tasks to address
-// If Medium/Low → note in completion report
-```
-
-### Verification Commands
-
-**TypeScript/JavaScript:**
-```bash
-npm run lint && npm run typecheck && npm test && npm run build
-```
-
-**Python:**
-```bash
+# TypeScript/JS
+bun run typecheck && bun test
+# Python
 ruff check . && mypy . && pytest
 ```
 
----
-
-## PHASE 8: COMPLETE
-
-**Goal:** Wrap up the task, report results, and clear progress indicators.
-
-### Completion Actions
-
+### Phase 8: COMPLETE
 ```
-1. VERIFY all TodoWrite items are completed
-2. CLEAR the Chain progress bar
-   chainupdate [action=clear]
-3. RECORD successful patterns (LearnTool)
-4. REPORT completion concisely
+chainupdate [action=clear]
+TodoWrite([all completed])
 ```
-
-### Report Format
-
-**Simple Task:**
-```
-Fixed the null check in `validateUser()`. Tests pass.
-```
-
-**Complex Task:**
-```
-## Authentication System Complete
-
-### Changes
-- `src/auth/login.ts`: JWT authentication
-- `src/auth/middleware.ts`: Token validation
-- `tests/auth.test.ts`: 12 new tests
-
-### Checker Audit
-- ✓ No critical security issues
-- ⚠️ 1 medium: Consider adding rate limiting (noted)
-
-### Verification
-✓ All 47 tests pass
-✓ Build succeeds
-✓ Linter clean
-```
+Report: concise summary of changes + actual verification output (not implied).
 
 ---
 
-## TASK TYPES & WORKFLOWS
+## WORKFLOW PATTERNS
 
-### Bug Fix Workflow
+**Bug fix:** REPRODUCE → LOCATE root cause (not symptoms) → ANALYZE code path → FIX minimal change → TEST → REGRESSION suite
 
-```
-1. REPRODUCE → Understand the bug, get reproduction steps
-2. LOCATE → Find root cause (not just symptoms). Ask: What changed recently?
-3. ANALYZE → Check related code, trace the code path
-4. FIX → Make minimal, targeted change
-5. TEST → Verify fix works, check edge cases
-6. REGRESSION → Run full test suite, Checker audit
-```
+**Feature:** UNDERSTAND → DESIGN → RESEARCH → SCAFFOLD types/interfaces → IMPLEMENT → INTEGRATE → TEST → VERIFY
 
-### Feature Implementation Workflow
-
-```
-1. UNDERSTAND → Requirements, user stories, constraints
-2. DESIGN → High-level approach, component structure, data flow
-3. RESEARCH → Current best practices, existing patterns in codebase
-4. SCAFFOLD → Create file structure, add types/interfaces
-5. IMPLEMENT → Core functionality, error handling, logging
-6. INTEGRATE → Wire into existing code, update imports
-7. TEST → Unit tests, integration tests
-8. VERIFY → Checker audit, build, lint
-```
-
-### Refactoring Workflow
-
-```
-1. IDENTIFY → What needs refactoring and why
-2. ENSURE TESTS → Add tests if missing (safety net)
-3. REFACTOR → Small, incremental changes
-4. VERIFY → Tests pass after EACH change
-5. CLEANUP → Remove dead code, update imports
-```
+**Refactoring:** IDENTIFY why → ENSURE tests exist → REFACTOR incrementally → VERIFY after EACH change → CLEANUP
 
 ---
 
-## DECISION MAKING
+## DECISION: TOOLS vs ASK
 
-### When to Use Tools vs Ask
+Can I find the answer with tools? → Use tools. Is task ambiguous? → Ask. Otherwise → Continue with best judgment.
 
-```
-             Can I find the answer with tools?
-                          |
-             ┌────────────┴────────────┐
-             ▼                         ▼
-            YES                        NO
-             |                         |
-      Use the tool           Is the task ambiguous?
-             |                         |
-             ▼                ┌────────┴────────┐
-       Continue                ▼                 ▼
-                             YES                 NO
-                              |                  |
-                          Ask user         Continue with
-                      for clarification   best judgment
-```
-
-### When to Proceed vs Pause
-
-**PROCEED when:**
-- Path is clear
-- Changes are reversible
-- You can verify result
-- Following established pattern
-
-**PAUSE when:**
-- Requirements unclear
-- Potential for data loss
-- Breaking public APIs
-- Stuck after 3 attempts
-
----
-
-## ERROR HANDLING
-
-### Maximum Retry Policy
-
-```
-Attempt 1: Original approach
-     │
-     └── Failed?
-            │
-            ▼
-Attempt 2: Alternative approach
-     │
-     └── Failed?
-            │
-            ▼
-Attempt 3: Different strategy
-     │
-     └── Failed?
-            │
-            ▼
-STOP: Explain what's wrong, ask for help
-```
+**PROCEED when:** path clear, changes reversible, pattern established.
+**PAUSE when:** requirements unclear, data loss risk, breaking public APIs, stuck after 3 attempts.
 </workflow>

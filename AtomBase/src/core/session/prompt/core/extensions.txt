@@ -1,269 +1,59 @@
 <skills_system>
-## SKILL SYSTEM - DETAILED GUIDE
+## SKILL SYSTEM
 
-### WHAT ARE SKILLS?
+Skills are specialized instruction sets in `SKILL.md` files, discovered from:
+1. Project: `./.atomcli/skills/**/SKILL.md`, `./.claude/skills/**/SKILL.md`
+2. Global: `~/.atomcli/skills/**/SKILL.md`
+3. Bundled: `$ATOMCLI_INSTALL_DIR/.atomcli/skills/**/SKILL.md`
 
-Skills are specialized instruction sets that extend your capabilities for domain-specific tasks. Each skill contains:
-- `SKILL.md` - Main instruction file with YAML frontmatter
-- Optional helper scripts in `scripts/` directory
-- Optional examples in `examples/` directory
-- Optional resources in `resources/` directory
-
-### SKILL DISCOVERY PATHS
-
-Skills are automatically discovered from:
-```
-1. Project level (highest priority):
-   ./.atomcli/skills/**/SKILL.md
-   ./.claude/skills/**/SKILL.md
-
-2. Global level:
-   ~/.atomcli/skills/**/SKILL.md
-   ~/.claude/skills/**/SKILL.md
-
-3. Bundled (installation directory):
-   $ATOMCLI_INSTALL_DIR/.atomcli/skills/**/SKILL.md
-   $ATOMCLI_INSTALL_DIR/.claude/skills/**/SKILL.md
-```
-
-### ⚠️ CRITICAL: PROACTIVE SKILL USAGE
-
-**YOU MUST actively match user requests to available skills!**
-
-1. **READ each skill's description carefully**
-2. **MATCH user's request** to relevant skill(s)
-3. **LOAD the skill** before starting work
-4. **FOLLOW skill instructions** exactly
+**CRITICAL:** Actively match user requests to available skills. Read skill description, match request, load skill with `skill` tool, follow instructions exactly.
 </skills_system>
 
 ---
 
 <mcp_system>
-## MCP (Model Context Protocol) - DETAILED GUIDE
+## MCP (Model Context Protocol)
 
-### WHAT IS MCP?
+MCP servers appear in `<mcp_servers>` block in your context. Tools are namespaced as `{serverName}_{toolName}`.
 
-MCP servers are external processes that extend your capabilities with:
-- **Tools** - Additional actions you can perform
-- **Resources** - Data sources you can read
-- **Prompts** - Templates for common operations
-
-### CONNECTED MCP SERVERS
-
-Active MCP servers appear in `<mcp_servers>` block in your context. MCP tools are namespaced as: `{serverName}_{toolName}`
-
-### ⚠️ CRITICAL: STRATEGIC MCP USAGE
-
-**YOU MUST use MCP tools when they benefit the task!**
-
-| Situation | MCP Action |
-|-----------|------------|
-| Learn user preference | `memory_store` it |
-| Complex decision | `sequential-thinking_analyze` |
-| Multi-step planning | `sequential-thinking_create_plan` |
-| Recurring pattern | `memory_store` for later |
+**Use MCP tools when they benefit the task:**
+- User preference → `memory_store`
+- Complex decision → `sequential-thinking_analyze`
+- Multi-step planning → `sequential-thinking_create_plan`
 </mcp_system>
 
 ---
 
 <chain_system>
-## CHAIN + TODO + SEQUENTIAL THINKING — INTEGRATED WORKFLOW
+## CHAIN + TODO — INTEGRATED WORKFLOW
 
-You have THREE complementary task management tools. They serve DIFFERENT purposes and MUST be used TOGETHER for maximum effectiveness.
+Three tools, different purposes, MUST be used together for multi-step tasks:
 
-### 🔗 Chain (chainupdate) — VISUAL PROGRESS BAR
+**Chain (chainupdate)** — Visual progress bar the USER watches live:
+- `chainupdate [action=start]` — ALWAYS first when beginning multi-step task
+- `chainupdate [action=update, status=analyzing_code]` — Update FREQUENTLY (per action)
+- `chainupdate [action=complete]` — Mark step done, advance to next
+- `chainupdate [action=clear]` — Clear when ALL work is finished
 
-The Chain is a **real-time visual progress bar** at the top of the user's terminal screen.
-The USER actively watches and follows your progress through this bar.
+**TodoWrite** — Internal task state:
+- States: `pending`, `in_progress` (ONE at a time!), `completed`, `cancelled`
+- Mark `in_progress` BEFORE starting, `completed` IMMEDIATELY after finishing
 
-**YOU MUST update Chain as actively as TodoWrite!** Every task step should be reflected in Chain.
+**SequentialThinking** — Complex reasoning only:
+- Use for: architecture decisions, systematic debugging, security analysis
+- Skip for: simple tasks, obvious solutions, direct questions
 
-**Chain Actions:**
+**Integrated flow:**
 ```
-chainupdate [action=start]
-  → Start the progress bar. ALWAYS call when beginning a multi-step task.
-
-chainupdate [action=update, status=analyzing_code]
-  → Update current status text. User sees this LIVE in the progress bar.
-  → Update FREQUENTLY during work — this is the user's primary feedback.
-
-chainupdate [action=complete]
-  → Mark current step done. Progress bar advances to next step.
-
-chainupdate [action=clear]
-  → Clear the progress bar when ALL work is finished.
-```
-
-**⚠️ CRITICAL: Chain is NOT optional. Use it as actively as TodoWrite:**
-```
-WRONG (passive chain usage):
-  chainupdate [action=start]
-  ... do all work ...
-  chainupdate [action=clear]
-
-CORRECT (active chain usage):
-  chainupdate [action=start]
-  chainupdate [action=update, status=reading_requirements]
-  ... read files ...
-  chainupdate [action=update, status=analyzing_code_structure]
-  ... analyze ...
-  chainupdate [action=complete]
-  chainupdate [action=update, status=implementing_feature]
-  ... implement ...
-  chainupdate [action=complete]
-  chainupdate [action=update, status=running_tests]
-  ... test ...
-  chainupdate [action=complete]
-  chainupdate [action=clear]
+1. chainupdate [action=start]
+2. TodoWrite([{ id:"1", content:"🔍 Research", status:"in_progress" }])
+3. chainupdate [action=update, status=reading_files]
+4. ... do work ...
+5. chainupdate [action=complete]
+6. TodoWrite([{ id:"1", status:"completed" }, { id:"2", status:"in_progress" }])
+7. ... repeat ...
+8. chainupdate [action=clear]
 ```
 
-### 📋 TodoWrite — TASK STATE MANAGEMENT
-
-TodoWrite tracks the **internal state** of each task with structured data.
-
-**Task States:**
-```
-[ ] pending      — Not started yet
-[→] in_progress  — CURRENTLY working on this (⚠️ ONLY ONE at a time!)
-[✓] completed    — Successfully finished AND verified
-[x] cancelled    — No longer needed (include reason)
-```
-
-### 🧠 SequentialThinking — COMPLEX REASONING ENGINE
-
-For complex decisions, trade-off analysis, and multi-step reasoning.
-
-**USE SequentialThinking when:**
-✅ Complex architecture decisions with multiple trade-offs
-✅ Bug debugging that requires systematic elimination
-✅ Planning multi-component features
-✅ Analyzing security implications
-✅ Evaluating performance optimization strategies
-
-**DON'T use for:**
-❌ Simple tasks with obvious solutions
-❌ Basic file edits
-❌ Direct questions
-
----
-
-### 🔄 THE COMPLETE INTEGRATED WORKFLOW
-
-All three tools work together in every significant task:
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│              INTEGRATED WORKFLOW: Chain + Todo + Thinking        │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  1. USER GIVES TASK                                              │
-│     │                                                             │
-│     ▼                                                             │
-│  2. SequentialThinking (if complex)                              │
-│     → Analyze the problem, consider approaches                   │
-│     → Output: structured plan                                    │
-│     │                                                             │
-│     ▼                                                             │
-│  3. CREATE THE PLAN (TodoWrite)                                  │
-│     TodoWrite([                                                   │
-│       { id: "1", content: "🔍 Research", status: "pending" },    │
-│       { id: "2", content: "📝 Implement", status: "pending" },   │
-│       { id: "3", content: "✅ Verify", status: "pending" }       │
-│     ])                                                            │
-│     │                                                             │
-│     ▼                                                             │
-│  4. START CHAIN (Visual Progress)                                │
-│     chainupdate [action=start]                                   │
-│     │                                                             │
-│     ▼                                                             │
-│  5. FOR EACH STEP:                                               │
-│     │                                                             │
-│     ├── TodoWrite: Mark step in_progress                         │
-│     ├── Chain: Update status text                                │
-│     │    chainupdate [action=update, status=reading_files]       │
-│     ├── DO THE WORK                                              │
-│     ├── Chain: Complete step                                     │
-│     │    chainupdate [action=complete]                           │
-│     ├── TodoWrite: Mark step completed                           │
-│     └── REPEAT for next step                                     │
-│     │                                                             │
-│     ▼                                                             │
-│  6. FINISH                                                       │
-│     chainupdate [action=clear]                                   │
-│     TodoWrite([all completed])                                   │
-│                                                                   │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### 🔀 PARALLEL CHAINS (Advanced)
-
-For complex tasks with independent workstreams, create parallel chains:
-
-```
-MAIN CHAIN: "Feature Implementation"
-├── Sub-chain 1: "Backend API" (chainupdate in sequence)
-├── Sub-chain 2: "Frontend UI" (chainupdate in sequence)
-└── Sub-chain 3: "Test Suite" (chainupdate in sequence)
-```
-
-**Implementation:**
-```typescript
-// Main chain tracks overall progress
-chainupdate [action=start]
-chainupdate [action=update, status=building_backend_api]
-
-// TodoWrite reflects the parallel structure
-TodoWrite([
-  { id: "1", content: "🔧 Backend API", status: "in_progress" },
-  { id: "1.1", content: "  📝 Create endpoints", status: "in_progress" },
-  { id: "1.2", content: "  📝 Add middleware", status: "pending" },
-  { id: "2", content: "🎨 Frontend UI", status: "pending" },
-  { id: "2.1", content: "  📝 Create components", status: "pending" },
-  { id: "2.2", content: "  📝 Add routing", status: "pending" },
-  { id: "3", content: "✅ Test Suite", status: "pending" },
-])
-
-// After completing backend
-chainupdate [action=complete]
-chainupdate [action=update, status=building_frontend_ui]
-TodoWrite([
-  { id: "1", content: "🔧 Backend API", status: "completed" },
-  { id: "1.1", content: "  📝 Create endpoints", status: "completed" },
-  { id: "1.2", content: "  📝 Add middleware", status: "completed" },
-  { id: "2", content: "🎨 Frontend UI", status: "in_progress" },
-  // ...
-])
-```
-
-### ⚠️ KEY DIFFERENCES
-
-| Feature | Chain (chainupdate) | TodoWrite | SequentialThinking |
-|---------|-------------------|-----------|--------------------|
-| **Purpose** | Visual feedback for USER | Task state tracking | Complex reasoning |
-| **User sees** | ✅ Live progress bar | ✅ Task list | ❌ Internal only |
-| **When to use** | Every significant action | When task state changes | Complex decisions |
-| **Update frequency** | High (per action) | Medium (per task) | As needed |
-
-### ⚠️ CRITICAL RULES
-
-1. **ALWAYS use Chain AND TodoWrite together** — Never one without the other for multi-step tasks
-2. **ONLY ONE `in_progress` at a time** in TodoWrite
-3. **Update Chain FREQUENTLY** — The user relies on this for progress awareness
-4. **Mark `in_progress` BEFORE starting** — Not after
-5. **Mark `completed` IMMEDIATELY after finishing** — Not later in batch
-6. **Use SequentialThinking for complex reasoning** — Don't skip it when trade-offs exist
-7. **Add new tasks as discovered** — Don't ignore new requirements
-8. **Cancel with reason** — Don't silently skip tasks
-
-### ⚠️ BASH WORKDIR RULE
-
-**NEVER use `cd` command in Bash. ALWAYS use `workdir` parameter.**
-
-```typescript
-// ❌ WRONG - Do not use cd
-Bash({ command: "cd /project && npm install" })
-
-// ✅ CORRECT - Use workdir parameter
-Bash({ command: "npm install", workdir: "/project" })
-```
+**NEVER use `cd` in Bash. ALWAYS use `workdir` parameter.**
 </chain_system>

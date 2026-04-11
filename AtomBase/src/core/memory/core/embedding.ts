@@ -29,6 +29,50 @@ const defaultConfig: EmbeddingServiceConfig = {
 }
 
 // ============================================================================
+// SAFE TEXT TRUNCATION
+// ============================================================================
+
+/**
+ * Estimate token count from character count.
+ * OpenAI uses ~4 chars/token on average for English; code is ~3 chars/token.
+ * We use the conservative estimate (3.5) to stay safely under limits.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5)
+}
+
+/**
+ * Truncate text to fit within a token budget without cutting mid-word,
+ * mid-JSON-structure, or mid-code-block.
+ *
+ * Strategy:
+ * 1. If text already fits, return as-is (no cost).
+ * 2. Estimate target char count from token budget.
+ * 3. Scan backwards from that char position to find a clean whitespace boundary.
+ * 4. Append a truncation notice so downstream consumers know data is incomplete.
+ */
+function truncateForEmbedding(
+  text: string,
+  maxTokens: number = 2000,
+): string {
+  if (estimateTokens(text) <= maxTokens) return text
+
+  // Estimated safe char boundary
+  const targetChars = Math.floor(maxTokens * 3.5)
+
+  // Walk backwards to the nearest whitespace to avoid splitting words/tokens
+  let cutAt = targetChars
+  while (cutAt > 0 && !/\s/.test(text[cutAt])) {
+    cutAt--
+  }
+
+  // If we couldn't find whitespace (e.g. minified code), fall back to hard cut
+  if (cutAt === 0) cutAt = targetChars
+
+  return text.slice(0, cutAt) + "\n[...truncated for embedding]"
+}
+
+// ============================================================================
 // EMBEDDING SERVICE INTERFACE
 // ============================================================================
 
@@ -88,10 +132,11 @@ export class OpenAIEmbedding implements EmbeddingService {
   async embed(text: string): Promise<number[]> {
     try {
       const client = await this.getClient()
+      const safeInput = truncateForEmbedding(text)
 
       const response = await client.embeddings.create({
         model: this.config.model,
-        input: text.slice(0, 8000), // Truncate if too long
+        input: safeInput,
         encoding_format: "float",
       })
 
@@ -124,7 +169,7 @@ export class OpenAIEmbedding implements EmbeddingService {
       const results: number[][] = []
 
       for (let i = 0; i < texts.length; i += batchSize) {
-        const batch = texts.slice(i, i + batchSize).map(t => t.slice(0, 8000))
+        const batch = texts.slice(i, i + batchSize).map(t => truncateForEmbedding(t))
 
         const response = await client.embeddings.create({
           model: this.config.model,
@@ -197,7 +242,7 @@ export class LocalEmbedding implements EmbeddingService {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: this.config.model,
-          input: text.slice(0, 8000),
+          input: truncateForEmbedding(text),
         }),
       })
 
@@ -411,9 +456,8 @@ export async function summarizeForEmbedding(
     return preprocessForEmbedding(text)
   }
 
-  // Simple truncation with preprocessing
-  // In production, could use LLM summarization
-  const truncated = text.slice(0, maxLength)
+  // Use the token-aware truncation utility
+  const truncated = truncateForEmbedding(text, Math.floor(maxLength / 3.5))
   return preprocessForEmbedding(truncated)
 }
 

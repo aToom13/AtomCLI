@@ -4,13 +4,12 @@ import { Log } from "@/util/util/log"
 import { Session } from "@/core/session"
 import { SessionPrompt } from "@/core/session/prompt"
 import { Agent } from "../agent/agent"
-import { Identifier } from "@/core/id/id"
 import { MessageV2 } from "@/core/session/message-v2"
 import { Config } from "@/core/config/config"
-import { PermissionNext } from "@/util/permission/next"
 import { selectModel, inferCategory, type TaskCategory } from "./model-router"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
+import { SubAgent } from "./subagent"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -507,13 +506,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                 const fullPrompt = depContext ? `${depContext}\n\n${task.prompt}` : task.prompt
 
-                // Subagent permissions
-                const subPermissions: PermissionNext.Rule[] = [
-                  { permission: "todowrite", pattern: "*", action: "deny" as const },
-                  { permission: "todoread", pattern: "*", action: "deny" as const },
-                  { permission: "task", pattern: "*", action: "deny" as const },
-                ]
-                const inheritedPermissions = PermissionNext.merge(parentPermissions, subPermissions)
+                // Subagent permissions via shared utility
+                const permissions = SubAgent.buildPermissions(parentPermissions)
 
                 // Execute task with retry logic
                 let taskSuccess = false
@@ -524,69 +518,31 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     // Try to reuse existing session for this agent type
                     const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
                     const existingSessionId = AGENT_SESSION_MAP.get(sessionKey)
-                    let session: any
 
-                    if (existingSessionId) {
-                      // Reuse existing session
-                      session = await Session.get(existingSessionId).catch(() => null)
-                      if (session) {
-                        // Notify TUI: reactivate existing agent
-                        try {
-                          await Bus.publish(TuiEvent.SubAgentReactivate, {
-                            sessionId: session.id,
-                            description: `[${task.category}] ${task.id}`,
-                          })
-                        } catch { /* TUI may not be available */ }
-                      }
-                    }
+                    const promptParts = await SessionPrompt.resolvePromptParts(fullPrompt)
 
-                    if (!session) {
-                      // Create new child session
-                      session = await Session.create({
-                        parentID: ctx.sessionID,
-                        title: `[${task.category}] ${task.id} (@${task.agent})`,
-                        permission: inheritedPermissions,
-                      })
-                      // Store mapping for future reuse
-                      AGENT_SESSION_MAP.set(sessionKey, session.id)
-                      workflow.sessionMapKeys.push(sessionKey) // F24: tract key for O(1) cleanup
+                    const spawnResult = await SubAgent.spawn({
+                      parentSessionID: ctx.sessionID,
+                      agent,
+                      model,
+                      parts: promptParts,
+                      permissions,
+                      description: `[${task.category}] ${task.id}`,
+                      sessionId: existingSessionId ?? undefined,
+                      title: `[${task.category}] ${task.id} (@${task.agent})`,
+                    })
 
-                      // Notify TUI: new sub-agent active
-                      try {
-                        await Bus.publish(TuiEvent.SubAgentActive, {
-                          sessionId: session.id,
-                          agentType: task.agent,
-                          description: `[${task.category}] ${task.id}`,
-                        })
-                      } catch { /* TUI may not be available */ }
+                    // Store mapping for future reuse if new session was created
+                    if (spawnResult.isNewSession) {
+                      AGENT_SESSION_MAP.set(sessionKey, spawnResult.sessionId)
+                      workflow.sessionMapKeys.push(sessionKey) // F24: track key for O(1) cleanup
                     }
 
                     // Store session ID for UI navigation
-                    result.sessionId = session.id
-
-                    const messageID = Identifier.ascending("message")
-                    const promptParts = await SessionPrompt.resolvePromptParts(fullPrompt)
-
-                    const promptResult = await SessionPrompt.prompt({
-                      messageID,
-                      sessionID: session.id,
-                      model: {
-                        modelID: model.modelID,
-                        providerID: model.providerID,
-                      },
-                      agent: agent.name,
-                      tools: {
-                        todowrite: false,
-                        todoread: false,
-                        task: false,
-                      },
-                      parts: promptParts,
-                    })
-
-                    const text = promptResult.parts.findLast((x) => x.type === "text")?.text ?? ""
+                    result.sessionId = spawnResult.sessionId
 
                     result.status = "completed"
-                    result.output = text
+                    result.output = spawnResult.output
                     result.completedAt = Date.now()
                     result.retryCount = attempt
                     completedTasks.push(task.id)
@@ -597,17 +553,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "complete", sessionID: ctx.sessionID })
                     } catch { /* TUI may not be active */ }
 
-                    // Notify TUI: agent done (waiting state), pass output for context transfer
-                    try {
-                      await Bus.publish(TuiEvent.SubAgentDone, {
-                        sessionId: session.id,
-                        lastOutput: text.slice(0, 2000),
-                      })
-                    } catch { /* TUI may not be active */ }
-
                     log.info("task completed", {
                       taskId: task.id,
-                      sessionId: session.id,
+                      sessionId: spawnResult.sessionId,
                       model: `${model.providerID}/${model.modelID}`,
                       duration: result.completedAt - (result.startedAt || 0),
                       attempts: attempt + 1,

@@ -7,11 +7,9 @@ import {
   CodeSearch,
   Edit,
   GenericTool,
-  Glob,
+  Find,
   Grep,
-  List,
   Orchestrate,
-  Patch,
   Question,
   Read,
   Task,
@@ -61,8 +59,8 @@ export function ToolPart(props: { last: boolean; part: ToolPartType; message: As
         <Match when={props.part.tool === "bash"}>
           <Bash {...toolprops} />
         </Match>
-        <Match when={props.part.tool === "glob"}>
-          <Glob {...toolprops} />
+        <Match when={props.part.tool === "find"}>
+          <Find {...toolprops} />
         </Match>
         <Match when={props.part.tool === "read"}>
           <Read {...toolprops} />
@@ -70,9 +68,7 @@ export function ToolPart(props: { last: boolean; part: ToolPartType; message: As
         <Match when={props.part.tool === "grep"}>
           <Grep {...toolprops} />
         </Match>
-        <Match when={props.part.tool === "list"}>
-          <List {...toolprops} />
-        </Match>
+
         <Match when={props.part.tool === "webfetch"}>
           <WebFetch {...toolprops} />
         </Match>
@@ -91,9 +87,7 @@ export function ToolPart(props: { last: boolean; part: ToolPartType; message: As
         <Match when={props.part.tool === "task"}>
           <Task {...toolprops} />
         </Match>
-        <Match when={props.part.tool === "patch"}>
-          <Patch {...toolprops} />
-        </Match>
+
         <Match when={props.part.tool === "todowrite"}>
           <TodoWrite {...toolprops} />
         </Match>

@@ -750,7 +750,7 @@ test("migrates legacy edit tool to edit permission", async () => {
   })
 })
 
-test("migrates legacy patch tool to edit permission", async () => {
+test("migrates legacy patch tool to patch permission (no longer maps to edit)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -773,13 +773,13 @@ test("migrates legacy patch tool to edit permission", async () => {
     fn: async () => {
       const config = await Config.get()
       expect(config.agent?.["test"]?.permission).toEqual({
-        edit: "allow",
+        patch: "allow",
       })
     },
   })
 })
 
-test("migrates legacy multiedit tool to edit permission", async () => {
+test("migrates legacy multiedit tool to multiedit permission (no longer maps to edit)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
@@ -802,7 +802,7 @@ test("migrates legacy multiedit tool to edit permission", async () => {
     fn: async () => {
       const config = await Config.get()
       expect(config.agent?.["test"]?.permission).toEqual({
-        edit: "deny",
+        multiedit: "deny",
       })
     },
   })

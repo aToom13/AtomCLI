@@ -99,6 +99,7 @@ export const GrepTool = Tool.define("grep", {
     pattern: z.string().describe("The regex pattern to search for in file contents"),
     path: z.string().optional().describe("The directory to search in. Defaults to the current working directory."),
     include: z.string().optional().describe('File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")'),
+    count: z.boolean().optional().describe("Only return the count of matches per file, not the matching lines"),
   }),
   async execute(params, ctx) {
     if (!params.pattern) {
@@ -124,6 +125,45 @@ export const GrepTool = Tool.define("grep", {
     await assertExternalDirectory(ctx, searchPath, { kind: "directory" })
 
     const rgPath = await Ripgrep.filepath()
+
+    // Count mode: use --count for aggregate results
+    if (params.count) {
+      const args = ["--count", "--hidden", "--follow", "--regexp", params.pattern]
+      if (params.include) args.push("--glob", params.include)
+      args.push(searchPath)
+
+      const proc = Bun.spawn([rgPath, ...args], { stdout: "pipe", stderr: "pipe" })
+      const output = await new Response(proc.stdout).text()
+      const exitCode = await proc.exited
+
+      if (exitCode === 1) {
+        return { title: params.pattern, metadata: { matches: 0, truncated: false }, output: "No matches found" }
+      }
+      if (exitCode !== 0) {
+        const errorOutput = await new Response(proc.stderr).text()
+        throw new Error(`ripgrep failed: ${errorOutput}`)
+      }
+
+      const lines = output.trim().split(/\r?\n/).filter(Boolean)
+      let totalCount = 0
+      const fileCounts: string[] = []
+      for (const line of lines) {
+        const sep = line.lastIndexOf(":")
+        if (sep === -1) continue
+        const file = line.slice(0, sep)
+        const count = parseInt(line.slice(sep + 1), 10)
+        if (isNaN(count)) continue
+        totalCount += count
+        fileCounts.push(`${file}: ${count}`)
+      }
+
+      return {
+        title: params.pattern,
+        metadata: { matches: totalCount, truncated: false },
+        output: `Total: ${totalCount} matches across ${fileCounts.length} files\n${fileCounts.join("\n")}`,
+      }
+    }
+
     const args = ["-nH", "--hidden", "--follow", "--field-match-separator=|", "--regexp", params.pattern]
     if (params.include) {
       args.push("--glob", params.include)
