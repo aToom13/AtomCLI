@@ -390,7 +390,7 @@ function Invoke-SourceBuild {
     try {
         # Clone
         Write-Step "Cloning repository..."
-        $cloneJob = Start-Job { git clone --depth 1 https://github.com/aToom13/AtomCLI.git 2>&1 }
+        $cloneJob = Start-Job -WorkingDirectory $tempDir -ScriptBlock { git clone --depth 1 https://github.com/aToom13/AtomCLI.git 2>&1 }
         $chars = @('|','/','-','\'); $ci = 0
         while ($cloneJob.State -eq 'Running') {
             Write-Host "`r$($chars[$ci % 4]) Cloning...   " -NoNewline -ForegroundColor Blue
@@ -405,7 +405,7 @@ function Invoke-SourceBuild {
         # Install deps
         Write-Step "Installing dependencies..."
         Write-Info "(may take 1-3 minutes)"
-        $depsJob = Start-Job { bun install 2>&1 }
+        $depsJob = Start-Job -WorkingDirectory $PWD -ScriptBlock { bun install 2>&1 }
         $elapsed = 0
         while ($depsJob.State -eq 'Running') {
             Write-Host "`r$($chars[$elapsed % 4]) Installing dependencies... ($elapsed`s)   " -NoNewline -ForegroundColor Blue
@@ -419,7 +419,7 @@ function Invoke-SourceBuild {
         # Install Playwright package in AtomBase
         Write-Step "Installing Playwright package..."
         Push-Location AtomBase
-        $pwPkg = Start-Job { bun add playwright 2>&1 }
+        $pwPkg = Start-Job -WorkingDirectory $PWD -ScriptBlock { bun add playwright 2>&1 }
         $pi = 0
         while ($pwPkg.State -eq 'Running') {
             Write-Host "`r$($chars[$pi % 4]) Installing Playwright...   " -NoNewline -ForegroundColor Blue
@@ -439,7 +439,7 @@ function Invoke-SourceBuild {
         Write-Info "        (This may take 2-5 minutes)"
 
         $buildLog = Join-Path $env:TEMP "atomcli-build-$PID.log"
-        $buildJob = Start-Job -ScriptBlock {
+        $buildJob = Start-Job -WorkingDirectory $PWD -ScriptBlock {
             param($log)
             bun run build --single 2>&1 | Out-Null
             $LASTEXITCODE
@@ -506,7 +506,7 @@ function Install-PlaywrightBrowsers {
     Push-Location $playwrightDir
     try {
         Write-Step "Installing Playwright package..."
-        $pwJob = Start-Job { bun init -y 2>&1; bun add playwright 2>&1 }
+        $pwJob = Start-Job -WorkingDirectory $PWD -ScriptBlock { bun init -y 2>&1; bun add playwright 2>&1 }
         $chars = @('|','/','-','\'); $pi = 0
         while ($pwJob.State -eq 'Running') {
             Write-Host "`r$($chars[$pi % 4]) Installing Playwright package...   " -NoNewline -ForegroundColor Blue
@@ -520,7 +520,7 @@ function Install-PlaywrightBrowsers {
 
             Write-Step "Installing Chromium browser..."
             Write-Info "(may take 1-2 minutes)"
-            $chromJob = Start-Job { bunx playwright install chromium 2>&1 }
+            $chromJob = Start-Job -WorkingDirectory $PWD -ScriptBlock { bunx playwright install chromium 2>&1 }
             $ci2 = 0
             while ($chromJob.State -eq 'Running') {
                 Write-Host "`r$($chars[$ci2 % 4]) Downloading Chromium... ($ci2`s)   " -NoNewline -ForegroundColor Blue
