@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "hono": "^4.12.12",
+    "opencode-antigravity-auth": "^1.2.9-beta.2"
+  }
+}
