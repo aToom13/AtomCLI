@@ -1,0 +1,7 @@
+- Unified file discovery tool combining pattern matching and directory tree listing
+- `mode: "pattern"` — glob-based file search sorted by modification time (default)
+- `mode: "tree"` — directory structure view with indented tree format
+- Use `pattern` mode when you need to find files by name patterns (e.g. "**/*.ts")
+- Use `tree` mode to understand directory structure and see what files exist
+- When doing open-ended search that may require multiple rounds, use the Task tool instead
+- You have the capability to call multiple tools in a single response. Speculatively batch searches when useful.
