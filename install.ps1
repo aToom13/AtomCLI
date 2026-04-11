@@ -30,7 +30,7 @@ function Write-Info    { param([string]$M) Write-Host "   $M" -ForegroundColor D
 
 function Show-Banner {
     Write-Host ""
-    Write-Host "     ████████╗ ██████╗ ███╗   ███╗   ██████╗██╗     ██╗" -ForegroundColor Cyan
+    Write-Host "    ███████╗ ██████╗ ███████╗  ███╗ ███     ██████╗██╗     ██╗" -ForegroundColor Cyan
     Write-Host "    ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║  ██╔════╝██║     ██║" -ForegroundColor Cyan
     Write-Host "    ███████║   ██║   ██║   ██║██╔████╔██║  ██║     ██║     ██║" -ForegroundColor Cyan
     Write-Host "    ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║  ██║     ██║     ██║" -ForegroundColor Cyan
@@ -362,8 +362,9 @@ function Install-Binary {
             Invoke-WithSpinner -Message "Downloading $version..." -Action {
                 param($u, $t)
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $t -ErrorAction Stop
-            } -ArgumentList $url, $targetPath 2>$null
+                $web = New-Object System.Net.WebClient
+                $web.DownloadFile($u, $t)
+            } -ArgumentList $url, $targetPath
 
             # fallback — spinner runs in job so file written there; re-run direct
             if (-not (Test-Path $targetPath) -or (Get-Item $targetPath).Length -eq 0) {
@@ -372,7 +373,7 @@ function Install-Binary {
             Write-Success "Downloaded AtomCLI $version"
             return
         } catch {
-            Write-Warn "Binary not found in releases, falling back to source build..."
+            Write-Warn "Binary not found in releases, falling back to source build... ($($_.Exception.Message))"
         }
     }
 
