@@ -53,4 +53,4 @@ System prompt composition, directory structure, and customization guide.
 
 ---
 
-_AtomCLI Documentation - Version 3.2.4-BetaDebug_
+_AtomCLI Documentation - Version 3.2.4-RC_

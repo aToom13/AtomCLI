@@ -128,7 +128,6 @@ export namespace Provider {
       return {
         autoload: input.models ? Object.keys(input.models).length > 0 : false,
         options: hasKey ? {} : { apiKey: "public" },
-
       }
     },
     // Ollama - Auto-detect running instances and available models
@@ -732,6 +731,11 @@ export namespace Provider {
     // Alias opencode to atomcli to support legacy default models
     if (database["opencode"]) {
       const filteredModels = pickBy(database["opencode"].models, (model) => {
+        // Test mode: if ATOMCLI_TEST_ALL_MODELS is set, do not filter any models from opencode
+        if (typeof process !== "undefined" && process.env.ATOMCLI_TEST_ALL_MODELS === "1") {
+          return true;
+        }
+        
         // Filter for models that are completely free (zero cost)
         const inputCost = model.cost?.input ?? 0
         const outputCost = model.cost?.output ?? 0
@@ -742,11 +746,35 @@ export namespace Provider {
         ...database["opencode"],
         id: "atomcli",
         name: "AtomCLI",
-        models: mapValues(filteredModels, (model) => ({
-          ...model,
-          providerID: "atomcli",
-        })),
+        models: mapValues(filteredModels, (model) => {
+          const isTestMode = typeof process !== "undefined" && process.env.ATOMCLI_TEST_ALL_MODELS === "1";
+          return {
+            ...model,
+            providerID: "atomcli",
+            ...(isTestMode ? { status: "active" as const } : {})
+          };
+        }),
         options: { apiKey: "public" } // Hint that no API key is needed
+      }
+
+      // Add AtomCLI-Free auto-routing virtual model
+      const templateModel = Object.values(database["atomcli"].models)[0]
+      if (templateModel) {
+        const allModels = Object.values(database["atomcli"].models)
+        database["atomcli"].models["atomcli-free"] = {
+          ...templateModel,
+          id: "atomcli-free",
+          api: { ...templateModel.api, id: "atomcli-free" },
+          name: "AtomCLI Free (Auto)",
+          family: "auto",
+          status: "active" as const,
+          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+          limit: {
+            context: Math.max(...allModels.map(m => m.limit?.context ?? 128000)),
+            output: Math.max(...allModels.map(m => m.limit?.output ?? 8192)),
+          },
+          variants: {},
+        }
       }
 
 
@@ -1215,6 +1243,31 @@ export namespace Provider {
       const suggestions = matches.map((m) => m.target)
       throw new ModelNotFoundError({ providerID, modelID, suggestions })
     }
+
+    // AtomCLI Free (Auto): resolve to the best available free model
+    // Returns the REAL model entry so the entire pipeline uses correct metadata
+    if (providerID === "atomcli" && modelID === "atomcli-free") {
+      const freeModels = Object.entries(provider.models)
+        .filter(([id, m]) => id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0)
+        .sort(([, a], [, b]) => {
+          const ctx = (b.limit?.context ?? 0) - (a.limit?.context ?? 0)
+          if (ctx !== 0) return ctx
+          return (b.limit?.output ?? 0) - (a.limit?.output ?? 0)
+        })
+      const selected = freeModels[0]
+      if (selected) {
+        log.info("atomcli-free resolved", { selected: selected[0], available: freeModels.map(([id]) => id) })
+        // Return a proxy/clone that looks like atomcli-free to the UI but uses the selected model's API metadata
+        return {
+          ...selected[1],
+          id: "atomcli-free",
+          name: "AtomCLI Free (Auto)",
+        }
+      }
+      // Fallback: return the virtual entry if no free models found
+      log.warn("atomcli-free: no free models to route to, using virtual entry")
+    }
+
     return info
   }
 

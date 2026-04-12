@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/enterprise",
-  "version": "3.2.4-BetaDebug",
+  "version": "3.2.4-RC",
   "private": true,
   "type": "module",
   "license": "MIT",
