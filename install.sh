@@ -668,6 +668,13 @@ setup_path() {
     fi
     
     export PATH="$INSTALL_DIR:$PATH"
+
+    # Source the shell config to activate PATH in the current session
+    if [ -n "$shell_rc" ] && [ -f "$shell_rc" ]; then
+        # shellcheck disable=SC1090
+        . "$shell_rc" 2>/dev/null || true
+        success "Shell configuration reloaded"
+    fi
 }
 
 # Setup default config
@@ -713,8 +720,8 @@ setup_optional_features() {
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    # Check if running interactively (not piped and tty available)
-    if [ ! -t 0 ] || [ ! -e /dev/tty ]; then
+    # Check if /dev/tty is available (works even when piped via curl | bash)
+    if [ ! -e /dev/tty ]; then
         info "Non-interactive mode: skipping optional features"
         info "Run 'atomcli auth login' to set up manually"
         return 0
@@ -836,15 +843,6 @@ setup_optional_features() {
 }
 EOF
         success "Kilocode configured"
-        KILOCODE_URL="https://kilocode.com/auth?source=atomcli"
-        info "Opening Kilocode login in browser..."
-        
-        # Try to open browser for login
-        if command -v open >/dev/null 2>&1; then
-            open "$KILOCODE_URL" &
-        elif command -v xdg-open >/dev/null 2>&1; then
-            xdg-open "$KILOCODE_URL" &
-        fi
     fi
     
     # Apply Skills
@@ -966,6 +964,13 @@ verify_installation() {
         info "Try building from source: curl -fsSL <url> | bash -s -- --source"
         exit 1
     fi
+
+    if [ "$ENABLE_KILOCODE" = true ]; then
+        echo ""
+        step "Starting Kilocode authentication..."
+        # Re-attach stdin to terminal so prompts work if needed
+        "$INSTALL_DIR/atomcli" auth login --provider kilocode < /dev/tty
+    fi
 }
 
 # Print completion message
@@ -979,8 +984,8 @@ print_complete() {
     echo ""
     
     if [ "$ENABLE_KILOCODE" = true ]; then
-        echo -e "    ${CYAN}1.${NC} Login to Kilocode (browser should open):"
-        echo -e "       ${CYAN}$KILOCODE_URL${NC}"
+        echo -e "    ${CYAN}1.${NC} Authenticate with Kilocode:"
+        echo -e "       ${CYAN}atomcli auth login --provider kilocode${NC}"
         echo ""
         echo -e "    ${CYAN}2.${NC} Start coding:"
         echo -e "       ${CYAN}atomcli${NC}"
@@ -991,6 +996,7 @@ print_complete() {
     fi
     
     echo -e "  ${DIM}Or restart your terminal first if atomcli is not found.${NC}"
+    echo -e "  ${DIM}To reload PATH in your current terminal: ${CYAN}exec \$SHELL${NC}"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""

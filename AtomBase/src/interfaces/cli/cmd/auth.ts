@@ -18,9 +18,11 @@ type PluginAuth = NonNullable<Hooks["auth"]>
  * Handle plugin-based authentication flow.
  * Returns true if auth was handled, false if it should fall through to default handling.
  */
-async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string): Promise<boolean> {
+async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, methodIndex?: string): Promise<boolean> {
   let index = 0
-  if (plugin.auth.methods.length > 1) {
+  if (methodIndex !== undefined) {
+    index = parseInt(methodIndex)
+  } else if (plugin.auth.methods.length > 1) {
     const method = await prompts.select({
       message: "Login method",
       options: [
@@ -230,10 +232,19 @@ export const AuthLoginCommand = cmd({
   command: "login [url]",
   describe: "log in to a provider",
   builder: (yargs) =>
-    yargs.positional("url", {
-      describe: "atomcli auth provider",
-      type: "string",
-    }),
+    yargs
+      .positional("url", {
+        describe: "atomcli auth provider",
+        type: "string",
+      })
+      .option("provider", {
+        type: "string",
+        describe: "Directly login to a specific provider ID (e.g. kilocode)",
+      })
+      .option("method", {
+        type: "string",
+        describe: "Bypass method selection prompt if multiple exist",
+      }),
   async handler(args) {
     await Instance.provide({
       directory: process.cwd(),
@@ -302,39 +313,41 @@ export const AuthLoginCommand = cmd({
           openrouter: 6,
           vercel: 7,
         }
-        let provider = await prompts.autocomplete({
-          message: "Select provider",
-          maxItems: 8,
-          options: [
-            ...pipe(
-              [...values()(providers), ...pluginAuthProviders],
-              sortBy(
-                (x) => priority[x.id] ?? 99,
-                (x) => x.name ?? x.id,
+        let provider = args.provider as string;
+        if (!provider) {
+          provider = await prompts.autocomplete({
+            message: "Select provider",
+            maxItems: 8,
+            options: [
+              ...pipe(
+                [...values()(providers), ...pluginAuthProviders],
+                sortBy(
+                  (x) => priority[x.id] ?? 99,
+                  (x) => x.name ?? x.id,
+                ),
+                map((x) => ({
+                  label: x.name,
+                  value: x.id,
+                  hint: {
+                    atomcli: "recommended",
+                    anthropic: "Claude Max or API key",
+                    openai: "ChatGPT Plus/Pro or API key",
+                    antigravity: "Google OAuth → Claude & Gemini",
+                  }[x.id],
+                })),
               ),
-              map((x) => ({
-                label: x.name,
-                value: x.id,
-                hint: {
-                  atomcli: "recommended",
-                  anthropic: "Claude Max or API key",
-                  openai: "ChatGPT Plus/Pro or API key",
-                  antigravity: "Google OAuth → Claude & Gemini",
-                }[x.id],
-              })),
-            ),
-            {
-              value: "other",
-              label: "Other",
-            },
-          ],
-        })
-
-        if (prompts.isCancel(provider)) throw new UI.CancelledError()
+              {
+                value: "other",
+                label: "Other",
+              },
+            ],
+          }) as string
+          if (prompts.isCancel(provider)) throw new UI.CancelledError()
+        }
 
         const plugin = await Plugin.list().then((x) => x.find((x) => x.auth?.provider === provider))
         if (plugin && plugin.auth) {
-          const handled = await handlePluginAuth({ auth: plugin.auth }, provider)
+          const handled = await handlePluginAuth({ auth: plugin.auth }, provider, args.method as string | undefined)
           if (handled) return
         }
 
@@ -342,7 +355,7 @@ export const AuthLoginCommand = cmd({
           provider = await prompts.text({
             message: "Enter provider id",
             validate: (x) => (x && x.match(/^[0-9a-z-]+$/) ? undefined : "a-z, 0-9 and hyphens only"),
-          })
+          }) as string
           if (prompts.isCancel(provider)) throw new UI.CancelledError()
           provider = provider.replace(/^@ai-sdk\//, "")
           if (prompts.isCancel(provider)) throw new UI.CancelledError()

@@ -691,11 +691,6 @@ function Setup-OptionalFeatures {
 "@
         Set-Content -Path $configFile -Value $kilocodeConfig -Encoding UTF8
         Write-Success "Kilocode configured"
-        
-        # Open browser for login
-        $kilocodeUrl = "https://kilocode.com/auth?source=atomcli"
-        Write-Info "Opening Kilocode login in browser..."
-        Start-Process $kilocodeUrl
     }
 
     if ($installSkills) {
@@ -793,6 +788,12 @@ function Test-Installation {
         } catch {
             Write-Success "AtomCLI installed at $binary"
         }
+
+        if ($script:EnableKilocode) {
+            Write-Host ""
+            Write-Step "Starting Kilocode authentication..."
+            & $binary auth login --provider kilocode
+        }
     } else {
         Write-Err "Installation verification failed - binary not found"
         exit 1
@@ -809,8 +810,8 @@ function Show-Complete {
     Write-Host "  Next steps:" -ForegroundColor White
     Write-Host ""
     if ($Kilocode) {
-        Write-Host "    1. Login to Kilocode (browser should open):" -ForegroundColor Cyan
-        Write-Host "       https://kilocode.com/auth?source=atomcli" -ForegroundColor Cyan
+        Write-Host "    1. Authenticate with Kilocode:" -ForegroundColor Cyan
+        Write-Host "       atomcli auth login --provider kilocode" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "    2. Start coding:" -ForegroundColor Cyan
         Write-Host "       atomcli" -ForegroundColor Cyan
