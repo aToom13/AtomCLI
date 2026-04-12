@@ -3,27 +3,16 @@
  * Adapted from opencode-antigravity-auth.
  */
 
-// OAuth credentials - MUST be set via environment variables
-// Required: ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET
-export const getAntigravityClientId = () => {
-  const id = process.env.ANTIGRAVITY_CLIENT_ID
-  if (!id) throw new Error("ANTIGRAVITY_CLIENT_ID not set")
-  return id
-}
-export const getAntigravityClientSecret = () => {
-  const secret = process.env.ANTIGRAVITY_CLIENT_SECRET
-  if (!secret) throw new Error("ANTIGRAVITY_CLIENT_SECRET not set")
-  return secret
-}
+// OAuth credentials (from Antigravity/Google registered app)
+// Override via ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET env vars
+export const getAntigravityClientId = () =>
+  process.env.ANTIGRAVITY_CLIENT_ID || "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+export const getAntigravityClientSecret = () =>
+  process.env.ANTIGRAVITY_CLIENT_SECRET || "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"
 
 export function validateAntigravityCredentials() {
-  const clientId = getAntigravityClientId()
-  const clientSecret = getAntigravityClientSecret()
-  if (!clientId || !clientSecret || clientId === "" || clientSecret === "") {
-    throw new Error(
-      "Antigravity credentials not configured. Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET env vars.",
-    )
-  }
+  // Uses fallback credentials - no validation needed
+  // Can be overridden via env vars
 }
 
 // Required OAuth scopes (minimal: cloud platform access only)
