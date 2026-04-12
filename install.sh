@@ -752,8 +752,8 @@ setup_optional_features() {
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    # Check if /dev/tty is available (works even when piped via curl | bash)
-    if [ ! -e /dev/tty ]; then
+    # Check if /dev/tty is available or NONINTERACTIVE is set
+    if [ ! -e /dev/tty ] || [ "${NONINTERACTIVE:-}" = "1" ]; then
         info "Non-interactive mode: skipping optional features"
         info "Run 'atomcli auth login' to set up manually"
         return 0
@@ -1037,7 +1037,7 @@ main_install() {
     install_bun
     
     # Interactive version selection when a terminal is available (works even with curl | bash)
-    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
+    if [ -e /dev/tty ] && [ -r /dev/tty ] && [ -z "$VERSION" ]; then
         select_version
         
         if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
@@ -1251,7 +1251,7 @@ update() {
     fi
     
     # Interactive version selection when a terminal is available (works with curl | bash)
-    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
+    if [ -e /dev/tty ] && [ -r /dev/tty ] && [ -z "$VERSION" ]; then
         select_version
         
         if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
@@ -1326,6 +1326,10 @@ show_help() {
 }
 
 # Parse arguments and run
+if [ -n "$VERSION" ]; then
+    NONINTERACTIVE="1"
+fi
+
 case "${1:-}" in
     --update)
         update

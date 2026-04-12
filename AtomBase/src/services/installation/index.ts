@@ -163,6 +163,7 @@ export namespace Installation {
         cmd = $`curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update`.env({
           ...process.env,
           VERSION: target,
+          NONINTERACTIVE: "1",
         })
         break
       case "npm":
