@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/app",
-  "version": "3.2.4-RC",
+  "version": "3.2.4-RCdebug",
   "description": "",
   "type": "module",
   "exports": {
