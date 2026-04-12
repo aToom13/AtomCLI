@@ -686,6 +686,29 @@ setup_path() {
     fi
 }
 
+# Pre-fetch models.dev catalog for instant model availability
+prefetch_models_cache() {
+    step "Pre-fetching model catalog..."
+    
+    # Cache directory matches app's Global.Path.cache
+    local cache_dir="$CONFIG_DIR/cache"
+    mkdir -p "$cache_dir"
+    
+    local cache_file="$cache_dir/models.json"
+    
+    if has curl; then
+        curl -fsSL "https://models.dev/api.json" -o "$cache_file" 2>/dev/null
+    elif has wget; then
+        wget -q "https://models.dev/api.json" -O "$cache_file" 2>/dev/null
+    fi
+    
+    if [ -s "$cache_file" ]; then
+        success "Model catalog cached"
+    else
+        warn "Could not pre-fetch model catalog (will be fetched on first run)"
+    fi
+}
+
 # Setup default config
 setup_config() {
     step "Setting up configuration..."
@@ -711,7 +734,7 @@ setup_config() {
        }
     }
   },
-  "model": "atomcli/minimax-m2.1-free",
+  "model": "atomcli/atomcli-free",
   "mcp": {}
 }
 EOF
@@ -847,7 +870,7 @@ setup_optional_features() {
       }
     }
   },
-  "model": "kilocode/gpt-5-nano",
+  "model": "atomcli/atomcli-free",
   "mcp": {}
 }
 EOF
@@ -1036,6 +1059,7 @@ main_install() {
             rm -rf "$tmp_dir"
             setup_path
             setup_config
+            prefetch_models_cache
             setup_optional_features
             verify_installation 
             print_complete
@@ -1046,6 +1070,7 @@ main_install() {
     install_binary
     setup_path
     setup_config
+    prefetch_models_cache
     setup_optional_features
     verify_installation
     print_complete
