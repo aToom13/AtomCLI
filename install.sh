@@ -294,7 +294,6 @@ EOF
     fi
 
     # Try to get from releases first
-    # Try to get from releases first
     local version=""
     if [ -n "$VERSION" ]; then
         # Ensure starts with v
@@ -616,7 +615,7 @@ setup_path() {
     local shell_rc=""
     local path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
     
-    # Detect shell
+    # Detect shell rc file
     case "$SHELL" in
         */zsh)  shell_rc="$HOME/.zshrc" ;;
         */bash) 
@@ -630,14 +629,19 @@ setup_path() {
         *)      shell_rc="$HOME/.profile" ;;
     esac
     
-    # Check if already in PATH
-    if echo "$PATH" | grep -q "$INSTALL_DIR"; then
-        info "PATH already configured"
-        return 0
+    # Check if PATH entry is ALREADY WRITTEN in the shell rc file (not $PATH env!)
+    # Bug fix: Previously checked $PATH env var, which holds stale values from
+    # previous install sessions, causing the script to skip writing to .bashrc
+    local needs_write=true
+    if [ -n "$shell_rc" ] && [ -f "$shell_rc" ]; then
+        if grep -qF "$INSTALL_DIR" "$shell_rc" 2>/dev/null; then
+            needs_write=false
+            info "PATH already configured in $shell_rc"
+        fi
     fi
     
-    # Add to shell config — fish uses its own syntax
-    if [ -n "$shell_rc" ]; then
+    # Write to shell rc file only if the entry doesn't exist yet
+    if [ "$needs_write" = true ] && [ -n "$shell_rc" ]; then
         case "$SHELL" in
             */fish)
                 mkdir -p "$(dirname "$shell_rc")"
@@ -654,26 +658,29 @@ setup_path() {
         success "Added to PATH in $shell_rc"
     fi
     
-    # Also add Bun to PATH if needed (bash/zsh/profile only)
+    # Also add Bun to PATH if needed (check file content, not env)
     if [ "$BUN_INSTALLED" = false ] && [ -n "$shell_rc" ]; then
-        case "$SHELL" in
-            */fish)
-                echo "fish_add_path \"$HOME/.bun/bin\"" >> "$shell_rc"
-                ;;
-            *)
-                echo "export BUN_INSTALL=\"\$HOME/.bun\"" >> "$shell_rc"
-                echo "export PATH=\"\$BUN_INSTALL/bin:\$PATH\"" >> "$shell_rc"
-                ;;
-        esac
+        if ! grep -qF ".bun/bin" "$shell_rc" 2>/dev/null; then
+            case "$SHELL" in
+                */fish)
+                    echo "fish_add_path \"$HOME/.bun/bin\"" >> "$shell_rc"
+                    ;;
+                *)
+                    echo "export BUN_INSTALL=\"\$HOME/.bun\"" >> "$shell_rc"
+                    echo "export PATH=\"\$BUN_INSTALL/bin:\$PATH\"" >> "$shell_rc"
+                    ;;
+            esac
+        fi
     fi
     
+    # ALWAYS activate in current session (even if rc file already had the entry)
     export PATH="$INSTALL_DIR:$PATH"
 
-    # Source the shell config to activate PATH in the current session immediately
+    # ALWAYS source the shell rc file to ensure PATH is fully loaded
     if [ -n "$shell_rc" ] && [ -f "$shell_rc" ]; then
         # shellcheck disable=SC1090
         source "$shell_rc" 2>/dev/null || . "$shell_rc" 2>/dev/null || true
-        # Re-export after source (source may not propagate to current env in subshell)
+        # Re-export after source to guarantee it in the current process
         export PATH="$INSTALL_DIR:$PATH"
         success "Shell configuration reloaded"
     fi
@@ -970,8 +977,10 @@ verify_installation() {
     if [ "$ENABLE_KILOCODE" = true ]; then
         echo ""
         step "Starting Kilocode authentication..."
-        # Re-attach stdin to terminal so prompts work if needed
-        "$INSTALL_DIR/atomcli" auth login --provider kilocode < /dev/tty
+        # Re-attach stdin to terminal so prompts work even in curl | bash
+        # --method 0 skips the "Login method" prompt, --provider skips provider selection
+        # || true prevents set -e from crashing if user cancels or auth fails
+        "$INSTALL_DIR/atomcli" auth login --provider kilocode --method 0 < /dev/tty || true
     fi
 }
 
@@ -1071,8 +1080,8 @@ uninstall() {
     echo -e "${DIM}  (includes skills, sessions, and settings)${NC}"
     echo ""
     
-    # Check if running interactively
-    if [ -t 0 ]; then
+    # Check if a terminal is available (works with curl | bash too)
+    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
         read -p "Remove config? [y/N] " -n 1 -r REPLY < /dev/tty
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -1216,8 +1225,8 @@ update() {
         info "Found existing installation at $INSTALL_DIR/atomcli"
     fi
     
-    # Interactive version selection if running in a terminal
-    if [ -t 0 ]; then
+    # Interactive version selection when a terminal is available (works with curl | bash)
+    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
         select_version
         
         if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
