@@ -84,7 +84,27 @@ export async function AntigravityAuthPlugin(input: PluginInput): Promise<Hooks> 
                 {
                     label: "Google OAuth (Antigravity)",
                     type: "oauth" as const,
-                    authorize: async () => {
+                    prompts: [
+                        {
+                            type: "text" as const,
+                            key: "clientId",
+                            message: "Enter Google Cloud Client ID (or press enter if set in your shell)",
+                            condition: () => !process.env.ANTIGRAVITY_CLIENT_ID,
+                            validate: (x: string) => x && x.length > 0 ? undefined : "Required for Antigravity OAuth",
+                        },
+                        {
+                            type: "text" as const,
+                            key: "clientSecret",
+                            message: "Enter Google Cloud Client Secret",
+                            condition: () => !process.env.ANTIGRAVITY_CLIENT_SECRET,
+                            validate: (x: string) => x && x.length > 0 ? undefined : "Required for Antigravity OAuth",
+                        }
+                    ],
+                    authorize: async (inputs: Record<string, string> = {}) => {
+                        // Apply user inputs to process.env so that oauth functions pick them up
+                        if (inputs.clientId) process.env.ANTIGRAVITY_CLIENT_ID = inputs.clientId;
+                        if (inputs.clientSecret) process.env.ANTIGRAVITY_CLIENT_SECRET = inputs.clientSecret;
+
                         // Create authorization URL
                         const auth = createAuthorizationUrl()
 

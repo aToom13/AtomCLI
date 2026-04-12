@@ -63,7 +63,13 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string):
   }
 
   if (method.type === "oauth") {
-    const authorize = await method.authorize(inputs)
+    let authorize
+    try {
+      authorize = await method.authorize(inputs)
+    } catch (error: any) {
+      prompts.log.error(error?.message || "Failed to start authorization flow")
+      return true
+    }
 
     if (authorize.url) {
       prompts.log.info("Go to: " + authorize.url)
@@ -139,7 +145,13 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string):
 
   if (method.type === "api") {
     if (method.authorize) {
-      const result = await method.authorize(inputs)
+      let result
+      try {
+        result = await method.authorize(inputs)
+      } catch (error: any) {
+        prompts.log.error(error?.message || "Failed to start authorization flow")
+        return true
+      }
       if (result.type === "failed") {
         prompts.log.error("Failed to authorize")
       }

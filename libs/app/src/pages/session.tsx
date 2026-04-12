@@ -15,11 +15,6 @@ import { DiffChanges } from "@atomcli/ui/diff-changes"
 import { ResizeHandle } from "@atomcli/ui/resize-handle"
 import { Tabs } from "@atomcli/ui/tabs"
 import { useCodeComponent } from "@atomcli/ui/context/code"
-import { SessionTurn } from "@atomcli/ui/session-turn"
-import { createAutoScroll } from "@atomcli/ui/hooks"
-import { SessionReview } from "@atomcli/ui/session-review"
-import { SessionMessageRail } from "@atomcli/ui/session-message-rail"
-
 import { DragDropProvider, DragDropSensors, DragOverlay, SortableProvider, closestCenter } from "@thisbeyond/solid-dnd"
 import type { DragEvent } from "@thisbeyond/solid-dnd"
 import { useSync } from "@/context/sync"
@@ -54,102 +49,15 @@ import { usePlatform } from "@/context/platform"
 import { navMark, navParams } from "@/utils/perf"
 import { same } from "@/utils/same"
 
-type DiffStyle = "unified" | "split"
+import { SessionReviewTab, type DiffStyle } from "./session/components/SessionReviewTab"
+import { SessionChat } from "./session/components/SessionChat"
+import { useSessionScroll } from "./session/hooks/useSessionScroll"
+import { useSessionNavigation } from "./session/hooks/useSessionNavigation"
 
 const handoff = {
   prompt: "",
   terminals: [] as string[],
   files: {} as Record<string, SelectedLineRange | null>,
-}
-
-interface SessionReviewTabProps {
-  diffs: () => FileDiff[]
-  view: () => ReturnType<ReturnType<typeof useLayout>["view"]>
-  diffStyle: DiffStyle
-  onDiffStyleChange?: (style: DiffStyle) => void
-  onViewFile?: (file: string) => void
-  classes?: {
-    root?: string
-    header?: string
-    container?: string
-  }
-}
-
-function SessionReviewTab(props: SessionReviewTabProps) {
-  let scroll: HTMLDivElement | undefined
-  let frame: number | undefined
-  let pending: { x: number; y: number } | undefined
-
-  const restoreScroll = (retries = 0) => {
-    const el = scroll
-    if (!el) return
-
-    const s = props.view().scroll("review")
-    if (!s) return
-
-    // Wait for content to be scrollable - content may not have rendered yet
-    if (el.scrollHeight <= el.clientHeight && retries < 10) {
-      requestAnimationFrame(() => restoreScroll(retries + 1))
-      return
-    }
-
-    if (el.scrollTop !== s.y) el.scrollTop = s.y
-    if (el.scrollLeft !== s.x) el.scrollLeft = s.x
-  }
-
-  const handleScroll = (event: Event & { currentTarget: HTMLDivElement }) => {
-    pending = {
-      x: event.currentTarget.scrollLeft,
-      y: event.currentTarget.scrollTop,
-    }
-    if (frame !== undefined) return
-
-    frame = requestAnimationFrame(() => {
-      frame = undefined
-
-      const next = pending
-      pending = undefined
-      if (!next) return
-
-      props.view().setScroll("review", next)
-    })
-  }
-
-  createEffect(
-    on(
-      () => props.diffs().length,
-      () => {
-        requestAnimationFrame(restoreScroll)
-      },
-      { defer: true },
-    ),
-  )
-
-  onCleanup(() => {
-    if (frame === undefined) return
-    cancelAnimationFrame(frame)
-  })
-
-  return (
-    <SessionReview
-      scrollRef={(el) => {
-        scroll = el
-        restoreScroll()
-      }}
-      onScroll={handleScroll}
-      open={props.view().review.open()}
-      onOpenChange={props.view().review.setOpen}
-      classes={{
-        root: props.classes?.root ?? "pb-40",
-        header: props.classes?.header ?? "px-6",
-        container: props.classes?.container ?? "px-6",
-      }}
-      diffs={props.diffs()}
-      diffStyle={props.diffStyle}
-      onDiffStyleChange={props.onDiffStyleChange}
-      onViewFile={props.onViewFile}
-    />
-  )
 }
 
 export default function Page() {
@@ -291,19 +199,7 @@ export default function Page() {
     if (!revert) return userMessages()
     return userMessages().filter((m) => m.id < revert)
   }, emptyUserMessages)
-  const lastUserMessage = createMemo(() => visibleUserMessages().at(-1))
-
-  createEffect(
-    on(
-      () => lastUserMessage()?.id,
-      () => {
-        const msg = lastUserMessage()
-        if (!msg) return
-        if (msg.agent) local.agent.set(msg.agent)
-        if (msg.model) local.model.set(msg.model)
-      },
-    ),
-  )
+  /* Effect moved down */
 
   const [store, setStore] = createStore({
     activeDraggable: undefined as string | undefined,
@@ -316,13 +212,7 @@ export default function Page() {
     promptHeight: 0,
   })
 
-  const renderedUserMessages = createMemo(() => {
-    const msgs = visibleUserMessages()
-    const start = store.turnStart
-    if (start <= 0) return msgs
-    if (start >= msgs.length) return emptyUserMessages
-    return msgs.slice(start)
-  }, emptyUserMessages)
+
 
   const newSessionWorktree = createMemo(() => {
     if (store.newSessionWorktree === "create") return "create"
@@ -331,33 +221,12 @@ export default function Page() {
     return "main"
   })
 
-  const activeMessage = createMemo(() => {
-    if (!store.messageId) return lastUserMessage()
-    const found = visibleUserMessages()?.find((m) => m.id === store.messageId)
-    return found ?? lastUserMessage()
-  })
+  /* activeMessage removed (using hook) */
   const setActiveMessage = (message: UserMessage | undefined) => {
     setStore("messageId", message?.id)
   }
 
-  function navigateMessageByOffset(offset: number) {
-    const msgs = visibleUserMessages()
-    if (msgs.length === 0) return
-
-    const current = activeMessage()
-    const currentIndex = current ? msgs.findIndex((m) => m.id === current.id) : -1
-
-    let targetIndex: number
-    if (currentIndex === -1) {
-      targetIndex = offset > 0 ? 0 : msgs.length - 1
-    } else {
-      targetIndex = currentIndex + offset
-    }
-
-    if (targetIndex < 0 || targetIndex >= msgs.length) return
-
-    scrollToMessage(msgs[targetIndex], "auto")
-  }
+  /* navigateMessageByOffset removed (using hook) */
 
   const diffs = createMemo(() => (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
   const diffsReady = createMemo(() => {
@@ -369,8 +238,28 @@ export default function Page() {
 
   const idle = { type: "idle" as const }
   let inputRef!: HTMLDivElement
-  let promptDock: HTMLDivElement | undefined
-  let scroller: HTMLDivElement | undefined
+
+  /* isWorking defined below, need to move it up */
+  const isWorking = createMemo(() => status().type !== "idle")
+
+  const scroll = useSessionScroll({
+    visibleUserMessages,
+    activeMessageId: () => store.messageId,
+    setActiveMessageId: (id) => setStore("messageId", id),
+    isWorking,
+    messagesReady,
+  })
+
+  const nav = useSessionNavigation({
+    visibleUserMessages,
+    messageId: () => store.messageId,
+    scroll,
+  })
+
+  // Aliases for compatibility with existing code
+  const activeMessage = nav.activeMessage
+  const lastUserMessage = nav.lastUserMessage
+  const navigateMessageByOffset = nav.navigateMessageByOffset
 
   createEffect(() => {
     if (!params.id) return
@@ -406,6 +295,19 @@ export default function Page() {
         setStore("expanded", {})
       },
       { defer: true },
+    ),
+  )
+
+  // Sync local agent/model when last message changes
+  createEffect(
+    on(
+      () => lastUserMessage()?.id,
+      () => {
+        const msg = lastUserMessage()
+        if (!msg) return
+        if (msg.agent) local.agent.set(msg.agent)
+        if (msg.model) local.model.set(msg.model)
+      },
     ),
   )
 
@@ -574,7 +476,7 @@ export default function Page() {
         const sessionID = params.id
         if (!sessionID) return
         if (status()?.type !== "idle") {
-          await sdk.client.session.abort({ sessionID }).catch(() => {})
+          await sdk.client.session.abort({ sessionID }).catch(() => { })
         }
         const revert = info()?.revert?.messageID
         // Find the last user message that's not already reverted
@@ -764,214 +666,8 @@ export default function Page() {
     sync.session.diff(id)
   })
 
-  const isWorking = createMemo(() => status().type !== "idle")
-  const autoScroll = createAutoScroll({
-    working: isWorking,
-  })
+  /* isWorking moved up */
 
-  let scrollSpyFrame: number | undefined
-  let scrollSpyTarget: HTMLDivElement | undefined
-
-  const anchor = (id: string) => `message-${id}`
-
-  const setScrollRef = (el: HTMLDivElement | undefined) => {
-    scroller = el
-    autoScroll.scrollRef(el)
-  }
-
-  const turnInit = 20
-  const turnBatch = 20
-  let turnHandle: number | undefined
-  let turnIdle = false
-
-  function cancelTurnBackfill() {
-    const handle = turnHandle
-    if (handle === undefined) return
-    turnHandle = undefined
-
-    if (turnIdle && window.cancelIdleCallback) {
-      window.cancelIdleCallback(handle)
-      return
-    }
-
-    clearTimeout(handle)
-  }
-
-  function scheduleTurnBackfill() {
-    if (turnHandle !== undefined) return
-    if (store.turnStart <= 0) return
-
-    if (window.requestIdleCallback) {
-      turnIdle = true
-      turnHandle = window.requestIdleCallback(() => {
-        turnHandle = undefined
-        backfillTurns()
-      })
-      return
-    }
-
-    turnIdle = false
-    turnHandle = window.setTimeout(() => {
-      turnHandle = undefined
-      backfillTurns()
-    }, 0)
-  }
-
-  function backfillTurns() {
-    const start = store.turnStart
-    if (start <= 0) return
-
-    const next = start - turnBatch
-    const nextStart = next > 0 ? next : 0
-
-    const el = scroller
-    if (!el) {
-      setStore("turnStart", nextStart)
-      scheduleTurnBackfill()
-      return
-    }
-
-    const beforeTop = el.scrollTop
-    const beforeHeight = el.scrollHeight
-
-    setStore("turnStart", nextStart)
-
-    requestAnimationFrame(() => {
-      const delta = el.scrollHeight - beforeHeight
-      if (delta) el.scrollTop = beforeTop + delta
-    })
-
-    scheduleTurnBackfill()
-  }
-
-  createEffect(
-    on(
-      () => [params.id, messagesReady()] as const,
-      ([id, ready]) => {
-        cancelTurnBackfill()
-        setStore("turnStart", 0)
-        if (!id || !ready) return
-
-        const len = visibleUserMessages().length
-        const start = len > turnInit ? len - turnInit : 0
-        setStore("turnStart", start)
-        scheduleTurnBackfill()
-      },
-      { defer: true },
-    ),
-  )
-
-  createResizeObserver(
-    () => promptDock,
-    ({ height }) => {
-      const next = Math.ceil(height)
-
-      if (next === store.promptHeight) return
-
-      const el = scroller
-      const stick = el ? el.scrollHeight - el.clientHeight - el.scrollTop < 10 : false
-
-      setStore("promptHeight", next)
-
-      if (stick && el) {
-        requestAnimationFrame(() => {
-          el.scrollTo({ top: el.scrollHeight, behavior: "auto" })
-        })
-      }
-    },
-  )
-
-  const updateHash = (id: string) => {
-    window.history.replaceState(null, "", `#${anchor(id)}`)
-  }
-
-  const scrollToMessage = (message: UserMessage, behavior: ScrollBehavior = "smooth") => {
-    setActiveMessage(message)
-
-    const msgs = visibleUserMessages()
-    const index = msgs.findIndex((m) => m.id === message.id)
-    if (index !== -1 && index < store.turnStart) {
-      setStore("turnStart", index)
-      scheduleTurnBackfill()
-
-      requestAnimationFrame(() => {
-        const el = document.getElementById(anchor(message.id))
-        if (el) el.scrollIntoView({ behavior, block: "start" })
-      })
-
-      updateHash(message.id)
-      return
-    }
-
-    const el = document.getElementById(anchor(message.id))
-    if (el) el.scrollIntoView({ behavior, block: "start" })
-    updateHash(message.id)
-  }
-
-  const getActiveMessageId = (container: HTMLDivElement) => {
-    const cutoff = container.scrollTop + 100
-    const nodes = container.querySelectorAll<HTMLElement>("[data-message-id]")
-    let id: string | undefined
-
-    for (const node of nodes) {
-      const next = node.dataset.messageId
-      if (!next) continue
-      if (node.offsetTop > cutoff) break
-      id = next
-    }
-
-    return id
-  }
-
-  const scheduleScrollSpy = (container: HTMLDivElement) => {
-    scrollSpyTarget = container
-    if (scrollSpyFrame !== undefined) return
-
-    scrollSpyFrame = requestAnimationFrame(() => {
-      scrollSpyFrame = undefined
-
-      const target = scrollSpyTarget
-      scrollSpyTarget = undefined
-      if (!target) return
-
-      const id = getActiveMessageId(target)
-      if (!id) return
-      if (id === store.messageId) return
-
-      setStore("messageId", id)
-    })
-  }
-
-  createEffect(() => {
-    const sessionID = params.id
-    const ready = messagesReady()
-    if (!sessionID || !ready) return
-
-    requestAnimationFrame(() => {
-      const hash = window.location.hash.slice(1)
-      if (!hash) {
-        autoScroll.forceScrollToBottom()
-        return
-      }
-
-      const hashTarget = document.getElementById(hash)
-      if (hashTarget) {
-        hashTarget.scrollIntoView({ behavior: "auto", block: "start" })
-        return
-      }
-
-      const match = hash.match(/^message-(.+)$/)
-      if (match) {
-        const msg = visibleUserMessages().find((m) => m.id === match[1])
-        if (msg) {
-          scrollToMessage(msg, "auto")
-          return
-        }
-      }
-
-      autoScroll.forceScrollToBottom()
-    })
-  })
 
   createEffect(() => {
     document.addEventListener("keydown", handleKeyDown)
@@ -1013,9 +709,7 @@ export default function Page() {
   })
 
   onCleanup(() => {
-    cancelTurnBackfill()
     document.removeEventListener("keydown", handleKeyDown)
-    if (scrollSpyFrame !== undefined) cancelAnimationFrame(scrollSpyFrame)
   })
 
   return (
@@ -1079,7 +773,7 @@ export default function Page() {
                               file.load(path)
                             }}
                             classes={{
-                              root: "pb-[calc(var(--prompt-height,8rem)+32px)]",
+                              root: `pb-[calc(var(--prompt-height,8rem)+32px)]`,
                               header: "px-4",
                               container: "px-4",
                             }}
@@ -1088,115 +782,19 @@ export default function Page() {
                       </div>
                     }
                   >
-                    <div class="relative w-full h-full min-w-0">
-                      <Show when={isDesktop()}>
-                        <div class="absolute inset-0 pointer-events-none z-10">
-                          <SessionMessageRail
-                            messages={visibleUserMessages()}
-                            current={activeMessage()}
-                            onMessageSelect={scrollToMessage}
-                            wide={!showTabs()}
-                            class="pointer-events-auto"
-                          />
-                        </div>
-                      </Show>
-                      <div
-                        ref={setScrollRef}
-                        onScroll={(e) => {
-                          autoScroll.handleScroll()
-                          if (isDesktop()) scheduleScrollSpy(e.currentTarget)
-                        }}
-                        onClick={autoScroll.handleInteraction}
-                        class="relative min-w-0 w-full h-full overflow-y-auto no-scrollbar"
-                      >
-                        <div
-                          ref={autoScroll.contentRef}
-                          class="flex flex-col gap-32 items-start justify-start pb-[calc(var(--prompt-height,8rem)+64px)] md:pb-[calc(var(--prompt-height,10rem)+64px)] transition-[margin]"
-                          classList={{
-                            "mt-0.5": !showTabs(),
-                            "mt-0": showTabs(),
-                          }}
-                        >
-                          <Show when={store.turnStart > 0}>
-                            <div class="w-full flex justify-center">
-                              <Button
-                                variant="ghost"
-                                size="large"
-                                class="text-12-medium opacity-50"
-                                onClick={() => setStore("turnStart", 0)}
-                              >
-                                Render earlier messages
-                              </Button>
-                            </div>
-                          </Show>
-                          <Show when={historyMore()}>
-                            <div class="w-full flex justify-center">
-                              <Button
-                                variant="ghost"
-                                size="large"
-                                class="text-12-medium opacity-50"
-                                disabled={historyLoading()}
-                                onClick={() => {
-                                  const id = params.id
-                                  if (!id) return
-                                  setStore("turnStart", 0)
-                                  sync.session.history.loadMore(id)
-                                }}
-                              >
-                                {historyLoading() ? "Loading earlier messages..." : "Load earlier messages"}
-                              </Button>
-                            </div>
-                          </Show>
-                          <For each={renderedUserMessages()}>
-                            {(message) => {
-                              if (import.meta.env.DEV) {
-                                onMount(() => {
-                                  const id = params.id
-                                  if (!id) return
-                                  navMark({ dir: params.dir, to: id, name: "session:first-turn-mounted" })
-                                })
-                              }
-
-                              return (
-                                <div
-                                  id={anchor(message.id)}
-                                  data-message-id={message.id}
-                                  classList={{
-                                    "min-w-0 w-full max-w-full": true,
-                                    "last:min-h-[calc(100vh-5.5rem-var(--prompt-height,8rem)-64px)] md:last:min-h-[calc(100vh-4.5rem-var(--prompt-height,10rem)-64px)]":
-                                      platform.platform !== "desktop",
-                                    "last:min-h-[calc(100vh-7rem-var(--prompt-height,8rem)-64px)] md:last:min-h-[calc(100vh-6rem-var(--prompt-height,10rem)-64px)]":
-                                      platform.platform === "desktop",
-                                  }}
-                                >
-                                  <SessionTurn
-                                    sessionID={params.id!}
-                                    messageID={message.id}
-                                    lastUserMessageID={lastUserMessage()?.id}
-                                    stepsExpanded={store.expanded[message.id] ?? false}
-                                    onStepsExpandedToggle={() =>
-                                      setStore("expanded", message.id, (open: boolean | undefined) => !open)
-                                    }
-                                    classes={{
-                                      root: "min-w-0 w-full relative",
-                                      content:
-                                        "flex flex-col justify-between !overflow-visible [&_[data-slot=session-turn-message-header]]:top-[-32px]",
-                                      container:
-                                        "px-4 md:px-6 " +
-                                        (!showTabs()
-                                          ? "md:max-w-200 md:mx-auto"
-                                          : visibleUserMessages().length > 1
-                                            ? "md:pr-6 md:pl-18"
-                                            : ""),
-                                    }}
-                                  />
-                                </div>
-                              )
-                            }}
-                          </For>
-                        </div>
-                      </div>
-                    </div>
+                    <SessionChat
+                      scroll={scroll}
+                      isDesktop={isDesktop}
+                      showTabs={showTabs}
+                      expanded={store.expanded}
+                      setExpanded={(id, toggle) => setStore("expanded", id, toggle)}
+                      historyMore={historyMore}
+                      historyLoading={historyLoading}
+                      onLoadHistory={(id) => sync.session.history.loadMore(id)}
+                      visibleUserMessages={visibleUserMessages}
+                      activeMessage={activeMessage}
+                      lastUserMessage={lastUserMessage}
+                    />
                   </Show>
                 </Show>
               </Match>
@@ -1224,7 +822,7 @@ export default function Page() {
 
           {/* Prompt input */}
           <div
-            ref={(el) => (promptDock = el)}
+            ref={scroll.setPromptDockRef}
             class="absolute inset-x-0 bottom-0 pt-12 pb-4 md:pb-8 flex flex-col justify-center items-center z-50 px-4 md:px-0 bg-gradient-to-t from-background-stronger via-background-stronger to-transparent pointer-events-none"
           >
             <div
