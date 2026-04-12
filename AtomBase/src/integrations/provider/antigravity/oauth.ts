@@ -77,11 +77,11 @@ function decodeState(state: string): AuthState {
 export function createAuthorizationUrl(projectId = ""): AntigravityAuthorization | { error: string } {
     const clientId = getAntigravityClientId()
     const clientSecret = getAntigravityClientSecret()
-    
+
     if (!clientId || !clientSecret) {
         return { error: "ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET must be set" }
     }
-    
+
     const pkce = generatePKCE()
 
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth")
