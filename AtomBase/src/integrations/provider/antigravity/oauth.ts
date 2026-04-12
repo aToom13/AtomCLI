@@ -6,8 +6,9 @@
 import crypto from "crypto"
 import http from "http"
 import {
-    ANTIGRAVITY_CLIENT_ID,
-    ANTIGRAVITY_CLIENT_SECRET,
+    getAntigravityClientId,
+    getAntigravityClientSecret,
+    validateAntigravityCredentials,
     ANTIGRAVITY_REDIRECT_URI,
     ANTIGRAVITY_SCOPES,
     ANTIGRAVITY_ENDPOINT_PROD,
@@ -71,12 +72,20 @@ function decodeState(state: string): AuthState {
 
 /**
  * Build the authorization URL for Google OAuth with PKCE.
+ * Returns error if credentials not available.
  */
-export function createAuthorizationUrl(projectId = ""): AntigravityAuthorization {
+export function createAuthorizationUrl(projectId = ""): AntigravityAuthorization | { error: string } {
+    const clientId = getAntigravityClientId()
+    const clientSecret = getAntigravityClientSecret()
+    
+    if (!clientId || !clientSecret) {
+        return { error: "ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET must be set" }
+    }
+    
     const pkce = generatePKCE()
 
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth")
-    url.searchParams.set("client_id", ANTIGRAVITY_CLIENT_ID)
+    url.searchParams.set("client_id", getAntigravityClientId())
     url.searchParams.set("response_type", "code")
     url.searchParams.set("redirect_uri", ANTIGRAVITY_REDIRECT_URI)
     url.searchParams.set("scope", ANTIGRAVITY_SCOPES.join(" "))
@@ -128,6 +137,7 @@ async function fetchProjectID(accessToken: string): Promise<string> {
  * Exchange authorization code for tokens.
  */
 export async function exchangeCode(code: string, state: string): Promise<AntigravityTokenResult> {
+    validateAntigravityCredentials()
     try {
         const { verifier, projectId } = decodeState(state)
 
@@ -136,8 +146,8 @@ export async function exchangeCode(code: string, state: string): Promise<Antigra
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
-                client_id: ANTIGRAVITY_CLIENT_ID,
-                client_secret: ANTIGRAVITY_CLIENT_SECRET,
+                client_id: getAntigravityClientId(),
+                client_secret: getAntigravityClientSecret(),
                 code,
                 grant_type: "authorization_code",
                 redirect_uri: ANTIGRAVITY_REDIRECT_URI,
@@ -191,6 +201,7 @@ export async function exchangeCode(code: string, state: string): Promise<Antigra
  * Refresh access token using refresh token.
  */
 export async function refreshToken(storedRefresh: string): Promise<AntigravityTokenResult> {
+    validateAntigravityCredentials()
     try {
         const [refreshToken, projectId] = storedRefresh.split("|")
         if (!refreshToken) {
@@ -202,8 +213,8 @@ export async function refreshToken(storedRefresh: string): Promise<AntigravityTo
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
-                client_id: ANTIGRAVITY_CLIENT_ID,
-                client_secret: ANTIGRAVITY_CLIENT_SECRET,
+                client_id: getAntigravityClientId(),
+                client_secret: getAntigravityClientSecret(),
                 refresh_token: refreshToken,
                 grant_type: "refresh_token",
             }),

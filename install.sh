@@ -721,27 +721,28 @@ setup_optional_features() {
     fi
     
     # ─────────────────────────────────────────────────────────────
-    # Antigravity (Free Claude & Gemini models)
+    # Kilocode (Free Cloud Models)
     # ─────────────────────────────────────────────────────────────
     echo -e "${CYAN}┌─────────────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│${NC}  ${BOLD}🚀 Antigravity - Free AI Models${NC}              ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${BOLD}☁️ Kilocode - Free Cloud AI Models${NC}           ${CYAN}│${NC}"
     echo -e "${CYAN}├─────────────────────────────────────────────────┤${NC}"
-    echo -e "${CYAN}│${NC}  ${DIM}Access Claude Sonnet 4.5, Gemini 3, and more${NC} ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${DIM}completely FREE via Google OAuth.${NC}            ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}Access 320+ free cloud models instantly.${NC}          ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}No API key needed, just login with Google.${NC}         ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}                                                 ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${DIM}Models: claude-sonnet-4-5-thinking,${NC}          ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${DIM}gemini-3-pro, gemini-2.5-flash, and more${NC}     ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}Models: gpt-5-nano, claude-sonnet, gemini,${NC}      ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}llama, mistral + 300+ more (completely free)${NC}  ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}*(Ücretsiz modeller - sınırsız kullanım)${NC}    ${CYAN}│${NC}"
     echo -e "${CYAN}└─────────────────────────────────────────────────┘${NC}"
     echo ""
     
-    ENABLE_ANTIGRAVITY=false
-    read -p "Enable Antigravity (free models)? [Y/n] " -n 1 -r REPLY < /dev/tty
+    ENABLE_KILOCODE=false
+    read -p "Enable Kilocode (free cloud models)? [Y/n] " -n 1 -r REPLY < /dev/tty
     echo ""
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        ENABLE_ANTIGRAVITY=true
-        success "Antigravity will be enabled"
+        ENABLE_KILOCODE=true
+        success "Kilocode will be enabled"
     else
-        info "Skipping Antigravity"
+        info "Skipping Kilocode"
     fi
     echo ""
     
@@ -810,45 +811,40 @@ setup_optional_features() {
     echo -e "${BOLD}Applying selections...${NC}"
     echo ""
     
-    # Apply Antigravity
-    if [ "$ENABLE_ANTIGRAVITY" = true ]; then
-        step "Configuring Antigravity plugin..."
+    # Apply Kilocode
+    if [ "$ENABLE_KILOCODE" = true ]; then
+        step "Configuring Kilocode..."
         
-        # Update atomcli.json to include Antigravity plugin
+        # Kilocode is built-in, just create default config
         cat > "$CONFIG_DIR/atomcli.json" << 'EOF'
 {
-  "plugin": ["opencode-antigravity-auth@beta"],
   "provider": {
-    "google": {
+    "atomcli": {
       "models": {
-        "antigravity-gemini-3-pro": {
-          "name": "Gemini 3 Pro (Antigravity)",
-          "limit": { "context": 1048576, "output": 65535 }
-        },
-        "antigravity-gemini-3-flash": {
-          "name": "Gemini 3 Flash (Antigravity)",
-          "limit": { "context": 1048576, "output": 65536 }
-        },
-        "antigravity-claude-sonnet-4-5-thinking": {
-          "name": "Claude Sonnet 4.5 Thinking (Antigravity)",
-          "limit": { "context": 200000, "output": 64000 }
-        },
-        "gemini-2.5-flash": {
-          "name": "Gemini 2.5 Flash",
-          "limit": { "context": 1048576, "output": 65536 }
-        },
-        "gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro",
-          "limit": { "context": 1048576, "output": 65536 }
+        "minimax-m2.1-free": {
+          "name": "Minimax-M2.1-Custom",
+          "limit": {
+            "context": 100000,
+            "output": 4096
+          }
         }
       }
     }
   },
+  "model": "kilocode/gpt-5-nano",
   "mcp": {}
 }
 EOF
-        success "Antigravity plugin configured"
-        info "Run 'atomcli auth login' → Google → Antigravity OAuth to authenticate"
+        success "Kilocode configured"
+        KILOCODE_URL="https://kilocode.com/auth?source=atomcli"
+        info "Opening Kilocode login in browser..."
+        
+        # Try to open browser for login
+        if command -v open >/dev/null 2>&1; then
+            open "$KILOCODE_URL" &
+        elif command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$KILOCODE_URL" &
+        fi
     fi
     
     # Apply Skills
@@ -982,10 +978,9 @@ print_complete() {
     echo -e "  ${DIM}Next steps:${NC}"
     echo ""
     
-    if [ "$ENABLE_ANTIGRAVITY" = true ]; then
-        echo -e "    ${CYAN}1.${NC} Authenticate for free models:"
-        echo -e "       ${CYAN}atomcli auth login${NC}"
-        echo -e "       ${DIM}→ Select Google → Antigravity OAuth${NC}"
+    if [ "$ENABLE_KILOCODE" = true ]; then
+        echo -e "    ${CYAN}1.${NC} Login to Kilocode (browser should open):"
+        echo -e "       ${CYAN}$KILOCODE_URL${NC}"
         echo ""
         echo -e "    ${CYAN}2.${NC} Start coding:"
         echo -e "       ${CYAN}atomcli${NC}"

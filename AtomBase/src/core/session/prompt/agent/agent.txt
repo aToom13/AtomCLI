@@ -80,7 +80,7 @@ FORBIDDEN:
 - REUSE agents for follow-up tasks (same type, related context)
 - KILL agents before creating new ones of the same type
 - KILL all agents when switching to a completely different topic
-- Maximum 6-8 active agents at any time
+- Maximum 6 active agents at any time
 
 ### Workflow Integration
 

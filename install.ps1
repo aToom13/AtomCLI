@@ -614,16 +614,23 @@ function Setup-OptionalFeatures {
     Write-Host "────────────────────────────────────────────────" -ForegroundColor White
     Write-Host ""
 
-    # ── Antigravity ──────────────────────────────────────────
-    Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Cyan
-    Write-Host "  |  Antigravity - Free AI Models               |" -ForegroundColor Cyan
-    Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Cyan
-    Write-Host "  |  Access Claude Sonnet 4.5, Gemini 3, etc.  |" -ForegroundColor DarkGray
-    Write-Host "  |  completely FREE via Google OAuth.          |" -ForegroundColor DarkGray
-    Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Cyan
+    # ── Kilocode ─────────────────────────────────────────────
+    Write-Host "  +-----------------------------------------------+" -ForegroundColor Cyan
+    Write-Host "  |  Kilocode - Free Cloud AI Models             |" -ForegroundColor Cyan
+    Write-Host "  +-----------------------------------------------+" -ForegroundColor Cyan
+    Write-Host "  |  Access 320+ free cloud models instantly.    |" -ForegroundColor DarkGray
+    Write-Host "  |  No API key needed, just login with Google.  |" -ForegroundColor DarkGray
+    Write-Host "  |  *(Ücretsiz modeller - sınırsız kullanım)   |" -ForegroundColor DarkGray
+    Write-Host "  +-----------------------------------------------+" -ForegroundColor Cyan
     Write-Host ""
-    $enableAntigravity = Prompt-YesNo "Enable Antigravity (free models)?"
-    if ($enableAntigravity) { Write-Success "Antigravity will be enabled" } else { Write-Info "Skipping Antigravity" }
+    $enableKilocode = Prompt-YesNo "Enable Kilocode (free cloud models)?"
+    if ($enableKilocode) { 
+        Write-Success "Kilocode will be enabled"
+        $script:EnableKilocode = $true
+    } else { 
+        Write-Info "Skipping Kilocode"
+        $script:EnableKilocode = $false
+    }
     Write-Host ""
 
     # ── Skills ───────────────────────────────────────────────
@@ -660,44 +667,35 @@ function Setup-OptionalFeatures {
     Write-Host "  Applying selections..." -ForegroundColor White
     Write-Host ""
 
-    if ($enableAntigravity) {
-        Write-Step "Configuring Antigravity plugin..."
+    if ($script:EnableKilocode) {
+        Write-Step "Configuring Kilocode..."
         $configFile = Join-Path $ConfigDir "atomcli.json"
-        $antigravityConfig = @"
+        $kilocodeConfig = @"
 {
-  "plugin": ["opencode-antigravity-auth@beta"],
   "provider": {
-    "google": {
+    "atomcli": {
       "models": {
-        "antigravity-gemini-3-pro": {
-          "name": "Gemini 3 Pro (Antigravity)",
-          "limit": { "context": 1048576, "output": 65535 }
-        },
-        "antigravity-gemini-3-flash": {
-          "name": "Gemini 3 Flash (Antigravity)",
-          "limit": { "context": 1048576, "output": 65536 }
-        },
-        "antigravity-claude-sonnet-4-5-thinking": {
-          "name": "Claude Sonnet 4.5 Thinking (Antigravity)",
-          "limit": { "context": 200000, "output": 64000 }
-        },
-        "gemini-2.5-flash": {
-          "name": "Gemini 2.5 Flash",
-          "limit": { "context": 1048576, "output": 65536 }
-        },
-        "gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro",
-          "limit": { "context": 1048576, "output": 65536 }
+        "minimax-m2.1-free": {
+          "name": "Minimax-M2.1-Custom",
+          "limit": {
+            "context": 100000,
+            "output": 4096
+          }
         }
       }
     }
   },
+  "model": "kilocode/gpt-5-nano",
   "mcp": {}
 }
 "@
-        Set-Content -Path $configFile -Value $antigravityConfig -Encoding UTF8
-        Write-Success "Antigravity plugin configured"
-        Write-Info "Run 'atomcli auth login' -> Google -> Antigravity OAuth to authenticate"
+        Set-Content -Path $configFile -Value $kilocodeConfig -Encoding UTF8
+        Write-Success "Kilocode configured"
+        
+        # Open browser for login
+        $kilocodeUrl = "https://kilocode.com/auth?source=atomcli"
+        Write-Info "Opening Kilocode login in browser..."
+        Start-Process $kilocodeUrl
     }
 
     if ($installSkills) {
@@ -802,7 +800,7 @@ function Test-Installation {
 }
 
 function Show-Complete {
-    param([bool]$Antigravity = $false)
+    param([bool]$Kilocode = $false)
     Write-Host ""
     Write-Host "────────────────────────────────────────────────────────" -ForegroundColor Green
     Write-Host ""
@@ -810,10 +808,9 @@ function Show-Complete {
     Write-Host ""
     Write-Host "  Next steps:" -ForegroundColor White
     Write-Host ""
-    if ($Antigravity) {
-        Write-Host "    1. Authenticate for free models:" -ForegroundColor Cyan
-        Write-Host "       atomcli auth login" -ForegroundColor Cyan
-        Write-Info "       -> Select Google -> Antigravity OAuth"
+    if ($Kilocode) {
+        Write-Host "    1. Login to Kilocode (browser should open):" -ForegroundColor Cyan
+        Write-Host "       https://kilocode.com/auth?source=atomcli" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "    2. Start coding:" -ForegroundColor Cyan
         Write-Host "       atomcli" -ForegroundColor Cyan
@@ -925,7 +922,7 @@ function Install-AtomCLI {
     Initialize-Config
     Setup-OptionalFeatures
     Test-Installation
-    Show-Complete
+    Show-Complete -Kilocode:$script:EnableKilocode
 }
 
 # ─────────────────────────────────────────────────────────────

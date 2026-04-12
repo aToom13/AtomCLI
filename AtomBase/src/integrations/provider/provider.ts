@@ -40,6 +40,7 @@ import { createVercel } from "@ai-sdk/vercel"
 import { ProviderTransform } from "./transform"
 import { createOllama, detectOllama, toProviderModels } from "./ollama"
 import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
+import { createAntigravity } from "./antigravity"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -73,6 +74,11 @@ export namespace Provider {
     "@atomcli/ollama": createOllama,
     // Kilocode - Cloud LLM provider
     "@atomcli/kilocode": createKilocode,
+  }
+
+  // Add Antigravity bundled provider if not disabled
+  if (!Flag.ATOMCLI_DISABLE_ANTIGRAVITY) {
+    BUNDLED_PROVIDERS["@atomcli/antigravity"] = createAntigravity
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
@@ -718,8 +724,8 @@ export namespace Provider {
     const modelsDev = await ModelsDev.get()
     const database = mapValues(modelsDev, fromModelsDevProvider)
 
-    // Clear antigravity models from the models.dev database so our native plugin can be the sole source of truth
-    if (database["antigravity"]) {
+    // Clear antigravity models from the models.dev database if antigravity is enabled
+    if (!Flag.ATOMCLI_DISABLE_ANTIGRAVITY && database["antigravity"]) {
       database["antigravity"].models = {}
     }
 

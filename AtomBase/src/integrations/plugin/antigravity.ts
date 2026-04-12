@@ -51,7 +51,7 @@ export async function AntigravityAuthPlugin(input: PluginInput): Promise<Hooks> 
                                     id,
                                     name: m.name,
                                     providerID: ANTIGRAVITY_PROVIDER_ID,
-                                    api: { npm: "@ai-sdk/google", id, url: m.headerStyle === "gemini-cli" ? GEMINI_CLI_ENDPOINT : ANTIGRAVITY_ENDPOINT },
+                                    api: { npm: "@atomcli/antigravity", id, url: m.headerStyle === "gemini-cli" ? GEMINI_CLI_ENDPOINT : ANTIGRAVITY_ENDPOINT },
                                     status: "active" as const,
                                     capabilities: {
                                         temperature: true,
@@ -84,47 +84,31 @@ export async function AntigravityAuthPlugin(input: PluginInput): Promise<Hooks> 
                 {
                     label: "Google OAuth (Antigravity)",
                     type: "oauth" as const,
-                    prompts: [
-                        {
-                            type: "text" as const,
-                            key: "clientId",
-                            message: "Enter Google Cloud Client ID (or press enter if set in your shell)",
-                            condition: () => !process.env.ANTIGRAVITY_CLIENT_ID,
-                            validate: (x: string) => x && x.length > 0 ? undefined : "Required for Antigravity OAuth",
-                        },
-                        {
-                            type: "text" as const,
-                            key: "clientSecret",
-                            message: "Enter Google Cloud Client Secret",
-                            condition: () => !process.env.ANTIGRAVITY_CLIENT_SECRET,
-                            validate: (x: string) => x && x.length > 0 ? undefined : "Required for Antigravity OAuth",
+                    authorize: async () => {
+                        // Create authorization URL (uses built-in Google OAuth client credentials)
+                        const authResult = createAuthorizationUrl()
+                        
+                        if ("error" in authResult) {
+                            throw new Error(authResult.error)
                         }
-                    ],
-                    authorize: async (inputs: Record<string, string> = {}) => {
-                        // Apply user inputs to process.env so that oauth functions pick them up
-                        if (inputs.clientId) process.env.ANTIGRAVITY_CLIENT_ID = inputs.clientId;
-                        if (inputs.clientSecret) process.env.ANTIGRAVITY_CLIENT_SECRET = inputs.clientSecret;
 
-                        // Create authorization URL
-                        const auth = createAuthorizationUrl()
-
-                        // Start local OAuth callback server
-                        const serverPromise = startOAuthServer(51121)
-
-                        // Try to open browser
+                        // Open browser for Google OAuth
                         try {
-                            await open(auth.url)
-                        } catch {
+                            await open(authResult.url)
+                        } catch (e) {
                             log.warn("Could not open browser automatically")
                         }
 
+                        // Start local OAuth callback server to receive the code
+                        const serverPromise = startOAuthServer(51121)
+
                         return {
-                            url: auth.url,
-                            instructions: "Complete Google sign-in in your browser to authenticate with Antigravity",
+                            url: authResult.url,
+                            instructions: "Complete Google sign-in in your browser. If browser didn't open, copy the URL above and open it manually.",
                             method: "auto" as const,
                             callback: async () => {
                                 try {
-                                    // Wait for OAuth callback
+                                    // Wait for OAuth callback from browser
                                     const result = await serverPromise
                                     if (!result) {
                                         return { type: "failed" as const }
@@ -153,6 +137,8 @@ export async function AntigravityAuthPlugin(input: PluginInput): Promise<Hooks> 
                                         refresh: tokenResult.refresh,
                                         access: tokenResult.access,
                                         expires: tokenResult.expires,
+                                        email: tokenResult.email,
+                                        projectId: tokenResult.projectId,
                                     }
                                 } catch (error) {
                                     log.error("Antigravity auth failed", { error })

@@ -12,68 +12,140 @@
 | Change directory | workdir param | cd command |
 | Parallel ops | **Batch** | sequential calls |
 
+---
+
 ## CRITICAL RULES
 
-**1. READ BEFORE EDIT** — The Edit tool WILL FAIL if you haven't read the file first. This is a hard technical constraint.
+**1. READ BEFORE EDIT** — The Edit tool WILL FAIL if you haven't read the file first. Hard technical constraint.
 
-**2. PARALLEL with Batch** — Use Batch for 2-10 independent operations (2-5x faster). Never batch dependent ops (read + edit of same file).
+**2. PARALLEL with Batch** — Use Batch for 2–10 independent operations (2–5x faster). Never batch dependent ops (read + edit of same file).
 
-**3. PROACTIVE tool usage** — Don't ask for info you can get with tools. When user says "fix auth bug", use Grep to find it, Read to understand it, Edit to fix it.
+**3. PROACTIVE tool usage** — Don't ask for info you can get with tools. When user says "fix auth bug", Grep to find it, Read to understand it, Edit to fix it.
 
-**4. workdir not cd** — Always pass `workdir` param to Bash, never use `cd`.
+**4. workdir not cd** — Always pass `workdir` param to Bash. Never use `cd`.
+
+---
 
 ## FILE TOOLS
 
 **Read** — `{ filePath, offset?, limit? }` — Returns file with line numbers. MUST call before Edit.
 
-**Write** — `{ filePath, content }` — Creates file + parent dirs. Use for NEW files only. Read first if file exists.
+**Write** — `{ filePath, content }` — Creates file + parent dirs. Use for NEW files only.
 
-**Edit** — `{ filePath, oldString, newString, replaceAll? }` — Exact string replacement. oldString must match EXACTLY (whitespace matters!). If fails: re-read file, check whitespace, add more context for uniqueness. Use `operations` array for multiple edits in one call.
+**Edit** — `{ filePath, oldString, newString, replaceAll? }` — Exact string replacement. oldString must match EXACTLY (whitespace matters). If fails: re-read, check whitespace, add more context. Use `operations` array for multiple edits in one call.
 
-**Find** — `{ mode?: "pattern"|"tree", pattern?, path?, ignore? }` — Pattern mode: find files by glob (`**/*.ts`). Tree mode: list directory structure.
+**Find** — `{ mode?: "pattern"|"tree", pattern?, path?, ignore? }` — Glob (`**/*.ts`) or directory tree.
 
-**Grep** — `{ pattern, include? }` — Search file contents with regex. Returns `file:line: content` format.
+**Grep** — `{ pattern, include? }` — Regex search. Returns `file:line: content`.
+
+---
 
 ## TERMINAL
 
-**Bash** — `{ command, workdir?, timeout?, description? }` — Persistent session. Forbidden: cat/head/tail/sed/awk/find/grep (use native tools instead). Chain with `&&`. Use `--no-pager` for git.
+**Bash** — `{ command, workdir?, timeout?, description? }` — Persistent session.
+Forbidden in Bash: cat / head / tail / sed / awk / find / grep — use native tools instead.
+Chain with `&&`. Use `--no-pager` for git.
 
-**Batch** — `{ tools: [{tool, parameters}] }` — 1-10 tools in parallel.
+**Batch** — `{ tools: [{tool, parameters}] }` — 1–10 tools in parallel.
+
+---
 
 ## CODE INTELLIGENCE
 
-**LSP** — `{ operation: "definition"|"references"|"hover"|"completion", filePath, line, character }` — Language server ops (0-indexed!).
+**LSP** — `{ operation: "definition"|"references"|"hover"|"completion", filePath, line, character }` — 0-indexed line/char.
 
 **CodeSearch** — `{ query, tokenCount? }` — Search programming docs via Exa.
 
+---
+
 ## TASK MANAGEMENT
 
-**TodoWrite** — `{ todos: [{id, content, status, priority?}] }` — Task state. One `in_progress` at a time. Use TOGETHER with chainupdate.
+**TodoWrite** — `{ todos: [{id, content, status, priority?}] }` — Task state.
+One `in_progress` at a time. Use together with chainupdate for non-trivial tasks.
+States: `pending` → `in_progress` → `completed` | `cancelled`
 
 **TodoRead** — No params. Returns current task list.
 
-**Task** — `{ subagent_type: "general"|"explore", description, prompt }` — Launch specialized subagent. Blocking.
+**Task** — `{ subagent_type: "general"|"explore", description, prompt }` — Blocking subagent.
 
-**Question** — `{ question, options?, multiple? }` — Ask user when genuinely blocked. NOT for confirmations or things tools can answer.
+**Question** — `{ question, options?, multiple? }` — Ask user ONLY when genuinely blocked. Not for confirmations. Not for things tools can answer.
+
+---
 
 ## WEB
 
 **WebSearch** — `{ query, type?: "keyword"|"neural", results? }` — Search via Exa AI.
 
-**WebFetch** — `{ url, format?: "markdown"|"text"|"html" }` — Fetch and parse URL content.
+**WebFetch** — `{ url, format?: "markdown"|"text"|"html" }` — Fetch and parse URL.
+
+---
 
 ## MEMORY
 
-**Memory** — `{ action: "save"|"search"|"list" }` — Persistent cross-session memory. Replaces brain + learn tools.
+**Memory** — `{ action: "save"|"search"|"list" }` — Persistent cross-session memory.
 
-**MANDATORY: Before answering questions about the user personally** (name, preferences, past projects, decisions, configs, habits) — ALWAYS call `memory({ action: "search", query: "..." })` first. Never guess or rely on in-context assumptions.
+**MANDATORY:** Before answering any personal question about the user (name, preferences, past projects, decisions, configs) — ALWAYS call `memory search` first. Never guess.
 
 | Trigger | Action |
 |---------|--------|
-| "Adım ne?", "kim olduğumu biliyor musun?" | `memory search "user name identity"` |
-| "Hangi projeyi tercih etmişim?" | `memory search "project preference"` |
-| "Bunu daha önce nasıl yapmıştık?" | `memory search "<topic>"` |
-| Yeni öğrenilen bilgi / kullanıcı tercihi | `memory save "<fact>"` |
+| "What's my name?" / "Do you know who I am?" | `memory search "user name identity"` |
+| "Which project did I prefer?" | `memory search "project preference"` |
+| "How did we do this before?" | `memory search "<topic>"` |
+| New user preference or decision learned | `memory save "<fact>"` |
 
-**Rule:** If memory returns no results → answer from context. If results exist → use them as ground truth.
+**Rule:** Memory results → use as ground truth. No memory results → answer from context.
+
+---
+
+## ORCHESTRATE — Multi-Agent Workflow Engine
+
+**Use when:** Task can be broken into independent subtasks. See workflow.txt for auto-trigger rules.
+
+**Steps:**
+1. Plan: `{ action: "plan", tasks: [...] }` → returns workflowId
+2. Execute: `{ action: "execute", workflowId: "<id>" }`
+3. Status / Abort: `{ action: "status"|"abort", workflowId: "<id>" }`
+
+**Task fields:**
+- `id` — unique identifier
+- `prompt` — instruction for the agent
+- `agent` — which agent to use (default: `"coder"`)
+- `category` — for smart model routing (auto-inferred if omitted)
+- `dependsOn` — array of task IDs that must complete first
+- `model` — optional override, format `"provider/model"`
+
+**Available agents:**
+
+| Agent | Role | Can edit files? |
+|-------|------|----------------|
+| `coder` | Code writing, debugging, refactor, features | Yes (default) |
+| `documenter` | Markdown/docs only (.md, .mdx, README, comments) | Docs only |
+| `analyst` | Read-only security & architecture analysis | No |
+| `explore` | Fast codebase search, grep, directory scan | No |
+| `checker` | Security + optimization audit, findings report only | No |
+| `general` | General reasoning, research, non-code tasks | Yes |
+
+**Task categories** (for model routing, independent of agent):
+`"coding"` | `"documentation"` | `"analysis"` | `"general"`
+
+**Max active agents: 6**
+
+**Parallel execution:**
+- Layer 1: Independent tasks run simultaneously
+- Layer 2: Dependent tasks run after their `dependsOn` layer completes
+
+**Example:**
+```js
+orchestrate({
+  action: "plan",
+  tasks: [
+    { id: "upgrade-axios", agent: "coder",   category: "coding",   prompt: "Upgrade axios to 1.15.0" },
+    { id: "upgrade-hono",  agent: "coder",   category: "coding",   prompt: "Upgrade hono to 4.12.12" },
+    { id: "fix-creds",     agent: "coder",   category: "coding",   prompt: "Fix OAuth credentials" },
+    { id: "verify",        agent: "checker", category: "analysis", prompt: "Audit all changes",
+      dependsOn: ["upgrade-axios", "upgrade-hono", "fix-creds"] }
+  ]
+})
+```
+
 </tool_usage>

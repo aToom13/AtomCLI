@@ -16,14 +16,18 @@ export const getAntigravityClientSecret = () => {
   return secret
 }
 
-// Required OAuth scopes
-export const ANTIGRAVITY_SCOPES = [
-  "https://www.googleapis.com/auth/cloud-platform",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/userinfo.profile",
-  "https://www.googleapis.com/auth/cclog",
-  "https://www.googleapis.com/auth/experimentsandconfigs",
-] as const
+export function validateAntigravityCredentials() {
+  const clientId = getAntigravityClientId()
+  const clientSecret = getAntigravityClientSecret()
+  if (!clientId || !clientSecret || clientId === "" || clientSecret === "") {
+    throw new Error(
+      "Antigravity credentials not configured. Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET env vars.",
+    )
+  }
+}
+
+// Required OAuth scopes (minimal: cloud platform access only)
+export const ANTIGRAVITY_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"] as const
 
 // OAuth local server port
 export const ANTIGRAVITY_OAUTH_PORT = 51121

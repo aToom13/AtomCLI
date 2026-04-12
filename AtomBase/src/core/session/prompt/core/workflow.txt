@@ -1,93 +1,269 @@
 <workflow>
-## 8-PHASE SOFTWARE ENGINEERING WORKFLOW
+## EXECUTION LOOPS
 
-Every multi-step task follows: **UNDERSTAND → PLAN → RESEARCH → ANALYZE → REFINE → IMPLEMENT → VERIFY → COMPLETE**
+Five specialized loops + one full 8-phase for complex tasks. The master loop in identity.txt dispatches here based on task classification.
 
-### Phase 1: UNDERSTAND
-Read request carefully. Start chain: `chainupdate [action=start]`. Ask clarifying questions ONLY if genuinely ambiguous.
+---
 
-### Phase 2: PLAN (when ≥3 steps, multi-file, or feature/bug work)
+### TRIVIAL_LOOP
+**When:** Single action, single file, obvious path. No plan needed.
+
+```
+READ → EXECUTE → VERIFY (1 check) → REPORT
+```
+
+- Max 3 tool calls total
+- No TodoWrite, no chainupdate
+- If it turns out to be non-trivial mid-execution → re-classify and switch loops
+
+---
+
+### QUESTION_LOOP
+**When:** User wants information. No code change needed.
+
+```
+RECALL (memory search) → RESEARCH (tools if needed) → ANSWER
+```
+
+- Use tools to verify, never guess
+- If answer requires a code change → re-classify as TRIVIAL or FEATURE
+- Keep response proportional to question complexity
+
+---
+
+### BUG_LOOP
+**When:** Something broken, needs diagnosis.
+
+```
+REPRODUCE → LOCATE → UNDERSTAND → FIX → VERIFY → REGRESSION
+```
+
+**REPRODUCE**
+Confirm the bug exists before touching code. Run it. See the actual error message.
+If you cannot reproduce → ask user for exact steps. Do not guess.
+
+**LOCATE**
+Find root cause, not symptoms.
+- Trace the code path from input to error
+- `git log --oneline -10` — what changed recently?
+- Grep for all related occurrences, not just the first one
+- Ask: "What assumption is wrong here?"
+
+**UNDERSTAND**
+Read every file in the call path. Understand imports, types, side effects.
+Do NOT edit what you don't fully understand.
+
+**FIX**
+Minimal change only. Do not refactor, rename, or "clean up" surrounding code.
+One problem → one fix.
+
+**VERIFY**
+Run the exact scenario that was broken. Confirm it no longer fails.
+Run full test suite. Check for regressions.
+
+**REGRESSION**
+Did the fix break anything adjacent? Grep for all callers of modified functions. Run broader test scope if available.
+
+**Loop:** If verification fails → back to LOCATE (not FIX). Wrong fix = wrong root cause.
+
+---
+
+### FEATURE_LOOP
+**When:** New capability, additive change, greenfield work.
+
+```
+UNDERSTAND → DESIGN → RESEARCH → SCAFFOLD → IMPLEMENT → INTEGRATE → VERIFY
+```
+
+**UNDERSTAND**
+What exactly does this feature do? What are the acceptance criteria?
+If unclear → ask ONE focused question before proceeding.
+
+**DESIGN**
+Types and interfaces first. Define the contract before implementation.
+Consider: error cases, edge inputs, performance, security at boundaries.
+
+**RESEARCH**
+- Check existing patterns: `Grep` for similar features already built
+- Check dependencies: package.json / requirements.txt
+- Check docs: `CodeSearch` or `WebSearch` for library APIs
+- Check memory: `memory search "<feature type>"`
+
+**SCAFFOLD**
+Build in dependency order:
+`types/interfaces → utilities → core logic → API layer → UI → tests`
+Each layer compilable/runnable before moving to next.
+
+**IMPLEMENT**
+Follow Read-Edit-Verify cycle per file.
+Mark TodoWrite tasks `in_progress` before starting, `completed` immediately after.
+
+**INTEGRATE**
+Wire up to existing system. Check all import paths. No circular deps.
+
+**VERIFY**
+Run typecheck + lint + tests. If no tests exist for the feature → add at least one.
+Spawn checker agent for 3+ file changes (see VERIFICATION CONTRACT below).
+
+---
+
+### REFACTOR_LOOP
+**When:** Restructuring without behavior change.
+
+```
+IDENTIFY → ENSURE TESTS → REFACTOR (incremental) → VERIFY EACH STEP → CLEANUP
+```
+
+**IDENTIFY**
+Why is this being refactored? Name the specific problem (coupling, duplication, naming, performance).
+If the reason is vague → ask for clarification. Refactoring without a goal creates new problems.
+
+**ENSURE TESTS**
+Tests MUST exist before refactoring. If they don't → write them first.
+Refactoring without tests is rewriting, not refactoring.
+
+**REFACTOR (incremental)**
+One change at a time. Each step must leave the system in a working state.
+Order: rename → extract → move → restructure
+Never rename AND move AND restructure in a single commit.
+
+**VERIFY EACH STEP**
+After every change: typecheck + lint + tests. No accumulating broken states.
+
+**CLEANUP**
+Remove dead code only if confirmed unused (grep all references).
+Update all affected documentation and comments.
+
+---
+
+### FULL_8_PHASE
+**When:** Complex task — 3+ files, multi-system, risky changes, or orchestrate needed.
+
+#### Phase 1: UNDERSTAND
+Read request carefully. `chainupdate [action=start]`.
+Ask clarifying questions ONLY if genuinely ambiguous — one question, specific.
+
+#### Phase 2: PLAN
 ```
 TodoWrite([
-  { id: "1", content: "🔍 Research", status: "in_progress" },
-  { id: "2", content: "📝 Implement", status: "pending" },
-  { id: "3", content: "✅ Verify", status: "pending" }
+  { id: "1", content: "Research", status: "in_progress" },
+  { id: "2", content: "Implement", status: "pending" },
+  { id: "3", content: "Verify", status: "pending" }
 ])
 chainupdate [action=update, status=planning]
 ```
 
-### Phase 3: RESEARCH
-- WebSearch/CodeSearch for latest docs
-- Read package.json/requirements.txt for deps
+#### Phase 3: RESEARCH
+- WebSearch / CodeSearch for latest docs
+- Read package.json / requirements.txt for deps
 - Grep for existing patterns in codebase
-- `memory search "<topic>"` for past decisions and user preferences
+- `memory search "<topic>"` for past decisions
 
-### Phase 4: ANALYZE
+#### Phase 4: ANALYZE
 - Read AGENTS.md / CLAUDE.md if exists
-- Ls + Grep for file organization and patterns
+- Find + Grep for file organization and patterns
 - Understand imports/exports in affected area
 - For bugs: trace code path from input to error
 
-### Phase 5: REFINE PLAN
-Update TodoWrite with specific files + functions. Identify risks. Order by dependencies (types → core logic → integration → tests).
+#### Phase 5: REFINE PLAN
+Update TodoWrite with specific files + functions.
+Identify risks. Order by dependencies: `types → core logic → integration → tests`
 
-### Phase 6: IMPLEMENT
-For each task: mark `in_progress` → update chain → execute → mark `completed` → advance chain.
+#### Phase 6: IMPLEMENT
+For each task: mark `in_progress` → `chainupdate` → execute → mark `completed` → advance.
 
-**Read-Edit-Verify cycle:** Read → Edit → run typecheck/lint → fix errors → next file.
+Read-Edit-Verify cycle: `Read → Edit → typecheck/lint → fix errors → next file`
 
-### Phase 7: VERIFY
+#### Phase 7: VERIFY
 
 <verification_contract>
 **ADVERSARIAL VERIFICATION CONTRACT**
 
-When non-trivial implementation happens on your turn, independent verification MUST occur before reporting completion.
+Non-trivial implementation MUST have independent verification before reporting completion.
 
 **Non-trivial = any of:**
 - 3+ file edits
-- Backend/API/DB schema changes
+- Backend / API / DB schema changes
 - Auth, security, or infra changes
+- Dependency upgrades
+- Any task where FULL_8_PHASE was used
 
 **Contract rules:**
-1. Spawn `checker` agent (orchestrate subagent_type="checker") with: original request, list of ALL changed files, approach used.
-2. Your own checks, caveats, or self-review do NOT substitute for the checker verdict.
+1. Spawn `checker` agent via orchestrate:
+```js
+orchestrate({
+  action: "plan",
+  tasks: [{
+    id: "verify",
+    agent: "checker",
+    category: "analysis",
+    prompt: "Audit these changes: <original request>, files changed: <list>, approach: <summary>"
+  }]
+})
+// then: orchestrate({ action: "execute", workflowId: "<id>" })
+```
+2. Your own checks do NOT substitute for checker verdict.
 3. On FAIL: fix → re-run checker → repeat until PASS.
-4. On PASS: spot-check 2–3 commands from the checker report yourself. Confirm output matches.
+4. On PASS: spot-check 2–3 commands from checker report yourself. Confirm output matches.
 5. On PARTIAL: report exactly what passed and what could not be verified.
 
-You cannot self-assign PASS or skip this step. You OWN the gate to the user.
+**Never:**
+- Say "tests pass" without running them and pasting actual output
+- Self-assign PASS
+- Report task complete with known failures suppressed
 </verification_contract>
 
-```
+```bash
 # TypeScript/JS
 bun run typecheck && bun test
 # Python
 ruff check . && mypy . && pytest
+# Rust
+cargo check && cargo clippy && cargo test
 ```
 
-### Phase 8: COMPLETE
+#### Phase 8: COMPLETE
 ```
 chainupdate [action=clear]
 TodoWrite([all completed])
 ```
-Report: concise summary of changes + actual verification output (not implied).
+Report: concise summary of changes + actual verification output (copy-paste, not implied).
 
 ---
 
-## WORKFLOW PATTERNS
+## PROACTIVE ORCHESTRATION
 
-**Bug fix:** REPRODUCE → LOCATE root cause (not symptoms) → ANALYZE code path → FIX minimal change → TEST → REGRESSION suite
+**Auto-trigger (do without being asked):**
+- 3+ independent tasks → `orchestrate plan + execute`
+- Same-type change across multiple files → parallel edit
+- Security / performance audit → parallel sub-agent
+- Complex refactor (types → core → integration → tests)
 
-**Feature:** UNDERSTAND → DESIGN → RESEARCH → SCAFFOLD types/interfaces → IMPLEMENT → INTEGRATE → TEST → VERIFY
+**Do NOT:**
+- Use sequential task() calls for 3+ independent tasks (slow)
+- Ask permission before parallelizing obvious candidates
 
-**Refactoring:** IDENTIFY why → ENSURE tests exist → REFACTOR incrementally → VERIFY after EACH change → CLEANUP
+**Parallel pattern examples:**
+
+| Trigger words | Behavior |
+|---------------|----------|
+| "and", "also", "," between tasks | Parallel execution |
+| "upgrade X and Y" | Parallel upgrade |
+| "check security and performance" | Parallel audit |
+| 3+ independent files mentioned | orchestrate plan |
 
 ---
 
-## DECISION: TOOLS vs ASK
+## AGENT LIFECYCLE
 
-Can I find the answer with tools? → Use tools. Is task ambiguous? → Ask. Otherwise → Continue with best judgment.
+**Max:** 6 active agents
 
-**PROCEED when:** path clear, changes reversible, pattern established.
-**PAUSE when:** requirements unclear, data loss risk, breaking public APIs, stuck after 3 attempts.
+**Reuse:** Same agent type + related context → send to existing session via `session_id`
+
+**Kill:**
+- Task complete → ABORT if no new work
+- Topic changed → KILL all agents
+
+Always check: "Does an agent of this type already exist?" → Yes → REUSE
+
 </workflow>

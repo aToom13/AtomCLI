@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/companion",
-  "version": "3.2.4-EarlyBeta",
+  "version": "3.2.4-BetaDebug",
   "type": "module",
   "private": true,
   "main": "src/index.ts",

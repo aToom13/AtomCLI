@@ -377,6 +377,13 @@ export function createAntigravity(options?: { projectId?: string }) {
         chat(modelId: string): LanguageModel {
             return createAntigravityModel(modelId, options)
         },
+        // Stub methods - not used by AtomCLI
+        textEmbeddingModel() {
+            throw new Error("Antigravity does not support embedding models")
+        },
+        imageModel() {
+            throw new Error("Antigravity does not support image models")
+        },
     }
 }
 

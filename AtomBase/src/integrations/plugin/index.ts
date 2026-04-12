@@ -16,8 +16,10 @@ export namespace Plugin {
 
   const BUILTIN = ["atomcli-copilot-auth@0.0.11", "atomcli-anthropic-auth@0.0.8"]
 
-  // Built-in plugins that are directly imported (not installed from npm)
-  const INTERNAL_PLUGINS: PluginInstance[] = [CodexAuthPlugin, KilocodeAuthPlugin, AntigravityAuthPlugin]
+  // Built-in plugins (exclude Antigravity if disabled via flag)
+  const INTERNAL_PLUGINS: PluginInstance[] = Flag.ATOMCLI_DISABLE_ANTIGRAVITY
+    ? [CodexAuthPlugin, KilocodeAuthPlugin]
+    : [CodexAuthPlugin, KilocodeAuthPlugin, AntigravityAuthPlugin]
 
   const state = Instance.state(async () => {
     const client = createAtomcliClient({
