@@ -1012,8 +1012,8 @@ main_install() {
     check_dependencies
     install_bun
     
-    # Interactive version selection when running in a terminal
-    if [ -t 0 ]; then
+    # Interactive version selection when a terminal is available (works even with curl | bash)
+    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
         select_version
         
         if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
@@ -1181,9 +1181,8 @@ select_version() {
     local cancel_option=$i
     echo ""
     
-    # Auto-default to latest after 30s
     local choice=""
-    read -t 30 -p "$(echo -e "  ${BOLD}Choice [1]:${NC} ")" choice
+    read -t 30 -p "$(echo -e "  ${BOLD}Choice [1]:${NC} ")" choice < /dev/tty
     
     if [ -z "$choice" ]; then
         choice=1
