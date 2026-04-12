@@ -669,10 +669,12 @@ setup_path() {
     
     export PATH="$INSTALL_DIR:$PATH"
 
-    # Source the shell config to activate PATH in the current session
+    # Source the shell config to activate PATH in the current session immediately
     if [ -n "$shell_rc" ] && [ -f "$shell_rc" ]; then
         # shellcheck disable=SC1090
-        . "$shell_rc" 2>/dev/null || true
+        source "$shell_rc" 2>/dev/null || . "$shell_rc" 2>/dev/null || true
+        # Re-export after source (source may not propagate to current env in subshell)
+        export PATH="$INSTALL_DIR:$PATH"
         success "Shell configuration reloaded"
     fi
 }
@@ -736,7 +738,7 @@ setup_optional_features() {
     echo -e "${CYAN}│${NC}  ${DIM}Access 320+ free cloud models instantly.${NC}          ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}  ${DIM}No API key needed, just login with Google.${NC}         ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}                                                 ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${DIM}Models: gpt-5-nano, claude-sonnet, gemini,${NC}      ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${DIM}Models: gpt-5-nano, gemini, Minimax ${NC}      ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}  ${DIM}llama, mistral + 300+ more (completely free)${NC}  ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}  ${DIM}*(Ücretsiz modeller - sınırsız kullanım)${NC}    ${CYAN}│${NC}"
     echo -e "${CYAN}└─────────────────────────────────────────────────┘${NC}"
@@ -982,21 +984,11 @@ print_complete() {
     echo ""
     echo -e "  ${DIM}Next steps:${NC}"
     echo ""
-    
-    if [ "$ENABLE_KILOCODE" = true ]; then
-        echo -e "    ${CYAN}1.${NC} Authenticate with Kilocode:"
-        echo -e "       ${CYAN}atomcli auth login --provider kilocode${NC}"
-        echo ""
-        echo -e "    ${CYAN}2.${NC} Start coding:"
-        echo -e "       ${CYAN}atomcli${NC}"
-        echo ""
-    else
-        echo -e "    ${CYAN}atomcli${NC}"
-        echo ""
-    fi
-    
-    echo -e "  ${DIM}Or restart your terminal first if atomcli is not found.${NC}"
-    echo -e "  ${DIM}To reload PATH in your current terminal: ${CYAN}exec \$SHELL${NC}"
+    echo -e "    ${CYAN}1.${NC} Complete setup (providers, models, preferences):"
+    echo -e "       ${BOLD}${CYAN}atomcli setup${NC}"
+    echo ""
+    echo -e "    ${CYAN}2.${NC} Start coding:"
+    echo -e "       ${CYAN}atomcli${NC}"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
