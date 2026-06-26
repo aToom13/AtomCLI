@@ -127,6 +127,24 @@ export namespace Agent {
         mode: "all",
         native: true,
       },
+      reviewer: {
+        name: "reviewer",
+        description: `QA verification agent for sub-agent outputs. Reviews task results and passes/fails them silently. Never modifies code — only verifies.`,
+        options: {},
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            "*": "deny",
+            read: {
+              "*": "allow",
+            },
+          }),
+          user,
+        ),
+        mode: "subagent",
+        native: true,
+        hidden: true,
+      },
       general: {
         name: "general",
         description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
@@ -186,7 +204,7 @@ export namespace Agent {
             todoread: "deny",
             todowrite: "deny",
             edit: {
-              "*": "deny",  // Analyst sadece okur, yazmaz
+              "*": "deny", // Analyst sadece okur, yazmaz
             },
           }),
           user,

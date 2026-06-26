@@ -10,6 +10,7 @@ import { selectModel, inferCategory, type TaskCategory } from "./model-router"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { SubAgent } from "./subagent"
+import { WorkflowFS } from "./workflow-fs"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -233,7 +234,6 @@ function shouldSkipDueToFailedDependency(task: TaskNode, workflow: WorkflowState
   })
 }
 
-
 // ─── Tool Definition ─────────────────────────────────────────
 
 const TaskSchema = z.object({
@@ -323,7 +323,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             })
           }
           await Bus.publish(TuiEvent.ChainUpdateStep, { status: "pending", sessionID: ctx.sessionID })
-        } catch { /* TUI may not be active */ }
+        } catch {
+          /* TUI may not be active */
+        }
 
         // Build execution layers (groups of parallelizable tasks)
         const layers: string[][] = []
@@ -415,7 +417,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         workflow.status = "running"
         // Track index of current task in Chain for parallel_update
         const taskIndexMap: Record<string, number> = {}
-        workflow.tasks.forEach((t, i) => { taskIndexMap[t.id] = i })
+        workflow.tasks.forEach((t, i) => {
+          taskIndexMap[t.id] = i
+        })
         log.info("workflow executing", { workflowId: params.workflowId })
 
         const config = await Config.get()
@@ -468,8 +472,14 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 // Update Chain UI: mark this task as running
                 const stepIdx = taskIndexMap[task.id]
                 try {
-                  await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "running", sessionID: ctx.sessionID })
-                } catch { /* TUI may not be active */ }
+                  await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                    stepIndex: stepIdx,
+                    status: "running",
+                    sessionID: ctx.sessionID,
+                  })
+                } catch {
+                  /* TUI may not be active */
+                }
 
                 // Select model: task'te belirtilen model veya SMART routing
                 let model: { providerID: string; modelID: string }
@@ -512,8 +522,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 // Execute task with retry logic
                 let taskSuccess = false
                 let lastError: string | undefined
+                let lastAttemptOutput: string | undefined
+                let lastAttemptCount = 0
 
                 for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES && !taskSuccess; attempt++) {
+                  lastAttemptCount = attempt
                   try {
                     // Try to reuse existing session for this agent type
                     const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
@@ -541,25 +554,68 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     // Store session ID for UI navigation
                     result.sessionId = spawnResult.sessionId
 
-                    result.status = "completed"
-                    result.output = spawnResult.output
-                    result.completedAt = Date.now()
-                    result.retryCount = attempt
-                    completedTasks.push(task.id)
-                    taskSuccess = true
+                    // Save output before QA — if QA fails, we keep the original
+                    lastAttemptOutput = spawnResult.output
 
-                    // Update Chain UI: mark step as complete
-                    try {
-                      await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "complete", sessionID: ctx.sessionID })
-                    } catch { /* TUI may not be active */ }
+                    // ─── REVIEWER QA: verify sub-agent output ─────────────
+                    const reviewerAgent = await Agent.get("reviewer")
+                    const reviewerModel = await selectModel("analysis", fallbackModel)
 
-                    log.info("task completed", {
-                      taskId: task.id,
-                      sessionId: spawnResult.sessionId,
-                      model: `${model.providerID}/${model.modelID}`,
-                      duration: result.completedAt - (result.startedAt || 0),
-                      attempts: attempt + 1,
+                    const reviewPrompt = [
+                      `<task>`,
+                      task.prompt,
+                      `</task>`,
+                      ``,
+                      `<output>`,
+                      spawnResult.output,
+                      `</output>`,
+                      ``,
+                      `Review the output above. Does it correctly complete the task?`,
+                      `Reply PASS or FAIL: <reason>.`,
+                    ].join("\n")
+
+                    const reviewResult = await SubAgent.spawn({
+                      parentSessionID: ctx.sessionID,
+                      agent: reviewerAgent,
+                      model: reviewerModel,
+                      permissions: SubAgent.buildPermissions(parentPermissions),
+                      parts: [{ type: "text", text: reviewPrompt }],
+                      description: `[QA] ${task.id}`,
                     })
+
+                    const reviewText = reviewResult.output.trim()
+
+                    if (reviewText.startsWith("PASS")) {
+                      // ✅ QA passed
+                      result.status = "completed"
+                      result.output = spawnResult.output
+                      result.completedAt = Date.now()
+                      result.retryCount = attempt
+                      completedTasks.push(task.id)
+                      taskSuccess = true
+
+                      await WorkflowFS.writeSuccess(params.workflowId!, task.id, task.agent, spawnResult.output)
+
+                      // Update Chain UI: mark step as complete
+                      try {
+                        await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                          stepIndex: stepIdx,
+                          status: "complete",
+                          sessionID: ctx.sessionID,
+                        })
+                      } catch {
+                        /* TUI may not be active */
+                      }
+
+                      log.info("task passed QA", {
+                        taskId: task.id,
+                        sessionId: spawnResult.sessionId,
+                        attempts: attempt + 1,
+                      })
+                    } else {
+                      // ❌ QA failed — throw to trigger retry
+                      throw new Error(`QA_FAILED: ${reviewText}`)
+                    }
                   } catch (e) {
                     lastError = (e as Error).message
 
@@ -584,10 +640,26 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   result.completedAt = Date.now()
                   failedTasks.push(task.id)
 
+                  // Write failure file (include original output if QA rejected it)
+                  await WorkflowFS.writeFailed(
+                    params.workflowId!,
+                    task.id,
+                    task.agent,
+                    lastError,
+                    lastAttemptCount,
+                    lastAttemptOutput,
+                  )
+
                   // Update Chain UI: mark step as failed
                   try {
-                    await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex: stepIdx, status: "failed", sessionID: ctx.sessionID })
-                  } catch { /* TUI may not be active */ }
+                    await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                      stepIndex: stepIdx,
+                      status: "failed",
+                      sessionID: ctx.sessionID,
+                    })
+                  } catch {
+                    /* TUI may not be active */
+                  }
 
                   log.error("task failed after all retries", {
                     taskId: task.id,
@@ -607,64 +679,21 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             // Clear Chain UI on finish
             try {
               await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-            } catch { /* TUI may not be active */ }
+            } catch {
+              /* TUI may not be active */
+            }
 
             // Cleanup old workflows to prevent memory leaks
             cleanupOldWorkflows()
 
-            // Build summary
-            const parts: string[] = [
-              `## Workflow ${workflow.status === "completed" ? "✅ Completed" : "⚠️ Completed with Errors"}`,
-              ``,
-              `| Task | Status | Session ID | Model | Duration |`,
-              `|:-----|:-------|:-----------|:------|:---------|`,
-            ]
-
-            for (const task of workflow.tasks) {
-              const r = workflow.results[task.id]
-              const statusEmoji = {
-                pending: "⏳",
-                running: "🔄",
-                completed: "✅",
-                failed: "❌",
-                skipped: "⏭️",
-              }[r.status]
-              const modelStr = r.model ? `${r.model.providerID}/${r.model.modelID}` : "-"
-              const duration = r.startedAt && r.completedAt ? `${((r.completedAt - r.startedAt) / 1000).toFixed(1)}s` : "-"
-              const retryInfo = r.retryCount ? ` (${r.retryCount} retries)` : ""
-              const sessionStr = r.sessionId || "-"
-              parts.push(`| ${task.id} | ${statusEmoji} ${r.status}${retryInfo} | ${sessionStr} | ${modelStr} | ${duration} |`)
-            }
-
-            if (failedTasks.length > 0) {
-              parts.push(`\n### Errors:`)
-              for (const taskId of failedTasks) {
-                const r = workflow.results[taskId]
-                parts.push(`- **${taskId}:** ${r.error}`)
-              }
-            }
-
-            // Include completed outputs
-            for (const taskId of completedTasks) {
-              const r = workflow.results[taskId]
-              if (r.output) {
-                parts.push(`\n### Output: ${taskId}`)
-                // Truncate long outputs
-                const truncated = r.output.length > 4000 ? r.output.slice(0, 4000) + "\n... (truncated)" : r.output
-                parts.push(truncated)
-              }
-            }
-
-            // Notify parent session with results
-            const promptText = `<system_notification>\nBackground execution for workflow ${params.workflowId} completed.\nResults:\n${parts.join("\n")}\n</system_notification>\n\nPlease summarize these results to the user.`
-            await SessionPrompt.prompt({
-              sessionID: ctx.sessionID,
-              agent: ctx.agent,
-              parts: [{ type: "text", text: promptText }],
-            }).catch((err) => {
-              log.error("failed to send result prompt back to orchestrator", { error: err.message })
+            // Log completion (no system_notification — parent LLM stays asleep)
+            log.info("workflow completed", {
+              workflowId: params.workflowId,
+              completed: completedTasks.length,
+              failed: failedTasks.length,
+              total: workflow.tasks.length,
+              outputDir: `.atomcli/runs/${params.workflowId}/`,
             })
-
           } catch (err) {
             log.error("workflow background execution failed", { error: (err as Error).message })
           }
@@ -676,11 +705,15 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         // Return immediately
         return {
           title: "Workflow Started",
-          output: `Workflow ${params.workflowId} has been started in the background. You will receive a system notification when it completes. \n\nYou can continue working on other things or answer user questions while waiting.`,
+          output:
+            `Workflow **${params.workflowId}** has been started in the background with ${workflow.tasks.length} task(s).\n\n` +
+            `Results will be written to \`.atomcli/runs/${params.workflowId}/\` when complete.\n` +
+            `Use \`orchestrate(action="status", workflowId="${params.workflowId}")\` to check progress.`,
           metadata: {
             error: false,
             workflowId: params.workflowId,
-            status: "running"
+            status: "running",
+            outputDir: `.atomcli/runs/${params.workflowId}/`,
           },
         }
       }
@@ -722,7 +755,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }[r.status]
           const modelStr = r.model ? `${r.model.providerID}/${r.model.modelID}` : "-"
           const sessionStr = r.sessionId || "-"
-          parts.push(`| ${task.id} | ${task.agent} | ${task.category} | ${statusEmoji} ${r.status} | ${sessionStr} | ${modelStr} |`)
+          parts.push(
+            `| ${task.id} | ${task.agent} | ${task.category} | ${statusEmoji} ${r.status} | ${sessionStr} | ${modelStr} |`,
+          )
         }
 
         return {
@@ -754,7 +789,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           SessionPrompt.cancel(params.sessionId)
           try {
             await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: params.sessionId })
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
           abortedCount++
         }
 
@@ -775,7 +812,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   SessionPrompt.cancel(r.sessionId)
                   try {
                     await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: r.sessionId })
-                  } catch { /* ignore */ }
+                  } catch {
+                    /* ignore */
+                  }
                   abortedCount++
                 }
               } else if (r.status === "pending") {
@@ -784,7 +823,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 // Agent is already done/waiting, but we should remove it from the UI
                 try {
                   await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: r.sessionId })
-                } catch { /* ignore */ }
+                } catch {
+                  /* ignore */
+                }
                 abortedCount++
               }
             }
