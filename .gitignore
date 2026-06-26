@@ -56,3 +56,4 @@ session-*.md
 
 # Generated SDK files (regenerated on each build)
 libs/sdk/openapi.json
+.atomcli/plan/

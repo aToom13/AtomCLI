@@ -42,9 +42,8 @@ When smart_model_routing is enabled, each task automatically gets the best model
 \`\`\`json
 { "action": "execute", "workflowId": "<returned-id>" }
 \`\`\`
-→ Starts tasks in the background and returns immediately. A brief completion summary
-will appear in the parent session when the workflow finishes. Full results are written to
-\`.atomcli/runs/<workflowId>/\` on disk for review.
+→ Runs all tasks and waits for completion. Returns combined results from all sub-agents.
+Full results are also written to \`.atomcli/runs/<workflowId>/\` on disk for review.
 
 **STEP 3 (optional) - Status:**
 \`\`\`json
@@ -233,6 +232,53 @@ function shouldSkipDueToFailedDependency(task: TaskNode, workflow: WorkflowState
     const depResult = workflow.results[depId]
     return depResult && (depResult.status === "failed" || depResult.status === "skipped")
   })
+}
+
+/**
+ * Format workflow results into a readable summary for the LLM.
+ */
+function formatWorkflowOutput(workflow: WorkflowState): string {
+  const parts: string[] = [
+    `## Workflow Results: ${workflow.id}`,
+    `**Status:** ${workflow.status}`,
+    `**Total Tasks:** ${workflow.tasks.length}`,
+    ``,
+  ]
+
+  for (const task of workflow.tasks) {
+    const r = workflow.results[task.id]
+    const statusEmoji =
+      {
+        pending: "⏳",
+        running: "🔄",
+        completed: "✅",
+        failed: "❌",
+        skipped: "⏭️",
+      }[r.status] || "❓"
+
+    parts.push(`### ${statusEmoji} ${task.id} (@${task.agent}) [${task.category}]`)
+
+    if (r.error) {
+      parts.push(``)
+      parts.push(`**Error:** ${r.error}`)
+    }
+
+    if (r.output) {
+      parts.push(``)
+      parts.push(r.output)
+    }
+
+    parts.push(``)
+    parts.push(`---`)
+  }
+
+  const completed = workflow.tasks.filter((t) => workflow.results[t.id].status === "completed").length
+  const failed = workflow.tasks.filter((t) => workflow.results[t.id].status === "failed").length
+  const skipped = workflow.tasks.filter((t) => workflow.results[t.id].status === "skipped").length
+
+  parts.push(`**${completed} succeeded, ${failed} failed, ${skipped} skipped (${workflow.tasks.length} total)**`)
+
+  return parts.join("\n")
 }
 
 // ─── Tool Definition ─────────────────────────────────────────
@@ -445,7 +491,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         const completedTasks: string[] = []
         const failedTasks: string[] = []
 
-        // Start execution in background
+        // Execute all tasks (blocking)
         const runWorkflow = async () => {
           try {
             // Execute in waves
@@ -579,7 +625,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       `</output>`,
                       ``,
                       `Review the output above. Does it correctly complete the task?`,
-                      `Reply PASS or FAIL: <reason>.`,
+                      `Respond in English. Your response must start with exactly "PASS" or "FAIL" on the first line (no markdown, no extra text before). Then add your reason.`,
+                      ``,
+                      `Example:`,
+                      `PASS`,
+                      `The output correctly lists all files and their descriptions.`,
                     ].join("\n")
 
                     const reviewResult = await SubAgent.spawn({
@@ -592,8 +642,12 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     })
 
                     const reviewText = reviewResult.output.trim()
+                    const firstLine = reviewText
+                      .split("\n")[0]
+                      .replace(/^[#*\s]+/, "")
+                      .trim()
 
-                    if (reviewText.startsWith("PASS")) {
+                    if (/^PASS\b/i.test(firstLine)) {
                       // ✅ QA passed
                       result.status = "completed"
                       result.output = spawnResult.output
@@ -694,30 +748,6 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             // Cleanup old workflows to prevent memory leaks
             cleanupOldWorkflows()
 
-            // Clear workflow timeout since we completed normally
-            clearTimeout(workflowTimeout)
-
-            // Inject brief completion summary so the parent session sees it on wake
-            try {
-              const state = failedTasks.length > 0 ? "completed_with_errors" : "completed"
-              const summary = [
-                "<system_notification>",
-                `Workflow **${params.workflowId}** ${state}.`,
-                `${completedTasks.length} tasks succeeded, ${failedTasks.length} failed (${workflow.tasks.length} total).`,
-                `Results: \`.atomcli/runs/${params.workflowId}/\``,
-                "</system_notification>",
-              ].join("\n")
-
-              await SessionPrompt.prompt({
-                sessionID: ctx.sessionID,
-                agent: ctx.agent,
-                noReply: true,
-                parts: [{ type: "text", text: summary }],
-              })
-            } catch {
-              // Parent may be busy — results are on disk
-            }
-
             log.info("workflow completed", {
               workflowId: params.workflowId,
               completed: completedTasks.length,
@@ -727,55 +757,40 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             })
           } catch (err) {
             const errorMsg = (err as Error).message
-            log.error("workflow background execution failed", { error: errorMsg })
+            log.error("workflow execution failed", { error: errorMsg })
             // Ensure the workflow is marked as failed so status() shows it
             workflow.status = "failed"
-            // Clear workflow timeout since we already failed
-            clearTimeout(workflowTimeout)
           }
         }
 
-        // Workflow-level timeout: if the entire workflow doesn't finish in 10 minutes,
-        // cancel all running tasks and mark the workflow as failed.
-        // Individual tasks have their own retry logic; this is a safety net.
-        const WORKFLOW_TIMEOUT_MS = 10 * 60 * 1000
-        const workflowTimeout = setTimeout(() => {
-          if (workflow.status === "running") {
-            workflow.status = "failed"
-            for (const task of workflow.tasks) {
-              const r = workflow.results[task.id]
-              if (r.status === "running" && r.sessionId) {
-                SessionPrompt.cancel(r.sessionId)
-                r.error = "Workflow timed out"
-              } else if (r.status === "pending") {
-                r.status = "skipped"
-                r.error = "Skipped due to workflow timeout"
-              }
-            }
-            try {
-              Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-            } catch {
-              /* TUI may not be active */
-            }
-            log.error("workflow timed out", { workflowId: params.workflowId, taskCount: workflow.tasks.length })
-          }
-        }, WORKFLOW_TIMEOUT_MS)
+        // Blocking execution: wait for all tasks to complete
+        log.info("blocking: waiting for workflow tasks", {
+          workflowId: params.workflowId,
+          taskCount: workflow.tasks.length,
+        })
+        try {
+          await runWorkflow()
+        } catch (err) {
+          log.error("blocking: workflow execution failed", { error: (err as Error).message })
+          workflow.status = "failed"
+        }
+        log.info("blocking: workflow completed", {
+          workflowId: params.workflowId,
+          completed: completedTasks.length,
+          failed: failedTasks.length,
+        })
 
-        // Detach execution
-        setTimeout(runWorkflow, 0)
-
-        // Return immediately
+        // Build output from workflow results
+        const output = formatWorkflowOutput(workflow)
         return {
-          title: "Workflow Started",
-          output:
-            `Workflow **${params.workflowId}** has been started in the background with ${workflow.tasks.length} task(s).\n\n` +
-            `Results will be written to \`.atomcli/runs/${params.workflowId}/\` when complete.\n` +
-            `Use \`orchestrate(action="status", workflowId="${params.workflowId}")\` to check progress.`,
+          title: `Workflow: ${workflow.tasks.length} tasks — ${workflow.status}`,
+          output,
           metadata: {
-            error: false,
+            error: workflow.status === "failed",
             workflowId: params.workflowId,
-            status: "running",
-            outputDir: `.atomcli/runs/${params.workflowId}/`,
+            status: workflow.status,
+            completedTasks,
+            failedTasks,
           },
         }
       }
