@@ -85,7 +85,8 @@ AtomBase/src/core/session/prompt/
 |   |-- agent.txt           #   Default autonomous mode
 |   |-- explore.txt         #   Read-only exploration mode
 |   |-- plan.txt            #   Planning mode (editing prohibited)
-|   +-- build.txt           #   Application mode
+|   |-- build.txt           #   Application mode
+|   +-- reviewer.txt        #   QA verification (PASS/FAIL only)
 |
 +-- runtime/                # Runtime injections
     |-- max-steps.txt       #   Step limit warning
@@ -185,12 +186,13 @@ Detection rules:
 
 ### 3. Agent (Agent Mode)
 
-| Mode      | File          | Behavior                            |
-| --------- | ------------- | ----------------------------------- |
-| `agent`   | `agent.txt`   | Fully autonomous, all tools enabled |
-| `explore` | `explore.txt` | Read-only, only Read/Grep/Glob/Ls   |
-| `plan`    | `plan.txt`    | Plan only, editing prohibited       |
-| `build`   | `build.txt`   | Execute plan, full permissions      |
+| Mode       | File           | Behavior                                          |
+| ---------- | -------------- | ------------------------------------------------- |
+| `agent`    | `agent.txt`    | Fully autonomous, all tools enabled               |
+| `explore`  | `explore.txt`  | Read-only, only Read/Grep/Glob/Ls                 |
+| `plan`     | `plan.txt`     | Plan only, editing prohibited                     |
+| `build`    | `build.txt`    | Execute plan, full permissions                    |
+| `reviewer` | `reviewer.txt` | QA verification (PASS/FAIL for sub-agent outputs) |
 
 ### 4. Runtime (Runtime Injection)
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-**AtomCLI** is an autonomous AI coding agent framework built with TypeScript and Bun runtime. Version: 3.2.4-RC
+**AtomCLI** is an autonomous AI coding agent framework built with TypeScript and Bun runtime. Version: 3.2.4
 
 ## Architecture
 
@@ -43,7 +43,7 @@
 - **API Server**: Hono
 - **MCP**: @modelcontextprotocol/sdk
 - **Mobile**: Flutter (companion app)
-- **Web Dashboard**: SolidJS + Vite + Nitro (enterprise)
+- **Web Dashboard**: SolidJS (server dashboard)
 
 ## Usage
 

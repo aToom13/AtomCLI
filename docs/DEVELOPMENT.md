@@ -37,12 +37,9 @@ AtomCLI/
 ├── libs/                        # Shared libraries
 │   ├── companion/               # @atomcli/companion - pairing & bridge logic
 │   ├── sdk/                     # JavaScript/TypeScript SDK
-│   ├── enterprise/              # Web dashboard (SolidJS + Vite SSR)
-│   ├── ui/                      # Shared UI components
-│   ├── util/                    # Utility functions
-│   ├── plugin/                  # Plugin system
-│   ├── script/                  # Shared build scripts
-│   └── app/                     # App shell (SolidJS)
+│   ├── util/                    # Shared utilities
+│   ├── plugin/                  # Plugin interfaces and implementations
+│   └── script/                  # Shared build scripts
 ├── .atomcli/                    # Bundled skills/agents (included in releases)
 ├── docs/                        # Documentation
 └── install.sh                   # Installation script
@@ -59,7 +56,6 @@ AtomCLI/
 | `AtomBase/src/core/config/`           | Configuration          | [Browse](../AtomBase/src/core/config/)           |
 | `AtomBase/src/integrations/mcp/`      | MCP servers            | [Browse](../AtomBase/src/integrations/mcp/)      |
 | `libs/companion/`                     | Mobile companion logic | [Browse](../libs/companion/)                     |
-| `libs/enterprise/`                    | Web dashboard          | [Browse](../libs/enterprise/)                    |
 | `libs/sdk/`                           | SDK package            | [Browse](../libs/sdk/)                           |
 
 ---
@@ -84,17 +80,17 @@ User Input
     │
     ▼
 ┌─────────────────┐
-│   CLI / TUI     │  ← src/cli/cmd/tui/
+│   CLI / TUI     │  ← src/interfaces/cli/cmd/tui/
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│    Session      │  ← src/session/
+│    Session      │  ← src/core/session/
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│    Provider     │  ← src/provider/
+│    Provider     │  ← src/integrations/provider/
 └────────┬────────┘
          │
          ▼
@@ -104,7 +100,7 @@ User Input
          │
          ▼
 ┌─────────────────┐
-│   Tool Calls    │  ← src/tool/
+│   Tool Calls    │  ← src/integrations/tool/
 └─────────────────┘
 ```
 
@@ -165,15 +161,19 @@ Agent tools in `AtomBase/src/integrations/tool/`:
 
 ### Additional Tools
 
-| Tool       | File                                                             | Description                  |
-| ---------- | ---------------------------------------------------------------- | ---------------------------- |
-| TestGen    | [test-gen.ts](../AtomBase/src/integrations/tool/test-gen.ts)     | Automatic test generation    |
-| Docs       | [docs.ts](../AtomBase/src/integrations/tool/docs.ts)             | Documentation generation     |
-| Refactor   | [refactor.ts](../AtomBase/src/integrations/tool/refactor.ts)     | Code smell detection & fixes |
-| Review     | [review.ts](../AtomBase/src/integrations/tool/review.ts)         | Code review & analysis       |
-| Finance    | [finance.ts](../AtomBase/src/integrations/tool/finance.ts)       | Financial market analysis    |
-| CodeSearch | [codesearch.ts](../AtomBase/src/integrations/tool/codesearch.ts) | AI code search               |
-| WebSearch  | [websearch.ts](../AtomBase/src/integrations/tool/websearch.ts)   | Web search with Exa AI       |
+| Tool         | File                                                                 | Description                             |
+| ------------ | -------------------------------------------------------------------- | --------------------------------------- |
+| TestGen      | [test-gen.ts](../AtomBase/src/integrations/tool/test-gen.ts)         | Automatic test generation               |
+| Docs         | [docs.ts](../AtomBase/src/integrations/tool/docs.ts)                 | Documentation generation                |
+| Refactor     | [refactor.ts](../AtomBase/src/integrations/tool/refactor.ts)         | Code smell detection & fixes            |
+| Review       | [review.ts](../AtomBase/src/integrations/tool/review.ts)             | Code review & analysis                  |
+| Finance      | [finance.ts](../AtomBase/src/integrations/tool/finance.ts)           | Financial market analysis               |
+| CodeSearch   | [codesearch.ts](../AtomBase/src/integrations/tool/codesearch.ts)     | AI code search                          |
+| WebSearch    | [websearch.ts](../AtomBase/src/integrations/tool/websearch.ts)       | Web search with Exa AI                  |
+| Orchestrate  | [orchestrate.ts](../AtomBase/src/integrations/tool/orchestrate.ts)   | Multi-agent workflow orchestration      |
+| Model Router | [model-router.ts](../AtomBase/src/integrations/tool/model-router.ts) | Smart model routing by category         |
+| Workflow FS  | [workflow-fs.ts](../AtomBase/src/integrations/tool/workflow-fs.ts)   | File-based sub-agent output persistence |
+| SubAgent     | [subagent.ts](../AtomBase/src/integrations/tool/subagent.ts)         | Shared sub-agent spawn utility          |
 
 ---
 
@@ -436,7 +436,7 @@ AtomCLI
     │
     ▼
 ┌─────────────────┐
-│   MCP Manager   │  ← src/mcp/index.ts
+│   MCP Manager   │  ← src/integrations/mcp/index.ts
 └────────┬────────┘
          │
     ┌────┴────┐
@@ -462,7 +462,7 @@ AtomCLI
 bun test
 
 # Run specific test file
-bun test src/tool/read.test.ts
+bun test test/tool/read.test.ts
 
 # Watch mode
 bun test --watch
@@ -498,7 +498,6 @@ bun test --watch
 - [Providers Guide](./PROVIDERS.md) - AI provider configuration and API keys
 - [MCP Guide](./MCP-GUIDE.md) - MCP server installation and development
 - [Skills Guide](./SKILLS-GUIDE.md) - Skill development and usage
-- [Memory Integration](./MEMORY-INTEGRATION.md) - Semantic memory system
 - [AtomBase README](../AtomBase/README.md) - Core package docs
 - [SDK README](../libs/sdk/README.md) - SDK documentation
 - [Libs README](../libs/README.md) - Shared libraries

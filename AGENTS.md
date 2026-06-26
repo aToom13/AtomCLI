@@ -58,7 +58,6 @@ bun turbo test
 | `AtomBase/test/tool/fixtures/`                   | Test fixtures incl. required `models-api.json`                  |
 | `libs/sdk/js/src/v2/gen/`                        | Auto-generated SDK — do not edit manually                       |
 | `libs/companion/`                                | @atomcli/companion — pairing auth, mobile bridge, discovery     |
-| `libs/enterprise/`                               | Web dashboard — SolidJS + Vite SSR                              |
 | `companion/`                                     | Flutter mobile companion app (Android/iOS)                      |
 | `.atomcli/` (repo root)                          | Bundled skills/agents — included in every release binary        |
 

@@ -25,7 +25,7 @@ AI: Merhaba Akif! 👋
 
 Kullanıcı: Benim adım ne?
 [LLM: "hasInformation: false" (soru, bilgi değil)]
-AI: Adın Akif! 
+AI: Adın Akif!
 [Hafıza: Profil'den okundu]
 
 Kullanıcı: Aslında benim adım Mehmet, Akif değil
@@ -37,6 +37,7 @@ AI: Tamam, düzelttim!
 ### Avantajları
 
 **Eski Yöntem (Regex):**
+
 ```typescript
 ❌ /(?:benim adım)\s+(\w+)/i
 ❌ "Benim adım ne?" → "ne" (yanlış!)
@@ -45,6 +46,7 @@ AI: Tamam, düzelttim!
 ```
 
 **Yeni Yöntem (LLM):**
+
 ```typescript
 ✅ LLM anlam çıkarma
 ✅ "Benim adım ne?" → Soru (bilgi yok)
@@ -78,7 +80,7 @@ atomcli memory export -o memory-backup.json
 ### Programatik Kullanım
 
 ```typescript
-import { SessionMemoryIntegration } from "@/memory/integration/session"
+import { SessionMemoryIntegration } from "@/core/memory/integration/session"
 
 // Initialize memory system
 await SessionMemoryIntegration.initialize()
@@ -102,7 +104,7 @@ await SessionMemoryIntegration.addInterest("React")
 ## 📁 Yapı
 
 ```
-src/memory/
+src/core/memory/
 ├── index.ts                    # Ana export dosyası
 ├── types.ts                    # Type tanımları
 ├── core/
@@ -126,6 +128,7 @@ src/memory/
 Hafıza sistemi **iki seviyede** çalışır:
 
 ### 1. Session Başlangıcı (Pasif)
+
 System prompt'a kullanıcı bağlamı eklenir:
 
 ```typescript
@@ -138,6 +141,7 @@ export async function environment(): Promise<string[]> {
 ```
 
 ### 2. Sohbet Sırasında (Aktif)
+
 Her mesajdan otomatik öğrenir:
 
 ```typescript
@@ -194,10 +198,10 @@ Hafıza verileri şu konumlarda saklanır:
 ```bash
 # Hafıza testlerini çalıştır
 cd AtomBase
-bun test test/memory/integration.test.ts
+bun test test/core/memory/integration.test.ts
 
 # Tüm hafıza testlerini çalıştır
-bun test test/memory/
+bun test test/core/memory/
 ```
 
 ## 📝 Öğrenme Mekanizmaları

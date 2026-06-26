@@ -41,7 +41,6 @@ System prompt composition, directory structure, and customization guide.
 ## Quick Links
 
 - [Main README](../README.md) - Project overview
-- [AtomBase README](../AtomBase/README.md) - Core package documentation
 - [SDK README](../libs/sdk/README.md) - JavaScript SDK
 - [Libs README](../libs/README.md) - Shared libraries
 
@@ -53,4 +52,4 @@ System prompt composition, directory structure, and customization guide.
 
 ---
 
-_AtomCLI Documentation - Version 3.2.4-RC_
+_AtomCLI Documentation - Version 3.2.4_

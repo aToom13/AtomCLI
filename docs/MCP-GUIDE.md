@@ -43,6 +43,7 @@ atomcli mcp add <name>
 ```
 
 Or via chat:
+
 ```
 > Add memory-bank MCP
 ```
@@ -68,11 +69,13 @@ atomcli mcp install <npm-package-or-url>
 Persistent memory across sessions. Remembers project context, decisions, and user preferences.
 
 **Install**:
+
 ```bash
 atomcli mcp add memory-bank
 ```
 
 **Features**:
+
 - Stores context in `.memory/` directory
 - Automatically loads on session start
 - Tracks project-specific knowledge
@@ -86,11 +89,13 @@ atomcli mcp add memory-bank
 Enhanced file system operations beyond basic read/write.
 
 **Install**:
+
 ```bash
 atomcli mcp add filesystem
 ```
 
 **Features**:
+
 - Directory listing
 - File watching
 - Pattern-based operations
@@ -102,11 +107,13 @@ atomcli mcp add filesystem
 Step-by-step reasoning for complex problems.
 
 **Install**:
+
 ```bash
 atomcli mcp add sequential-thinking
 ```
 
 **Features**:
+
 - Breaks down complex tasks
 - Chain-of-thought prompting
 - Better reasoning for multi-step problems
@@ -120,6 +127,7 @@ atomcli mcp add sequential-thinking
 Web browsing capabilities.
 
 **Features**:
+
 - Navigate to URLs
 - Extract page content
 - Take screenshots
@@ -131,6 +139,7 @@ Web browsing capabilities.
 Git operations and repository management.
 
 **Features**:
+
 - Commit, push, pull
 - Branch management
 - Diff viewing
@@ -142,6 +151,7 @@ Git operations and repository management.
 SQL database access.
 
 **Features**:
+
 - Query execution
 - Schema inspection
 - Data manipulation
@@ -153,6 +163,7 @@ SQL database access.
 Slack workspace integration.
 
 **Features**:
+
 - Send messages
 - Read channels
 - Create posts
@@ -266,6 +277,7 @@ Set `"enabled": false` to disable a server without removing it:
 ### Basic Structure
 
 An MCP server needs to:
+
 1. Listen on stdio (or HTTP for SSE)
 2. Implement the MCP protocol
 3. Expose tools, resources, or prompts
@@ -273,13 +285,10 @@ An MCP server needs to:
 ### TypeScript Example
 
 ```typescript
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
-const server = new Server(
-  { name: "my-server", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
+const server = new Server({ name: "my-server", version: "1.0.0" }, { capabilities: { tools: {} } })
 
 // Define a tool
 server.setRequestHandler("tools/list", async () => ({
@@ -290,25 +299,25 @@ server.setRequestHandler("tools/list", async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          input: { type: "string", description: "Input parameter" }
+          input: { type: "string", description: "Input parameter" },
         },
-        required: ["input"]
-      }
-    }
-  ]
-}));
+        required: ["input"],
+      },
+    },
+  ],
+}))
 
 // Handle tool calls
 server.setRequestHandler("tools/call", async (request) => {
   if (request.params.name === "my_tool") {
-    const result = doSomething(request.params.arguments.input);
-    return { content: [{ type: "text", text: result }] };
+    const result = doSomething(request.params.arguments.input)
+    return { content: [{ type: "text", text: result }] }
   }
-});
+})
 
 // Start server
-const transport = new StdioServerTransport();
-await server.connect(transport);
+const transport = new StdioServerTransport()
+await server.connect(transport)
 ```
 
 ### Python Example
@@ -420,4 +429,3 @@ echo '{"jsonrpc":"2.0","method":"initialize","id":1}' | npx my-server
 - [Development Guide](./DEVELOPMENT.md) - Technical documentation
 - [Providers Guide](./PROVIDERS.md) - AI provider setup
 - [Skills Guide](./SKILLS-GUIDE.md) - Custom agent behaviors
-- [Memory Integration](./MEMORY-INTEGRATION.md) - Semantic memory system

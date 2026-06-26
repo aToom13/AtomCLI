@@ -29,7 +29,7 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v3.2.4-RC)
+## What's New (v3.2.4)
 
 ### Unified Memory System
 
@@ -456,9 +456,7 @@ AtomCLI/
 ├── libs/
 │   ├── companion/           # @atomcli/companion - pairing & bridge logic
 │   ├── sdk/                 # JavaScript/TypeScript SDK
-│   ├── enterprise/          # Web dashboard (SolidJS + Vite)
-│   ├── ui/                  # Shared UI components
-│   ├── util/                # Utility functions
+│   ├── util/                # Shared utilities
 │   └── plugin/              # Plugin system
 ├── .atomcli/                # Bundled skills & agents (included in releases)
 ├── docs/                    # Documentation
