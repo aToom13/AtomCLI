@@ -266,23 +266,6 @@ Automatic failover when primary AI provider fails:
 }
 ```
 
-### Self-Learning System
-
-AtomCLI learns from errors and successful patterns:
-
-- **Error Analysis**: Automatically analyze and categorize errors
-- **Pattern Storage**: Store successful solutions for reuse
-- **Memory Persistence**: JSON-based storage in `~/.atomcli/learning/`
-- **Research Integration**: Web research for unknown errors
-- **Implementation**: [learning/](../AtomBase/src/services/learning/)
-
-| Component      | File                                                                     | Description              |
-| -------------- | ------------------------------------------------------------------------ | ------------------------ |
-| Memory         | [memory.ts](../AtomBase/src/services/learning/memory.ts)                 | Persistent storage       |
-| Research       | [research.ts](../AtomBase/src/services/learning/research.ts)             | Web research integration |
-| Error Analyzer | [error-analyzer.ts](../AtomBase/src/services/learning/error-analyzer.ts) | Error pattern analysis   |
-| Integration    | [integration.ts](../AtomBase/src/services/learning/integration.ts)       | Session integration      |
-
 ---
 
 ## Development Workflow

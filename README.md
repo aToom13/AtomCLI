@@ -270,16 +270,57 @@ _Multi-panel layout with file tree, task list, and live coding_
 
 </details>
 
-### Keyboard Shortcuts
+### Keyboard Shortcuts & Slash Commands
+
+**Quick Start**
 
 | Key           | Action                               |
 | ------------- | ------------------------------------ |
-| `Tab`         | Switch agent                         |
+| `Tab`         | Switch agent (build/plan/explore)    |
+| `Ctrl+A`      | Connect provider or select model     |
 | `Ctrl+P`      | Open command palette                 |
 | `Ctrl+C`      | Cancel current operation             |
-| `Shift+Enter` | Send amendment while AI is writing   |
 | `Ctrl+↑/↓`    | Navigate task sessions (Orchestrate) |
-| `Esc`         | Close dialogs                        |
+| `Shift+Enter` | Send amendment while AI is writing   |
+| `Escape`      | Cancel or close dialog               |
+
+**Session Commands**
+
+| Command    | Action                   |
+| ---------- | ------------------------ |
+| `/new`     | Create new session       |
+| `/fork`    | Fork from a message      |
+| `/compact` | Compress session context |
+| `/share`   | Share session link       |
+| `Ctrl+Z`   | Undo last message        |
+
+**Tools & Skills**
+
+| Command            | Action                     |
+| ------------------ | -------------------------- |
+| `/skill`           | List available skills      |
+| `/mcp`             | Toggle MCP servers         |
+| `/smart_model`     | Toggle smart model routing |
+| `@skillname`       | Load a skill inline        |
+| `atomcli features` | View all hidden features   |
+
+**File Commands**
+
+| Command   | Action                       |
+| --------- | ---------------------------- |
+| `/review` | Review uncommitted changes   |
+| `/export` | Export session to file       |
+| `/copy`   | Copy transcript to clipboard |
+| `Ctrl+R`  | Quick review                 |
+
+**Agent Modes**
+
+| Mode      | Description               |
+| --------- | ------------------------- |
+| `build`   | Default coding agent      |
+| `plan`    | Planning mode (read-only) |
+| `explore` | Codebase exploration      |
+| `agent`   | Autonomous mode (yolo)    |
 
 ---
 

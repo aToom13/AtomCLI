@@ -24,7 +24,7 @@
 
 ### Entry Point
 
-`src/shim.ts` - Main entry point
+`src/index.ts` - Main entry point
 
 ## Key Features
 
