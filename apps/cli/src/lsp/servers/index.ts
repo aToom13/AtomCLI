@@ -1,5 +1,0 @@
-export * from "./web"
-export * from "./script"
-export * from "./native"
-export * from "./managed"
-export * from "./config"
