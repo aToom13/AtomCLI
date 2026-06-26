@@ -8,6 +8,8 @@ import type { AssistantMessage, Session } from "@atomcli/sdk/v2"
 import { useKeybind } from "../../context/keybind"
 import { ChainProgressBar } from "@tui/component/chain-widget"
 import { useChain } from "@tui/context/chain"
+import { useSubAgents } from "@tui/context/subagent"
+import { Focusable } from "@tui/context/spatial"
 
 const Title = (props: { session: Accessor<Session> }) => {
   const { theme } = useTheme()
@@ -26,6 +28,33 @@ const ContextInfo = (props: { context: Accessor<string | undefined>; cost: Acces
         {props.context()} ({props.cost()})
       </text>
     </Show>
+  )
+}
+
+function AgentToggleButton() {
+  const { theme } = useTheme()
+  const subAgentCtx = useSubAgents()
+  const agentCount = () => subAgentCtx.agents().length
+  const isVisible = () => subAgentCtx.panelVisible()
+
+  return (
+    <Focusable id="agents-toggle" onPress={() => subAgentCtx.togglePanel()}>
+      {(focused: () => boolean) => (
+        <box
+          onMouseUp={() => subAgentCtx.togglePanel()}
+          paddingLeft={1}
+          paddingRight={1}
+          backgroundColor={focused() ? theme.primary : undefined}
+        >
+          <Show
+            when={agentCount() > 0}
+            fallback={<text fg={isVisible() ? theme.accent : theme.textMuted}>⊞ Agents</text>}
+          >
+            <text fg={isVisible() ? theme.accent : theme.textMuted}>⊞ {agentCount()} Agents</text>
+          </Show>
+        </box>
+      )}
+    </Focusable>
   )
 }
 
@@ -94,12 +123,16 @@ export function Header() {
               </text>
               <box flexGrow={1} flexShrink={1} />
               <ContextInfo context={context} cost={cost} />
+              <AgentToggleButton />
             </box>
           </Match>
           <Match when={true}>
             <box flexDirection="row" justifyContent="space-between" gap={1}>
               <Title session={session} />
-              <ContextInfo context={context} cost={cost} />
+              <box flexDirection="row" gap={1}>
+                <ContextInfo context={context} cost={cost} />
+                <AgentToggleButton />
+              </box>
             </box>
           </Match>
         </Switch>
@@ -110,4 +143,3 @@ export function Header() {
     </box>
   )
 }
-

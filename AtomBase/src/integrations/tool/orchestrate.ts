@@ -42,8 +42,9 @@ When smart_model_routing is enabled, each task automatically gets the best model
 \`\`\`json
 { "action": "execute", "workflowId": "<returned-id>" }
 \`\`\`
-→ Starts tasks in the background and returns immediately. You will be notified when complete.
-The notification will include a table with \`Session ID\`s. You MUST use these IDs if you need to abort/delete an agent.
+→ Starts tasks in the background and returns immediately. A brief completion summary
+will appear in the parent session when the workflow finishes. Full results are written to
+\`.atomcli/runs/<workflowId>/\` on disk for review.
 
 **STEP 3 (optional) - Status:**
 \`\`\`json
@@ -460,6 +461,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 }
               }
 
+              // H4: If workflow was aborted while we were processing, stop immediately
+              if (workflow.status !== "running") break
+
               const ready = getReadyTasks(workflow)
               if (ready.length === 0) break
 
@@ -525,7 +529,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 let lastAttemptOutput: string | undefined
                 let lastAttemptCount = 0
 
-                for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES && !taskSuccess; attempt++) {
+                for (
+                  let attempt = 0;
+                  attempt <= DEFAULT_MAX_RETRIES && !taskSuccess && workflow.status === "running";
+                  attempt++
+                ) {
                   lastAttemptCount = attempt
                   try {
                     // Try to reuse existing session for this agent type
@@ -578,7 +586,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       parentSessionID: ctx.sessionID,
                       agent: reviewerAgent,
                       model: reviewerModel,
-                      permissions: SubAgent.buildPermissions(parentPermissions),
+                      permissions: SubAgent.buildFromAgent(reviewerAgent),
                       parts: [{ type: "text", text: reviewPrompt }],
                       description: `[QA] ${task.id}`,
                     })
@@ -634,9 +642,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   }
                 }
 
-                if (!taskSuccess && lastError) {
+                if (!taskSuccess) {
                   result.status = "failed"
-                  result.error = lastError
+                  result.error = lastError ?? "Workflow may have been aborted — task did not complete"
                   result.completedAt = Date.now()
                   failedTasks.push(task.id)
 
@@ -686,7 +694,30 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             // Cleanup old workflows to prevent memory leaks
             cleanupOldWorkflows()
 
-            // Log completion (no system_notification — parent LLM stays asleep)
+            // Clear workflow timeout since we completed normally
+            clearTimeout(workflowTimeout)
+
+            // Inject brief completion summary so the parent session sees it on wake
+            try {
+              const state = failedTasks.length > 0 ? "completed_with_errors" : "completed"
+              const summary = [
+                "<system_notification>",
+                `Workflow **${params.workflowId}** ${state}.`,
+                `${completedTasks.length} tasks succeeded, ${failedTasks.length} failed (${workflow.tasks.length} total).`,
+                `Results: \`.atomcli/runs/${params.workflowId}/\``,
+                "</system_notification>",
+              ].join("\n")
+
+              await SessionPrompt.prompt({
+                sessionID: ctx.sessionID,
+                agent: ctx.agent,
+                noReply: true,
+                parts: [{ type: "text", text: summary }],
+              })
+            } catch {
+              // Parent may be busy — results are on disk
+            }
+
             log.info("workflow completed", {
               workflowId: params.workflowId,
               completed: completedTasks.length,
@@ -695,9 +726,40 @@ export const OrchestrateTool = Tool.define("orchestrate", {
               outputDir: `.atomcli/runs/${params.workflowId}/`,
             })
           } catch (err) {
-            log.error("workflow background execution failed", { error: (err as Error).message })
+            const errorMsg = (err as Error).message
+            log.error("workflow background execution failed", { error: errorMsg })
+            // Ensure the workflow is marked as failed so status() shows it
+            workflow.status = "failed"
+            // Clear workflow timeout since we already failed
+            clearTimeout(workflowTimeout)
           }
         }
+
+        // Workflow-level timeout: if the entire workflow doesn't finish in 10 minutes,
+        // cancel all running tasks and mark the workflow as failed.
+        // Individual tasks have their own retry logic; this is a safety net.
+        const WORKFLOW_TIMEOUT_MS = 10 * 60 * 1000
+        const workflowTimeout = setTimeout(() => {
+          if (workflow.status === "running") {
+            workflow.status = "failed"
+            for (const task of workflow.tasks) {
+              const r = workflow.results[task.id]
+              if (r.status === "running" && r.sessionId) {
+                SessionPrompt.cancel(r.sessionId)
+                r.error = "Workflow timed out"
+              } else if (r.status === "pending") {
+                r.status = "skipped"
+                r.error = "Skipped due to workflow timeout"
+              }
+            }
+            try {
+              Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+            } catch {
+              /* TUI may not be active */
+            }
+            log.error("workflow timed out", { workflowId: params.workflowId, taskCount: workflow.tasks.length })
+          }
+        }, WORKFLOW_TIMEOUT_MS)
 
         // Detach execution
         setTimeout(runWorkflow, 0)

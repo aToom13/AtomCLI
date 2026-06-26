@@ -29,7 +29,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "3.2.4-RCdebug",
+      "version": "3.2.4",
       "bin": {
         "atomcli": "./bin/atomcli",
       },

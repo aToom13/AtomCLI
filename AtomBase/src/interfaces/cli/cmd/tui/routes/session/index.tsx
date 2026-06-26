@@ -109,6 +109,13 @@ export function Session() {
     }
   })
 
+  // Sub-agent panel visibility toggle (F9) — state lives in SubAgentContext
+  useKeyboard(async (evt) => {
+    if (evt.name === "f9" && !evt.ctrl && !evt.meta && !evt.shift) {
+      subAgentCtx.togglePanel()
+    }
+  })
+
   // Revert Logic
   const revert = useRevert(session, messages)
 
@@ -391,11 +398,13 @@ export function Session() {
           <Toast />
         </box>
 
-        {/* Right: Sub-Agent Panel (auto-shows when agents are active) */}
-        <SubAgentPanel agents={subAgentCtx.agents()} />
+        {/* Right: Sub-Agent Panel (auto-shows when agents are active, toggle with F9) */}
+        <Show when={subAgentCtx.panelVisible()}>
+          <SubAgentPanel agents={subAgentCtx.agents()} onToggle={() => subAgentCtx.togglePanel()} />
+        </Show>
 
-        {/* Right: Code Panel (hides when agents are active) */}
-        <Show when={subAgentCtx.agents().length === 0}>
+        {/* Right: Code Panel (shows when panel is hidden OR no agents) */}
+        <Show when={!subAgentCtx.panelVisible() || subAgentCtx.agents().length === 0}>
           <CodePanel />
         </Show>
 

@@ -51,6 +51,21 @@ export namespace SubAgent {
     return inherited
   }
 
+  /**
+   * Build permissions from an agent's OWN definition instead of inheriting
+   * from the parent session.
+   *
+   * Uses the agent's permission rules as the base (instead of parent permissions)
+   * and merges with the base deny rules (todowrite/todoread/task).
+   *
+   * This is used for special agents like "reviewer" that should have
+   * restricted permissions ("*": "deny", read: { "*": "allow" }) regardless
+   * of what permissions the parent session has.
+   */
+  export function buildFromAgent(agent: Agent.Info): PermissionNext.Rule[] {
+    return PermissionNext.merge(agent.permission ?? [], BASE_DENIED_PERMISSIONS)
+  }
+
   export interface SpawnConfig {
     /** Parent session ID for hierarchy */
     parentSessionID: string
@@ -102,7 +117,9 @@ export namespace SubAgent {
             sessionId: session.id,
             description: config.description,
           })
-        } catch { /* TUI may not be available */ }
+        } catch {
+          /* TUI may not be available */
+        }
       }
     }
 
@@ -121,7 +138,9 @@ export namespace SubAgent {
           agentType: config.agent.name,
           description: config.description,
         })
-      } catch { /* TUI may not be available */ }
+      } catch {
+        /* TUI may not be available */
+      }
     }
 
     // Execute the prompt
@@ -152,7 +171,9 @@ export namespace SubAgent {
         sessionId: session.id,
         lastOutput: output.slice(0, 2000),
       })
-    } catch { /* TUI may not be available */ }
+    } catch {
+      /* TUI may not be available */
+    }
 
     return {
       sessionId: session.id,
