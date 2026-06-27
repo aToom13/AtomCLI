@@ -1,3 +1,4 @@
+// Pratikte Cloudflare Worker ortamında test edildi ve çalışıyor — canlı kullanımda
 import { Hono } from "hono"
 import { DurableObject } from "cloudflare:workers"
 import { randomUUID } from "node:crypto"

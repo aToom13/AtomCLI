@@ -112,7 +112,7 @@ export namespace Provider {
       const hasKey = await (async () => {
         const env = Env.all()
         if (input.env?.some((item) => env[item])) return true
-        if (input.id && await Auth.get(input.id)) return true
+        if (input.id && (await Auth.get(input.id))) return true
         const config = await Config.get()
         if (config.provider?.["atomcli"]?.options?.apiKey) return true
         return false
@@ -548,7 +548,7 @@ export namespace Provider {
           apiKey: token,
           organizationId,
           headers: {
-            "Authorization": `Bearer ${token}`,
+            Authorization: `Bearer ${token}`,
           },
         },
       }
@@ -663,13 +663,13 @@ export namespace Provider {
         },
         experimentalOver200K: model.cost?.context_over_200k
           ? {
-            cache: {
-              read: model.cost.context_over_200k.cache_read ?? 0,
-              write: model.cost.context_over_200k.cache_write ?? 0,
-            },
-            input: model.cost.context_over_200k.input,
-            output: model.cost.context_over_200k.output,
-          }
+              cache: {
+                read: model.cost.context_over_200k.cache_read ?? 0,
+                write: model.cost.context_over_200k.cache_write ?? 0,
+              },
+              input: model.cost.context_over_200k.input,
+              output: model.cost.context_over_200k.output,
+            }
           : undefined,
       },
       limit: {
@@ -733,9 +733,9 @@ export namespace Provider {
       const filteredModels = pickBy(database["opencode"].models, (model) => {
         // Test mode: if ATOMCLI_TEST_ALL_MODELS is set, do not filter any models from opencode
         if (typeof process !== "undefined" && process.env.ATOMCLI_TEST_ALL_MODELS === "1") {
-          return true;
+          return true
         }
-        
+
         // Filter for models that are completely free (zero cost)
         const inputCost = model.cost?.input ?? 0
         const outputCost = model.cost?.output ?? 0
@@ -747,14 +747,14 @@ export namespace Provider {
         id: "atomcli",
         name: "AtomCLI",
         models: mapValues(filteredModels, (model) => {
-          const isTestMode = typeof process !== "undefined" && process.env.ATOMCLI_TEST_ALL_MODELS === "1";
+          const isTestMode = typeof process !== "undefined" && process.env.ATOMCLI_TEST_ALL_MODELS === "1"
           return {
             ...model,
             providerID: "atomcli",
-            ...(isTestMode ? { status: "active" as const } : {})
-          };
+            ...(isTestMode ? { status: "active" as const } : {}),
+          }
         }),
-        options: { apiKey: "public" } // Hint that no API key is needed
+        options: { apiKey: "public" }, // Hint that no API key is needed
       }
 
       // Add AtomCLI-Free auto-routing virtual model
@@ -770,14 +770,12 @@ export namespace Provider {
           status: "active" as const,
           cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
           limit: {
-            context: Math.max(...allModels.map(m => m.limit?.context ?? 128000)),
-            output: Math.max(...allModels.map(m => m.limit?.output ?? 8192)),
+            context: Math.max(...allModels.map((m) => m.limit?.context ?? 128000)),
+            output: Math.max(...allModels.map((m) => m.limit?.output ?? 8192)),
           },
           variants: {},
         }
       }
-
-
     }
 
     // Add Kilocode provider - Cloud LLM gateway with device auth
@@ -806,7 +804,7 @@ export namespace Provider {
         })),
         options: {},
         env: [],
-        source: "custom"
+        source: "custom",
       }
       // Mock whisper-large-v3 if missing, using any available model as template
       if (!database["privatemode-ai"].models["whisper-large-v3"]) {
@@ -1022,7 +1020,10 @@ export namespace Provider {
             models: {},
           } as any
         }
-        const options = await plugin.auth.loader(() => Auth.get(providerID) as any, database[plugin.auth.provider])
+        const options = await plugin.auth.loader(
+          () => Auth.get(providerID) as any,
+          database[plugin.auth.provider] as any,
+        )
         mergeProvider(plugin.auth.provider, {
           source: "custom",
           options: options,
@@ -1040,7 +1041,7 @@ export namespace Provider {
           if (enterpriseAuth) {
             const enterpriseOptions = await plugin.auth.loader(
               () => Auth.get(enterpriseProviderID) as any,
-              database[enterpriseProviderID],
+              database[enterpriseProviderID] as any,
             )
             mergeProvider(enterpriseProviderID, {
               source: "custom",

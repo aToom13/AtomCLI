@@ -8,5 +8,5 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "version": "3.2.1-debug"
+  "version": "3.2.6"
 }

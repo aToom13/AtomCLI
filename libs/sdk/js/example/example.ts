@@ -1,4 +1,4 @@
-import { createAtomcliClient, createAtomcliServer } from "@atomcli/sdk"
+import { createAtomcliClient, createAtomcliServer } from "@atomcli/sdk/v2"
 
 const server = await createAtomcliServer()
 const client = createAtomcliClient({ baseUrl: server.url })

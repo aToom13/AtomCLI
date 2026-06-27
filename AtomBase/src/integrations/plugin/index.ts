@@ -2,7 +2,7 @@ import type { Hooks, PluginInput, Plugin as PluginInstance } from "@atomcli/plug
 import { Config } from "@/core/config/config"
 import { Bus } from "@/core/bus"
 import { Log } from "@/util/util/log"
-import { createAtomcliClient } from "@atomcli/sdk"
+import { createAtomcliClient } from "@atomcli/sdk/v2"
 import { Server } from "@/server/server"
 import { BunProc } from "@/util/bun"
 import { Instance } from "@/services/project/instance"
@@ -107,7 +107,6 @@ export namespace Plugin {
     const hooks = await state().then((x) => x.hooks)
     const config = await Config.get()
     for (const hook of hooks) {
-      // @ts-expect-error this is because we haven't moved plugin to sdk v2
       await hook.config?.(config)
     }
     Bus.subscribeAll(async (input) => {

@@ -1,6 +1,9 @@
 import z from "zod"
 import { Tool } from "./tool"
-import { execFileSync, execSync } from "child_process"
+import { execFile as execFileCb } from "child_process"
+import { promisify } from "util"
+
+const execFile = promisify(execFileCb)
 
 const DESCRIPTION = `Window and application management tool.
 
@@ -65,8 +68,8 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
         let output = "## Open Windows\n\n"
 
         try {
-          const windows = execFileSync("wmctrl", ["-l"], { encoding: "utf-8" })
-          const lines = windows.trim().split("\n").filter(Boolean)
+          const { stdout } = await execFile("wmctrl", ["-l"], { encoding: "utf-8" })
+          const lines = stdout.trim().split("\n").filter(Boolean)
 
           if (lines.length === 0) {
             output += "No windows found.\n"
@@ -110,8 +113,8 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
 
           // If window_title provided, find the window ID
           if (!targetId && params.window_title) {
-            const windows = execFileSync("wmctrl", ["-l"], { encoding: "utf-8" })
-            for (const line of windows.split("\n")) {
+            const { stdout } = await execFile("wmctrl", ["-l"], { encoding: "utf-8" })
+            for (const line of stdout.split("\n")) {
               if (line.toLowerCase().includes(params.window_title.toLowerCase())) {
                 targetId = line.split(/\s+/)[0]
                 break
@@ -127,8 +130,7 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
             }
           }
 
-          // Safe: using execFileSync with array args (no shell injection)
-          execFileSync("wmctrl", ["-i", "-a", targetId], { encoding: "utf-8" })
+          await execFile("wmctrl", ["-i", "-a", targetId], { encoding: "utf-8" })
 
           return {
             title: "Window Switched",
@@ -150,23 +152,29 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
         try {
           // Get active window using xdotool if available
           try {
-            const activeId = execFileSync("xdotool", ["getactivewindow"], { encoding: "utf-8" }).trim()
-            const activeName = execFileSync("xdotool", ["getwindowname", activeId], { encoding: "utf-8" }).trim()
+            const activeId = (await execFile("xdotool", ["getactivewindow"], { encoding: "utf-8" })).stdout.trim()
+            const activeName = (
+              await execFile("xdotool", ["getwindowname", activeId], { encoding: "utf-8" })
+            ).stdout.trim()
 
             output += `**Window ID:** ${activeId}\n`
             output += `**Title:** ${activeName}\n`
 
             // Get window class using xprop (xdotool getwindowclassname is unreliable)
             try {
-              const xpropOutput = execFileSync("xprop", ["-id", activeId, "WM_CLASS"], { encoding: "utf-8" }).trim()
+              const xpropOutput = (
+                await execFile("xprop", ["-id", activeId, "WM_CLASS"], { encoding: "utf-8" })
+              ).stdout.trim()
               const classMatch = xpropOutput.match(/WM_CLASS.*=\s*"([^"]*)"/)
               if (classMatch) {
                 output += `**Class:** ${classMatch[1]}\n`
               }
-            } catch { /* xprop optional — class info not critical */ }
+            } catch {
+              /* xprop optional — class info not critical */
+            }
           } catch {
             // Fallback to wmctrl
-            const windows = execFileSync("wmctrl", ["-l"], { encoding: "utf-8" })
+            const { stdout: windows } = await execFile("wmctrl", ["-l"], { encoding: "utf-8" })
             output += "Could not determine active window. Open windows:\n" + windows
           }
         } catch (e) {
@@ -190,7 +198,7 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
         }
 
         try {
-          execFileSync("wmctrl", ["-i", "-c", params.window_id], { encoding: "utf-8" })
+          await execFile("wmctrl", ["-i", "-c", params.window_id], { encoding: "utf-8" })
 
           return {
             title: "Window Closed",
@@ -216,10 +224,9 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
         }
 
         try {
-          execFileSync("xdotool", [
-            "windowsize", params.window_id,
-            String(params.width), String(params.height),
-          ], { encoding: "utf-8" })
+          await execFile("xdotool", ["windowsize", params.window_id, String(params.width), String(params.height)], {
+            encoding: "utf-8",
+          })
 
           return {
             title: "Window Resized",
@@ -245,10 +252,9 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
         }
 
         try {
-          execFileSync("xdotool", [
-            "windowmove", params.window_id,
-            String(params.x), String(params.y),
-          ], { encoding: "utf-8" })
+          await execFile("xdotool", ["windowmove", params.window_id, String(params.x), String(params.y)], {
+            encoding: "utf-8",
+          })
 
           return {
             title: "Window Moved",
@@ -274,7 +280,7 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
         }
 
         try {
-          execFileSync("xdotool", ["windowminimize", params.window_id], { encoding: "utf-8" })
+          await execFile("xdotool", ["windowminimize", params.window_id], { encoding: "utf-8" })
 
           return {
             title: "Window Minimized",
@@ -301,7 +307,7 @@ export const AppSwitcherTool = Tool.define("app_switcher", {
 
         try {
           // wmctrl can maximize: -b add,maximized_vert,maximized_horz
-          execFileSync("wmctrl", ["-i", "-r", params.window_id, "-b", "add,maximized_vert,maximized_horz"], {
+          await execFile("wmctrl", ["-i", "-r", params.window_id, "-b", "add,maximized_vert,maximized_horz"], {
             encoding: "utf-8",
           })
 

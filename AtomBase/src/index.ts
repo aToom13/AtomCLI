@@ -28,7 +28,6 @@ import { AcpCommand } from "@/interfaces/cli/cmd/acp"
 import { EOL } from "os"
 import { PrCommand } from "@/interfaces/cli/cmd/pr"
 import { SessionCommand } from "@/interfaces/cli/cmd/session"
-import { FlowCommand } from "@/interfaces/cli/cmd/flow"
 import { FeaturesCommand } from "@/interfaces/cli/cmd/features"
 import { TestGenCommand } from "@/interfaces/cli/cmd/test-gen"
 import { DocsCommand } from "@/interfaces/cli/cmd/docs"
@@ -127,7 +126,6 @@ const cli = yargs(hideBin(process.argv))
   .command(GithubCommand)
   .command(PrCommand)
   .command(SessionCommand)
-  .command(FlowCommand)
   .command(FeaturesCommand)
   .command(TestGenCommand)
   .command(DocsCommand)
@@ -208,7 +206,7 @@ try {
         // Start the background learner detached from the current terminal
         const child = spawn(process.argv[0], [process.argv[1], "_daemon-learn"], {
           detached: true,
-          stdio: "ignore"
+          stdio: "ignore",
         })
         // Unref allows the current CLI to exit immediately
         child.unref()

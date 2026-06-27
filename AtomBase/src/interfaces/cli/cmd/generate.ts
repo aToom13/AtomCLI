@@ -13,7 +13,7 @@ export const GenerateCommand = {
           {
             lang: "js",
             source: [
-              `import { createAtomcliClient } from "@atomcli/sdk`,
+              `import { createAtomcliClient } from "@atomcli/sdk/v2`,
               ``,
               `const client = createAtomcliClient()`,
               `await client.${operation.operationId}({`,

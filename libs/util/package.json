@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/util",
-  "version": "3.2.1-debug",
+  "version": "3.2.6",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
@@ -17,6 +17,8 @@
   },
   "devDependencies": {
     "typescript": "catalog:",
-    "@types/bun": "catalog:"
+    "@types/bun": "catalog:",
+    "ai": "catalog:",
+    "@opentui/core": "0.1.72"
   }
 }

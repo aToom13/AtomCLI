@@ -27,7 +27,7 @@ import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
 import { Log } from "@/util/util/log"
-import type { Path } from "@atomcli/sdk"
+import type { Path } from "@atomcli/sdk/v2"
 
 import { handleSessionEvent } from "./handlers/session"
 import { handleMessageEvent } from "./handlers/message"
@@ -111,7 +111,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       mcp_resource: {},
       formatter: [],
       vcs: undefined,
-      path: { state: "", config: "", worktree: "", directory: "" },
+      path: { home: "", state: "", config: "", worktree: "", directory: "" },
     })
 
     const sdk = useSDK()
@@ -287,12 +287,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               }
               draft.optimistic_message[sessionID].push(msg)
               draft.part[msg.id] = parts
-            })
+            }),
           )
         },
         clear(sessionID: string) {
           setStore("optimistic_message", sessionID, [])
-        }
+        },
       },
       bootstrap,
     }

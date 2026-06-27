@@ -5,20 +5,7 @@ import DESCRIPTION from "./find.txt"
 import { Ripgrep } from "@/services/file/ripgrep"
 import { Instance } from "@/services/project/instance"
 import { assertExternalDirectory } from "./external-directory"
-
-// Preprocess to handle JSON string serialization from LLM tool calls
-const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
-  return z.preprocess((val) => {
-    if (typeof val === "string") {
-      try {
-        return JSON.parse(val)
-      } catch {
-        return val
-      }
-    }
-    return val
-  }, schema)
-}
+import { parseJsonIfString } from "@/util/util/zod"
 
 export const IGNORE_PATTERNS = [
   "node_modules/",

@@ -429,8 +429,8 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
               const tokens = await refreshAccessToken(currentAuth.refresh)
               const newAccountId = extractAccountId(tokens) || authWithAccount.accountId
               await input.client.auth.set({
-                path: { id: "codex" },
-                body: {
+                providerID: "codex",
+                auth: {
                   type: "oauth",
                   refresh: tokens.refresh_token,
                   access: tokens.access_token,

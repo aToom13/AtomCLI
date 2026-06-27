@@ -2,20 +2,7 @@ import z from "zod"
 import { Tool } from "./tool"
 import { Question } from "@/interfaces/question"
 import DESCRIPTION from "./question.txt"
-
-// Preprocess to handle JSON string serialization from LLM tool calls
-const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
-  return z.preprocess((val) => {
-    if (typeof val === "string") {
-      try {
-        return JSON.parse(val)
-      } catch {
-        return val
-      }
-    }
-    return val
-  }, schema)
-}
+import { parseJsonIfString } from "@/util/util/zod"
 
 export const QuestionTool = Tool.define("question", {
   description: DESCRIPTION,

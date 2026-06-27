@@ -65,6 +65,7 @@ export namespace Keybind {
         meta: false,
         shift: false,
         leader: false,
+        super: false,
         name: "",
       }
 

@@ -9,6 +9,11 @@
     "allowJs": true,
     "noEmit": true,
     "strict": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["../../AtomBase/src/*"]
+    }
   }
 }

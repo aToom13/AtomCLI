@@ -3,11 +3,25 @@ import { Tool } from "./tool"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { Log } from "@/util/util/log"
+import { parseJsonIfString } from "@/util/util/zod"
 
 const log = Log.create({ service: "chainupdate" })
 
 // Track active chains per session to detect and handle duplicate starts
+// Bounded to prevent memory leaks on long-running sessions
 const ACTIVE_CHAINS = new Map<string, { startedAt: number; steps: number }>()
+const MAX_ACTIVE_CHAINS = 1000
+
+function trackActiveChain(sessionID: string, steps: number) {
+  // Evict oldest entry if at capacity
+  if (ACTIVE_CHAINS.size >= MAX_ACTIVE_CHAINS) {
+    const oldestKey = ACTIVE_CHAINS.keys().next().value
+    if (oldestKey !== undefined) {
+      ACTIVE_CHAINS.delete(oldestKey)
+    }
+  }
+  ACTIVE_CHAINS.set(sessionID, { startedAt: Date.now(), steps })
+}
 
 const DESCRIPTION = `Manage the task chain progress bar in the UI. Shows your work plan and real-time progress to the user.
 
@@ -56,21 +70,6 @@ const SubStepSchema = z.object({
   name: z.string(),
   description: z.string(),
 })
-
-// Preprocess to handle JSON string serialization from LLM tool calls
-// LLM sometimes sends arrays/objects as JSON strings instead of native types
-const parseJsonIfString = <T extends z.ZodTypeAny>(schema: T) => {
-  return z.preprocess((val) => {
-    if (typeof val === "string") {
-      try {
-        return JSON.parse(val)
-      } catch {
-        return val
-      }
-    }
-    return val
-  }, schema)
-}
 
 export const ChainUpdateTool = Tool.define("chainupdate", {
   description: DESCRIPTION,
@@ -188,7 +187,7 @@ export const ChainUpdateTool = Tool.define("chainupdate", {
           await Bus.publish(TuiEvent.ChainUpdateStep, { status: "running", sessionID: ctx.sessionID })
         }
         // Track this chain
-        ACTIVE_CHAINS.set(ctx.sessionID, { startedAt: Date.now(), steps: params.steps?.length ?? 0 })
+        trackActiveChain(ctx.sessionID, params.steps?.length ?? 0)
         return {
           title: `Chain started with ${params.steps?.length ?? 0} steps`,
           output: `Chain initialized. Update status frequently, mark todos done, and use sub_plan for issues.`,
