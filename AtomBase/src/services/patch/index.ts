@@ -2,6 +2,8 @@ import z from "zod"
 import * as path from "path"
 import * as fs from "fs/promises"
 import { Log } from "@/util/util/log"
+import { Bus } from "@/core/bus"
+import { FileEvent } from "@/services/file/event"
 
 export namespace Patch {
   const log = Log.create({ service: "patch" })
@@ -469,21 +471,22 @@ export namespace Patch {
     for (const hunk of hunks) {
       switch (hunk.type) {
         case "add":
-          // Create parent directories
+          // Ensure parent directory exists
           const addDir = path.dirname(hunk.path)
           if (addDir !== "." && addDir !== "/") {
             await fs.mkdir(addDir, { recursive: true })
           }
-
           await fs.writeFile(hunk.path, hunk.contents, "utf-8")
           added.push(hunk.path)
           log.info(`Added file: ${hunk.path}`)
+          await Bus.publish(FileEvent.Created, { paths: [hunk.path] })
           break
 
         case "delete":
           await fs.unlink(hunk.path)
           deleted.push(hunk.path)
           log.info(`Deleted file: ${hunk.path}`)
+          await Bus.publish(FileEvent.Deleted, { paths: [hunk.path] })
           break
 
         case "update":
@@ -500,6 +503,8 @@ export namespace Patch {
             await fs.unlink(hunk.path)
             modified.push(hunk.move_path)
             log.info(`Moved file: ${hunk.path} -> ${hunk.move_path}`)
+            await Bus.publish(FileEvent.Deleted, { paths: [hunk.path] })
+            await Bus.publish(FileEvent.Created, { paths: [hunk.move_path] })
           } else {
             // Regular update
             await fs.writeFile(hunk.path, fileUpdate.content, "utf-8")

@@ -46,7 +46,7 @@ export const WriteTool = Tool.define("write", {
     })
 
     await Bun.write(filepath, params.content)
-    await Bus.publish(FileEvent.Edited, {
+    await Bus.publish(exists ? FileEvent.Edited : FileEvent.Created, {
       file: filepath,
     })
     FileTime.read(ctx.sessionID, filepath)

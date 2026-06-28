@@ -34,14 +34,9 @@ import { Flag } from "@/interfaces/flag/flag"
 import { Log } from "@/util/util/log"
 import { LspTool } from "./lsp"
 import { Truncate } from "./truncation"
-import { SysadminTool } from "./sysadmin"
 import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
-import { ScreenCaptureTool } from "./screen-capture"
-import { AppSwitcherTool } from "./app-switcher"
-import { FileWatcherTool } from "./file-watcher"
 import { SelfMaintenanceTool } from "./self-maintenance"
-
 
 import { OrchestrateTool } from "./orchestrate"
 
@@ -111,7 +106,6 @@ export namespace ToolRegistry {
     const config = await Config.get()
 
     return [
-
       ...(Flag.ATOMCLI_CLIENT === "cli" ? [QuestionTool] : []),
       BashTool,
       ReadTool,
@@ -131,12 +125,8 @@ export namespace ToolRegistry {
       SkillAddTool,
       McpAddTool,
       MemoryTool,
-      SysadminTool,
       BrowserTool,
       SystemHealthTool,
-      ScreenCaptureTool,
-      AppSwitcherTool,
-      FileWatcherTool,
       SelfMaintenanceTool,
 
       OrchestrateTool,

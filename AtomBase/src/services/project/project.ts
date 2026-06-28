@@ -1,5 +1,6 @@
 import z from "zod"
 import fs from "fs/promises"
+import os from "os"
 import { Filesystem } from "@/util/util/filesystem"
 import path from "path"
 import { $ } from "bun"
@@ -163,8 +164,8 @@ export namespace Project {
 
       return {
         id: "global",
-        worktree: "/",
-        sandbox: "/",
+        worktree: os.homedir(),
+        sandbox: os.homedir(),
         vcs: Info.shape.vcs.parse(Flag.ATOMCLI_FAKE_VCS),
       }
     })

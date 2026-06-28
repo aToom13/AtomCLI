@@ -1,9 +1,9 @@
 /**
  * Code Review Command
- * 
+ *
  * Automatically reviews GitHub/GitLab PRs for code quality, security, and performance.
  * Adds comments and suggestions directly to PRs.
- * 
+ *
  * Usage: atomcli review --pr=123
  */
 
@@ -55,23 +55,18 @@ export namespace CodeReview {
   /**
    * Get PR diff from GitHub
    */
-  export async function getGitHubPRDiff(
-    repo: string,
-    pr: number,
-    token?: string
-  ): Promise<string> {
-    const authHeader = token ? `-H "Authorization: token ${token}"` : ""
+  export async function getGitHubPRDiff(repo: string, pr: number, token?: string): Promise<string> {
     const url = `https://api.github.com/repos/${repo}/pulls/${pr}`
 
-    const proc = Bun.spawn(
-      ["bash", "-c", `curl -s ${authHeader} -H "Accept: application/vnd.github.v3.diff" ${url}`],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    )
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.v3.diff",
+    }
+    if (token) {
+      headers["Authorization"] = `token ${token}`
+    }
 
-    const diff = await new Response(proc.stdout).text()
+    const res = await fetch(url, { headers })
+    const diff = await res.text()
     return diff
   }
 
@@ -128,7 +123,13 @@ export namespace CodeReview {
       }
 
       // Hunk content
-      if (currentHunk && !line.startsWith("diff") && !line.startsWith("index") && !line.startsWith("---") && !line.startsWith("+++")) {
+      if (
+        currentHunk &&
+        !line.startsWith("diff") &&
+        !line.startsWith("index") &&
+        !line.startsWith("---") &&
+        !line.startsWith("+++")
+      ) {
         currentHunk.lines.push(line)
         if (line.startsWith("+") && !line.startsWith("+++") && currentFile) {
           currentFile.additions++
@@ -152,7 +153,7 @@ export namespace CodeReview {
   export async function reviewFile(
     file: string,
     diff: string,
-    hunks: Array<{ oldStart: number; newStart: number; lines: string[] }>
+    hunks: Array<{ oldStart: number; newStart: number; lines: string[] }>,
   ): Promise<ReviewComment[]> {
     const agent = await Agent.get("general")
     if (!agent) throw new Error("General agent not found")
@@ -238,32 +239,28 @@ If no issues found, return an empty array [].`
     repo: string,
     pr: number,
     result: ReviewResult,
-    token?: string
+    token?: string,
   ): Promise<void> {
-    const authHeader = token ? `-H "Authorization: token ${token}"` : ""
     const baseUrl = `https://api.github.com/repos/${repo}/pulls/${pr}`
 
     // Post review summary as a comment
     const summaryBody = generateReviewSummary(result)
 
-    const proc = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `curl -s -X POST ${authHeader} -H "Content-Type: application/json" ${baseUrl}/reviews -d '${JSON.stringify(
-          {
-            body: summaryBody,
-            event: result.stats.errors > 0 ? "REQUEST_CHANGES" : "COMMENT",
-          }
-        )}'`,
-      ],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    )
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    }
+    if (token) {
+      headers["Authorization"] = `token ${token}`
+    }
 
-    await proc.exited
+    await fetch(`${baseUrl}/reviews`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        body: summaryBody,
+        event: result.stats.errors > 0 ? "REQUEST_CHANGES" : "COMMENT",
+      }),
+    })
 
     // Post individual line comments
     for (const comment of result.comments) {
@@ -277,33 +274,30 @@ If no issues found, return an empty array [].`
     repo: string,
     pr: number,
     comment: ReviewComment,
-    token?: string
+    token?: string,
   ): Promise<void> {
-    const authHeader = token ? `-H "Authorization: token ${token}"` : ""
     const url = `https://api.github.com/repos/${repo}/pulls/${pr}/comments`
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    }
+    if (token) {
+      headers["Authorization"] = `token ${token}`
+    }
 
     const body = {
       path: comment.file,
       line: comment.line,
-      body: `**${comment.severity.toUpperCase()}** (${comment.category}): ${comment.message}${comment.suggestion ? `\n\n**Suggestion:** ${comment.suggestion}` : ""
-        }`,
+      body: `**${comment.severity.toUpperCase()}** (${comment.category}): ${comment.message}${
+        comment.suggestion ? `\n\n**Suggestion:** ${comment.suggestion}` : ""
+      }`,
     }
 
-    const proc = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `curl -s -X POST ${authHeader} -H "Content-Type: application/json" ${url} -d '${JSON.stringify(
-          body
-        )}'`,
-      ],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    )
-
-    await proc.exited
+    await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    })
   }
 
   function generateReviewSummary(result: ReviewResult): string {
@@ -405,9 +399,9 @@ Severities: ${severities.join(", ")}
 
 Top issues:
 ${comments
-        .slice(0, 5)
-        .map((c) => `- ${c.category}: ${c.message}`)
-        .join("\n")}
+  .slice(0, 5)
+  .map((c) => `- ${c.category}: ${c.message}`)
+  .join("\n")}
 
 Provide a brief, constructive summary.`
 
@@ -511,11 +505,14 @@ export const ReviewCommand = cmd({
 
           if (result.comments.length > 0) {
             console.log("\n### Comments by File\n")
-            const byFile = result.comments.reduce((acc, c) => {
-              if (!acc[c.file]) acc[c.file] = []
-              acc[c.file].push(c)
-              return acc
-            }, {} as Record<string, CodeReview.ReviewComment[]>)
+            const byFile = result.comments.reduce(
+              (acc, c) => {
+                if (!acc[c.file]) acc[c.file] = []
+                acc[c.file].push(c)
+                return acc
+              },
+              {} as Record<string, CodeReview.ReviewComment[]>,
+            )
 
             for (const [file, comments] of Object.entries(byFile)) {
               console.log(`\n**${file}**`)
@@ -527,11 +524,7 @@ export const ReviewCommand = cmd({
 
           // Save to file if requested
           if (args.output) {
-            await fs.writeFile(
-              args.output,
-              JSON.stringify(result, null, 2),
-              "utf-8"
-            )
+            await fs.writeFile(args.output, JSON.stringify(result, null, 2), "utf-8")
             console.log(`\n📄 Results saved to: ${args.output}`)
           }
 
@@ -554,7 +547,7 @@ export const ReviewCommand = cmd({
           console.error("Error:", error instanceof Error ? error.message : error)
           process.exit(1)
         }
-      }
+      },
     })
   },
 })

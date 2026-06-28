@@ -2,6 +2,7 @@ import z from "zod"
 import { spawn } from "child_process"
 import { Tool } from "./tool"
 import path from "path"
+import * as os from "os"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "@/util/util/log"
 import { Instance } from "@/services/project/instance"
@@ -39,7 +40,8 @@ function validateCommand(command: string): boolean {
     if (criticalPatterns.test(command)) {
       const match = command.match(criticalPatterns)
       throw new Error(
-        `Command contains critical injection pattern: "${match?.[0]}". ` + `Command substitution is never allowed in test mode.`,
+        `Command contains critical injection pattern: "${match?.[0]}". ` +
+          `Command substitution is never allowed in test mode.`,
       )
     }
   }
@@ -115,12 +117,12 @@ export const BashTool = Tool.define("bash", async () => {
         const allowedBase = path.resolve(Instance.worktree || Instance.directory)
 
         // In test mode, allow /tmp directory for test files
-        const isAllowed = isTestMode && resolvedCwd.startsWith("/tmp")
+        const isAllowed = isTestMode && resolvedCwd.startsWith(os.tmpdir())
 
         if (!resolvedCwd.startsWith(allowedBase) && !isAllowed) {
           throw new Error(
             `Working directory "${params.workdir}" is outside the allowed project boundaries. ` +
-            `For security, commands can only run within the project directory.`,
+              `For security, commands can only run within the project directory.`,
           )
         }
       }
@@ -164,12 +166,7 @@ export const BashTool = Tool.define("bash", async () => {
         if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown"].includes(command[0])) {
           for (const arg of command.slice(1)) {
             if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
-            const resolved = await $`realpath ${arg}`
-              .cwd(cwd)
-              .quiet()
-              .nothrow()
-              .text()
-              .then((x) => x.trim())
+            const resolved = path.resolve(cwd, arg)
             log.info("resolved path", { arg, resolved })
             if (resolved) {
               // Git Bash on Windows returns Unix-style paths like /c/Users/...

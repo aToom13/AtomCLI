@@ -206,6 +206,7 @@ try {
         // Start the background learner detached from the current terminal
         const child = spawn(process.argv[0], [process.argv[1], "_daemon-learn"], {
           detached: true,
+          windowsHide: true,
           stdio: "ignore",
         })
         // Unref allows the current CLI to exit immediately

@@ -1,6 +1,7 @@
 import { cmd } from "@/interfaces/cli/cmd/cmd"
 import { Instance } from "@/services/project/instance"
 import path from "path"
+import { fileURLToPath } from "url"
 import { Server } from "@/server/server"
 import { upgrade } from "@/interfaces/cli/upgrade"
 import { withNetworkOptions, resolveNetworkOptions } from "@/interfaces/cli/network"
@@ -25,9 +26,9 @@ export const TuiSpawnCommand = cmd({
         "run",
         "--conditions",
         "browser",
-        new URL("../../../index.ts", import.meta.url).pathname,
+        fileURLToPath(new URL("../../../index.ts", import.meta.url)),
       )
-      cwd = new URL("../../../../", import.meta.url).pathname
+      cwd = fileURLToPath(new URL("../../../../", import.meta.url))
     } else cmd.push(process.execPath)
     cmd.push("attach", server.url.toString(), "--dir", args.project ? path.resolve(args.project) : process.cwd())
     const proc = Bun.spawn({

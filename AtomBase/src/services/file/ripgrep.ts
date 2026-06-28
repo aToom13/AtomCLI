@@ -254,7 +254,11 @@ export namespace Ripgrep {
     const timeout = input.timeout ?? FILES_TIMEOUT_MS
     const timer = setTimeout(() => {
       log.warn("ripgrep files timeout, killing process", { cwd: input.cwd, timeout })
-      try { proc.kill() } catch { /* already exited */ }
+      try {
+        proc.kill()
+      } catch {
+        /* already exited */
+      }
     }, timeout)
     // Prevent this timer from holding the event loop open after all work is done.
     // The finally block always calls clearTimeout(timer), so this is safe.
@@ -409,7 +413,8 @@ export namespace Ripgrep {
     limit?: number
     follow?: boolean
   }) {
-    const args = [`${await filepath()}`, "--json", "--hidden", "--glob='!.git/*'"]
+    const rgPath = await filepath()
+    const args = ["--json", "--hidden", "--glob=!.git/*"]
     if (input.follow !== false) args.push("--follow")
 
     if (input.glob) {
@@ -425,14 +430,23 @@ export namespace Ripgrep {
     args.push("--")
     args.push(input.pattern)
 
-    const command = args.join(" ")
-    const result = await $`${{ raw: command }}`.cwd(input.cwd).quiet().nothrow()
-    if (result.exitCode !== 0) {
+    const proc = Bun.spawn({
+      cmd: [rgPath, ...args],
+      cwd: input.cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+
+    const stdout = await Bun.readableStreamToText(proc.stdout)
+    const stderr = await Bun.readableStreamToText(proc.stderr)
+    await proc.exited
+
+    if (proc.exitCode !== 0) {
       return []
     }
 
     // Single-pass: parse, filter, and extract in one loop
-    const text = result.text().trim()
+    const text = stdout.trim()
     if (!text) return []
 
     const results: any[] = []

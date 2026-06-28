@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, "..");
+const pathSep = process.platform === "win32" ? ";" : ":";
 
 // Execute src/index.ts
 // We set CWD to projectRoot so Bun resolves dependencies (react, etc.) correctly from AtomBase/node_modules
@@ -18,7 +19,7 @@ const result = spawnSync("bun", ["run", "--conditions=browser", join(projectRoot
     ATOMCLI_CWD: process.cwd(),
     ATOMCLI_INSTALL_DIR: projectRoot,
     // Add path to node_modules/bin to PATH so invoked tools (like npx) can find them if needed
-    PATH: `${join(projectRoot, "node_modules", ".bin")}:${process.env.PATH}`
+    PATH: `${join(projectRoot, "node_modules", ".bin")}${pathSep}${process.env.PATH}`
   }
 });
 

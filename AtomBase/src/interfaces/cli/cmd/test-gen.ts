@@ -1,10 +1,10 @@
 /**
  * Test Generation Command
- * 
+ *
  * Automatically generates unit tests for source files.
  * Supports Jest, Vitest, and Bun test frameworks.
  * Detects testable functions and generates comprehensive test cases.
- * 
+ *
  * Usage: atomcli test-gen --file=src/utils.ts
  */
 
@@ -20,6 +20,7 @@ import { Session } from "@/core/session"
 import { Config } from "@/core/config/config"
 import { Write } from "@/integrations/tool/write"
 import { Bash } from "@/integrations/tool/bash"
+import { Shell } from "@/interfaces/shell/shell"
 import { Instance } from "@/services/project/instance"
 import path from "path"
 import fs from "fs/promises"
@@ -68,8 +69,8 @@ export namespace TestGen {
 
       // Check for config files
       const files = await fs.readdir(".")
-      if (files.some(f => f.includes("vitest.config"))) return "vitest"
-      if (files.some(f => f.includes("jest.config"))) return "jest"
+      if (files.some((f) => f.includes("vitest.config"))) return "vitest"
+      if (files.some((f) => f.includes("jest.config"))) return "jest"
 
       return "unknown"
     } catch (e) {
@@ -150,7 +151,10 @@ export namespace TestGen {
 
   function parseParameters(params: string): string[] {
     if (!params.trim()) return []
-    return params.split(",").map(p => p.trim().split(/[\s:=]/)[0]).filter(Boolean)
+    return params
+      .split(",")
+      .map((p) => p.trim().split(/[\s:=]/)[0])
+      .filter(Boolean)
   }
 
   /**
@@ -178,7 +182,7 @@ export namespace TestGen {
     sourcePath: string,
     functions: TestableFunction[],
     framework: TestFramework,
-    includeEdgeCases: boolean = true
+    includeEdgeCases: boolean = true,
   ): Promise<string> {
     const sourceContent = await fs.readFile(sourcePath, "utf-8")
 
@@ -213,9 +217,7 @@ export namespace TestGen {
       model,
       system: [getTestGenSystemPrompt(framework)],
       abort: abortController.signal,
-      messages: [
-        { role: "user", content: prompt }
-      ],
+      messages: [{ role: "user", content: prompt }],
       tools: {},
     })
 
@@ -228,12 +230,14 @@ export namespace TestGen {
     sourceContent: string,
     functions: TestableFunction[],
     framework: TestFramework,
-    includeEdgeCases: boolean
+    includeEdgeCases: boolean,
   ): string {
-    const functionList = functions.map(f => {
-      const params = f.parameters.join(", ")
-      return `- ${f.name}(${params}) [${f.type}]${f.isExported ? " (exported)" : ""}`
-    }).join("\n")
+    const functionList = functions
+      .map((f) => {
+        const params = f.parameters.join(", ")
+        return `- ${f.name}(${params}) [${f.type}]${f.isExported ? " (exported)" : ""}`
+      })
+      .join("\n")
 
     return `Generate comprehensive unit tests for the following TypeScript/JavaScript code.
 
@@ -300,11 +304,7 @@ describe("myFunction", () => {
   /**
    * Write test file to disk
    */
-  export async function writeTestFile(
-    testPath: string,
-    content: string,
-    overwrite: boolean = false
-  ): Promise<void> {
+  export async function writeTestFile(testPath: string, content: string, overwrite: boolean = false): Promise<void> {
     // Check if file exists
     try {
       await fs.access(testPath)
@@ -337,7 +337,9 @@ describe("myFunction", () => {
           command = `bun test "${testPath}"`
       }
 
-      const result = await Bun.spawn(["bash", "-c", command], {
+      const shell = Shell.acceptable()
+      const isWin = process.platform === "win32"
+      const result = await Bun.spawn(isWin ? [shell, "/c", command] : [shell, "-c", command], {
         stdout: "pipe",
         stderr: "pipe",
       })
@@ -399,7 +401,7 @@ export const TestGenCommand = cmd({
         directory: process.cwd(),
         fn: async () => {
           // Detect framework
-          const framework = (args.framework || await TestGen.detectFramework()) as TestGen.TestFramework
+          const framework = (args.framework || (await TestGen.detectFramework())) as TestGen.TestFramework
           if (framework === "unknown") {
             log.error("Could not detect test framework. Please specify with --framework")
             process.exit(1)
@@ -424,12 +426,7 @@ export const TestGenCommand = cmd({
 
           // Generate tests
           console.log(`Generating tests for ${functions.length} functions...`)
-          const testCode = await TestGen.generateTests(
-            args.file,
-            functions,
-            framework,
-            args.edgeCases
-          )
+          const testCode = await TestGen.generateTests(args.file, functions, framework, args.edgeCases)
 
           // Write test file
           await TestGen.writeTestFile(testPath, testCode, args.overwrite)
@@ -446,7 +443,7 @@ export const TestGenCommand = cmd({
               process.exit(1)
             }
           }
-        }
+        },
       })
     } catch (error) {
       log.error("test generation failed", { error })

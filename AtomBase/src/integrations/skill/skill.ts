@@ -78,10 +78,10 @@ export namespace Skill {
       }),
     )
     // Also include global ~/.atomcli/skills/ and ~/.claude/skills/ (fallback)
-    const globalAtom = Global.Path.skills  // ~/.atomcli/skills/
-    const globalClaude = `${Global.Path.home}/.claude`
+    const globalAtom = Global.Path.skills // ~/.atomcli/skills/
+    const globalClaude = path.join(Global.Path.home, ".claude")
     if (await exists(globalAtom)) {
-      skillDirs.push(path.dirname(globalAtom))  // Add ~/.atomcli/ to scan for skills subdir
+      skillDirs.push(path.dirname(globalAtom)) // Add ~/.atomcli/ to scan for skills subdir
     }
     if (await exists(globalClaude)) {
       skillDirs.push(globalClaude)
@@ -89,10 +89,10 @@ export namespace Skill {
 
     // Add bundled skills from installation directory
     if (Flag.ATOMCLI_INSTALL_DIR) {
-      const installAtom = `${Flag.ATOMCLI_INSTALL_DIR}/.atomcli`
+      const installAtom = path.join(Flag.ATOMCLI_INSTALL_DIR, ".atomcli")
       if (await exists(installAtom)) skillDirs.push(installAtom)
 
-      const installClaude = `${Flag.ATOMCLI_INSTALL_DIR}/.claude`
+      const installClaude = path.join(Flag.ATOMCLI_INSTALL_DIR, ".claude")
       if (await exists(installClaude)) skillDirs.push(installClaude)
     } else {
       // Fallback for compiled binary: check relative to executable

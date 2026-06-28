@@ -349,11 +349,11 @@ export namespace Config {
       {
         cwd: dir,
       },
-    ).catch(() => { })
+    ).catch(() => {})
 
     // Install any additional dependencies defined in the package.json
     // This allows local plugins and custom tools to use external packages
-    await BunProc.run(["install"], { cwd: dir }).catch(() => { })
+    await BunProc.run(["install"], { cwd: dir }).catch(() => {})
   }
 
   const COMMAND_GLOB = new Bun.Glob("{command,commands}/**/*.md")
@@ -369,12 +369,13 @@ export namespace Config {
       if (!md.data) continue
 
       const name = (() => {
+        const normalizedItem = item.replaceAll("\\", "/")
         const patterns = ["/.atomcli/command/", "/command/"]
-        const pattern = patterns.find((p) => item.includes(p))
+        const pattern = patterns.find((p) => normalizedItem.includes(p))
 
         if (pattern) {
-          const index = item.indexOf(pattern)
-          return item.slice(index + pattern.length, -3)
+          const index = normalizedItem.indexOf(pattern)
+          return normalizedItem.slice(index + pattern.length, -3)
         }
         return path.basename(item, ".md")
       })()
@@ -409,10 +410,11 @@ export namespace Config {
 
       // Extract relative path from agent folder for nested agents
       let agentName = path.basename(item, ".md")
-      const agentFolderPath = item.includes("/.atomcli/agent/")
-        ? item.split("/.atomcli/agent/")[1]
-        : item.includes("/agent/")
-          ? item.split("/agent/")[1]
+      const normalizedItem = item.replaceAll("\\", "/")
+      const agentFolderPath = normalizedItem.includes("/.atomcli/agent/")
+        ? normalizedItem.split("/.atomcli/agent/")[1]
+        : normalizedItem.includes("/agent/")
+          ? normalizedItem.split("/agent/")[1]
           : agentName + ".md"
 
       // If agent is in a subfolder, include folder path in name
@@ -1167,7 +1169,7 @@ export namespace Config {
             return Object.entries(data).every(([id, config]) => {
               if (config.disabled) return true
               if (serverIds.has(id)) return true
-              return 'extensions' in config ? Boolean((config as any).extensions) : false
+              return "extensions" in config ? Boolean((config as any).extensions) : false
             })
           },
           {
@@ -1282,7 +1284,7 @@ export namespace Config {
         await Bun.write(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
         await fs.unlink(path.join(Global.Path.config, "config"))
       })
-      .catch(() => { })
+      .catch(() => {})
 
     return result
   })
@@ -1409,7 +1411,7 @@ export namespace Config {
           const plugin = data.plugin[i]
           try {
             data.plugin[i] = import.meta.resolve!(plugin, configFilepath)
-          } catch (err) { }
+          } catch (err) {}
         }
       }
       return data
@@ -1493,7 +1495,7 @@ export namespace Config {
     // If no existing config, create new one in .atomcli directory
     if (!filepath) {
       const atomcliDir = path.join(Instance.directory, ".atomcli")
-      await fs.mkdir(atomcliDir, { recursive: true }).catch(() => { })
+      await fs.mkdir(atomcliDir, { recursive: true }).catch(() => {})
       filepath = path.join(atomcliDir, "atomcli.json")
     }
 

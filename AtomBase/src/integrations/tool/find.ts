@@ -144,11 +144,11 @@ async function executeTree(searchPath: string, ignore: string[] | undefined, ctx
 
   for (const file of files) {
     const dir = path.dirname(file)
-    const parts = dir === "." ? [] : dir.split("/")
+    const parts = dir === "." ? [] : dir.split(path.sep)
 
     // Add all parent directories
     for (let i = 0; i <= parts.length; i++) {
-      const dirPath = i === 0 ? "." : parts.slice(0, i).join("/")
+      const dirPath = i === 0 ? "." : parts.slice(0, i).join(path.sep)
       dirs.add(dirPath)
     }
 

@@ -2,6 +2,8 @@ import z from "zod"
 import { Tool } from "./tool"
 import { execSync } from "child_process"
 import * as os from "os"
+import * as fs from "fs"
+import * as path from "path"
 
 const DESCRIPTION = `System health monitoring and management tool.
 
@@ -41,8 +43,23 @@ export const SystemHealthTool = Tool.define("system_health", {
         // Get disk usage
         let diskInfo = "Unknown"
         try {
-          diskInfo = execSync("df -h / | tail -1", { encoding: "utf-8" }).trim()
-        } catch { }
+          if (process.platform === "win32") {
+            const wmic = execSync("wmic logicaldisk where \"DeviceID='C:'\" get FreeSpace,Size /format:list", {
+              encoding: "utf-8",
+            })
+            const freeMatch = wmic.match(/FreeSpace=(\d+)/)
+            const sizeMatch = wmic.match(/Size=(\d+)/)
+            if (freeMatch && sizeMatch) {
+              const freeGB = (parseInt(freeMatch[1]) / 1073741824).toFixed(1)
+              const totalGB = (parseInt(sizeMatch[1]) / 1073741824).toFixed(1)
+              diskInfo = `C: ${freeGB}G free / ${totalGB}G total`
+            }
+          } else if (process.platform === "linux" || process.platform === "darwin") {
+            diskInfo = execSync("df -h / | tail -1", { encoding: "utf-8" }).trim()
+          } else {
+            diskInfo = "Disk info only available on Linux/macOS/Windows"
+          }
+        } catch {}
 
         // Get uptime
         const uptime = os.uptime()
@@ -84,17 +101,54 @@ ${diskInfo}
         output += "|--------|----------|-------|-------|------------------\n"
 
         try {
-          const result = execSync("ps aux --sort=-%cpu | head -15", { encoding: "utf-8" })
-          const lines = result.trim().split("\n").slice(1) // Skip header
+          if (process.platform === "win32") {
+            const result = execSync("tasklist /FO CSV /NH", { encoding: "utf-8" })
+            const lines = result.trim().split("\n").slice(0, 15)
+            for (const line of lines) {
+              const cols = line.split(",").map((c) => c.replace(/"/g, "").trim())
+              const cmd = cols[0].substring(0, 30)
+              const pid = cols[1]
+              const mem = cols[4]
+              output += `| ${pid.padEnd(6)} | ${"".padEnd(8)} | ${"".padEnd(5)} | ${mem.padEnd(5)} | ${cmd}\n`
+            }
+          } else if (process.platform === "linux") {
+            const result = execSync("ps aux --sort=-%cpu | head -15", { encoding: "utf-8" })
+            const lines = result.trim().split("\n").slice(1) // Skip header
 
-          for (const line of lines) {
-            const parts = line.split(/\s+/)
-            const user = parts[0].substring(0, 8)
-            const pid = parts[1]
-            const cpu = parts[2]
-            const mem = parts[3]
-            const cmd = parts.slice(10).join(" ").substring(0, 30)
-            output += `| ${pid.padEnd(6)} | ${user.padEnd(8)} | ${cpu.padEnd(5)} | ${mem.padEnd(5)} | ${cmd}\n`
+            for (const line of lines) {
+              const parts = line.split(/\s+/)
+              const user = parts[0].substring(0, 8)
+              const pid = parts[1]
+              const cpu = parts[2]
+              const mem = parts[3]
+              const cmd = parts.slice(10).join(" ").substring(0, 30)
+              output += `| ${pid.padEnd(6)} | ${user.padEnd(8)} | ${cpu.padEnd(5)} | ${mem.padEnd(5)} | ${cmd}\n`
+            }
+          } else if (process.platform === "darwin") {
+            // macOS ps doesn't support --sort, so we get all and sort in JS
+            const result = execSync("ps aux", { encoding: "utf-8" })
+            const lines = result.trim().split("\n").slice(1) // Skip header
+            const processes = lines
+              .map((line) => {
+                const parts = line.split(/\s+/)
+                if (parts.length < 11) return null
+                return {
+                  user: parts[0].substring(0, 8),
+                  pid: parts[1],
+                  cpu: parseFloat(parts[2]),
+                  mem: parts[3],
+                  cmd: parts.slice(10).join(" ").substring(0, 30),
+                }
+              })
+              .filter(Boolean)
+              .sort((a, b) => b!.cpu - a!.cpu)
+              .slice(0, 15)
+
+            for (const proc of processes) {
+              output += `| ${proc!.pid.padEnd(6)} | ${proc!.user.padEnd(8)} | ${proc!.cpu.toFixed(1).padEnd(5)} | ${proc!.mem.padEnd(5)} | ${proc!.cmd}\n`
+            }
+          } else {
+            output += "Process list only available on Linux/macOS/Windows\n"
           }
         } catch (e) {
           output += "Error getting process list: " + (e as Error).message
@@ -103,7 +157,15 @@ ${diskInfo}
         return {
           title: "Top Processes",
           output,
-          metadata: { cpuLoad: undefined, memory: undefined, uptime: undefined, pid: undefined, signal: undefined, error: undefined, freedBytes: undefined },
+          metadata: {
+            cpuLoad: undefined,
+            memory: undefined,
+            uptime: undefined,
+            pid: undefined,
+            signal: undefined,
+            error: undefined,
+            freedBytes: undefined,
+          },
         }
       }
 
@@ -112,24 +174,52 @@ ${diskInfo}
           return {
             title: "Error",
             output: "PID is required for kill action",
-            metadata: { cpuLoad: undefined, memory: undefined, uptime: undefined, pid: undefined, signal: undefined, error: undefined, freedBytes: undefined },
+            metadata: {
+              cpuLoad: undefined,
+              memory: undefined,
+              uptime: undefined,
+              pid: undefined,
+              signal: undefined,
+              error: undefined,
+              freedBytes: undefined,
+            },
           }
         }
 
         const signal = params.signal || "SIGTERM"
 
         try {
-          process.kill(params.pid, signal)
+          if (process.platform === "win32") {
+            execSync(`taskkill /pid ${params.pid} /T ${signal === "SIGKILL" ? "/F" : ""}`.trim())
+          } else {
+            process.kill(params.pid, signal)
+          }
           return {
             title: `Process ${params.pid} terminated`,
             output: `Sent ${signal} to process ${params.pid}`,
-            metadata: { pid: params.pid, signal, cpuLoad: undefined, memory: undefined, uptime: undefined, error: undefined, freedBytes: undefined },
+            metadata: {
+              pid: params.pid,
+              signal,
+              cpuLoad: undefined,
+              memory: undefined,
+              uptime: undefined,
+              error: undefined,
+              freedBytes: undefined,
+            },
           }
         } catch (e) {
           return {
             title: "Failed to kill process",
             output: `Error: ${(e as Error).message}`,
-            metadata: { error: (e as Error).message, cpuLoad: undefined, memory: undefined, uptime: undefined, pid: undefined, signal: undefined, freedBytes: undefined },
+            metadata: {
+              error: (e as Error).message,
+              cpuLoad: undefined,
+              memory: undefined,
+              uptime: undefined,
+              pid: undefined,
+              signal: undefined,
+              freedBytes: undefined,
+            },
           }
         }
       }
@@ -141,87 +231,129 @@ ${diskInfo}
         // Clear package manager cache (if exists)
         try {
           // npm cache
-          execSync("npm cache clean --force 2>/dev/null || true", { encoding: "utf-8" })
+          execSync("npm cache clean --force", { encoding: "utf-8", stdio: "pipe" })
           output += "- npm cache cleaned\n"
-        } catch { }
+        } catch {}
 
-        // Clear temp files (older than 1 day)
-        try {
-          const result = execSync("find /tmp -type f -mtime +1 -delete 2>/dev/null | wc -l", { encoding: "utf-8" })
-          output += `- Cleaned ${result.trim()} old temp files\n`
-        } catch { }
+        // Clear temp files (older than 1 day) - Linux/macOS only
+        if (process.platform === "linux" || process.platform === "darwin") {
+          try {
+            const result = execSync("find /tmp -type f -mtime +1 -print -delete 2>/dev/null | wc -l", {
+              encoding: "utf-8",
+            })
+            output += `- Cleaned ${result.trim()} old temp files\n`
+          } catch {}
+        } else if (process.platform === "win32") {
+          // Windows temp cleanup
+          try {
+            execSync('cmd /c "del /q /f /s %TEMP%\\* 2>nul"', { encoding: "utf-8" })
+            output += "- Windows temp files cleaned\n"
+          } catch {}
+        }
 
-        // Sync filesystem buffers
-        try {
-          execSync("sync", { encoding: "utf-8" })
-          output += "- Filesystem buffers synced\n"
-        } catch { }
+        // Sync filesystem buffers (Linux/macOS only)
+        if (process.platform === "linux" || process.platform === "darwin") {
+          try {
+            execSync("sync", { encoding: "utf-8" })
+            output += "- Filesystem buffers synced\n"
+          } catch {}
+        }
 
         output += "\nOptimization complete."
 
         return {
           title: "System Optimized",
           output,
-          metadata: { freedBytes: freed, cpuLoad: undefined, memory: undefined, uptime: undefined, pid: undefined, signal: undefined, error: undefined },
+          metadata: {
+            freedBytes: freed,
+            cpuLoad: undefined,
+            memory: undefined,
+            uptime: undefined,
+            pid: undefined,
+            signal: undefined,
+            error: undefined,
+          },
         }
       }
 
       case "gpu": {
         let output = "## GPU Information\n\n"
 
-        // Check for NVIDIA GPU
-        try {
-          const gpuInfo = execSync(
-            "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null",
-            { encoding: "utf-8" },
-          ).trim()
+        // Check for NVIDIA GPU (Linux/Windows only)
+        if (process.platform === "linux" || process.platform === "win32") {
+          try {
+            const gpuInfo = execSync(
+              "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null",
+              { encoding: "utf-8" },
+            ).trim()
 
-          if (gpuInfo) {
-            const lines = gpuInfo.split("\n")
-            let gpuIndex = 0
-            for (const line of lines) {
-              const [name, memTotal, memUsed, memFree, util, temp] = line.split(", ")
-              output += `**GPU ${gpuIndex}:**\n`
-              output += `- Name: ${name}\n`
-              output += `- Memory: ${memUsed.trim()} / ${memTotal.trim()} used (${memFree.trim()} free)\n`
-              output += `- Utilization: ${util.trim()}\n`
-              output += `- Temperature: ${temp.trim()}\n\n`
-              gpuIndex++
-            }
-
-            // Add GPU processes
-            try {
-              const gpuProcesses = execSync(
-                "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | head -10",
-                { encoding: "utf-8" },
-              ).trim()
-              if (gpuProcesses) {
-                output += "**GPU Processes:**\n"
-                output += "| PID | Process | Memory |\n"
-                output += "|-----|---------|--------|\n"
-                for (const line of gpuProcesses.split("\n")) {
-                  const [pid, name, mem] = line.split(", ")
-                  output += `| ${pid} | ${name} | ${mem} |\n`
-                }
+            if (gpuInfo) {
+              const lines = gpuInfo.split("\n")
+              let gpuIndex = 0
+              for (const line of lines) {
+                const [name, memTotal, memUsed, memFree, util, temp] = line.split(", ")
+                output += `**GPU ${gpuIndex}:**\n`
+                output += `- Name: ${name}\n`
+                output += `- Memory: ${memUsed.trim()} / ${memTotal.trim()} used (${memFree.trim()} free)\n`
+                output += `- Utilization: ${util.trim()}\n`
+                output += `- Temperature: ${temp.trim()}\n\n`
+                gpuIndex++
               }
-            } catch { }
-          }
-        } catch {
-          output += "No NVIDIA GPU detected or nvidia-smi not available.\n"
 
-          // Check for AMD GPU
+              // Add GPU processes
+              try {
+                const gpuProcesses = execSync(
+                  "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | head -10",
+                  { encoding: "utf-8" },
+                ).trim()
+                if (gpuProcesses) {
+                  output += "**GPU Processes:**\n"
+                  output += "| PID | Process | Memory |\n"
+                  output += "|-----|---------|--------|\n"
+                  for (const line of gpuProcesses.split("\n")) {
+                    const [pid, name, mem] = line.split(", ")
+                    output += `| ${pid} | ${name} | ${mem} |\n`
+                  }
+                }
+              } catch {}
+            }
+          } catch {
+            output += "No NVIDIA GPU detected or nvidia-smi not available.\n"
+          }
+        } else {
+          output += "NVIDIA GPU detection only available on Linux/Windows.\n"
+        }
+
+        // Check for AMD GPU (Linux only)
+        if (process.platform === "linux") {
           try {
             const amdGpu = execSync("lspci | grep -i vga | grep -i amd", { encoding: "utf-8" }).trim()
             if (amdGpu) {
               output += `\n**AMD GPU detected:**\n${amdGpu}\n`
+            } else {
+              output += "\nNo AMD GPU detected via lspci.\n"
             }
-          } catch { }
+          } catch {
+            output += "\nAMD GPU detection failed (lspci not available).\n"
+          }
+        } else if (process.platform === "win32") {
+          output += "\nAMD GPU detection not available on Windows.\n"
+        } else {
+          output += "\nAMD GPU detection only available on Linux.\n"
         }
 
         return {
           title: "GPU Status",
           output,
-          metadata: { cpuLoad: undefined, memory: undefined, uptime: undefined, pid: undefined, signal: undefined, error: undefined, freedBytes: undefined },
+          metadata: {
+            cpuLoad: undefined,
+            memory: undefined,
+            uptime: undefined,
+            pid: undefined,
+            signal: undefined,
+            error: undefined,
+            freedBytes: undefined,
+          },
         }
       }
     }

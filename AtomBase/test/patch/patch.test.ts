@@ -1,21 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Patch } from "@/services/patch"
+import { Instance } from "@/services/project/instance"
+import { tmpdir } from "../fixture/fixture"
 import * as fs from "fs/promises"
 import * as path from "path"
-import { tmpdir } from "os"
 
 describe("Patch namespace", () => {
-  let tempDir: string
-
-  beforeEach(async () => {
-    tempDir = await fs.mkdtemp(path.join(tmpdir(), "patch-test-"))
-  })
-
-  afterEach(async () => {
-    // Clean up temp directory
-    await fs.rm(tempDir, { recursive: true, force: true })
-  })
-
   describe("parsePatch", () => {
     test("should parse simple add file patch", () => {
       const patchText = `*** Begin Patch
@@ -135,67 +125,88 @@ PATCH`
 
   describe("applyPatch", () => {
     test("should add a new file", async () => {
-      const patchText = `*** Begin Patch
-*** Add File: ${tempDir}/new-file.txt
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const patchText = `*** Begin Patch
+*** Add File: ${tmp.path}/new-file.txt
 +Hello World
 +This is a new file
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.added).toHaveLength(1)
-      expect(result.modified).toHaveLength(0)
-      expect(result.deleted).toHaveLength(0)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.added).toHaveLength(1)
+          expect(result.modified).toHaveLength(0)
+          expect(result.deleted).toHaveLength(0)
 
-      const content = await fs.readFile(result.added[0], "utf-8")
-      expect(content).toBe("Hello World\nThis is a new file")
+          const content = await fs.readFile(result.added[0], "utf-8")
+          expect(content).toBe("Hello World\nThis is a new file")
+        },
+      })
     })
 
     test("should delete an existing file", async () => {
-      const filePath = path.join(tempDir, "to-delete.txt")
-      await fs.writeFile(filePath, "This file will be deleted")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const filePath = path.join(tmp.path, "to-delete.txt")
+          await fs.writeFile(filePath, "This file will be deleted")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Delete File: ${filePath}
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.deleted).toHaveLength(1)
-      expect(result.deleted[0]).toBe(filePath)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.deleted).toHaveLength(1)
+          expect(result.deleted[0]).toBe(filePath)
 
-      const exists = await fs
-        .access(filePath)
-        .then(() => true)
-        .catch(() => false)
-      expect(exists).toBe(false)
+          const exists = await fs
+            .access(filePath)
+            .then(() => true)
+            .catch(() => false)
+          expect(exists).toBe(false)
+        },
+      })
     })
 
     test("should update an existing file", async () => {
-      const filePath = path.join(tempDir, "to-update.txt")
-      await fs.writeFile(filePath, "line 1\nline 2\nline 3\n")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const filePath = path.join(tmp.path, "to-update.txt")
+          await fs.writeFile(filePath, "line 1\nline 2\nline 3\n")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Update File: ${filePath}
 @@
  line 1
 -line 2
-+line 2 updated
++updated line 2
  line 3
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.modified).toHaveLength(1)
-      expect(result.modified[0]).toBe(filePath)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.modified).toHaveLength(1)
 
-      const content = await fs.readFile(filePath, "utf-8")
-      expect(content).toBe("line 1\nline 2 updated\nline 3\n")
+          const content = await fs.readFile(filePath, "utf-8")
+          expect(content).toBe("line 1\nupdated line 2\nline 3\n")
+        },
+      })
     })
 
     test("should move and update a file", async () => {
-      const oldPath = path.join(tempDir, "old-name.txt")
-      const newPath = path.join(tempDir, "new-name.txt")
-      await fs.writeFile(oldPath, "old content\n")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const oldPath = path.join(tmp.path, "old-name.txt")
+          const newPath = path.join(tmp.path, "new-name.txt")
+          await fs.writeFile(oldPath, "old content\n")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Update File: ${oldPath}
 *** Move to: ${newPath}
 @@
@@ -203,29 +214,35 @@ PATCH`
 +new content
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.modified).toHaveLength(1)
-      expect(result.modified[0]).toBe(newPath)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.modified).toHaveLength(1)
+          expect(result.modified[0]).toBe(newPath)
 
-      const oldExists = await fs
-        .access(oldPath)
-        .then(() => true)
-        .catch(() => false)
-      expect(oldExists).toBe(false)
+          const oldExists = await fs
+            .access(oldPath)
+            .then(() => true)
+            .catch(() => false)
+          expect(oldExists).toBe(false)
 
-      const newContent = await fs.readFile(newPath, "utf-8")
-      expect(newContent).toBe("new content\n")
+          const newContent = await fs.readFile(newPath, "utf-8")
+          expect(newContent).toBe("new content\n")
+        },
+      })
     })
 
     test("should handle multiple operations in one patch", async () => {
-      const file1 = path.join(tempDir, "file1.txt")
-      const file2 = path.join(tempDir, "file2.txt")
-      const file3 = path.join(tempDir, "file3.txt")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const file1 = path.join(tmp.path, "file1.txt")
+          const file2 = path.join(tmp.path, "file2.txt")
+          const file3 = path.join(tmp.path, "file3.txt")
 
-      await fs.writeFile(file1, "content 1")
-      await fs.writeFile(file2, "content 2")
+          await fs.writeFile(file1, "content 1")
+          await fs.writeFile(file2, "content 2")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Add File: ${file3}
 +new file content
 *** Update File: ${file1}
@@ -235,98 +252,151 @@ PATCH`
 *** Delete File: ${file2}
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.added).toHaveLength(1)
-      expect(result.modified).toHaveLength(1)
-      expect(result.deleted).toHaveLength(1)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.added).toHaveLength(1)
+          expect(result.added[0]).toBe(file3)
+
+          expect(result.modified).toHaveLength(1)
+          expect(result.modified[0]).toBe(file1)
+
+          expect(result.deleted).toHaveLength(1)
+          expect(result.deleted[0]).toBe(file2)
+
+          const content1 = await fs.readFile(file1, "utf-8")
+          expect(content1).toBe("updated content 1\n")
+
+          const content3 = await fs.readFile(file3, "utf-8")
+          expect(content3).toBe("new file content")
+
+          const exists2 = await fs
+            .access(file2)
+            .then(() => true)
+            .catch(() => false)
+          expect(exists2).toBe(false)
+        },
+      })
     })
 
     test("should create parent directories when adding files", async () => {
-      const nestedPath = path.join(tempDir, "deep", "nested", "file.txt")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const nestedPath = path.join(tmp.path, "deep", "nested", "file.txt")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Add File: ${nestedPath}
 +Deep nested content
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.added).toHaveLength(1)
-      expect(result.added[0]).toBe(nestedPath)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.added).toHaveLength(1)
+          expect(result.added[0]).toBe(nestedPath)
 
-      const exists = await fs
-        .access(nestedPath)
-        .then(() => true)
-        .catch(() => false)
-      expect(exists).toBe(true)
+          const exists = await fs
+            .access(nestedPath)
+            .then(() => true)
+            .catch(() => false)
+          expect(exists).toBe(true)
+        },
+      })
     })
   })
 
   describe("error handling", () => {
     test("should throw error when updating non-existent file", async () => {
-      const nonExistent = path.join(tempDir, "does-not-exist.txt")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const nonExistent = path.join(tmp.path, "does-not-exist.txt")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Update File: ${nonExistent}
 @@
 -old line
 +new line
 *** End Patch`
 
-      await expect(Patch.applyPatch(patchText)).rejects.toThrow()
+          await expect(Patch.applyPatch(patchText)).rejects.toThrow()
+        },
+      })
     })
 
     test("should throw error when deleting non-existent file", async () => {
-      const nonExistent = path.join(tempDir, "does-not-exist.txt")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const nonExistent = path.join(tmp.path, "does-not-exist.txt")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Delete File: ${nonExistent}
 *** End Patch`
 
-      await expect(Patch.applyPatch(patchText)).rejects.toThrow()
+          await expect(Patch.applyPatch(patchText)).rejects.toThrow()
+        },
+      })
     })
   })
 
   describe("edge cases", () => {
     test("should handle empty files", async () => {
-      const emptyFile = path.join(tempDir, "empty.txt")
-      await fs.writeFile(emptyFile, "")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const emptyFile = path.join(tmp.path, "empty.txt")
+          await fs.writeFile(emptyFile, "")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Update File: ${emptyFile}
 @@
 +First line
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.modified).toHaveLength(1)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.modified).toHaveLength(1)
 
-      const content = await fs.readFile(emptyFile, "utf-8")
-      expect(content).toBe("First line\n")
+          const content = await fs.readFile(emptyFile, "utf-8")
+          expect(content).toBe("First line\n")
+        },
+      })
     })
 
     test("should handle files with no trailing newline", async () => {
-      const filePath = path.join(tempDir, "no-newline.txt")
-      await fs.writeFile(filePath, "no newline")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const filePath = path.join(tmp.path, "no-newline.txt")
+          await fs.writeFile(filePath, "no newline")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Update File: ${filePath}
 @@
 -no newline
 +has newline now
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.modified).toHaveLength(1)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.modified).toHaveLength(1)
 
-      const content = await fs.readFile(filePath, "utf-8")
-      expect(content).toBe("has newline now\n")
+          const content = await fs.readFile(filePath, "utf-8")
+          expect(content).toBe("has newline now\n")
+        },
+      })
     })
 
     test("should handle multiple update chunks in single file", async () => {
-      const filePath = path.join(tempDir, "multi-chunk.txt")
-      await fs.writeFile(filePath, "line 1\nline 2\nline 3\nline 4\n")
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const filePath = path.join(tmp.path, "multi-chunk.txt")
+          await fs.writeFile(filePath, "line 1\nline 2\nline 3\nline 4\n")
 
-      const patchText = `*** Begin Patch
+          const patchText = `*** Begin Patch
 *** Update File: ${filePath}
 @@
  line 1
@@ -338,11 +408,13 @@ PATCH`
 +LINE 4
 *** End Patch`
 
-      const result = await Patch.applyPatch(patchText)
-      expect(result.modified).toHaveLength(1)
+          const result = await Patch.applyPatch(patchText)
+          expect(result.modified).toHaveLength(1)
 
-      const content = await fs.readFile(filePath, "utf-8")
-      expect(content).toBe("line 1\nLINE 2\nline 3\nLINE 4\n")
+          const content = await fs.readFile(filePath, "utf-8")
+          expect(content).toBe("line 1\nLINE 2\nline 3\nLINE 4\n")
+        },
+      })
     })
   })
 })

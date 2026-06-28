@@ -1,6 +1,7 @@
 import { Log } from "@/util/util/log"
 import path from "path"
 import fs from "fs/promises"
+import os from "os"
 import { Global } from "../global"
 import { lazy } from "@/util/util/lazy"
 import { Lock } from "@/util/util/lock"
@@ -21,7 +22,7 @@ export namespace Storage {
 
   /** Returns true for primitive values that are inherently immutable — no clone needed. */
   function isPrimitive(v: any): boolean {
-    return v === null || typeof v !== "object" && typeof v !== "function"
+    return v === null || (typeof v !== "object" && typeof v !== "function")
   }
 
   function cacheGet(key: string[]): any | undefined {
@@ -64,10 +65,7 @@ export namespace Storage {
   function listCacheInvalidate(key: string[]): void {
     for (const [k] of listCache) {
       const prefixParts = k.split("\0")
-      if (
-        key.length >= prefixParts.length &&
-        prefixParts.every((p, i) => p === key[i])
-      ) {
+      if (key.length >= prefixParts.length && prefixParts.every((p, i) => p === key[i])) {
         listCache.delete(k)
       }
     }
@@ -93,7 +91,7 @@ export namespace Storage {
         log.info(`migrating project ${projectDir}`)
         let projectID = projectDir
         const fullProjectDir = path.join(project, projectDir)
-        let worktree = "/"
+        let worktree = os.homedir()
 
         if (projectID !== "global") {
           for await (const msgFile of new Bun.Glob("storage/session/message/*/*.json").scan({
@@ -223,7 +221,7 @@ export namespace Storage {
     const dir = await state().then((x) => x.dir)
     const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
-      await fs.unlink(target).catch(() => { })
+      await fs.unlink(target).catch(() => {})
       cacheDelete(key)
       listCacheInvalidate(key)
     })

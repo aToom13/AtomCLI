@@ -14,6 +14,54 @@ import fuzzysort from "fuzzysort"
 import { Global } from "@/core/global"
 import { FileEvent } from "./event"
 import { PermissionNext } from "@/util/permission/next"
+import { Bus } from "@/core/bus"
+
+// Git diff cache with invalidation on file changes
+const diffCache = new Map<string, string>()
+const MAX_DIFF_CACHE = 200
+
+// Status cache (single entry, invalidated on any file change)
+let statusCache: { result: File.Info[]; timestamp: number } | null = null
+const STATUS_CACHE_TTL = 5000 // 5 seconds
+
+// Invalidate cache on file changes
+const unsubChanged = Bus.subscribe(FileEvent.Changed, ({ properties }) => {
+  for (const p of properties.paths) {
+    for (const key of diffCache.keys()) {
+      if (key.includes(p)) diffCache.delete(key)
+    }
+  }
+  statusCache = null
+  Filesystem.clearCaches()
+})
+const unsubCreated = Bus.subscribe(FileEvent.Created, ({ properties }) => {
+  for (const p of properties.paths) {
+    for (const key of diffCache.keys()) {
+      if (key.includes(p)) diffCache.delete(key)
+    }
+  }
+  statusCache = null
+  Filesystem.clearCaches()
+})
+const unsubDeleted = Bus.subscribe(FileEvent.Deleted, ({ properties }) => {
+  for (const p of properties.paths) {
+    for (const key of diffCache.keys()) {
+      if (key.includes(p)) diffCache.delete(key)
+    }
+  }
+  statusCache = null
+  Filesystem.clearCaches()
+})
+
+/**
+ * Unsubscribe all file event listeners. Call this to clean up resources
+ * (e.g., during tests or module reload).
+ */
+export function clearSubscriptions(): void {
+  unsubChanged()
+  unsubCreated()
+  unsubDeleted()
+}
 
 export namespace File {
   export import Event = FileEvent
@@ -113,15 +161,6 @@ export namespace File {
     return false
   }
 
-
-
-
-
-
-
-
-
-
   const state = Instance.state(async () => {
     type Entry = { files: string[]; dirs: string[] }
     let cache: Entry = { files: [], dirs: [] }
@@ -180,7 +219,7 @@ export namespace File {
           current = dir
           if (set.has(dir)) continue
           set.add(dir)
-          result.dirs.push(dir + "/")
+          result.dirs.push(path.join(dir, ""))
         }
       }
       cache = result
@@ -209,12 +248,27 @@ export namespace File {
     const project = Instance.project
     if (project.vcs !== "git") return []
 
+    // Check status cache
+    if (statusCache && Date.now() - statusCache.timestamp < STATUS_CACHE_TTL) {
+      return statusCache.result
+    }
+
     // F10: parallelize all 3 git commands
-    const [diffOutput, untrackedOutput, deletedOutput] = await Promise.all([
-      $`git diff --numstat HEAD`.cwd(Instance.directory).quiet().nothrow().text(),
-      $`git ls-files --others --exclude-standard`.cwd(Instance.directory).quiet().nothrow().text(),
-      $`git diff --name-only --diff-filter=D HEAD`.cwd(Instance.directory).quiet().nothrow().text(),
-    ])
+    let diffOutput = ""
+    let untrackedOutput = ""
+    let deletedOutput = ""
+    try {
+      const [d, u, del] = await Promise.all([
+        $`git diff --numstat HEAD`.cwd(Instance.directory).quiet().text(),
+        $`git ls-files --others --exclude-standard`.cwd(Instance.directory).quiet().text(),
+        $`git diff --name-only --diff-filter=D HEAD`.cwd(Instance.directory).quiet().text(),
+      ])
+      diffOutput = d
+      untrackedOutput = u
+      deletedOutput = del
+    } catch {
+      log.warn("git status commands failed")
+    }
 
     const changedFiles: Info[] = []
 
@@ -249,7 +303,7 @@ export namespace File {
           } catch {
             return
           }
-        })
+        }),
       )
     }
 
@@ -265,17 +319,21 @@ export namespace File {
       }
     }
 
-    return changedFiles.map((x) => ({
+    const result = changedFiles.map((x) => ({
       ...x,
       path: path.relative(Instance.directory, x.path),
     }))
+
+    // Cache the result
+    statusCache = { result, timestamp: Date.now() }
+
+    return result
   }
 
   export async function read(file: string, sessionID?: string): Promise<Content> {
     using _ = log.time("read", { file })
     const project = Instance.project
     const full = path.join(Instance.directory, file)
-
 
     // if (!Filesystem.contains(Instance.directory, full)) {
     //   throw new Error(`Access denied: path escapes project directory`)
@@ -318,10 +376,28 @@ export namespace File {
       .then((x) => x.trim())
 
     if (project.vcs === "git") {
-      let diff = await $`git diff ${file}`.cwd(Instance.directory).quiet().nothrow().text()
-      if (!diff.trim()) diff = await $`git diff --staged ${file}`.cwd(Instance.directory).quiet().nothrow().text()
+      const cacheKey = file + "\0" + Instance.directory
+      let diff = diffCache.get(cacheKey)
+      if (diff === undefined) {
+        try {
+          diff = await $`git diff HEAD ${file}`.cwd(Instance.directory).quiet().text()
+        } catch {
+          diff = ""
+          log.warn("git diff failed", { file })
+        }
+        if (diffCache.size >= MAX_DIFF_CACHE) {
+          const firstKey = diffCache.keys().next().value
+          if (firstKey) diffCache.delete(firstKey)
+        }
+        diffCache.set(cacheKey, diff)
+      }
       if (diff.trim()) {
-        const original = await $`git show HEAD:${file}`.cwd(Instance.directory).quiet().nothrow().text()
+        let original = ""
+        try {
+          original = await $`git show HEAD:${file}`.cwd(Instance.directory).quiet().text()
+        } catch {
+          log.warn("git show failed", { file })
+        }
         const patch = structuredPatch(file, file, original, content, "old", "new", {
           context: Infinity,
           ignoreWhitespace: true,
@@ -350,7 +426,6 @@ export namespace File {
       ignored = ig.ignores.bind(ig)
     }
     const resolved = dir ? path.join(Instance.directory, dir) : Instance.directory
-
 
     if (!Filesystem.contains(Instance.directory, resolved)) {
       if (!sessionID) throw new Error(`Access denied: path escapes project directory`)

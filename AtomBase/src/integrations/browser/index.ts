@@ -1,147 +1,147 @@
 import { Log } from "@/util/util/log"
 import fs from "fs"
 import path from "path"
+import os from "os"
 
 // Type-only imports for Playwright types
 import type { Browser as PlaywrightBrowser, BrowserContext, Page } from "playwright"
 
 export class BrowserManager {
-    private static instance: BrowserManager
-    private browser: PlaywrightBrowser | null = null
-    private context: BrowserContext | null = null
-    private page: Page | null = null
-    private log = Log.create({ service: "browser" })
-    private screenshotDir = path.join(process.cwd(), ".screenshots")
-    private consoleLogs: string[] = []
-    private playwrightAvailable: boolean | null = null
-    private playwrightPath: string = "playwright"
+  private static instance: BrowserManager
+  private browser: PlaywrightBrowser | null = null
+  private context: BrowserContext | null = null
+  private page: Page | null = null
+  private log = Log.create({ service: "browser" })
+  private screenshotDir = path.join(process.cwd(), ".screenshots")
+  private consoleLogs: string[] = []
+  private playwrightAvailable: boolean | null = null
+  private playwrightPath: string = "playwright"
 
-    private constructor() { }
+  private constructor() {}
 
-    public static getInstance(): BrowserManager {
-        if (!BrowserManager.instance) {
-            BrowserManager.instance = new BrowserManager()
-        }
-        return BrowserManager.instance
+  public static getInstance(): BrowserManager {
+    if (!BrowserManager.instance) {
+      BrowserManager.instance = new BrowserManager()
+    }
+    return BrowserManager.instance
+  }
+
+  /**
+   * Check if Playwright is available without crashing
+   * Searches multiple locations: local node_modules, config dir, and global
+   */
+  public async isPlaywrightAvailable(): Promise<boolean> {
+    if (this.playwrightAvailable !== null) {
+      return this.playwrightAvailable
     }
 
-    /**
-     * Check if Playwright is available without crashing
-     * Searches multiple locations: local node_modules, config dir, and global
-     */
-    public async isPlaywrightAvailable(): Promise<boolean> {
-        if (this.playwrightAvailable !== null) {
-            return this.playwrightAvailable
-        }
+    // List of potential playwright module paths
+    const playwrightPaths = [
+      // 1. Standard dynamic import (local node_modules, NODE_PATH)
+      "playwright",
+      // 2. AtomCLI directory (where install.sh installs it)
+      `${os.homedir()}/.atomcli/playwright/node_modules/playwright`,
+      // 3. Legacy config directory (backward compatibility)
+      `${process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")}/atomcli/playwright/node_modules/playwright`,
+    ]
 
-        // List of potential playwright module paths
-        const playwrightPaths = [
-            // 1. Standard dynamic import (local node_modules, NODE_PATH)
-            "playwright",
-            // 2. AtomCLI directory (where install.sh installs it)
-            `${process.env.HOME}/.atomcli/playwright/node_modules/playwright`,
-            // 3. Legacy config directory (backward compatibility)
-            `${process.env.XDG_CONFIG_HOME || process.env.HOME + "/.config"}/atomcli/playwright/node_modules/playwright`,
-        ]
-
-        for (const modulePath of playwrightPaths) {
-            try {
-                await import(modulePath)
-                this.playwrightAvailable = true
-                this.playwrightPath = modulePath
-                return true
-            } catch (e) {
-                // Try next path
-            }
-        }
-
-        this.log.warn("Playwright not available in any known location")
-        this.playwrightAvailable = false
-        return false
+    for (const modulePath of playwrightPaths) {
+      try {
+        await import(modulePath)
+        this.playwrightAvailable = true
+        this.playwrightPath = modulePath
+        return true
+      } catch (e) {
+        // Try next path
+      }
     }
 
-    /**
-     * Get Playwright module dynamically from discovered path
-     */
-    private async getPlaywright() {
-        const pw = await import(this.playwrightPath)
-        return pw
+    this.log.warn("Playwright not available in any known location")
+    this.playwrightAvailable = false
+    return false
+  }
+
+  /**
+   * Get Playwright module dynamically from discovered path
+   */
+  private async getPlaywright() {
+    const pw = await import(this.playwrightPath)
+    return pw
+  }
+
+  public getLogs(): string[] {
+    return this.consoleLogs
+  }
+
+  public clearLogs() {
+    this.consoleLogs = []
+  }
+
+  private cleanScreenshots() {
+    if (fs.existsSync(this.screenshotDir)) {
+      try {
+        this.log.info("clearing previous screenshots")
+        fs.rmSync(this.screenshotDir, { recursive: true, force: true })
+        fs.mkdirSync(this.screenshotDir, { recursive: true })
+      } catch (e: any) {
+        this.log.error("failed to clean screenshots", { error: e.message })
+      }
+    } else {
+      fs.mkdirSync(this.screenshotDir, { recursive: true })
+    }
+  }
+
+  private async init() {
+    // Check if Playwright is available first
+    const available = await this.isPlaywrightAvailable()
+    if (!available) {
+      throw new Error(
+        "Playwright is not available. Please install it with: bun add -g playwright && bunx playwright install chromium\n" +
+          "Or run: npx playwright install chromium",
+      )
     }
 
-    public getLogs(): string[] {
-        return this.consoleLogs
+    // if (this.browser) return
+
+    if (this.browser && !this.browser.isConnected()) {
+      this.browser = null
+      this.context = null
+      this.page = null
     }
 
-    public clearLogs() {
-        this.consoleLogs = []
+    if (!this.browser) {
+      try {
+        this.log.info("launching browser (headed)")
+        const { chromium } = await this.getPlaywright()
+        this.browser = await chromium.launch({
+          headless: false,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        })
+      } catch (e: any) {
+        this.log.warn("headed launch failed, falling back to headless", { error: e.message })
+        const { chromium } = await this.getPlaywright()
+        this.browser = await chromium.launch({
+          headless: true,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        })
+      }
     }
 
-    private cleanScreenshots() {
-        if (fs.existsSync(this.screenshotDir)) {
-            try {
-                this.log.info("clearing previous screenshots")
-                fs.rmSync(this.screenshotDir, { recursive: true, force: true })
-                fs.mkdirSync(this.screenshotDir, { recursive: true })
-            } catch (e: any) {
-                this.log.error("failed to clean screenshots", { error: e.message })
-            }
-        } else {
-            fs.mkdirSync(this.screenshotDir, { recursive: true })
-        }
-    }
+    if (!this.context) {
+      this.context = await this.browser!.newContext({
+        viewport: { width: 1280, height: 720 },
+      })
 
-    private async init() {
-        // Check if Playwright is available first
-        const available = await this.isPlaywrightAvailable()
-        if (!available) {
-            throw new Error(
-                "Playwright is not available. Please install it with: bun add -g playwright && bunx playwright install chromium\n" +
-                "Or run: npx playwright install chromium"
-            )
-        }
+      // Inject click visualization script
+      await this.context.addInitScript(() => {
+        if (typeof document === "undefined") return
 
-        // if (this.browser) return
-
-        if (this.browser && !this.browser.isConnected()) {
-            this.browser = null
-            this.context = null
-            this.page = null
-        }
-
-        if (!this.browser) {
-            try {
-                this.log.info("launching browser (headed)")
-                const { chromium } = await this.getPlaywright()
-                this.browser = await chromium.launch({
-                    headless: false,
-                    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-                })
-            } catch (e: any) {
-                this.log.warn("headed launch failed, falling back to headless", { error: e.message })
-                const { chromium } = await this.getPlaywright()
-                this.browser = await chromium.launch({
-                    headless: true,
-                    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-                })
-            }
-        }
-
-        if (!this.context) {
-            this.context = await this.browser!.newContext({
-                viewport: { width: 1280, height: 720 },
-            })
-
-
-            // Inject click visualization script
-            await this.context.addInitScript(() => {
-                if (typeof document === "undefined") return
-
-                // Visual click effect
-                document.addEventListener(
-                    "click",
-                    (e) => {
-                        const dot = document.createElement("div")
-                        dot.style.cssText = `
+        // Visual click effect
+        document.addEventListener(
+          "click",
+          (e) => {
+            const dot = document.createElement("div")
+            dot.style.cssText = `
                 position: absolute;
                 width: 20px;
                 height: 20px;
@@ -155,58 +155,56 @@ export class BrowserManager {
                 transform: scale(0);
                 transition: transform 0.2s, opacity 0.5s;
             `
-                        document.body.appendChild(dot)
-                        requestAnimationFrame(() => {
-                            dot.style.transform = "scale(1)"
-                        })
-                        setTimeout(() => {
-                            dot.style.opacity = "0"
-                        }, 300)
-                        setTimeout(() => {
-                            dot.remove()
-                        }, 800)
-                    },
-                    true,
-                )
+            document.body.appendChild(dot)
+            requestAnimationFrame(() => {
+              dot.style.transform = "scale(1)"
             })
-
-        }
-
-        if (!this.page || this.page.isClosed()) {
-            this.page = await this.context!.newPage()
-
-            // Improved logging for debug
-            this.page.on("console", (msg) => {
-                const text = `[${msg.type()}] ${msg.text()}`;
-                this.consoleLogs.push(text);
-                this.log.debug(`console: ${text}`);
-            })
-            this.page.on("pageerror", (err) => {
-                const text = `[error] ${err.message}`;
-                this.consoleLogs.push(text);
-                this.log.error(`pageerror: ${text}`);
-            })
-        }
-
+            setTimeout(() => {
+              dot.style.opacity = "0"
+            }, 300)
+            setTimeout(() => {
+              dot.remove()
+            }, 800)
+          },
+          true,
+        )
+      })
     }
 
-    public async getPage(): Promise<Page> {
-        if (!this.page || this.page.isClosed()) {
-            await this.init()
-        }
-        await this.page!.bringToFront()
-        return this.page!
-    }
+    if (!this.page || this.page.isClosed()) {
+      this.page = await this.context!.newPage()
 
-    public async close() {
-        if (this.browser) {
-            await this.browser.close()
-            this.browser = null
-            this.context = null
-            this.page = null
-            this.log.info("browser closed")
-        }
+      // Improved logging for debug
+      this.page.on("console", (msg) => {
+        const text = `[${msg.type()}] ${msg.text()}`
+        this.consoleLogs.push(text)
+        this.log.debug(`console: ${text}`)
+      })
+      this.page.on("pageerror", (err) => {
+        const text = `[error] ${err.message}`
+        this.consoleLogs.push(text)
+        this.log.error(`pageerror: ${text}`)
+      })
     }
+  }
+
+  public async getPage(): Promise<Page> {
+    if (!this.page || this.page.isClosed()) {
+      await this.init()
+    }
+    await this.page!.bringToFront()
+    return this.page!
+  }
+
+  public async close() {
+    if (this.browser) {
+      await this.browser.close()
+      this.browser = null
+      this.context = null
+      this.page = null
+      this.log.info("browser closed")
+    }
+  }
 }
 
 export const Browser = BrowserManager.getInstance()

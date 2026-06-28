@@ -285,9 +285,7 @@ export namespace Session {
     async (input) => {
       const result = [] as MessageV2.WithParts[]
       for await (const msg of MessageV2.stream(
-        input.limit
-          ? { sessionID: input.sessionID, limit: input.limit }
-          : input.sessionID,
+        input.limit ? { sessionID: input.sessionID, limit: input.limit } : input.sessionID,
       )) {
         result.push(msg)
       }
@@ -314,20 +312,69 @@ export namespace Session {
     return result
   })
 
+  // Simple semaphore for limiting concurrent operations
+  function createSemaphore(limit: number) {
+    let running = 0
+    const queue: Array<() => void> = []
+    return async <T>(fn: () => Promise<T>): Promise<T> => {
+      return new Promise((resolve, reject) => {
+        const run = async () => {
+          running++
+          try {
+            const result = await fn()
+            resolve(result)
+          } catch (e) {
+            reject(e)
+          } finally {
+            running--
+            if (queue.length > 0) {
+              const next = queue.shift()!
+              next()
+            }
+          }
+        }
+        if (running < limit) {
+          run()
+        } else {
+          queue.push(run)
+        }
+      })
+    }
+  }
+
+  const removeSemaphore = createSemaphore(200) // Limit concurrent Storage.remove calls (increased for deep trees)
+
+  // Collect all descendant session IDs recursively (no semaphore for collection)
+  async function collectAllDescendantIds(sessionID: string): Promise<string[]> {
+    const childrenList = await children(sessionID)
+    const descendantIds: string[] = []
+    for (const child of childrenList) {
+      descendantIds.push(child.id)
+      const childDescendants = await collectAllDescendantIds(child.id)
+      descendantIds.push(...childDescendants)
+    }
+    return descendantIds
+  }
+
   export const remove = fn(Identifier.schema("session"), async (sessionID) => {
     const project = Instance.project
     try {
       const session = await get(sessionID)
-      for (const child of await children(sessionID)) {
-        await remove(child.id)
-      }
-      await unshare(sessionID).catch(() => { })
-      for (const msg of await Storage.list(["message", sessionID])) {
-        for (const part of await Storage.list(["part", msg.at(-1)!])) {
-          await Storage.remove(part)
-        }
-        await Storage.remove(msg)
-      }
+      // Collect all descendant IDs first (no semaphore needed for reads)
+      const allDescendants = await collectAllDescendantIds(sessionID)
+      // Batch remove all descendants in parallel with semaphore
+      await Promise.all(allDescendants.map((id) => removeSemaphore(() => Storage.remove(["session", project.id, id]))))
+      // Batch remove messages and parts in parallel with semaphore
+      const messageIDs = await Storage.list(["message", sessionID])
+      await Promise.all(
+        messageIDs.map(async (msg) => {
+          const partIDs = await Storage.list(["part", msg.at(-1)!])
+          await Promise.all(partIDs.map((part) => removeSemaphore(() => Storage.remove(part))))
+          await removeSemaphore(() => Storage.remove(msg))
+        }),
+      )
+      await unshare(sessionID).catch((e) => log.warn("unshare failed", { sessionID, error: (e as Error).message }))
+      // Remove the session itself
       await Storage.remove(["session", project.id, sessionID])
       Bus.publish(Event.Deleted, {
         info: session,
