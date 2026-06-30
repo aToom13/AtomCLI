@@ -1000,16 +1000,11 @@ export namespace Provider {
         if (enterpriseAuth) hasAuth = true
       }
 
-      // Antigravity models should be discovered even without auth
-      if (providerID === "antigravity") {
-        hasAuth = true
-      }
-
       if (!hasAuth) continue
       if (!plugin.auth.loader) continue
 
-      // Load for the main provider if auth exists or for antigravity
-      if (auth || providerID === "antigravity") {
+      // Load for the main provider if auth exists
+      if (auth) {
         if (!database[plugin.auth.provider]) {
           database[plugin.auth.provider] = {
             id: plugin.auth.provider,
