@@ -24,8 +24,13 @@ const MAX_DIFF_CACHE = 200
 let statusCache: { result: File.Info[]; timestamp: number } | null = null
 const STATUS_CACHE_TTL = 5000 // 5 seconds
 
-// Invalidate cache on file changes
-const unsubChanged = Bus.subscribe(FileEvent.Changed, ({ properties }) => {
+// Unsubscribe handles — initialized lazily in File.init() to avoid
+// triggering Instance.context before Instance.provide() sets it up.
+let _unsubChanged: (() => void) | undefined
+let _unsubCreated: (() => void) | undefined
+let _unsubDeleted: (() => void) | undefined
+
+function invalidateCaches({ properties }: { properties: { paths: string[] } }) {
   for (const p of properties.paths) {
     for (const key of diffCache.keys()) {
       if (key.includes(p)) diffCache.delete(key)
@@ -33,34 +38,16 @@ const unsubChanged = Bus.subscribe(FileEvent.Changed, ({ properties }) => {
   }
   statusCache = null
   Filesystem.clearCaches()
-})
-const unsubCreated = Bus.subscribe(FileEvent.Created, ({ properties }) => {
-  for (const p of properties.paths) {
-    for (const key of diffCache.keys()) {
-      if (key.includes(p)) diffCache.delete(key)
-    }
-  }
-  statusCache = null
-  Filesystem.clearCaches()
-})
-const unsubDeleted = Bus.subscribe(FileEvent.Deleted, ({ properties }) => {
-  for (const p of properties.paths) {
-    for (const key of diffCache.keys()) {
-      if (key.includes(p)) diffCache.delete(key)
-    }
-  }
-  statusCache = null
-  Filesystem.clearCaches()
-})
+}
 
 /**
  * Unsubscribe all file event listeners. Call this to clean up resources
  * (e.g., during tests or module reload).
  */
 export function clearSubscriptions(): void {
-  unsubChanged()
-  unsubCreated()
-  unsubDeleted()
+  _unsubChanged?.()
+  _unsubCreated?.()
+  _unsubDeleted?.()
 }
 
 export namespace File {
@@ -241,6 +228,14 @@ export namespace File {
   })
 
   export function init() {
+    // Subscribe to file events here (not at module top-level) because
+    // Bus.subscribe → Bus.raw → state() → Instance.directory requires
+    // the AsyncLocalStorage context set up by Instance.provide().
+    if (!_unsubChanged) {
+      _unsubChanged = Bus.subscribe(FileEvent.Changed, invalidateCaches)
+      _unsubCreated = Bus.subscribe(FileEvent.Created, invalidateCaches)
+      _unsubDeleted = Bus.subscribe(FileEvent.Deleted, invalidateCaches)
+    }
     state()
   }
 
