@@ -44,7 +44,12 @@ export const JDTLS: Info = {
         "https://www.eclipse.org/downloads/download.php?file=/jdtls/snapshots/jdt-language-server-latest.tar.gz"
       const archivePath = path.join(distPath, "release.tar.gz")
       await $`curl -L -o '${archivePath}' '${releaseURL}'`.quiet().nothrow()
-      await $`tar -xzf ${archivePath}`.cwd(distPath).quiet().nothrow()
+      if (process.platform === "win32") {
+        // Windows: use PowerShell to extract tar.gz (available since Windows 10 build 17063)
+        await $`powershell -NoProfile -Command "tar -xzf '${archivePath}' -C '${distPath}'"`.quiet().nothrow()
+      } else {
+        await $`tar -xzf ${archivePath}`.cwd(distPath).quiet().nothrow()
+      }
       await fs.rm(archivePath, { force: true })
     }
     const files = fsSync

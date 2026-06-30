@@ -16,7 +16,7 @@ export const UpgradeCommand = {
         alias: "m",
         describe: "installation method to use",
         type: "string",
-        choices: ["curl", "npm", "pnpm", "bun", "brew"],
+        choices: ["curl", "npm", "pnpm", "bun", "brew", "windows"],
       })
       .option("channel", {
         alias: "c",
@@ -107,7 +107,11 @@ export const UpgradeCommand = {
           buildSpinner.start("Cloning and building AtomCLI from source...")
           try {
             const proc = Bun.spawn(
-              ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --source"],
+              [
+                "bash",
+                "-c",
+                "curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --source",
+              ],
               { stdout: "pipe", stderr: "pipe" },
             )
             await proc.exited

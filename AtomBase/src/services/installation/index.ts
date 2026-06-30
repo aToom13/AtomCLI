@@ -60,6 +60,19 @@ export namespace Installation {
   export async function method() {
     if (process.execPath.includes(path.join(".atomcli", "bin"))) return "curl"
     if (process.execPath.includes(path.join(".local", "bin"))) return "curl"
+
+    // Windows: binary installed by PowerShell installer to %LOCALAPPDATA%\AtomCLI\bin\
+    if (process.platform === "win32") {
+      const execNorm = process.execPath.toLowerCase().replace(/\//g, "\\")
+      if (
+        execNorm.includes(path.join("atomcli", "bin").toLowerCase()) ||
+        execNorm.includes("appdata\\local\\atomcli") ||
+        execNorm.includes("appdata\\local\\atomcli\\bin")
+      ) {
+        return "windows"
+      }
+    }
+
     const exec = process.execPath.toLowerCase()
 
     try {
@@ -82,7 +95,7 @@ export namespace Installation {
       if (isGit) {
         return "git"
       }
-    } catch { }
+    } catch {}
 
     const checks = [
       {
@@ -160,11 +173,13 @@ export namespace Installation {
         break
       }
       case "curl":
-        cmd = $`curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update`.env({
-          ...process.env,
-          VERSION: target,
-          NONINTERACTIVE: "1",
-        })
+        cmd = $`curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --update`.env(
+          {
+            ...process.env,
+            VERSION: target,
+            NONINTERACTIVE: "1",
+          },
+        )
         break
       case "npm":
         cmd = $`npm install -g atomcli-ai@${target}`
@@ -183,6 +198,14 @@ export namespace Installation {
         })
         break
       }
+      case "windows":
+        cmd =
+          $`powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex; Update-AtomCLI"`.env(
+            {
+              ...process.env,
+            },
+          )
+        break
       default:
         throw new Error(`Unknown method: ${method}`)
     }
@@ -337,12 +360,8 @@ export namespace Installation {
       .then((data: any) => {
         if (channel) {
           const releases = Array.isArray(data) ? data : [data]
-          const match = releases.find((r: any) =>
-            r.tag_name?.toLowerCase().includes(channel.toLowerCase()),
-          )
-          return match
-            ? match.tag_name.replace(/^v/, "")
-            : releases[0]?.tag_name?.replace(/^v/, "") ?? VERSION
+          const match = releases.find((r: any) => r.tag_name?.toLowerCase().includes(channel.toLowerCase()))
+          return match ? match.tag_name.replace(/^v/, "") : (releases[0]?.tag_name?.replace(/^v/, "") ?? VERSION)
         }
         return data.tag_name.replace(/^v/, "")
       })

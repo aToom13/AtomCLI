@@ -109,7 +109,7 @@ export namespace Auth {
 
     const encrypted = await Crypto.encryptJSON({ ...validData, [key]: info })
     await Bun.write(file, encrypted)
-    await fs.chmod(file.name!, 0o600)
+    if (process.platform !== "win32") await fs.chmod(file.name!, 0o600)
   }
 
   /**
@@ -144,6 +144,6 @@ export namespace Auth {
     delete validData[key]
     const encrypted = await Crypto.encryptJSON(validData)
     await Bun.write(file, encrypted)
-    await fs.chmod(file.name!, 0o600)
+    if (process.platform !== "win32") await fs.chmod(file.name!, 0o600)
   }
 }

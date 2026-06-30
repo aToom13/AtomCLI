@@ -38,7 +38,7 @@ function validateFilePath(filePath: string): { normalizedPath: string; isExterna
   const normalizedPath = path.normalize(absolutePath)
 
   // Get the allowed base directory
-  const allowedBase = path.resolve(Instance.worktree || Instance.directory)
+  const allowedBase = path.resolve(Instance.directory)
 
   // Check if the normalized path is within allowed boundaries
   const isExternal = !normalizedPath.startsWith(allowedBase)
@@ -70,7 +70,9 @@ export const EditTool = Tool.define("edit", {
         }),
       )
       .optional()
-      .describe("Array of edit operations to apply sequentially on the same file. Use instead of oldString/newString for multiple edits."),
+      .describe(
+        "Array of edit operations to apply sequentially on the same file. Use instead of oldString/newString for multiple edits.",
+      ),
   }),
   async execute(params, ctx) {
     if (!params.filePath) {
@@ -80,7 +82,7 @@ export const EditTool = Tool.define("edit", {
     // Build operations list: either from `operations` array or from single oldString/newString
     const ops = params.operations
       ? params.operations
-      : (params.oldString !== undefined && params.newString !== undefined)
+      : params.oldString !== undefined && params.newString !== undefined
         ? [{ oldString: params.oldString, newString: params.newString, replaceAll: params.replaceAll }]
         : null
 
@@ -160,7 +162,7 @@ async function executeSingleEdit(
     }
 
     const file = Bun.file(filePath)
-    const stats = await file.stat().catch(() => { })
+    const stats = await file.stat().catch(() => {})
     if (!stats) throw new Error(`File ${filePath} not found`)
     if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
     await FileTime.assert(ctx.sessionID, filePath)
@@ -282,8 +284,11 @@ export const SimpleReplacer: Replacer = function* ({ find }) {
   yield find
 }
 
-export const LineTrimmedReplacer: Replacer = function* ({ content, contentLines: originalLines, findLines: searchLines }) {
-
+export const LineTrimmedReplacer: Replacer = function* ({
+  content,
+  contentLines: originalLines,
+  findLines: searchLines,
+}) {
   if (searchLines[searchLines.length - 1] === "") {
     searchLines.pop()
   }
@@ -320,8 +325,11 @@ export const LineTrimmedReplacer: Replacer = function* ({ content, contentLines:
   }
 }
 
-export const BlockAnchorReplacer: Replacer = function* ({ content, contentLines: originalLines, findLines: searchLines }) {
-
+export const BlockAnchorReplacer: Replacer = function* ({
+  content,
+  contentLines: originalLines,
+  findLines: searchLines,
+}) {
   if (searchLines.length < 3) {
     return
   }
@@ -613,7 +621,11 @@ export const TrimmedBoundaryReplacer: Replacer = function* ({ content, find }) {
   }
 }
 
-export const ContextAwareReplacer: Replacer = function* ({ content, contentLines: originalLines, findLines: searchLines }) {
+export const ContextAwareReplacer: Replacer = function* ({
+  content,
+  contentLines: originalLines,
+  findLines: searchLines,
+}) {
   if (searchLines.length < 3) {
     // Need at least 3 lines to have meaningful context
     return

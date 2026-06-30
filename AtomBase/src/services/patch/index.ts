@@ -483,7 +483,16 @@ export namespace Patch {
           break
 
         case "delete":
-          await fs.unlink(hunk.path)
+          try {
+            await fs.unlink(hunk.path)
+          } catch (err: any) {
+            if (err?.code === "EPERM" || err?.code === "EBUSY") {
+              // Windows: file may be locked, retry with rm
+              await fs.rm(hunk.path, { force: true })
+            } else {
+              throw err
+            }
+          }
           deleted.push(hunk.path)
           log.info(`Deleted file: ${hunk.path}`)
           await Bus.publish(FileEvent.Deleted, { paths: [hunk.path] })
@@ -500,7 +509,7 @@ export namespace Patch {
             }
 
             await fs.writeFile(hunk.move_path, fileUpdate.content, "utf-8")
-            await fs.unlink(hunk.path)
+            await fs.unlink(hunk.path).catch(() => fs.rm(hunk.path, { force: true }).catch(() => {}))
             modified.push(hunk.move_path)
             log.info(`Moved file: ${hunk.path} -> ${hunk.move_path}`)
             await Bus.publish(FileEvent.Deleted, { paths: [hunk.path] })

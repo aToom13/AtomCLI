@@ -40,9 +40,15 @@ export class BrowserManager {
       // 1. Standard dynamic import (local node_modules, NODE_PATH)
       "playwright",
       // 2. AtomCLI directory (where install.sh installs it)
-      `${os.homedir()}/.atomcli/playwright/node_modules/playwright`,
+      path.join(os.homedir(), ".atomcli", "playwright", "node_modules", "playwright"),
       // 3. Legacy config directory (backward compatibility)
-      `${process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")}/atomcli/playwright/node_modules/playwright`,
+      path.join(
+        process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
+        "atomcli",
+        "playwright",
+        "node_modules",
+        "playwright",
+      ),
     ]
 
     for (const modulePath of playwrightPaths) {

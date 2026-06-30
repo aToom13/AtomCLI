@@ -82,7 +82,7 @@ function validateSearchPath(searchPath: string): string {
   const normalizedPath = path.normalize(absolutePath)
 
   // Ensure path is within allowed boundaries
-  const allowedBase = path.resolve(Instance.worktree || Instance.directory)
+  const allowedBase = path.resolve(Instance.directory)
   if (!normalizedPath.startsWith(allowedBase)) {
     throw new Error(
       `Search path "${searchPath}" is outside the allowed project boundaries. ` +

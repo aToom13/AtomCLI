@@ -35,7 +35,7 @@ function validateFilePath(filePath: string): { normalizedPath: string; isExterna
   const normalizedPath = path.normalize(absolutePath)
 
   // Get the allowed base directory
-  const allowedBase = path.resolve(Instance.worktree || Instance.directory)
+  const allowedBase = path.resolve(Instance.directory)
 
   // Check if the normalized path is within allowed boundaries
   const isExternal = !normalizedPath.startsWith(allowedBase)

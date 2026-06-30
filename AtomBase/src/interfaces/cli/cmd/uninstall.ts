@@ -95,7 +95,7 @@ async function collectRemovalTargets(args: UninstallArgs, method: Installation.M
   ]
 
   const shellConfig = method === "curl" ? await getShellConfigFile() : null
-  const binary = method === "curl" ? process.execPath : null
+  const binary = method === "curl" || method === "windows" ? process.execPath : null
 
   return { directories, shellConfig, binary }
 }
@@ -198,14 +198,36 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
     }
   }
 
-  if (method === "curl" && targets.binary) {
+  if (targets.binary) {
     UI.empty()
-    prompts.log.message("To finish removing the binary, run:")
-    prompts.log.info(`  rm "${targets.binary}"`)
+    if (method === "windows") {
+      prompts.log.message("To finish removing the binary, run:")
+      prompts.log.info(`  Remove-Item "${targets.binary}" -Force`)
 
-    const binDir = path.dirname(targets.binary)
-    if (binDir.includes(".atomcli")) {
-      prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
+      // Clean AtomCLI from Windows User PATH
+      const installDir = path.dirname(targets.binary)
+      try {
+        const userPath = process.env.PATH || ""
+        if (userPath.toLowerCase().includes(installDir.toLowerCase())) {
+          const entries = userPath
+            .split(path.delimiter)
+            .filter((p) => !p.toLowerCase().includes(installDir.toLowerCase()))
+          await $`powershell -NoProfile -c "[Environment]::SetEnvironmentVariable('Path', '${entries.join(";")}', 'User')"`
+            .quiet()
+            .nothrow()
+          prompts.log.info("  Cleaned AtomCLI from User PATH")
+        }
+      } catch {
+        prompts.log.warn(`  Manually remove ${installDir} from your PATH if needed`)
+      }
+    } else {
+      prompts.log.message("To finish removing the binary, run:")
+      prompts.log.info(`  rm "${targets.binary}"`)
+
+      const binDir = path.dirname(targets.binary)
+      if (binDir.includes(".atomcli")) {
+        prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
+      }
     }
   }
 

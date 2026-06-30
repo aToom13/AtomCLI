@@ -114,7 +114,7 @@ export const BashTool = Tool.define("bash", async () => {
         }
         // Ensure the resolved path is within allowed boundaries
         const resolvedCwd = path.resolve(cwd)
-        const allowedBase = path.resolve(Instance.worktree || Instance.directory)
+        const allowedBase = path.resolve(Instance.directory)
 
         // In test mode, allow /tmp directory for test files
         const isAllowed = isTestMode && resolvedCwd.startsWith(os.tmpdir())

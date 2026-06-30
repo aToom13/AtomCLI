@@ -283,8 +283,10 @@ ${diskInfo}
         if (process.platform === "linux" || process.platform === "win32") {
           try {
             const gpuInfo = execSync(
-              "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null",
-              { encoding: "utf-8" },
+              process.platform === "win32"
+                ? "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader"
+                : "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null",
+              { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
             ).trim()
 
             if (gpuInfo) {
@@ -303,14 +305,16 @@ ${diskInfo}
               // Add GPU processes
               try {
                 const gpuProcesses = execSync(
-                  "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | head -10",
-                  { encoding: "utf-8" },
+                  process.platform === "win32"
+                    ? "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader"
+                    : "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null",
+                  { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
                 ).trim()
                 if (gpuProcesses) {
                   output += "**GPU Processes:**\n"
                   output += "| PID | Process | Memory |\n"
                   output += "|-----|---------|--------|\n"
-                  for (const line of gpuProcesses.split("\n")) {
+                  for (const line of gpuProcesses.split("\n").slice(0, 10)) {
                     const [pid, name, mem] = line.split(", ")
                     output += `| ${pid} | ${name} | ${mem} |\n`
                   }
