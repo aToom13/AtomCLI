@@ -8,7 +8,11 @@ import { upgrade } from "@/interfaces/cli/upgrade"
 import { Config } from "@/core/config/config"
 import { Bus } from "@/core/bus"
 import { GlobalBus } from "@/core/bus/global"
+import { initConsoleEncoding } from "@/util/util/unicode"
 import type { BunWebSocketData } from "hono/bun"
+
+// Set Windows console to UTF-8 codepage before any rendering
+initConsoleEncoding()
 
 await Log.init({
   print: process.argv.includes("--print-logs"),

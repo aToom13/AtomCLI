@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/function",
-  "version": "3.2.7",
+  "version": "3.2.8",
   "$schema": "https://json.schemastore.org/package.json",
   "private": true,
   "type": "module",

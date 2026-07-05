@@ -14,7 +14,7 @@ import { Flag } from "@/interfaces/flag/flag"
 export namespace PermissionNext {
   const log = Log.create({ service: "permission" })
 
-  // Permissions that are NEVER auto-allowed, even in YOLO mode
+  // Permissions that are NEVER auto-allowed, even in YOLO or autonomous mode
   const YOLO_EXEMPT_PERMISSIONS = ["window_control"]
 
   export const Action = z.enum(["allow", "deny", "ask"]).meta({
@@ -101,7 +101,16 @@ export namespace PermissionNext {
 
   const state = Instance.state(async () => {
     const projectID = Instance.project.id
-    const stored = await Storage.read<Ruleset>(["permission", projectID]).catch(() => [] as Ruleset)
+    let stored: Ruleset = []
+    try {
+      stored = await Storage.read<Ruleset>(["permission", projectID])
+      if (!Array.isArray(stored)) {
+        log.warn("permission store corrupted, resetting", { projectID })
+        stored = []
+      }
+    } catch (error) {
+      log.warn("failed to load persisted permissions, starting fresh", { projectID, error })
+    }
 
     const pending: Record<
       string,
@@ -124,6 +133,7 @@ export namespace PermissionNext {
     }),
     async (input) => {
       // YOLO mode: auto-allow everything except exempt permissions (e.g., window_control)
+      // Activated by: --yolo/--autonomous CLI flag, ATOMCLI_YOLO/ATOMCLI_AUTONOMOUS env, or config agent_mode
       if (Flag.ATOMCLI_YOLO && !YOLO_EXEMPT_PERMISSIONS.includes(input.permission)) {
         log.info("YOLO mode: auto-allowing", { permission: input.permission })
         return
@@ -146,7 +156,7 @@ export namespace PermissionNext {
             const autoRejectTimer = setTimeout(() => {
               if (s.pending[id]) {
                 delete s.pending[id]
-                log.warn("permission auto-rejected after 20s timeout", {
+                log.warn("permission auto-rejected after 5min timeout", {
                   id,
                   permission: request.permission,
                 })
@@ -160,8 +170,14 @@ export namespace PermissionNext {
             }, 300_000)
             s.pending[id] = {
               info,
-              resolve: () => { clearTimeout(autoRejectTimer); resolve() },
-              reject: (e: any) => { clearTimeout(autoRejectTimer); reject(e) },
+              resolve: () => {
+                clearTimeout(autoRejectTimer)
+                resolve()
+              },
+              reject: (e: any) => {
+                clearTimeout(autoRejectTimer)
+                reject(e)
+              },
             }
             Bus.publish(Event.Asked, info)
           })
@@ -236,7 +252,14 @@ export namespace PermissionNext {
         }
 
         // Persist the permission ruleset to disk
-        await Storage.write(["permission", Instance.project.id], s.approved)
+        try {
+          await Storage.write(["permission", Instance.project.id], s.approved)
+        } catch (error) {
+          log.error("failed to persist permission rules to disk — approval will only last this session", {
+            error,
+            projectID: Instance.project.id,
+          })
+        }
         return
       }
     },

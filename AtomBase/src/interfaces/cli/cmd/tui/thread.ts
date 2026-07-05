@@ -1,4 +1,3 @@
-
 import { cmd } from "@/interfaces/cli/cmd/cmd"
 import { tui } from "./app"
 import { Rpc } from "@/util/util/rpc"
@@ -66,7 +65,7 @@ function createEventSource(client: RpcClient, directory: string): EventSource {
       const unsub1 = client.on<Event>("event", (event) => {
         trackAndHandle(event)
         if (event.type === "server.instance.disposed") {
-          client.call("subscribe", { directory }).catch(() => { })
+          client.call("subscribe", { directory }).catch(() => {})
         }
       })
       // Listen for global events (e.g., installation updates)
@@ -146,7 +145,7 @@ export const TuiThreadCommand = cmd({
         ...Object.fromEntries(
           Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
         ),
-        ...(args.autonomous ? { ATOMCLI_AUTONOMOUS: "1" } : {}),
+        ...(args.autonomous ? { ATOMCLI_AUTONOMOUS: "1", ATOMCLI_YOLO: "1" } : {}),
       },
     })
     worker.onerror = (e) => {
@@ -226,7 +225,7 @@ export const TuiThreadCommand = cmd({
     })
 
     setTimeout(() => {
-      client.call("checkUpgrade", { directory: cwd }).catch(() => { })
+      client.call("checkUpgrade", { directory: cwd }).catch(() => {})
     }, 1000)
 
     await tuiPromise

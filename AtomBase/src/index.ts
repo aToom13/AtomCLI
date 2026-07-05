@@ -1,6 +1,10 @@
 import "./shim"
+import { initConsoleEncoding } from "@/util/util/unicode"
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
+
+// Set Windows console to UTF-8 codepage early for proper Unicode rendering
+initConsoleEncoding()
 import { RunCommand } from "@/interfaces/cli/cmd/run"
 import { GenerateCommand } from "@/interfaces/cli/cmd/generate"
 import { Log } from "@/util/util/log"

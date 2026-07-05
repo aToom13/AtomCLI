@@ -323,6 +323,11 @@ export namespace Config {
 
     result.plugin = deduplicatePlugins(result.plugin ?? [])
 
+    // Activate YOLO mode if agent_mode is set to autonomous in config
+    if (result.agent_mode === "autonomous") {
+      Flag.enableYolo()
+    }
+
     return {
       config: result,
       directories,
