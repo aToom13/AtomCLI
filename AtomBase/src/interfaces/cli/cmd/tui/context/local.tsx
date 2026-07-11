@@ -104,12 +104,25 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           modelID: string
         }[]
         variant: Record<string, string | undefined>
+        projects: Record<
+          string,
+          {
+            model?: Record<
+              string,
+              {
+                providerID: string
+                modelID: string
+              }
+            >
+          }
+        >
       }>({
         ready: false,
         model: {},
         recent: [],
         favorite: [],
         variant: {},
+        projects: {},
       })
 
       const file = Bun.file(path.join(Global.Path.state, "model.json"))
@@ -121,6 +134,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             recent: modelStore.recent,
             favorite: modelStore.favorite,
             variant: modelStore.variant,
+            projects: modelStore.projects,
           }),
         )
       }
@@ -131,11 +145,35 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (Array.isArray(x.recent)) setModelStore("recent", x.recent)
           if (Array.isArray(x.favorite)) setModelStore("favorite", x.favorite)
           if (typeof x.variant === "object" && x.variant !== null) setModelStore("variant", x.variant)
+          if (typeof x.projects === "object" && x.projects !== null) setModelStore("projects", x.projects)
         })
-        .catch(() => { })
+        .catch(() => {})
         .finally(() => {
           setModelStore("ready", true)
         })
+
+      createEffect(() => {
+        const dir = sync.data.path.directory
+        if (dir && modelStore.ready && modelStore.projects?.[dir]?.model) {
+          const projectModels = modelStore.projects[dir].model
+          if (projectModels) {
+            batch(() => {
+              for (const [agentName, modelInfo] of Object.entries(projectModels)) {
+                if (isModelValid(modelInfo)) {
+                  const current = modelStore.model[agentName]
+                  if (
+                    !current ||
+                    current.providerID !== modelInfo.providerID ||
+                    current.modelID !== modelInfo.modelID
+                  ) {
+                    setModelStore("model", agentName, modelInfo)
+                  }
+                }
+              }
+            })
+          }
+        }
+      })
 
       const args = useArgs()
       const fallbackModel = createMemo(() => {
@@ -159,13 +197,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }
 
+        const atomcliAuto = { providerID: "atomcli", modelID: "atomcli-auto" }
+        if (isModelValid(atomcliAuto)) {
+          return atomcliAuto
+        }
+
         for (const item of modelStore.recent) {
           if (isModelValid(item)) {
             return item
           }
         }
 
-        const provider = sync.data.provider[0]
+        const provider = sync.data.provider.find((x) => x.id === "atomcli") ?? sync.data.provider[0]
         if (!provider) return undefined
         const defaultModel = sync.data.provider_default[provider.id]
         const firstModel = Object.values(provider.models)[0]
@@ -188,7 +231,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         )
       })
 
-      return {
+      const modelApi = {
         current: currentModel,
         get ready() {
           return modelStore.ready
@@ -210,8 +253,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
           const provider = sync.data.provider.find((x) => x.id === value.providerID)
           const info = provider?.models[value.modelID]
+          const isAuto = value.modelID === "atomcli-auto"
+          const modeSuffix = isAuto ? ` (${sync.data.config.experimental?.auto_mode ?? "balanced"})` : ""
           return {
-            provider: provider?.name ?? value.providerID,
+            provider: (provider?.name ?? value.providerID) + modeSuffix,
             model: info?.name ?? value.modelID,
             reasoning: info?.capabilities?.reasoning ?? false,
           }
@@ -227,7 +272,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (next >= recent.length) next = 0
           const val = recent[next]
           if (!val) return
-          setModelStore("model", agent.current().name, { ...val })
+          modelApi.set(val, { recent: true })
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -253,14 +298,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
           const next = favorites[index]
           if (!next) return
-          setModelStore("model", agent.current().name, { ...next })
-          const uniq = uniqueBy([next, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
-          while (uniq.length > 5) uniq.pop()
-          setModelStore(
-            "recent",
-            uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-          )
-          save()
+          modelApi.set(next, { recent: true })
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
           batch(() => {
@@ -273,6 +311,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               return
             }
             setModelStore("model", agent.current().name, model)
+            const dir = sync.data.path.directory
+            if (dir) {
+              if (!modelStore.projects[dir]) {
+                setModelStore("projects", dir, { model: {} })
+              }
+              setModelStore("projects", dir, "model", agent.current().name, model)
+            }
             if (options?.recent) {
               const uniq = uniqueBy([model, ...modelStore.recent], (x) => `${x.providerID}/${x.modelID}`)
               while (uniq.length > 5) uniq.pop()
@@ -280,8 +325,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 "recent",
                 uniq.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
               )
-              save()
             }
+            save()
           })
         },
         removeRecent(model: { providerID: string; modelID: string }) {
@@ -363,6 +408,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           },
         },
       }
+      return modelApi
     })
 
     const mcp = {

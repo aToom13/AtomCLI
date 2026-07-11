@@ -9,6 +9,43 @@ const log = Log.create({ service: "model-router" })
  */
 export type TaskCategory = "coding" | "documentation" | "analysis" | "general"
 
+export type AutoMode = "speed" | "balanced" | "quality" | "reasoning"
+
+export interface ModelState {
+  modelID: string               // Örn: "qwen/qwen3-235b-a22b"
+  consecutiveFailures: number   // Üst üste alınan hata sayısı
+  lastError: number | null      // Son hata timestamp'i
+  recentLatenciesMs: number[]   // Gerçek API gecikmeleri (Son 20 çağrı ring buffer)
+  usageCount: number            // Modelin kullanım sıklığı (Yük paylaştırma için)
+  windowStart: number           // Zaman penceresi başlangıcı
+}
+
+export const modelStates = new Map<string, ModelState>()
+
+export function recordCallResult(modelID: string, ok: boolean, latencyMs?: number) {
+  const s = modelStates.get(modelID) ?? {
+    modelID,
+    consecutiveFailures: 0,
+    lastError: null,
+    recentLatenciesMs: [],
+    usageCount: 0,
+    windowStart: Date.now()
+  }
+
+  if (ok) {
+    s.consecutiveFailures = 0
+    if (latencyMs !== undefined) {
+      s.recentLatenciesMs.push(latencyMs)
+      if (s.recentLatenciesMs.length > 20) s.recentLatenciesMs.shift()
+    }
+  } else {
+    s.consecutiveFailures++
+    s.lastError = Date.now()
+  }
+  s.usageCount++
+  modelStates.set(modelID, s)
+}
+
 /**
  * A model candidate with its score for a given category.
  */
@@ -35,16 +72,16 @@ function scoreModel(model: Provider.Model, category: TaskCategory): number {
             // Reasoning is highly valuable for coding
             if (model.capabilities.reasoning) score += 50
             // Higher output limit is better for code generation
-            score += Math.min(model.limit.output / 1000, 30) // max 30pts
+            score += Math.min((model.limit?.output ?? 0) / 1000, 30) // max 30pts
             // Moderate context is fine
-            score += Math.min(model.limit.context / 10000, 20) // max 20pts
+            score += Math.min((model.limit?.context ?? 0) / 10000, 20) // max 20pts
             break
 
         case "documentation":
             // Documentation benefits from long context
-            score += Math.min(model.limit.context / 5000, 60) // max 60pts (heavily weighted)
+            score += Math.min((model.limit?.context ?? 0) / 5000, 60) // max 60pts (heavily weighted)
             // Higher output for long docs
-            score += Math.min(model.limit.output / 1000, 25) // max 25pts
+            score += Math.min((model.limit?.output ?? 0) / 1000, 25) // max 25pts
             // Reasoning helps structure docs but less critical
             if (model.capabilities.reasoning) score += 15
             break
@@ -53,7 +90,7 @@ function scoreModel(model: Provider.Model, category: TaskCategory): number {
             // Analysis needs reasoning
             if (model.capabilities.reasoning) score += 60
             // Context helps for analyzing large data
-            score += Math.min(model.limit.context / 10000, 25) // max 25pts
+            score += Math.min((model.limit?.context ?? 0) / 10000, 25) // max 25pts
             // Tool calling is useful for analysis tasks
             if (model.capabilities.toolcall) score += 15
             break
@@ -63,8 +100,8 @@ function scoreModel(model: Provider.Model, category: TaskCategory): number {
             // Balanced scoring
             if (model.capabilities.toolcall) score += 25
             if (model.capabilities.reasoning) score += 25
-            score += Math.min(model.limit.context / 10000, 25)
-            score += Math.min(model.limit.output / 1000, 25)
+            score += Math.min((model.limit?.context ?? 0) / 10000, 25)
+            score += Math.min((model.limit?.output ?? 0) / 1000, 25)
             break
     }
 
@@ -73,7 +110,7 @@ function scoreModel(model: Provider.Model, category: TaskCategory): number {
 
     // Cost penalty: prefer cheaper models when scores are close
     // Normalize cost to a 0-10 penalty range
-    const costPer1M = (model.cost.input + model.cost.output) / 2
+    const costPer1M = ((model.cost?.input ?? 0) + (model.cost?.output ?? 0)) / 2
     if (costPer1M > 0) {
         score -= Math.min(costPer1M * 0.5, 10)
     }
@@ -81,61 +118,376 @@ function scoreModel(model: Provider.Model, category: TaskCategory): number {
     return Math.max(score, 0)
 }
 
+export function estimateComplexity(prompt: string): number {
+  let score = 0
+
+  // Uzunluk: 1000 kelimeye kadar lineer artış
+  score += Math.min(prompt.split(/\s+/).length / 100, 10)
+
+  // Soru işareti sayısı (çok sorulu → daha az odaklı)
+  score += Math.min((prompt.match(/\?/g) ?? []).length * 0.5, 3)
+
+  // Teknik terim yoğunluğu (regex, API, schema, algorithm, ...)
+  const techTerms = ["algorithm", "regex", "schema", "concurrent", "async", "recursive"]
+  score += techTerms.filter(t => prompt.toLowerCase().includes(t)).length
+
+  // Kod bloğu varlığı
+  if (/```/.test(prompt)) score += 2
+
+  // Çoklu görev işareti ("ve ayrıca", "ardından", "then also")
+  if (/\band\b|\bayrıca\b|\bardından\b/.test(prompt.toLowerCase())) score += 1.5
+
+  return Math.min(score, 10)  // 0-10 arası normalleştir
+}
+
+export interface WeightedKeyword {
+  pattern: string | RegExp
+  weight: number
+}
+
+export const CODING_PATTERNS: WeightedKeyword[] = [
+  { pattern: "write code", weight: 2 },
+  { pattern: "implement", weight: 1.5 },
+  { pattern: "fix bug", weight: 2 },
+  { pattern: "refactor", weight: 2 },
+  { pattern: "function", weight: 1 },
+  { pattern: "class", weight: 1 },
+  { pattern: "module", weight: 1 },
+  { pattern: "api", weight: 1.5 },
+  { pattern: "endpoint", weight: 1.5 },
+  { pattern: "test", weight: 1.5 },
+  { pattern: "debug", weight: 2 },
+  { pattern: "compile", weight: 1.5 },
+  { pattern: "build", weight: 1.5 },
+  { pattern: "syntax", weight: 1.5 },
+  { pattern: "error", weight: 1 },
+  { pattern: "bug", weight: 1.5 },
+  { pattern: "feature", weight: 1 },
+  { pattern: "kod yaz", weight: 2 },
+  { pattern: "düzelt", weight: 2 },
+  { pattern: "hata", weight: 1.5 },
+  { pattern: "fonksiyon", weight: 1.5 },
+  { pattern: "yaz", weight: 0.2 },
+]
+
+export const DOC_PATTERNS: WeightedKeyword[] = [
+  { pattern: "document", weight: 2 },
+  { pattern: "readme", weight: 2 },
+  { pattern: "guide", weight: 2 },
+  { pattern: "tutorial", weight: 2 },
+  { pattern: "explain", weight: 1 },
+  { pattern: "describe", weight: 1 },
+  { pattern: "summary", weight: 1 },
+  { pattern: "changelog", weight: 2 },
+  { pattern: "release notes", weight: 2 },
+  { pattern: "doküman", weight: 2 },
+  { pattern: "belge", weight: 2 },
+  { pattern: "açıkla", weight: 1.5 },
+  { pattern: "özet", weight: 1.5 },
+]
+
+export const ANALYSIS_PATTERNS: WeightedKeyword[] = [
+  { pattern: "analyze", weight: 2 },
+  { pattern: "review", weight: 2 },
+  { pattern: "audit", weight: 2 },
+  { pattern: "inspect", weight: 1.5 },
+  { pattern: "investigate", weight: 1.5 },
+  { pattern: "compare", weight: 1.5 },
+  { pattern: "evaluate", weight: 1.5 },
+  { pattern: "assess", weight: 1.5 },
+  { pattern: "benchmark", weight: 2 },
+  { pattern: "analiz", weight: 2 },
+  { pattern: "incele", weight: 2 },
+  { pattern: "karşılaştır", weight: 2 },
+]
+
+export function scoreAgainstPatterns(prompt: string, patterns: WeightedKeyword[]): number {
+  let score = 0
+  const lower = prompt.toLowerCase()
+  for (const p of patterns) {
+    const isRegex = p.pattern instanceof RegExp
+    const matches = isRegex 
+      ? (lower.match(p.pattern) ?? []).length 
+      : (lower.includes(p.pattern as string) ? 1 : 0)
+    score += matches * p.weight
+  }
+  return score
+}
+
+export function inferCategoryMulti(prompt: string): { category: TaskCategory; confidence: number } {
+  const scores = {
+    coding: scoreAgainstPatterns(prompt, CODING_PATTERNS),
+    documentation: scoreAgainstPatterns(prompt, DOC_PATTERNS),
+    analysis: scoreAgainstPatterns(prompt, ANALYSIS_PATTERNS),
+    general: 1, // Taban puan
+  }
+  
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1])
+  const [topCategory, topScore] = sorted[0]
+  const runnerUpScore = sorted[1][1]
+  const margin = topScore - runnerUpScore
+  
+  // Eğer en yüksek iki kategori birbirine çok yakınsa (margin farkı %30'dan azsa) belirsizlik vardır.
+  // Bu durumda "general" kategorisine düşür.
+  if (margin < topScore * 0.3) {
+    return { category: "general", confidence: 0.4 }
+  }
+  
+  return { category: topCategory as TaskCategory, confidence: margin / topScore }
+}
+
+export function estimateRequiredContext(session: any, currentPrompt: string): number {
+  const systemPromptTokens = session?.systemPromptTokenCount ?? 1500
+  const toolSchemasTokens = session?.toolSchemaTokenCount ?? 3000
+  const conversationHistoryTokens = session?.cumulativeTokenCount ?? 0
+  const currentPromptTokens = Math.ceil(currentPrompt.length / 4) // 1 token ≈ 4 karakter
+  const outputReserve = 2000 // Çıktı için ayrılan pay
+  
+  return systemPromptTokens + toolSchemasTokens + conversationHistoryTokens + currentPromptTokens + outputReserve
+}
+
+export function categoryHardOk(m: Provider.Model, category: TaskCategory): boolean {
+  if (category === "coding" && !m.capabilities.toolcall) return false
+  if (category === "analysis" && !m.capabilities.reasoning) return false
+  return true
+}
+
+export function selectCandidates(
+  freeModels: Array<[string, Provider.Model]>, 
+  category: TaskCategory
+): Array<[string, Provider.Model]> {
+  if (freeModels.length === 0) {
+    throw new Error("NoFreeModelsError: Kullanılabilir hiçbir ücretsiz model bulunamadı!")
+  }
+  
+  const tiers = [
+    // Tier 0: Görev kategorisi tam karşılanıyor VE model sağlıklı (hata yok)
+    (id: string, m: Provider.Model) => categoryHardOk(m, category) && (modelStates.get(id)?.consecutiveFailures ?? 0) === 0,
+    
+    // Tier 1: Görev kategorisi tam karşılanıyor (sağlık durumu ne olursa olsun)
+    (id: string, m: Provider.Model) => categoryHardOk(m, category),
+    
+    // Tier 2: Görev kategorisi "general" olarak gevşetiliyor VE model sağlıklı
+    (id: string, m: Provider.Model) => categoryHardOk(m, "general") && (modelStates.get(id)?.consecutiveFailures ?? 0) === 0,
+    
+    // Tier 3: Elimizde kalan ne varsa (Tier 3 her zaman true döner)
+    (id: string, m: Provider.Model) => true
+  ]
+  
+  for (const check of tiers) {
+    const candidates = freeModels.filter(([id, m]) => check(id, m))
+    if (candidates.length > 0) return candidates
+  }
+  
+  return freeModels // Fallback
+}
+
+export const MODE_WEIGHTS = {
+  speed:     { context: 0.1, output: 0.1, toolcall: 0.3, reasoning: 0.0, latency: 1.5 },
+  balanced:  { context: 0.3, output: 0.3, toolcall: 0.5, reasoning: 0.5, latency: 1.0 },
+  quality:   { context: 0.5, output: 0.5, toolcall: 0.8, reasoning: 1.5, latency: 0.5 },
+  reasoning: { context: 0.3, output: 0.3, toolcall: 0.5, reasoning: 3.0, latency: 0.2 },
+}
+
+export function finalScore(
+  id: string,
+  m: Provider.Model, 
+  category: TaskCategory, 
+  mode: AutoMode, 
+  complexity: number = 0
+): number {
+  // 1. Temel puanlama (saf yetenekler)
+  const base = scoreModel(m, category)
+  const w = MODE_WEIGHTS[mode]
+  
+  // 2. Mod ağırlıklı yetenek bonusları (toolcall çarpanı dahil edildi)
+  let score = base * (1 + w.reasoning * (m.capabilities.reasoning ? 1.5 : 0))
+            + w.context * Math.min((m.limit?.context ?? 0) / 10000, 20)
+            + w.output  * Math.min((m.limit?.output ?? 0) / 1000, 20)
+            + w.toolcall * (m.capabilities.toolcall ? 20 : 0)
+            
+  // 3. Karmaşıklık (Complexity) etkisi: >= 7 ise reasoning modellerine ek bonus
+  if (complexity >= 7 && m.capabilities.reasoning) {
+    score += 40
+  }
+  
+  // 4. Dinamik Latency Cezası (models.dev'de hız verisi yoktur, in-memory ModelState'ten ölçülür)
+  const state = modelStates.get(id)
+  let avgLat = state && state.recentLatenciesMs.length > 0 
+    ? state.recentLatenciesMs.reduce((a, b) => a + b, 0) / state.recentLatenciesMs.length 
+    : null
+    
+  // İlk çalıştırmada veri yoksa context limit'ini zayıf bir proxy (küçük model = hızlı) olarak kullan
+  if (avgLat === null) {
+    avgLat = ((m.limit?.context ?? 0) / 1000) * 10 // Örn: 128k ctx -> 1280ms varsayılan
+  }
+  score -= w.latency * (avgLat / 1000)
+  
+  // 5. Yumuşak Sağlık Cezası (Soft Penalty - ModelID bazlı)
+  const failures = state?.consecutiveFailures ?? 0
+  score -= failures * 15
+  
+  return Math.max(score, 0)
+}
+
+function pickWithLoadBalancing(
+  ranked: Array<{ id: string; m: Provider.Model; score: number }>, 
+  poolSize: number
+): { id: string; m: Provider.Model; score: number } {
+  const topN = poolSize <= 3 ? ranked.length : Math.max(2, Math.ceil(poolSize * 0.3))
+  const pool = ranked.slice(0, topN)
+  
+  const weights = pool.map(c => {
+    const usage = modelStates.get(c.id)?.usageCount ?? 0
+    return c.score / (1 + usage * 0.5)
+  })
+  
+  const totalWeight = weights.reduce((a, b) => a + b, 0)
+  let r = Math.random() * totalWeight
+  
+  for (let i = 0; i < pool.length; i++) {
+    r -= weights[i]
+    if (r <= 0) return pool[i]
+  }
+  return pool[0]
+}
+
+export interface ModelSelectionResult {
+  selected: { id: string; m: Provider.Model; score: number }
+  ranked: Array<{ id: string; m: Provider.Model; score: number }>
+}
+
+export function selectModelInternal(
+  category: TaskCategory,
+  allFreeModels: Array<[string, Provider.Model]>,
+  mode: AutoMode = "balanced",
+  complexity = 0,
+  session?: any,
+  prompt?: string
+): ModelSelectionResult {
+  let filtered = allFreeModels
+  if (session && prompt) {
+    const requiredContext = estimateRequiredContext(session, prompt)
+    filtered = allFreeModels.filter(([, m]) => (m.limit?.context ?? 0) >= requiredContext)
+  }
+  
+  const pool = filtered.length > 0 ? filtered : allFreeModels
+  const candidates = selectCandidates(pool, category)
+  
+  const ranked = candidates
+    .map(([id, m]) => ({ id, m, score: finalScore(id, m, category, mode, complexity) }))
+    .sort((a, b) => b.score - a.score)
+    
+  const selected = pickWithLoadBalancing(ranked, candidates.length)
+  
+  return { selected, ranked }
+}
+
+export function buildFallbackChain(
+  category: TaskCategory,
+  allFreeModels: Array<[string, Provider.Model]>,
+  mode: AutoMode = "balanced",
+  complexity = 0,
+  session?: any,
+  prompt?: string
+) {
+  const { selected, ranked } = selectModelInternal(category, allFreeModels, mode, complexity, session, prompt)
+  
+  const fallbacks = ranked
+    .filter(x => x.id !== selected.id)
+    .slice(0, 2)
+    .map(x => ({ providerID: "atomcli", modelID: x.id }))
+    
+  return {
+    primary: { providerID: "atomcli", modelID: selected.id },
+    fallbacks,
+    reason: `category=${category}, mode=${mode}, finalScore=${selected.score.toFixed(1)}`,
+  }
+}
+
 /**
  * Select the best model for a given task category.
- *
- * When smart_model_routing is disabled, returns the fallback model unchanged.
- * When enabled, scores all available models and picks the best one.
+ * Supports overloaded signatures:
+ * 1. selectModel(category, fallback)
+ * 2. selectModel(category, allFreeModels, mode, complexity, session, prompt)
  */
 export async function selectModel(
     category: TaskCategory,
-    fallback: { providerID: string; modelID: string },
-): Promise<{ providerID: string; modelID: string }> {
-    const config = await Config.get()
+    allFreeModelsOrFallback: Array<[string, Provider.Model]> | { providerID: string; modelID: string },
+    mode: AutoMode = "balanced",
+    complexity = 0,
+    session?: any,
+    prompt?: string
+): Promise<any> {
+    if (!Array.isArray(allFreeModelsOrFallback)) {
+        // Old signature: selectModel(category, fallback)
+        const fallback = allFreeModelsOrFallback
+        const config = await Config.get()
 
-    // If smart routing is disabled, use fallback
-    if (!config.experimental?.smart_model_routing) {
-        return fallback
-    }
-
-    try {
-        const providers = await Provider.list()
-        const candidates: ScoredModel[] = []
-
-        for (const [providerID, provider] of Object.entries(providers)) {
-            for (const [modelID, model] of Object.entries(provider.models)) {
-                // Skip models that can't do text output
-                if (!model.capabilities.output.text) continue
-                // Skip alpha/deprecated
-                if (model.status === "deprecated") continue
-
-                const score = scoreModel(model, category)
-                if (score > 0) {
-                    candidates.push({ providerID, modelID, model, score })
-                }
-            }
-        }
-
-        if (candidates.length === 0) {
-            log.warn("no suitable model found, using fallback", { category, fallback })
+        if (!config.experimental?.smart_model_routing) {
             return fallback
         }
 
-        // Sort by score (descending), take the best
-        candidates.sort((a, b) => b.score - a.score)
-        const best = candidates[0]
+        try {
+            const providers = await Provider.list()
+            const atomcliProvider = providers["atomcli"]
+            let freeModels: Array<[string, Provider.Model]> = []
+            if (atomcliProvider) {
+                freeModels = Object.entries(atomcliProvider.models).filter(
+                    ([id]) => id !== "atomcli-auto" && id !== "atomcli-free"
+                )
+            } else {
+                for (const [pID, p] of Object.entries(providers)) {
+                    for (const [mID, m] of Object.entries(p.models)) {
+                        if (m.cost?.input === 0 && m.cost?.output === 0 && mID !== "atomcli-auto" && mID !== "atomcli-free") {
+                            freeModels.push([mID, m])
+                        }
+                    }
+                }
+            }
 
-        log.info("model selected", {
-            category,
-            selected: `${best.providerID}/${best.modelID}`,
-            score: best.score,
-            candidates: candidates.length,
-        })
+            const configMode = config.experimental?.auto_mode ?? "balanced"
 
-        return { providerID: best.providerID, modelID: best.modelID }
-    } catch (e) {
-        log.warn("model routing failed, using fallback", { error: (e as Error).message })
-        return fallback
+            // Resolve active session & prompt
+            let activeSession = session
+            let promptText = prompt ?? ""
+            if (!activeSession) {
+                const { Session } = await import("@/core/session")
+                for await (const s of Session.list()) {
+                    if (!activeSession || s.time.updated > activeSession.time.updated) {
+                        activeSession = s
+                    }
+                }
+                if (activeSession && !promptText) {
+                    const messages = await Session.messages({ sessionID: activeSession.id })
+                    const lastUser = [...messages].reverse().find(m => m.info.role === "user")
+                    if (lastUser) {
+                        promptText = lastUser.parts
+                            .filter((p: any) => p.type === "text" && !p.synthetic)
+                            .map((p: any) => p.text)
+                            .join("\n")
+                    }
+                }
+            }
+
+            const comp = promptText ? estimateComplexity(promptText) : 0
+            const result = selectModelInternal(category, freeModels, configMode, comp, activeSession, promptText)
+            
+            log.info("model selected", {
+                category,
+                selected: `atomcli/${result.selected.id}`,
+                score: result.selected.score,
+                candidates: result.ranked.length,
+            })
+
+            return { providerID: "atomcli", modelID: result.selected.id }
+        } catch (e) {
+            log.warn("model routing failed, using fallback", { error: (e as Error).message })
+            return fallback
+        }
+    } else {
+        // New signature: selectModel(category, allFreeModels, mode, complexity, session, prompt)
+        return selectModelInternal(category, allFreeModelsOrFallback, mode, complexity, session, prompt)
     }
 }
 
@@ -180,4 +532,9 @@ export function inferCategory(prompt: string): TaskCategory {
 export const _internals = {
     scoreModel,
     inferCategory,
+    scoreAgainstPatterns,
+    inferCategoryMulti,
+    estimateComplexity,
+    selectCandidates,
+    pickWithLoadBalancing,
 }

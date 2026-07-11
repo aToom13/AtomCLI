@@ -147,7 +147,8 @@ export namespace LLM {
     const streamText = await getStreamText()
     const wrapLanguageModel = await getWrapLanguageModel()
 
-    return streamText({
+    const startTime = Date.now()
+    const result = streamText({
       onError(error) {
         l.error("stream error", {
           error,
@@ -247,6 +248,28 @@ export namespace LLM {
       }),
       experimental_telemetry: { isEnabled: cfg.experimental?.openTelemetry },
     })
+
+    if (result && result.text) {
+      result.text.then(
+        () => {
+          const latency = Date.now() - startTime
+          import("@/integrations/tool/model-router")
+            .then(({ recordCallResult }) => {
+              recordCallResult(input.model.id, true, latency)
+            })
+            .catch(() => {})
+        },
+        () => {
+          import("@/integrations/tool/model-router")
+            .then(({ recordCallResult }) => {
+              recordCallResult(input.model.id, false)
+            })
+            .catch(() => {})
+        }
+      )
+    }
+
+    return result
   }
 
   async function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "user">) {

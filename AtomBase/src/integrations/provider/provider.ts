@@ -728,18 +728,24 @@ export namespace Provider {
       database["antigravity"].models = {}
     }
 
-    // Alias opencode to atomcli to support legacy default models
     if (database["opencode"]) {
+      const isConfirmedFree = (model: Model): boolean => {
+        if (!model.cost || model.cost.input === undefined || model.cost.output === undefined) {
+          return false
+        }
+        return model.cost.input === 0 && model.cost.output === 0
+      }
+
+      const isTestEnv =
+        typeof process !== "undefined" &&
+        process.env.NODE_ENV !== "production" &&
+        process.env.ATOMCLI_TEST_ALL_MODELS === "1"
+
       const filteredModels = pickBy(database["opencode"].models, (model) => {
-        // Test mode: if ATOMCLI_TEST_ALL_MODELS is set, do not filter any models from opencode
-        if (typeof process !== "undefined" && process.env.ATOMCLI_TEST_ALL_MODELS === "1") {
+        if (isTestEnv) {
           return true
         }
-
-        // Filter for models that are completely free (zero cost)
-        const inputCost = model.cost?.input ?? 0
-        const outputCost = model.cost?.output ?? 0
-        return inputCost === 0 && outputCost === 0
+        return isConfirmedFree(model)
       })
 
       database["atomcli"] = {
@@ -757,15 +763,15 @@ export namespace Provider {
         options: { apiKey: "public" }, // Hint that no API key is needed
       }
 
-      // Add AtomCLI-Free auto-routing virtual model
+      // Add AtomCLI Auto auto-routing virtual models
       const templateModel = Object.values(database["atomcli"].models)[0]
       if (templateModel) {
         const allModels = Object.values(database["atomcli"].models)
-        database["atomcli"].models["atomcli-free"] = {
+        const virtualModel = {
           ...templateModel,
-          id: "atomcli-free",
-          api: { ...templateModel.api, id: "atomcli-free" },
-          name: "AtomCLI Free (Auto)",
+          id: "atomcli-auto",
+          api: { ...templateModel.api, id: "atomcli-auto" },
+          name: "AtomCLI Auto",
           family: "auto",
           status: "active" as const,
           cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
@@ -775,6 +781,7 @@ export namespace Provider {
           },
           variants: {},
         }
+        database["atomcli"].models["atomcli-auto"] = virtualModel
       }
     }
 
@@ -1240,28 +1247,120 @@ export namespace Provider {
       throw new ModelNotFoundError({ providerID, modelID, suggestions })
     }
 
-    // AtomCLI Free (Auto): resolve to the best available free model
+    // AtomCLI Auto / Free: resolve to the best available free model
     // Returns the REAL model entry so the entire pipeline uses correct metadata
-    if (providerID === "atomcli" && modelID === "atomcli-free") {
-      const freeModels = Object.entries(provider.models)
-        .filter(([id, m]) => id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0)
-        .sort(([, a], [, b]) => {
-          const ctx = (b.limit?.context ?? 0) - (a.limit?.context ?? 0)
-          if (ctx !== 0) return ctx
-          return (b.limit?.output ?? 0) - (a.limit?.output ?? 0)
+    if (providerID === "atomcli" && (modelID === "atomcli-auto" || modelID === "atomcli-free")) {
+      const isAuto = modelID === "atomcli-auto"
+      const freeModels = Object.entries(provider.models).filter(
+        ([id, m]) =>
+          id !== "atomcli-auto" && id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0,
+      )
+
+      let activeSession: any = undefined
+      let promptText = ""
+      try {
+        const { Session } = await import("@/core/session")
+        for await (const s of Session.list()) {
+          if (!activeSession || s.time.updated > activeSession.time.updated) {
+            activeSession = s
+          }
+        }
+        if (activeSession) {
+          const messages = await Session.messages({ sessionID: activeSession.id })
+          const lastUser = [...messages].reverse().find((m) => m.info.role === "user")
+          if (lastUser) {
+            promptText = lastUser.parts
+              .filter((p: any) => p.type === "text" && !p.synthetic)
+              .map((p: any) => p.text)
+              .join("\n")
+          }
+        }
+      } catch (err) {
+        log.warn("failed to resolve active session", { error: (err as Error).message })
+      }
+
+      const {
+        selectModelInternal,
+        estimateComplexity,
+        inferCategoryMulti,
+        estimateRequiredContext,
+        buildFallbackChain,
+      } = await import("@/integrations/tool/model-router")
+      const categoryRes = promptText
+        ? inferCategoryMulti(promptText)
+        : { category: "general" as const, confidence: 1.0 }
+      const category = categoryRes.category
+      const complexity = promptText ? estimateComplexity(promptText) : 0
+
+      const config = await Config.get()
+      const mode = config.experimental?.auto_mode ?? "balanced"
+
+      // For complex tasks in quality/reasoning modes, use meta-router
+      const { selectMetaRouter } = await import("@/integrations/tool/meta-router")
+      let metaRouterInfo = undefined
+      if ((mode === "reasoning" || mode === "quality") && complexity >= 5) {
+        const mrResult = selectMetaRouter(freeModels)
+        metaRouterInfo = mrResult
+        log.info("meta-router selected for complex task", {
+          mode,
+          complexity,
+          metaRouter: mrResult.modelID,
         })
-      const selected = freeModels[0]
+      }
+
+      const { selected, ranked } = selectModelInternal(
+        category,
+        freeModels,
+        mode,
+        complexity,
+        activeSession,
+        promptText,
+      )
+
+      // Build fallback chain for resilience
+      const fallbackChain = buildFallbackChain(category, freeModels, mode, complexity, activeSession, promptText)
+
+      try {
+        const { appendRoutingLog } = await import("@/integrations/tool/routing-log")
+        await appendRoutingLog({
+          ts: Date.now(),
+          category,
+          mode,
+          selected: selected.id,
+          score: selected.score,
+          candidates: ranked.slice(0, 5).map(({ id, score }) => ({ id, score })),
+          estimatedRequiredContext:
+            activeSession && promptText ? estimateRequiredContext(activeSession, promptText) : undefined,
+          sessionID: activeSession?.id,
+        })
+      } catch (logErr) {
+        // ignore
+      }
+
       if (selected) {
-        log.info("atomcli-free resolved", { selected: selected[0], available: freeModels.map(([id]) => id) })
-        // Return a proxy/clone that looks like atomcli-free to the UI but uses the selected model's API metadata
+        log.info(`${modelID} resolved dynamically`, {
+          category,
+          selected: selected.id,
+          score: selected.score.toFixed(1),
+          mode,
+          complexity,
+          fallbackCount: fallbackChain.fallbacks.length,
+          hasMetaRouter: !!metaRouterInfo,
+        })
         return {
-          ...selected[1],
-          id: `atomcli-free / ${selected[0]}`,
-          name: `AtomCLI Free (${selected[0]})`,
+          ...selected.m,
+          id: `${modelID} / ${selected.id}`,
+          name: isAuto ? `AtomCLI Auto (${selected.id})` : `AtomCLI Free (${selected.id})`,
+          // Store fallback chain and meta-router in options for the LLM call pipeline
+          options: {
+            ...selected.m.options,
+            _fallbackChain: fallbackChain,
+            _metaRouter: metaRouterInfo,
+          },
         }
       }
       // Fallback: return the virtual entry if no free models found
-      log.warn("atomcli-free: no free models to route to, using virtual entry")
+      log.warn(`${modelID}: no free models to route to, using virtual entry`)
     }
 
     return info
@@ -1353,7 +1452,7 @@ export namespace Provider {
   }
 
   // Update priority list to strictly favor atomcli models
-  const priority = ["atomcli/gpt-5-nano", "gpt-5-nano", "atomcli/big-pickle"]
+  const priority = ["atomcli-auto", "atomcli/atomcli-auto", "atomcli/gpt-5-nano", "gpt-5-nano", "atomcli/big-pickle"]
   export function sort(models: Model[]) {
     return sortBy(
       models,
@@ -1372,6 +1471,7 @@ export namespace Provider {
 
     // Check for specific preferred models within atomcli
     if (atomcli) {
+      if (atomcli.models["atomcli-auto"]) return { providerID: "atomcli", modelID: "atomcli-auto" }
       if (atomcli.models["gpt-5-nano"]) return { providerID: "atomcli", modelID: "gpt-5-nano" }
       if (atomcli.models["big-pickle"]) return { providerID: "atomcli", modelID: "big-pickle" }
     }

@@ -1236,6 +1236,10 @@ export namespace Config {
             .boolean()
             .optional()
             .describe("Enable automatic model selection per task category in orchestrate tool"),
+          auto_mode: z
+            .enum(["speed", "balanced", "quality", "reasoning"])
+            .optional()
+            .describe("Routing mode for automatic model selection"),
           mcp_timeout: z
             .number()
             .int()
