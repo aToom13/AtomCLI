@@ -1313,7 +1313,7 @@ export namespace Provider {
       const complexity = promptText ? estimateComplexity(promptText) : 0
 
       const config = await Config.get()
-      const mode = config.experimental?.auto_mode ?? "balanced"
+      const mode = config.experimental?.auto_mode ?? "quality"
       const autoRouterConfig = config.experimental?.auto_router
 
       // For complex tasks in quality/reasoning modes, use meta-router

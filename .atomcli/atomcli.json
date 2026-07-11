@@ -26,8 +26,8 @@
     }
   },
   "experimental": {
-    "smart_model_routing": false,
-    "auto_mode": "balanced",
+    "smart_model_routing": true,
+    "auto_mode": "quality",
     "auto_router": {
       "excluded_models": [],
       "model_ratings": {

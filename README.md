@@ -29,20 +29,24 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v3.2.9)
+## What's New (v3.3.0)
 
 ### Semantic Model Routing
 
 - **LLM-based task classification** replaces the previous keyword-matching approach. AtomCLI now uses the smallest available free model to semantically understand the intent of each prompt before routing.
 - **Automatic adapter** — as free model availability changes, the classifier always picks from the current active pool. Falls back to keyword matching if the LLM call fails.
 - **Per-category model ratings** in Auto Router configuration. Rate each model separately for coding, documentation, analysis, and general tasks on a scale of -3 to +3.
-- **Auto Router config UI** now accessible via `/autoconf`. Use arrow keys to navigate, Shift+E to expand per-category rating sub-rows, Space to toggle model exclusion.
-- **Config persistence fix** — Auto Router settings (excluded models, per-category ratings, category overrides) are now correctly saved to and loaded from the config file.
+- **Auto Router config UI** accessible via `/autoconf`. Use arrow keys to navigate, Shift+E to expand per-category rating sub-rows, Space to toggle model exclusion.
 
 ### Auto Router Improvements
 
 - Smart Routing toggle, mode selector (speed/balanced/quality/reasoning), and per-category model overrides are all configurable from the TUI.
 - Mode selection now directly affects model scoring: `speed` penalizes reasoning models, `quality` and `reasoning` award them a bonus.
+- **Default routing mode changed to `quality`** for better out-of-the-box model selection.
+
+### Config Persistence Fix
+
+- **Correct Config Directory Targeting** — Fixed an issue where Auto Router settings saved from the TUI would target the global config file instead of the active project-level config. Requests now correctly pass the project directory context to the server.
 
 ---
 

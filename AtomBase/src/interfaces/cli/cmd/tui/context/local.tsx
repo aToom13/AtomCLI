@@ -254,7 +254,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const provider = sync.data.provider.find((x) => x.id === value.providerID)
           const info = provider?.models[value.modelID]
           const isAuto = value.modelID === "atomcli-auto"
-          const modeSuffix = isAuto ? ` (${sync.data.config.experimental?.auto_mode ?? "balanced"})` : ""
+          const modeSuffix = isAuto ? ` (${sync.data.config.experimental?.auto_mode ?? "quality"})` : ""
           return {
             provider: (provider?.name ?? value.providerID) + modeSuffix,
             model: info?.name ?? value.modelID,

@@ -56,7 +56,7 @@ export function DialogAutoConf() {
     })(),
   )
   const [overrides, setOverrides] = createSignal<Record<string, string>>({ ...(router().category_overrides ?? {}) })
-  const [mode, setMode] = createSignal<AutoMode>(cfg().auto_mode ?? "balanced")
+  const [mode, setMode] = createSignal<AutoMode>(cfg().auto_mode ?? "quality")
   const [routing, setRouting] = createSignal<boolean>(cfg().smart_model_routing ?? false)
   const [saving, setSaving] = createSignal(false)
   // Which model is expanded to show per-category ratings (Shift+E toggle)
@@ -148,7 +148,10 @@ export function DialogAutoConf() {
 
       const res = await fetch(`${sdk.url}/config`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-atomcli-directory": sync.data.path.directory || ""
+        },
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -168,14 +171,17 @@ export function DialogAutoConf() {
     const payload = {
       experimental: {
         smart_model_routing: false,
-        auto_mode: "balanced",
+        auto_mode: "quality",
         auto_router: { excluded_models: [], model_ratings: {}, category_overrides: {} },
       },
     }
     try {
       await fetch(`${sdk.url}/config`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-atomcli-directory": sync.data.path.directory || ""
+        },
         body: JSON.stringify(payload),
       })
       const currentExp = (sync.data.config as any)?.experimental || {}

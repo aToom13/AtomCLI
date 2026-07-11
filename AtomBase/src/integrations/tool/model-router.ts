@@ -558,7 +558,7 @@ export async function selectModel(
         }
       }
 
-      const configMode = config.experimental?.auto_mode ?? "balanced"
+      const configMode = config.experimental?.auto_mode ?? "quality"
 
       // Resolve active session & prompt
       let activeSession = session

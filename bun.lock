@@ -27,7 +27,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "3.2.9",
+      "version": "3.3.0",
       "bin": {
         "atomcli": "./bin/atomcli",
       },
