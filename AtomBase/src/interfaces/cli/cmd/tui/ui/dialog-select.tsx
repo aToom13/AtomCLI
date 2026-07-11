@@ -1,7 +1,7 @@
 import { InputRenderable, RGBA, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTheme, selectedForeground } from "@tui/context/theme"
 import { entries, filter, flatMap, groupBy, pipe, take } from "remeda"
-import { batch, createEffect, createMemo, For, Show, type JSX, on } from "solid-js"
+import { batch, createEffect, createMemo, For, Index, Show, type JSX, on } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import * as fuzzysort from "fuzzysort"
@@ -252,63 +252,67 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
           ref={(r: ScrollBoxRenderable) => (scroll = r)}
           maxHeight={height()}
         >
-          <For each={grouped()}>
-            {([category, options], index) => (
-              <>
-                <Show when={category}>
-                  <box paddingTop={index() > 0 ? 1 : 0} paddingLeft={3}>
-                    <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-                      {category}
-                    </text>
-                  </box>
-                </Show>
-                <For each={options}>
-                  {(option) => {
-                    const active = createMemo(() => isDeepEqual(option.value, selected()?.value))
-                    const current = createMemo(() => isDeepEqual(option.value, props.current))
-                    return (
-                      <Focusable
-                        id={`dialog-select-${JSON.stringify(option.value)}`}
-                        onPress={() => {
-                          option.onSelect?.(dialog)
-                          props.onSelect?.(option)
-                        }}
-                      >
-                        {(focused: () => boolean) => (
-                          <box
-                            id={JSON.stringify(option.value)}
-                            flexDirection="row"
-                            onMouseUp={() => {
-                              option.onSelect?.(dialog)
-                              props.onSelect?.(option)
-                            }}
-                            onMouseOver={() => {
-                              const index = flat().findIndex((x) => isDeepEqual(x.value, option.value))
-                              if (index === -1) return
-                              moveTo(index)
-                            }}
-                            backgroundColor={active() || focused() ? (option.bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
-                            paddingLeft={current() || option.gutter ? 1 : 3}
-                            paddingRight={3}
-                            gap={1}
-                          >
-                            <Option
-                              title={option.title}
-                              footer={option.footer}
-                              description={option.description !== category ? option.description : undefined}
-                              active={active() || focused()}
-                              current={current()}
-                              gutter={option.gutter}
-                            />
-                          </box>
-                        )}
-                      </Focusable>
-                    )
-                  }}
-                </For>
-              </>
-            )}
-          </For>
+          <Index each={grouped()}>
+            {(item, index) => {
+              const category = createMemo(() => item()[0])
+              const options = createMemo(() => item()[1])
+              return (
+                <>
+                  <Show when={category()}>
+                    <box paddingTop={index > 0 ? 1 : 0} paddingLeft={3}>
+                      <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+                        {category()}
+                      </text>
+                    </box>
+                  </Show>
+                  <Index each={options()}>
+                    {(option) => {
+                      const active = createMemo(() => isDeepEqual(option().value, selected()?.value))
+                      const current = createMemo(() => isDeepEqual(option().value, props.current))
+                      return (
+                        <Focusable
+                          id={`dialog-select-${JSON.stringify(option().value)}`}
+                          onPress={() => {
+                            option().onSelect?.(dialog)
+                            props.onSelect?.(option())
+                          }}
+                        >
+                          {(focused: () => boolean) => (
+                            <box
+                              id={JSON.stringify(option().value)}
+                              flexDirection="row"
+                              onMouseUp={() => {
+                                option().onSelect?.(dialog)
+                                props.onSelect?.(option())
+                              }}
+                              onMouseOver={() => {
+                                const index = flat().findIndex((x) => isDeepEqual(x.value, option().value))
+                                if (index === -1) return
+                                moveTo(index)
+                              }}
+                              backgroundColor={active() || focused() ? (option().bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
+                              paddingLeft={current() || option().gutter ? 1 : 3}
+                              paddingRight={3}
+                              gap={1}
+                            >
+                              <Option
+                                title={option().title}
+                                footer={option().footer}
+                                description={option().description !== category() ? option().description : undefined}
+                                active={active() || focused()}
+                                current={current()}
+                                gutter={option().gutter}
+                              />
+                            </box>
+                          )}
+                        </Focusable>
+                      )
+                    }}
+                  </Index>
+                </>
+              )
+            }}
+          </Index>
         </scrollbox>
       </Show>
       <Show when={keybinds().length} fallback={<box flexShrink={0} />}>
