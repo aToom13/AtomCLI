@@ -1,14 +1,18 @@
-import { createMemo, createSignal, For } from "solid-js"
+import { createMemo, createSignal, For, Show } from "solid-js"
+import { createStore } from "solid-js/store"
 import { useSync } from "@tui/context/sync"
-import { useTheme } from "@tui/context/theme"
+import { useTheme, selectedForeground } from "@tui/context/theme"
 import { useDialog } from "@tui/ui/dialog"
 import { useKeyboard } from "@opentui/solid"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useSDK } from "@tui/context/sdk"
 import { useToast } from "@tui/ui/toast"
 
 type TaskCategory = "coding" | "documentation" | "analysis" | "general"
 type AutoMode = "speed" | "balanced" | "quality" | "reasoning"
+
+const CATEGORIES: TaskCategory[] = ["coding", "documentation", "analysis", "general"]
+const MODES: AutoMode[] = ["speed", "balanced", "quality", "reasoning"]
 
 function ratingLabel(v: number): string {
   if (v >= 2) return "++"
@@ -18,6 +22,11 @@ function ratingLabel(v: number): string {
   return "·"
 }
 
+function cycleMode(mode: AutoMode, dir: -1 | 1): AutoMode {
+  const idx = MODES.indexOf(mode)
+  return MODES[(idx + dir + MODES.length) % MODES.length]
+}
+
 export function DialogAutoConf() {
   const sync = useSync()
   const { theme } = useTheme()
@@ -25,11 +34,29 @@ export function DialogAutoConf() {
   const toast = useToast()
   const dialog = useDialog()
 
-  const CATEGORIES: TaskCategory[] = ["coding", "documentation", "analysis", "general"]
-  const MODES: AutoMode[] = ["speed", "balanced", "quality", "reasoning"]
+  // --- Config state ---
+  const routerCfg = (sync.data.config as any)?.experimental?.auto_router ?? {}
+  const [excluded, setExcluded] = createSignal<Set<string>>(new Set<string>(routerCfg.excluded_models ?? []))
+  const [ratings, setRatings] = createSignal<Map<string, Record<string, number>>>(
+    new Map(Object.entries(routerCfg.model_ratings ?? {}).map(([id, r]) => [id, r as Record<string, number>])),
+  )
+  const [overrides, setOverrides] = createSignal<Record<string, string>>({ ...(routerCfg.category_overrides ?? {}) })
+  const [mode, setMode] = createSignal<AutoMode>((sync.data.config as any)?.experimental?.auto_mode ?? "balanced")
+  const [saving, setSaving] = createSignal(false)
 
-  // Get atomcli free models
-  const atomcliModels = createMemo(() => {
+  // --- Focus state ---
+  // section: 0=mode, 1=models, 2=models-ratings(sub), 3=overrides, 4=actions
+  const [focus, setFocus] = createStore({
+    section: 0,
+    modelIdx: 0,
+    ratingCatIdx: 0,
+    overrideIdx: 0,
+    actionIdx: 0,
+  })
+
+  let scrollRef: ScrollBoxRenderable | undefined
+
+  const models = createMemo(() => {
     const provider = sync.data.provider.find((p) => p.id === "atomcli")
     if (!provider) return []
     return Object.entries(provider.models)
@@ -41,16 +68,21 @@ export function DialogAutoConf() {
       }))
   })
 
-  // Init state from config
-  const routerCfg = (sync.data.config as any)?.experimental?.auto_router ?? {}
-  const [excluded, setExcluded] = createSignal<Set<string>>(new Set<string>(routerCfg.excluded_models ?? []))
-  const [ratings, setRatings] = createSignal<Map<string, Record<string, number>>>(
-    new Map(Object.entries(routerCfg.model_ratings ?? {}).map(([id, r]) => [id, r as Record<string, number>])),
-  )
-  const [overrides, setOverrides] = createSignal<Record<string, string>>({ ...(routerCfg.category_overrides ?? {}) })
-  const [mode, setMode] = createSignal<AutoMode>((sync.data.config as any)?.experimental?.auto_mode ?? "balanced")
-  const [expandedModel, setExpandedModel] = createSignal<string | null>(null)
-  const [saving, setSaving] = createSignal(false)
+  const modelList = models()
+
+  // Clamp modelIdx when model list shrinks (e.g. provider data changes)
+  const clampedModelIdx = () => {
+    if (focus.modelIdx >= modelList.length) {
+      return Math.max(0, modelList.length - 1)
+    }
+    return focus.modelIdx
+  }
+
+  const expandedModelId = createMemo<string | null>(() => {
+    if (focus.section !== 2) return null
+    const idx = clampedModelIdx()
+    return modelList[idx]?.id ?? null
+  })
 
   function toggleExclude(id: string) {
     const next = new Set(excluded())
@@ -68,17 +100,14 @@ export function DialogAutoConf() {
   }
 
   function toggleOverride(category: string) {
-    const models = atomcliModels()
     const current = overrides()[category] ?? ""
     const next = { ...overrides() }
     if (!current) {
-      // Set override to first non-excluded model
-      const first = models.find((m) => !excluded().has(m.id))
+      const first = modelList.find((m) => !excluded().has(m.id))
       if (first) next[category] = first.id
     } else {
-      // Cycle to next model or remove
-      const idx = models.findIndex((m) => m.id === current)
-      const nextModel = models.find((m, i) => i > idx && !excluded().has(m.id))
+      const idx = modelList.findIndex((m) => m.id === current)
+      const nextModel = modelList.find((m, i) => i > idx && !excluded().has(m.id))
       if (nextModel) next[category] = nextModel.id
       else delete next[category]
     }
@@ -103,11 +132,8 @@ export function DialogAutoConf() {
       if (Object.keys(newRouter).length) newExperimental.auto_router = newRouter
 
       await sdk.client.config.update({ body: { experimental: newExperimental } } as any)
-
-      // Log the changes
       const currentExp = (sync.data.config as any)?.experimental || {}
       sync.set("config", "experimental" as any, { ...currentExp, ...newExperimental })
-
       toast.show({ title: "Auto Router", message: "Configuration saved", variant: "success" })
       dialog.clear()
     } catch {
@@ -122,187 +148,376 @@ export function DialogAutoConf() {
     setRatings(new Map<string, Record<string, number>>())
     setOverrides({})
     setMode("balanced")
-
     try {
       await sdk.client.config.update({
-        body: {
-          experimental: {
-            auto_mode: "balanced",
-            auto_router: undefined,
-          },
-        },
+        body: { experimental: { auto_mode: "balanced", auto_router: undefined } },
       } as any)
       const currentExp = (sync.data.config as any)?.experimental || {}
       sync.set("config", "experimental" as any, { ...currentExp, auto_mode: "balanced", auto_router: undefined })
       toast.show({ title: "Auto Router", message: "Reset to defaults", variant: "success" })
     } catch {
-      // ignore
+      /* ignore */
     }
     dialog.clear()
   }
 
+  // --- Keyboard Navigation ---
   useKeyboard((evt) => {
+    // Escape: collapse ratings or close dialog
     if (evt.name === "escape") {
-      dialog.clear()
+      if (focus.section === 2) {
+        setFocus("section", 1)
+        evt.preventDefault()
+        evt.stopPropagation()
+      }
+      // otherwise let dialog.tsx handle it
       return
     }
-    if (evt.name === "return") {
-      save()
+
+    // Tab: cycle sections (skip section 2 which is a models substate)
+    if (evt.name === "tab") {
+      const order = [0, 1, 3, 4] // mode, models, overrides, actions
+      const current = focus.section === 2 ? 1 : focus.section
+      const idx = order.indexOf(current)
+      const next = idx === -1 ? 0 : evt.shift ? (idx - 1 + order.length) % order.length : (idx + 1) % order.length
+      setFocus("section", order[next])
+      evt.preventDefault()
       return
+    }
+
+    // Section-specific key handling
+    switch (focus.section) {
+      case 0: {
+        // Mode
+        if (evt.name === "left") {
+          setMode(cycleMode(mode(), -1))
+          evt.preventDefault()
+        }
+        if (evt.name === "right") {
+          setMode(cycleMode(mode(), 1))
+          evt.preventDefault()
+        }
+        break
+      }
+      case 1: {
+        // Models (list)
+        if (!modelList.length) break
+        const idx = clampedModelIdx()
+        if (evt.name === "up" && idx > 0) {
+          setFocus("modelIdx", idx - 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "down" && idx < modelList.length - 1) {
+          setFocus("modelIdx", idx + 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "space") {
+          const m = modelList[idx]
+          if (m) toggleExclude(m.id)
+          evt.preventDefault()
+        }
+        if (evt.name === "enter" || (evt.name === "right" && modelList[idx])) {
+          setFocus("ratingCatIdx", 0)
+          setFocus("section", 2)
+          evt.preventDefault()
+        }
+        break
+      }
+      case 2: {
+        // Models — rating detail
+        if (!modelList.length) break
+        const idx = clampedModelIdx()
+        const m = modelList[idx]
+        if (!m) break
+        if (evt.name === "up" && focus.ratingCatIdx > 0) {
+          setFocus("ratingCatIdx", focus.ratingCatIdx - 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "down" && focus.ratingCatIdx < CATEGORIES.length - 1) {
+          setFocus("ratingCatIdx", focus.ratingCatIdx + 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "left") {
+          adjustRating(m.id, CATEGORIES[focus.ratingCatIdx], -1)
+          evt.preventDefault()
+        }
+        if (evt.name === "right") {
+          adjustRating(m.id, CATEGORIES[focus.ratingCatIdx], 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "enter") {
+          setFocus("section", 1)
+          evt.preventDefault()
+        }
+        break
+      }
+      case 3: {
+        // Overrides
+        if (evt.name === "up" && focus.overrideIdx > 0) {
+          setFocus("overrideIdx", focus.overrideIdx - 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "down" && focus.overrideIdx < CATEGORIES.length - 1) {
+          setFocus("overrideIdx", focus.overrideIdx + 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "space" || evt.name === "enter") {
+          toggleOverride(CATEGORIES[focus.overrideIdx])
+          evt.preventDefault()
+        }
+        break
+      }
+      case 4: {
+        // Actions
+        const total = 3
+        if (evt.name === "left" && focus.actionIdx > 0) {
+          setFocus("actionIdx", focus.actionIdx - 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "right" && focus.actionIdx < total - 1) {
+          setFocus("actionIdx", focus.actionIdx + 1)
+          evt.preventDefault()
+        }
+        if (evt.name === "enter" || evt.name === "space") {
+          if (focus.actionIdx === 0 && !saving()) save()
+          if (focus.actionIdx === 1) resetAll()
+          if (focus.actionIdx === 2) dialog.clear()
+          evt.preventDefault()
+        }
+        break
+      }
     }
   })
 
-  const models = atomcliModels()
+  // --- Render helpers ---
+  const activeFg = selectedForeground(theme)
 
   return (
-    <box paddingLeft={2} paddingRight={2} gap={1}>
-      {/* Header */}
+    <box paddingLeft={2} paddingRight={2} gap={1} paddingBottom={1}>
+      {/* ===== Header ===== */}
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
-          ⚙ Auto Model Configuration
+          Auto Model Configuration
         </text>
-        <text fg={theme.textMuted}>esc to close</text>
+        <text fg={theme.textMuted}>esc</text>
       </box>
 
-      {/* Description */}
-      <text fg={theme.textMuted}>Configure how atomcli-auto selects models. Click items to interact.</text>
-
-      {/* Mode Selection */}
-      <text attributes={TextAttributes.BOLD} fg={theme.text}>
-        Mode
-      </text>
-      <box flexDirection="row" gap={1}>
-        <For each={MODES}>
-          {(m) => (
-            <box onMouseUp={() => setMode(m)}>
-              <text
-                attributes={mode() === m ? TextAttributes.BOLD : TextAttributes.NONE}
-                fg={mode() === m ? theme.accent : theme.textMuted}
-              >
-                [{m}]
-              </text>
-            </box>
-          )}
-        </For>
-      </box>
-
-      {/* Separator */}
-      <text fg={theme.textMuted}>──────────────────────────────────────</text>
-
-      {/* Model List */}
-      <text attributes={TextAttributes.BOLD} fg={theme.text}>
-        Models
-      </text>
-      <text fg={theme.textMuted}>Click [✓] to exclude, click model name to rate</text>
-
-      <box flexDirection="column" height={Math.min(models.length * 2 + 1, 16)} overflow="scroll">
-        <For each={models}>
-          {(m) => {
-            const isExcluded = () => excluded().has(m.id)
-            const isExpanded = () => expandedModel() === m.id
-            return (
-              <>
-                <box flexDirection="row" paddingTop={0} gap={1}>
-                  <box onMouseUp={() => toggleExclude(m.id)}>
-                    <text attributes={TextAttributes.BOLD} fg={isExcluded() ? theme.error : theme.success}>
-                      [{isExcluded() ? "✗" : "✓"}]
-                    </text>
-                  </box>
-                  <box onMouseUp={() => setExpandedModel(isExpanded() ? null : m.id)}>
-                    <text
-                      fg={isExcluded() ? theme.textMuted : theme.text}
-                      attributes={isExpanded() ? TextAttributes.BOLD : TextAttributes.NONE}
-                    >
-                      {m.name}
-                      {m.capabilities.reasoning ? " 🧠" : ""}
-                      {m.capabilities.toolcall ? " 🔧" : ""}
-                    </text>
-                  </box>
-                  {/* Show rating summary inline */}
-                  <text fg={theme.textMuted}>
-                    {(() => {
-                      const r = ratings().get(m.id)
-                      if (!r) return ""
-                      return CATEGORIES.map((c) => {
-                        const v = r[c] ?? 0
-                        return v !== 0 ? `${c.slice(0, 3)}:${ratingLabel(v)}` : ""
-                      })
-                        .filter(Boolean)
-                        .join(" ")
-                    })()}
+      {/* ===== Mode ===== */}
+      <box>
+        <box flexDirection="row" justifyContent="space-between" paddingBottom={0}>
+          <text attributes={TextAttributes.BOLD} fg={theme.text}>
+            Mode
+          </text>
+          <Show when={focus.section === 0}>
+            <text fg={theme.textMuted}>← →</text>
+          </Show>
+        </box>
+        <box flexDirection="row" gap={1} paddingTop={0}>
+          <For each={MODES}>
+            {(m) => {
+              const isModeActive = mode() === m
+              const isFocused = focus.section === 0
+              return (
+                <box
+                  backgroundColor={isModeActive && isFocused ? theme.primary : undefined}
+                  onMouseUp={() => setMode(m)}
+                >
+                  <text
+                    attributes={isModeActive ? TextAttributes.BOLD : undefined}
+                    fg={isModeActive ? (isFocused ? activeFg : theme.accent) : theme.text}
+                  >
+                    {m}
                   </text>
                 </box>
-                {/* Expanded ratings */}
-                {isExpanded() && !isExcluded() && (
-                  <box paddingLeft={3} flexDirection="column">
+              )
+            }}
+          </For>
+        </box>
+      </box>
+
+      {/* ===== Models ===== */}
+      <box>
+        <box flexDirection="row" justifyContent="space-between">
+          <text attributes={TextAttributes.BOLD} fg={theme.text}>
+            Models
+          </text>
+          <Show when={focus.section === 1}>
+            <text fg={theme.textMuted}>↑↓ space enter</text>
+          </Show>
+          <Show when={focus.section === 2}>
+            <text fg={theme.textMuted}>↑↓ ← → esc</text>
+          </Show>
+        </box>
+        <scrollbox
+          ref={(r: ScrollBoxRenderable) => (scrollRef = r)}
+          height={Math.min(modelList.length * 3 + 1, 14)}
+          overflow="scroll"
+        >
+          <For each={modelList}>
+            {(m, i) => {
+              const idx = i()
+              const isExcl = excluded().has(m.id)
+              const isExpanded = expandedModelId() === m.id
+              const isModelFocused = (focus.section === 1 || focus.section === 2) && focus.modelIdx === idx
+              const fgColor = isExcl ? theme.textMuted : isModelFocused ? activeFg : theme.text
+
+              return (
+                <>
+                  {/* ── Model row ── */}
+                  <box flexDirection="row" gap={1} backgroundColor={isModelFocused ? theme.primary : undefined}>
+                    {/* Toggle exclude */}
+                    <box onMouseUp={() => toggleExclude(m.id)}>
+                      <text attributes={TextAttributes.BOLD} fg={isExcl ? theme.error : theme.success}>
+                        [{isExcl ? "✗" : "✓"}]
+                      </text>
+                    </box>
+
+                    {/* Model name */}
+                    <text fg={fgColor}>
+                      {m.name}
+                      {m.capabilities.reasoning ? " \uD83E\uDDE0" : ""}
+                      {m.capabilities.toolcall ? " \uD83D\uDD27" : ""}
+                    </text>
+
+                    {/* Rating badges (always visible) */}
+                    <Show
+                      when={(() => {
+                        const r = ratings().get(m.id)
+                        return r && Object.values(r).some((v) => v !== 0)
+                      })()}
+                    >
+                      <text fg={theme.textMuted}>
+                        {(() => {
+                          const r = ratings().get(m.id)
+                          if (!r) return ""
+                          return CATEGORIES.map((c) => `${c.slice(0, 3)}:${ratingLabel(r[c] ?? 0)}`).join(" ")
+                        })()}
+                      </text>
+                    </Show>
+                  </box>
+
+                  {/* ── Expanded rating rows ── */}
+                  {isExpanded && !isExcl && (
                     <For each={CATEGORIES}>
-                      {(cat) => {
-                        const val = () => ratings().get(m.id)?.[cat] ?? 0
+                      {(cat, ci) => {
+                        const catIdx = ci()
+                        const val = ratings().get(m.id)?.[cat] ?? 0
+                        const isCatFocused = focus.section === 2 && focus.ratingCatIdx === catIdx
+
                         return (
-                          <box flexDirection="row" gap={1}>
-                            <text fg={theme.textMuted} width={16}>
+                          <box
+                            flexDirection="row"
+                            gap={1}
+                            paddingLeft={3}
+                            backgroundColor={isCatFocused ? theme.primary : undefined}
+                            onMouseUp={() => {
+                              setFocus("section", 2)
+                              setFocus("ratingCatIdx", catIdx)
+                            }}
+                          >
+                            <text fg={isCatFocused ? activeFg : theme.textMuted} width={16}>
                               {cat}:
                             </text>
-                            <box onMouseUp={() => adjustRating(m.id, cat, -1)}>
-                              <text fg={theme.textMuted}>[-]</text>
-                            </box>
+                            <Show when={isCatFocused}>
+                              <text fg={activeFg}>[</text>
+                            </Show>
+                            <text fg={theme.textMuted}>-</text>
                             <text
                               attributes={TextAttributes.BOLD}
-                              fg={val() > 0 ? theme.success : val() < 0 ? theme.error : theme.text}
+                              fg={val > 0 ? theme.success : val < 0 ? theme.error : theme.text}
                             >
-                              {ratingLabel(val())}
+                              {ratingLabel(val)}
                             </text>
-                            <box onMouseUp={() => adjustRating(m.id, cat, 1)}>
-                              <text fg={theme.textMuted}>[+]</text>
-                            </box>
+                            <text fg={theme.textMuted}>+</text>
+                            <Show when={isCatFocused}>
+                              <text fg={activeFg}>]</text>
+                            </Show>
+                            <Show when={isCatFocused}>
+                              <text fg={theme.textMuted}>← →</text>
+                            </Show>
                           </box>
                         )
                       }}
                     </For>
-                  </box>
-                )}
-              </>
+                  )}
+                </>
+              )
+            }}
+          </For>
+        </scrollbox>
+      </box>
+
+      {/* ===== Category Overrides ===== */}
+      <box>
+        <box flexDirection="row" justifyContent="space-between">
+          <text attributes={TextAttributes.BOLD} fg={theme.text}>
+            Overrides
+          </text>
+          <Show when={focus.section === 3}>
+            <text fg={theme.textMuted}>↑↓ space</text>
+          </Show>
+        </box>
+        <For each={CATEGORIES}>
+          {(cat, ci) => {
+            const catIdx = ci()
+            const cur = overrides()[cat] ?? ""
+            const isFocused = focus.section === 3 && focus.overrideIdx === catIdx
+            return (
+              <box
+                flexDirection="row"
+                gap={1}
+                backgroundColor={isFocused ? theme.primary : undefined}
+                onMouseUp={() => {
+                  setFocus("section", 3)
+                  setFocus("overrideIdx", catIdx)
+                  toggleOverride(cat)
+                }}
+              >
+                <text fg={isFocused ? activeFg : theme.textMuted} width={16}>
+                  {cat}:
+                </text>
+                <text fg={cur ? theme.accent : theme.textMuted}>{cur || "(auto)"}</text>
+              </box>
             )
           }}
         </For>
       </box>
 
-      {/* Separator */}
-      <text fg={theme.textMuted}>──────────────────────────────────────</text>
+      {/* ===== Actions ===== */}
+      <box>
+        <box flexDirection="row" justifyContent="center" gap={3} paddingTop={1}>
+          {/* Save */}
+          <box
+            backgroundColor={focus.section === 4 && focus.actionIdx === 0 ? theme.primary : undefined}
+            onMouseUp={() => save()}
+          >
+            <text
+              attributes={TextAttributes.BOLD}
+              fg={saving() ? theme.textMuted : focus.section === 4 && focus.actionIdx === 0 ? activeFg : theme.accent}
+            >
+              Save
+            </text>
+          </box>
 
-      {/* Category Overrides */}
-      <text attributes={TextAttributes.BOLD} fg={theme.text}>
-        Category Overrides
-      </text>
-      <text fg={theme.textMuted}>Click to cycle: (auto) → model → (auto)</text>
-      <For each={CATEGORIES}>
-        {(cat) => {
-          const cur = () => overrides()[cat] ?? ""
-          return (
-            <box flexDirection="row" gap={1}>
-              <text fg={theme.textMuted} width={16}>
-                {cat}:
-              </text>
-              <box onMouseUp={() => toggleOverride(cat)}>
-                <text fg={cur() ? theme.accent : theme.textMuted}>{cur() || "(auto)"}</text>
-              </box>
-            </box>
-          )
-        }}
-      </For>
+          {/* Reset */}
+          <box
+            backgroundColor={focus.section === 4 && focus.actionIdx === 1 ? theme.primary : undefined}
+            onMouseUp={() => resetAll()}
+          >
+            <text fg={focus.section === 4 && focus.actionIdx === 1 ? activeFg : theme.textMuted}>Reset</text>
+          </box>
 
-      {/* Actions */}
-      <box flexDirection="row" gap={2} paddingTop={1}>
-        <box onMouseUp={() => save()}>
-          <text attributes={TextAttributes.BOLD} fg={saving() ? theme.textMuted : theme.accent}>
-            [ Save ]
-          </text>
-        </box>
-        <box onMouseUp={() => resetAll()}>
-          <text fg={theme.textMuted}>[ Reset ]</text>
-        </box>
-        <box onMouseUp={() => dialog.clear()}>
-          <text fg={theme.textMuted}>[ Cancel ]</text>
+          {/* Cancel */}
+          <box
+            backgroundColor={focus.section === 4 && focus.actionIdx === 2 ? theme.primary : undefined}
+            onMouseUp={() => dialog.clear()}
+          >
+            <text fg={focus.section === 4 && focus.actionIdx === 2 ? activeFg : theme.textMuted}>Cancel</text>
+          </box>
+
+          <Show when={focus.section === 4}>
+            <text fg={theme.textMuted}>← → enter</text>
+          </Show>
         </box>
       </box>
     </box>
