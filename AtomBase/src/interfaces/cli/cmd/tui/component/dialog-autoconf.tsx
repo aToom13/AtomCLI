@@ -163,14 +163,22 @@ export function DialogAutoConf() {
 
   // --- Keyboard Navigation ---
   useKeyboard((evt) => {
-    // Escape: collapse ratings or close dialog
+    // Always stop propagation for any key while dialog is open
+    // This prevents the background textarea/prompt from processing
+    // Tab, arrows, Enter, Space, etc.
+    const handled = () => {
+      evt.preventDefault()
+      evt.stopPropagation()
+    }
+
+    // Escape: collapse ratings first; only close dialog if not in ratings
     if (evt.name === "escape") {
       if (focus.section === 2) {
         setFocus("section", 1)
-        evt.preventDefault()
-        evt.stopPropagation()
+        handled()
+        return
       }
-      // otherwise let dialog.tsx handle it
+      // Let dialog.tsx handle close — do NOT stopPropagation
       return
     }
 
@@ -181,7 +189,7 @@ export function DialogAutoConf() {
       const idx = order.indexOf(current)
       const next = idx === -1 ? 0 : evt.shift ? (idx - 1 + order.length) % order.length : (idx + 1) % order.length
       setFocus("section", order[next])
-      evt.preventDefault()
+      handled()
       return
     }
 
@@ -191,11 +199,11 @@ export function DialogAutoConf() {
         // Mode
         if (evt.name === "left") {
           setMode(cycleMode(mode(), -1))
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "right") {
           setMode(cycleMode(mode(), 1))
-          evt.preventDefault()
+          handled()
         }
         break
       }
@@ -205,21 +213,21 @@ export function DialogAutoConf() {
         const idx = clampedModelIdx()
         if (evt.name === "up" && idx > 0) {
           setFocus("modelIdx", idx - 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "down" && idx < modelList.length - 1) {
           setFocus("modelIdx", idx + 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "space") {
           const m = modelList[idx]
           if (m) toggleExclude(m.id)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "enter" || (evt.name === "right" && modelList[idx])) {
           setFocus("ratingCatIdx", 0)
           setFocus("section", 2)
-          evt.preventDefault()
+          handled()
         }
         break
       }
@@ -231,23 +239,23 @@ export function DialogAutoConf() {
         if (!m) break
         if (evt.name === "up" && focus.ratingCatIdx > 0) {
           setFocus("ratingCatIdx", focus.ratingCatIdx - 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "down" && focus.ratingCatIdx < CATEGORIES.length - 1) {
           setFocus("ratingCatIdx", focus.ratingCatIdx + 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "left") {
           adjustRating(m.id, CATEGORIES[focus.ratingCatIdx], -1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "right") {
           adjustRating(m.id, CATEGORIES[focus.ratingCatIdx], 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "enter") {
           setFocus("section", 1)
-          evt.preventDefault()
+          handled()
         }
         break
       }
@@ -255,15 +263,15 @@ export function DialogAutoConf() {
         // Overrides
         if (evt.name === "up" && focus.overrideIdx > 0) {
           setFocus("overrideIdx", focus.overrideIdx - 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "down" && focus.overrideIdx < CATEGORIES.length - 1) {
           setFocus("overrideIdx", focus.overrideIdx + 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "space" || evt.name === "enter") {
           toggleOverride(CATEGORIES[focus.overrideIdx])
-          evt.preventDefault()
+          handled()
         }
         break
       }
@@ -272,17 +280,17 @@ export function DialogAutoConf() {
         const total = 3
         if (evt.name === "left" && focus.actionIdx > 0) {
           setFocus("actionIdx", focus.actionIdx - 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "right" && focus.actionIdx < total - 1) {
           setFocus("actionIdx", focus.actionIdx + 1)
-          evt.preventDefault()
+          handled()
         }
         if (evt.name === "enter" || evt.name === "space") {
           if (focus.actionIdx === 0 && !saving()) save()
           if (focus.actionIdx === 1) resetAll()
           if (focus.actionIdx === 2) dialog.clear()
-          evt.preventDefault()
+          handled()
         }
         break
       }
@@ -351,7 +359,7 @@ export function DialogAutoConf() {
         <scrollbox
           ref={(r: ScrollBoxRenderable) => (scrollRef = r)}
           height={Math.min(modelList.length * 3 + 1, 14)}
-          overflow="scroll"
+          scrollY={true}
         >
           <For each={modelList}>
             {(m, i) => {
