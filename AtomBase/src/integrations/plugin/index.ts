@@ -24,6 +24,7 @@ export namespace Plugin {
   const state = Instance.state(async () => {
     const client = createAtomcliClient({
       baseUrl: "http://localhost:4096",
+      directory: Instance.directory,
       // @ts-ignore - fetch type incompatibility
       fetch: async (...args) => Server.App().fetch(...args),
     })

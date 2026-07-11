@@ -212,6 +212,7 @@ export const TuiThreadCommand = cmd({
       url,
       fetch: customFetch,
       events,
+      directory: cwd,
       args: {
         continue: args.continue,
         sessionID: args.session,
