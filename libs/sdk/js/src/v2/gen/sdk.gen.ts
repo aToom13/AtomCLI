@@ -766,6 +766,10 @@ export class Config extends HeyApiClient {
          */
         smart_model_routing?: boolean
         /**
+         * Routing mode for automatic model selection
+         */
+        auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
+        /**
          * Timeout in milliseconds for model context protocol (MCP) requests
          */
         mcp_timeout?: number

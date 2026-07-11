@@ -1240,6 +1240,33 @@ export namespace Config {
             .enum(["speed", "balanced", "quality", "reasoning"])
             .optional()
             .describe("Routing mode for automatic model selection"),
+          auto_router: z
+            .object({
+              excluded_models: z.array(z.string()).optional().describe("Models to exclude from auto-routing selection"),
+              model_ratings: z
+                .record(
+                  z.string(),
+                  z.object({
+                    coding: z.number().min(-2).max(2).optional().default(0),
+                    documentation: z.number().min(-2).max(2).optional().default(0),
+                    analysis: z.number().min(-2).max(2).optional().default(0),
+                    general: z.number().min(-2).max(2).optional().default(0),
+                  }),
+                )
+                .optional()
+                .describe("Per-model user ratings (-2 to +2) for each task category"),
+              category_overrides: z
+                .object({
+                  coding: z.string().optional(),
+                  documentation: z.string().optional(),
+                  analysis: z.string().optional(),
+                  general: z.string().optional(),
+                })
+                .optional()
+                .describe("Force a specific model for a task category"),
+            })
+            .optional()
+            .describe("Auto router user preferences"),
           mcp_timeout: z
             .number()
             .int()

@@ -955,6 +955,10 @@ export type Config = {
      */
     smart_model_routing?: boolean
     /**
+     * Routing mode for automatic model selection
+     */
+    auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
+    /**
      * Timeout in milliseconds for model context protocol (MCP) requests
      */
     mcp_timeout?: number
@@ -1949,6 +1953,9 @@ export type Event =
   | EventPtyExited
   | EventPtyDeleted
   | EventFileEdited
+  | EventFileChanged
+  | EventFileCreated
+  | EventFileDeleted
   | EventSessionStatus
   | EventSessionIdle
   | EventSessionCompacted
@@ -2164,6 +2171,27 @@ export type EventFileEdited = {
   type: "file.edited"
   properties: {
     file: string
+  }
+}
+
+export type EventFileChanged = {
+  type: "file.changed"
+  properties: {
+    paths: Array<string>
+  }
+}
+
+export type EventFileCreated = {
+  type: "file.created"
+  properties: {
+    paths: Array<string>
+  }
+}
+
+export type EventFileDeleted = {
+  type: "file.deleted"
+  properties: {
+    paths: Array<string>
   }
 }
 
@@ -2959,6 +2987,10 @@ export type ConfigUpdateData = {
        * Enable automatic model selection per task category in orchestrate tool
        */
       smart_model_routing?: boolean
+      /**
+       * Routing mode for automatic model selection
+       */
+      auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
       /**
        * Timeout in milliseconds for model context protocol (MCP) requests
        */

@@ -529,6 +529,11 @@ export function Autocomplete(props: {
         onSelect: () => command.trigger("app.exit"),
       },
       {
+        display: "/autoconf",
+        description: "auto model configuration (exclude, rate, override models)",
+        onSelect: () => command.trigger("autoconf.open"),
+      },
+      {
         display: "/smart_model",
         description: "toggle smart model routing (auto-select best model for task)",
         onSelect: async () => {
@@ -536,7 +541,10 @@ export function Autocomplete(props: {
           const newMode = !isCurrentlySmart
           try {
             await sdk.client.config.update({ body: { experimental: { smart_model_routing: newMode } } } as any)
-            sync.set("config", "experimental" as any, { ...((sync.data.config as any).experimental || {}), smart_model_routing: newMode })
+            sync.set("config", "experimental" as any, {
+              ...((sync.data.config as any).experimental || {}),
+              smart_model_routing: newMode,
+            })
             toast.show({
               title: "Smart Model Routing",
               message: newMode ? "Enabled 🧠" : "Disabled 🛡️",

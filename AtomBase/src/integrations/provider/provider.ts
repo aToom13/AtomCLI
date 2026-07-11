@@ -1294,6 +1294,7 @@ export namespace Provider {
 
       const config = await Config.get()
       const mode = config.experimental?.auto_mode ?? "balanced"
+      const autoRouterConfig = config.experimental?.auto_router
 
       // For complex tasks in quality/reasoning modes, use meta-router
       const { selectMetaRouter } = await import("@/integrations/tool/meta-router")
@@ -1315,10 +1316,19 @@ export namespace Provider {
         complexity,
         activeSession,
         promptText,
+        autoRouterConfig,
       )
 
       // Build fallback chain for resilience
-      const fallbackChain = buildFallbackChain(category, freeModels, mode, complexity, activeSession, promptText)
+      const fallbackChain = buildFallbackChain(
+        category,
+        freeModels,
+        mode,
+        complexity,
+        activeSession,
+        promptText,
+        autoRouterConfig,
+      )
 
       try {
         const { appendRoutingLog } = await import("@/integrations/tool/routing-log")
