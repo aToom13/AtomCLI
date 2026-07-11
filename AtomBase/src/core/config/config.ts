@@ -1247,14 +1247,14 @@ export namespace Config {
                 .record(
                   z.string(),
                   z.object({
-                    coding: z.number().min(-2).max(2).optional().default(0),
-                    documentation: z.number().min(-2).max(2).optional().default(0),
-                    analysis: z.number().min(-2).max(2).optional().default(0),
-                    general: z.number().min(-2).max(2).optional().default(0),
+                    coding: z.number().min(-3).max(3).optional().default(0),
+                    documentation: z.number().min(-3).max(3).optional().default(0),
+                    analysis: z.number().min(-3).max(3).optional().default(0),
+                    general: z.number().min(-3).max(3).optional().default(0),
                   }),
                 )
                 .optional()
-                .describe("Per-model user ratings (-2 to +2) for each task category"),
+                .describe("Per-model user ratings (-3 to +3) for each task category"),
               category_overrides: z
                 .object({
                   coding: z.string().optional(),

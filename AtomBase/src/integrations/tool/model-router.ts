@@ -62,7 +62,7 @@ interface ScoredModel {
  * Higher score = better fit.
  * Returns 0 if the model lacks basic requirements (e.g., no toolcall for coding).
  */
-function scoreModel(model: Provider.Model, category: TaskCategory): number {
+function scoreModel(model: Provider.Model, category: TaskCategory, mode: AutoMode = "balanced"): number {
   let score = 0
 
   switch (category) {
@@ -108,11 +108,19 @@ function scoreModel(model: Provider.Model, category: TaskCategory): number {
   // Small bonus for active models
   if (model.status === "active") score += 5
 
-  // Cost penalty: prefer cheaper models when scores are close
-  // Normalize cost to a 0-10 penalty range
+  // Mode-based cost/reasoning adjustments
   const costPer1M = ((model.cost?.input ?? 0) + (model.cost?.output ?? 0)) / 2
-  if (costPer1M > 0) {
-    score -= Math.min(costPer1M * 0.5, 10)
+  if (mode === "speed") {
+    // Speed mode: penalise slow reasoning models, penalise cost more aggressively
+    if (model.capabilities.reasoning) score -= 15
+    if (costPer1M > 0) score -= Math.min(costPer1M * 1.5, 25)
+  } else if (mode === "quality" || mode === "reasoning") {
+    // Quality/reasoning: bonus for reasoning models, lenient cost penalty
+    if (model.capabilities.reasoning) score += 25
+    if (costPer1M > 0) score -= Math.min(costPer1M * 0.2, 4)
+  } else {
+    // balanced (default) — original formula
+    if (costPer1M > 0) score -= Math.min(costPer1M * 0.5, 10)
   }
 
   return Math.max(score, 0)
@@ -234,6 +242,74 @@ export function inferCategoryMulti(prompt: string): { category: TaskCategory; co
   return { category: topCategory as TaskCategory, confidence: margin / topScore }
 }
 
+const CLASSIFIER_SYSTEM_PROMPT = `You are a task classifier. Classify the user's request into exactly ONE category.
+Reply with ONLY the category name in lowercase, nothing else.
+
+Categories:
+- coding: Writing, fixing, refactoring, implementing, debugging, deploying code or scripts
+- documentation: Writing docs, READMEs, guides, tutorials, changelogs, comments
+- analysis: Code review, auditing, investigating, comparing, benchmarking, explaining how something works
+- general: Greetings, questions, brainstorming, planning, or anything else`
+
+/**
+ * Pick the smallest/fastest free model to use as the semantic classifier.
+ * Prefers non-reasoning models (faster) and smaller context windows (proxy for speed).
+ */
+export function pickClassifierModel(
+  freeModels: Array<[string, Provider.Model]>,
+): [string, Provider.Model] | null {
+  const candidates = freeModels
+    .filter(([, m]) => !m.capabilities.reasoning) // non-reasoning = faster
+    .sort(([, a], [, b]) => (a.limit?.context ?? 0) - (b.limit?.context ?? 0))
+
+  if (candidates.length > 0) return candidates[0]
+
+  // Fallback: any free model, sorted by context size
+  const all = [...freeModels].sort(([, a], [, b]) => (a.limit?.context ?? 0) - (b.limit?.context ?? 0))
+  return all.length > 0 ? all[0] : null
+}
+
+/**
+ * Semantic (LLM-based) task category classification.
+ * Uses a small free model to understand the user's intent instead of keyword matching.
+ * Falls back to keyword-based inferCategoryMulti() on any failure.
+ */
+export async function inferCategorySemantic(
+  prompt: string,
+  languageModel: any, // LanguageModelV2
+): Promise<{ category: TaskCategory; confidence: number }> {
+  try {
+    const { getGenerateText } = await import("@/util/util/ai-compat")
+    const generateText = await getGenerateText()
+
+    const result = await generateText({
+      model: languageModel,
+      system: CLASSIFIER_SYSTEM_PROMPT,
+      prompt: prompt.slice(0, 800), // Limit for speed
+    })
+
+    const raw = result.text.trim().toLowerCase().replace(/[^a-z]/g, "")
+
+    // Exact match
+    if (raw === "coding" || raw === "documentation" || raw === "analysis" || raw === "general") {
+      log.info("semantic classification", { category: raw, prompt: prompt.slice(0, 80) })
+      return { category: raw, confidence: 0.9 }
+    }
+
+    // Prefix match (model may add extra text)
+    if (raw.startsWith("cod")) return { category: "coding", confidence: 0.85 }
+    if (raw.startsWith("doc")) return { category: "documentation", confidence: 0.85 }
+    if (raw.startsWith("ana")) return { category: "analysis", confidence: 0.85 }
+    if (raw.startsWith("gen")) return { category: "general", confidence: 0.85 }
+
+    log.warn("semantic classification: unrecognized response, falling back to keyword", { raw })
+    return inferCategoryMulti(prompt)
+  } catch (e) {
+    log.warn("semantic classification failed, falling back to keyword", { error: (e as Error).message })
+    return inferCategoryMulti(prompt)
+  }
+}
+
 export function estimateRequiredContext(session: any, currentPrompt: string): number {
   const systemPromptTokens = session?.systemPromptTokenCount ?? 1500
   const toolSchemasTokens = session?.toolSchemaTokenCount ?? 3000
@@ -304,8 +380,8 @@ export function finalScore(
   complexity: number = 0,
   autoRouterConfig?: { model_ratings?: Record<string, Record<string, number>> },
 ): number {
-  // 1. Temel puanlama (saf yetenekler)
-  const base = scoreModel(m, category)
+  // 1. Temel puanlama (saf yetenekler) — mode-aware
+  const base = scoreModel(m, category, mode)
   const w = MODE_WEIGHTS[mode]
 
   // 2. Mod ağırlıklı yetenek bonusları (toolcall çarpanı dahil edildi)
@@ -337,9 +413,9 @@ export function finalScore(
   const failures = state?.consecutiveFailures ?? 0
   score -= failures * 15
 
-  // 6. Kullanıcı Rating Çarpanı (auto_router.model_ratings)
+  // 6. Kullanıcı Rating Çarpanı (auto_router.model_ratings, -3..+3)
   const userRating = autoRouterConfig?.model_ratings?.[id]?.[category] ?? 0
-  score += userRating * 20 // -40 ile +40 arası bonus/ceza
+  score += userRating * 15 // -45 ile +45 arası bonus/ceza
 
   return Math.max(score, 0)
 }

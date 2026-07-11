@@ -1283,12 +1283,32 @@ export namespace Provider {
         selectModelInternal,
         estimateComplexity,
         inferCategoryMulti,
+        inferCategorySemantic,
+        pickClassifierModel,
         estimateRequiredContext,
         buildFallbackChain,
       } = await import("@/integrations/tool/model-router")
-      const categoryRes = promptText
-        ? inferCategoryMulti(promptText)
-        : { category: "general" as const, confidence: 1.0 }
+
+      // Semantic (LLM-based) category classification using the smallest free model
+      let categoryRes: { category: "coding" | "documentation" | "analysis" | "general"; confidence: number }
+      if (promptText) {
+        const classifierEntry = pickClassifierModel(freeModels)
+        if (classifierEntry) {
+          try {
+            const classifierLang = await getLanguage(classifierEntry[1])
+            categoryRes = await inferCategorySemantic(promptText, classifierLang)
+          } catch (classifyErr) {
+            log.warn("semantic classifier failed, using keyword fallback", {
+              error: (classifyErr as Error).message,
+            })
+            categoryRes = inferCategoryMulti(promptText)
+          }
+        } else {
+          categoryRes = inferCategoryMulti(promptText)
+        }
+      } else {
+        categoryRes = { category: "general" as const, confidence: 1.0 }
+      }
       const category = categoryRes.category
       const complexity = promptText ? estimateComplexity(promptText) : 0
 

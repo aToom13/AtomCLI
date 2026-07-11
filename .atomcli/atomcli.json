@@ -26,6 +26,19 @@
     }
   },
   "experimental": {
-    "smart_model_routing": false
+    "smart_model_routing": false,
+    "auto_mode": "balanced",
+    "auto_router": {
+      "excluded_models": [],
+      "model_ratings": {
+        "deepseek-v4-flash-free": {
+          "coding": 2,
+          "documentation": 2,
+          "analysis": 2,
+          "general": 2
+        }
+      },
+      "category_overrides": {}
+    }
   }
 }
