@@ -959,6 +959,35 @@ export type Config = {
      */
     auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
     /**
+     * Auto router user preferences
+     */
+    auto_router?: {
+      /**
+       * Models to exclude from auto-routing selection
+       */
+      excluded_models?: Array<string>
+      /**
+       * Per-model user ratings (-3 to +3) for each task category
+       */
+      model_ratings?: {
+        [key: string]: {
+          coding?: number
+          documentation?: number
+          analysis?: number
+          general?: number
+        }
+      }
+      /**
+       * Force a specific model for a task category
+       */
+      category_overrides?: {
+        coding?: string
+        documentation?: string
+        analysis?: string
+        general?: string
+      }
+    }
+    /**
      * Timeout in milliseconds for model context protocol (MCP) requests
      */
     mcp_timeout?: number
@@ -2991,6 +3020,35 @@ export type ConfigUpdateData = {
        * Routing mode for automatic model selection
        */
       auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
+      /**
+       * Auto router user preferences
+       */
+      auto_router?: {
+        /**
+         * Models to exclude from auto-routing selection
+         */
+        excluded_models?: Array<string>
+        /**
+         * Per-model user ratings (-3 to +3) for each task category
+         */
+        model_ratings?: {
+          [key: string]: {
+            coding?: number
+            documentation?: number
+            analysis?: number
+            general?: number
+          }
+        }
+        /**
+         * Force a specific model for a task category
+         */
+        category_overrides?: {
+          coding?: string
+          documentation?: string
+          analysis?: string
+          general?: string
+        }
+      }
       /**
        * Timeout in milliseconds for model context protocol (MCP) requests
        */
@@ -5119,6 +5177,39 @@ export type McpResourceListResponses = {
 }
 
 export type McpResourceListResponse = McpResourceListResponses[keyof McpResourceListResponses]
+
+export type SkillListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/skill"
+}
+
+export type SkillListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SkillListError = SkillListErrors[keyof SkillListErrors]
+
+export type SkillListResponses = {
+  /**
+   * List of skills
+   */
+  200: {
+    skills: Array<{
+      name: string
+      description: string
+      location: string
+    }>
+  }
+}
+
+export type SkillListResponse = SkillListResponses[keyof SkillListResponses]
 
 export type ProviderListData = {
   body?: never

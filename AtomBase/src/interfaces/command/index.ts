@@ -6,6 +6,7 @@ import { Identifier } from "@/core/id/id"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 import { MCP } from "@/integrations/mcp"
+import { Skill } from "@/integrations/skill"
 
 export namespace Command {
   export const Event = {
@@ -53,6 +54,7 @@ export namespace Command {
   export const Default = {
     INIT: "init",
     REVIEW: "review",
+    SKILL: "skill",
   } as const
 
   const state = Instance.state(async () => {
@@ -75,6 +77,17 @@ export namespace Command {
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      },
+      [Default.SKILL]: {
+        name: Default.SKILL,
+        description: "list installed skills",
+        get template() {
+          return Skill.all().then((skills) => {
+            const lines = skills.map((s) => `- ${s.name}: ${s.description}`)
+            return lines.length === 0 ? "No skills found." : lines.join("\n")
+          })
+        },
+        hints: [],
       },
     }
 

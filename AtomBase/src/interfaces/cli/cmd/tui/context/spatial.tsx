@@ -257,7 +257,7 @@ function GlowCursor() {
                     return prev
                 })
             }
-            frameId = setTimeout(tick, 1000 / 30) // 30fps checks
+            frameId = setTimeout(tick, 250) // 4fps checks
         }
         tick()
 

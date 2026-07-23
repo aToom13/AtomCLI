@@ -165,6 +165,8 @@ import type {
   SessionUnshareResponses,
   SessionUpdateErrors,
   SessionUpdateResponses,
+  SkillListErrors,
+  SkillListResponses,
   SubtaskPartInput,
   TextPartInput,
   ToolIdsErrors,
@@ -769,6 +771,35 @@ export class Config extends HeyApiClient {
          * Routing mode for automatic model selection
          */
         auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
+        /**
+         * Auto router user preferences
+         */
+        auto_router?: {
+          /**
+           * Models to exclude from auto-routing selection
+           */
+          excluded_models?: Array<string>
+          /**
+           * Per-model user ratings (-3 to +3) for each task category
+           */
+          model_ratings?: {
+            [key: string]: {
+              coding?: number
+              documentation?: number
+              analysis?: number
+              general?: number
+            }
+          }
+          /**
+           * Force a specific model for a task category
+           */
+          category_overrides?: {
+            coding?: string
+            documentation?: string
+            analysis?: string
+            general?: string
+          }
+        }
         /**
          * Timeout in milliseconds for model context protocol (MCP) requests
          */
@@ -2937,6 +2968,27 @@ export class Mcp extends HeyApiClient {
   resource = new Resource({ client: this.client })
 }
 
+export class Skill extends HeyApiClient {
+  /**
+   * List installed skills
+   *
+   * Get a list of all installed skills with their names and descriptions.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
+    return (options?.client ?? this.client).get<SkillListResponses, SkillListErrors, ThrowOnError>({
+      url: "/skill",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Oauth extends HeyApiClient {
   /**
    * OAuth authorize
@@ -3232,6 +3284,8 @@ export class AtomcliClient extends HeyApiClient {
   question = new Question({ client: this.client })
 
   mcp = new Mcp({ client: this.client })
+
+  skill = new Skill({ client: this.client })
 
   provider = new Provider({ client: this.client })
 

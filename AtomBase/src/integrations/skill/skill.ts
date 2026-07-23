@@ -9,6 +9,7 @@ import { Global } from "@/core/global"
 import { Filesystem } from "@/util/util/filesystem"
 import { exists } from "fs/promises"
 import { Flag } from "@/interfaces/flag/flag"
+import { State } from "@/services/project/state"
 
 export namespace Skill {
   const log = Log.create({ service: "skill" })
@@ -153,5 +154,10 @@ export namespace Skill {
 
   export async function all() {
     return state().then((x) => Object.values(x))
+  }
+
+  export async function reload() {
+    State.invalidate(Instance.directory)
+    return state()
   }
 }

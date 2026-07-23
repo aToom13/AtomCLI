@@ -102,10 +102,23 @@ export namespace MCP {
     })
   export type Status = z.infer<typeof Status>
 
+  // Tools cache: avoids re-fetching MCP tools on every prompt loop iteration
+  // Cache is invalidated on ToolListChangedNotification, disconnect, or reconnect
+  const toolsCache = new Map<string, Record<string, Tool>>()
+
+  function invalidateToolsCache(serverName?: string) {
+    if (serverName) {
+      toolsCache.delete(serverName)
+    } else {
+      toolsCache.clear()
+    }
+  }
+
   // Register notification handlers for MCP client
   function registerNotificationHandlers(client: MCPClient, serverName: string) {
     client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
       log.info("tools list changed notification received", { server: serverName })
+      invalidateToolsCache(serverName)
       Bus.publish(ToolsChanged, { server: serverName })
     })
   }
@@ -203,6 +216,7 @@ export namespace MCP {
         ),
       )
       pendingOAuthTransports.clear()
+      invalidateToolsCache()
     },
   )
 
@@ -272,6 +286,8 @@ export namespace MCP {
     }
     s.clients[name] = result.mcpClient
     s.status[name] = result.status
+    // Invalidate cache since client may have been reconnected
+    invalidateToolsCache(name)
 
     return {
       status: s.status,
@@ -541,16 +557,25 @@ export namespace MCP {
       delete s.clients[name]
     }
     s.status[name] = { status: "disabled" }
+    invalidateToolsCache(name)
   }
 
-  export async function tools() {
-    const result: Record<string, Tool> = {}
+  export async function tools(signal?: AbortSignal) {
     const s = await state()
-    const clientsSnapshot = await clients()
+    const result: Record<string, Tool> = {}
 
-    for (const [clientName, client] of Object.entries(clientsSnapshot)) {
+    for (const [clientName, client] of Object.entries(s.clients)) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
+
       // Only include tools from connected MCPs (skip disabled ones)
       if (s.status[clientName]?.status !== "connected") {
+        continue
+      }
+
+      // Use cache if available
+      const cached = toolsCache.get(clientName)
+      if (cached) {
+        Object.assign(result, cached)
         continue
       }
 
@@ -567,11 +592,15 @@ export namespace MCP {
       if (!toolsResult) {
         continue
       }
+
+      const clientTools: Record<string, Tool> = {}
       for (const mcpTool of toolsResult.tools) {
         const sanitizedClientName = clientName.replace(/[^a-zA-Z0-9_-]/g, "_")
         const sanitizedToolName = mcpTool.name.replace(/[^a-zA-Z0-9_-]/g, "_")
-        result[sanitizedClientName + "_" + sanitizedToolName] = await convertMcpTool(mcpTool, client)
+        clientTools[sanitizedClientName + "_" + sanitizedToolName] = await convertMcpTool(mcpTool, client)
       }
+      toolsCache.set(clientName, clientTools)
+      Object.assign(result, clientTools)
     }
     return result
   }

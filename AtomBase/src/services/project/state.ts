@@ -28,6 +28,13 @@ export namespace State {
     }
   }
 
+  export function invalidate(key: string) {
+    const entries = recordsByKey.get(key)
+    if (!entries) return
+    // Clear all entries for this key — next access re-runs init
+    entries.clear()
+  }
+
   export async function dispose(key: string) {
     const entries = recordsByKey.get(key)
     if (!entries) return

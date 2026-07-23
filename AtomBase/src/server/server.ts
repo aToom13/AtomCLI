@@ -32,6 +32,7 @@ import { FindRoute } from "./routes/find"
 import { AuthRoute } from "./routes/auth"
 import { AgentRoute } from "./routes/agent"
 import { CommandRoute } from "./routes/command"
+import { SkillRoute } from "./routes/skill"
 import { SystemRoute } from "./routes/system"
 import { PermissionRoute } from "./routes/permission"
 import { LspRoute } from "./routes/lsp"
@@ -167,6 +168,7 @@ export namespace Server {
         .route("/tui/control", TuiRoute)
         .route("/question", QuestionRoute)
         .route("/mcp", McpRoute)
+        .route("/skill", SkillRoute)
         .route("/provider", ProviderRoute)
         .route("/lsp", LspRoute)
         .route("/formatter", FormatterRoute)
@@ -221,9 +223,7 @@ export namespace Server {
         return undefined
       }
     }
-    const server = opts.port === 0
-      ? (tryServe(4096) ?? tryServe(0))
-      : (tryServe(opts.port) ?? tryServe(0))
+    const server = opts.port === 0 ? (tryServe(4096) ?? tryServe(0)) : (tryServe(opts.port) ?? tryServe(0))
     if (!server) throw new Error(`Failed to start server on port ${opts.port}`)
 
     _url = server.url

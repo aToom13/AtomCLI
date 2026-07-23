@@ -587,31 +587,32 @@ export namespace SessionPrompt {
       }
 
       // F8: targeted shallow copy — only clone messages/parts that will be mutated
-      const sessionMessages = (step > 1 && lastFinished)
-        ? msgs.map(msg => {
-          if (msg.info.role !== "user" || msg.info.id <= lastFinished.id) return msg
-          // Check if any text parts need wrapping
-          const needsWrap = msg.parts.some(p => p.type === "text" && !p.ignored && !p.synthetic && p.text.trim())
-          if (!needsWrap) return msg
-          return {
-            ...msg,
-            parts: msg.parts.map(part => {
-              if (part.type !== "text" || part.ignored || part.synthetic || !part.text.trim()) return part
+      const sessionMessages =
+        step > 1 && lastFinished
+          ? msgs.map((msg) => {
+              if (msg.info.role !== "user" || msg.info.id <= lastFinished.id) return msg
+              // Check if any text parts need wrapping
+              const needsWrap = msg.parts.some((p) => p.type === "text" && !p.ignored && !p.synthetic && p.text.trim())
+              if (!needsWrap) return msg
               return {
-                ...part,
-                text: [
-                  "<system-reminder>",
-                  "The user sent the following message:",
-                  part.text,
-                  "",
-                  "Please address this message and continue with your tasks.",
-                  "</system-reminder>",
-                ].join("\n"),
+                ...msg,
+                parts: msg.parts.map((part) => {
+                  if (part.type !== "text" || part.ignored || part.synthetic || !part.text.trim()) return part
+                  return {
+                    ...part,
+                    text: [
+                      "<system-reminder>",
+                      "The user sent the following message:",
+                      part.text,
+                      "",
+                      "Please address this message and continue with your tasks.",
+                      "</system-reminder>",
+                    ].join("\n"),
+                  }
+                }),
               }
-            }),
-          }
-        })
-        : [...msgs]
+            })
+          : [...msgs]
 
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
 
@@ -619,18 +620,18 @@ export namespace SessionPrompt {
 
       // Proactive Memory Recall
       let memoryContext = ""
-      const lastUserWithParts = lastUser ? msgs.find(m => m.info.id === lastUser.id) : undefined
+      const lastUserWithParts = lastUser ? msgs.find((m) => m.info.id === lastUser.id) : undefined
       if (lastUserWithParts && lastUserWithParts.parts) {
         const userText = lastUserWithParts.parts
-          .filter(p => p.type === "text")
-          .map(p => (p as any).text)
+          .filter((p) => p.type === "text")
+          .map((p) => (p as any).text)
           .join(" ")
 
         if (userText) {
           // F13: static import — no dynamic import() in hot path
           memoryContext = await recall(userText, {
             sessionID: sessionID,
-            technology: "general" // Could be refined based on context
+            technology: "general", // Could be refined based on context
           })
         }
       }
@@ -650,11 +651,11 @@ export namespace SessionPrompt {
           ...(await MessageV2.toModelMessage(sessionMessages)),
           ...(isLastStep
             ? [
-              {
-                role: "assistant" as const,
-                content: MAX_STEPS,
-              },
-            ]
+                {
+                  role: "assistant" as const,
+                  content: MAX_STEPS,
+                },
+              ]
             : []),
         ],
         tools,
@@ -783,13 +784,13 @@ export namespace SessionPrompt {
     }
 
     // Timeout MCP tools loading to prevent hanging when MCP servers are slow/unreachable
-    const mcpTools = await Promise.race([
-      MCP.tools(),
-      new Promise<Record<string, AITool>>((resolve) => setTimeout(() => {
-        log.warn("MCP tools loading timed out after 5s, skipping MCP tools")
-        resolve({})
-      }, 5000)),
-    ])
+    const mcpAbort = new AbortController()
+    const mcpTimer = setTimeout(() => {
+      mcpAbort.abort()
+      log.warn("MCP tools loading timed out after 5s, skipping MCP tools")
+    }, 5000)
+    const mcpTools = await MCP.tools(mcpAbort.signal).catch(() => ({}))
+    clearTimeout(mcpTimer)
     for (const [key, item] of Object.entries(mcpTools)) {
       const execute = item.execute
       if (!execute) continue
@@ -1057,8 +1058,8 @@ export namespace SessionPrompt {
                       agent: input.agent!,
                       messageID: info.id,
                       extra: { bypassCwdCheck: true, model },
-                      metadata: async () => { },
-                      ask: async () => { },
+                      metadata: async () => {},
+                      ask: async () => {},
                     }
                     const result = await t.execute(args, readCtx)
                     pieces.push({
@@ -1118,8 +1119,8 @@ export namespace SessionPrompt {
                   agent: input.agent!,
                   messageID: info.id,
                   extra: { bypassCwdCheck: true },
-                  metadata: async () => { },
-                  ask: async () => { },
+                  metadata: async () => {},
+                  ask: async () => {},
                 }
                 const result = await FindTool.init().then((t) => t.execute({ mode: "tree", path: filepath }, listCtx))
                 return [
@@ -1276,8 +1277,8 @@ export namespace SessionPrompt {
     // Learn from user message (non-blocking to prevent hanging the prompt response)
     try {
       // F13: static import — no dynamic import() in hot path
-      const textParts = parts.filter(p => p.type === "text" && !("synthetic" in p && p.synthetic))
-      const userText = textParts.map(p => (p as any).text).join(" ")
+      const textParts = parts.filter((p) => p.type === "text" && !("synthetic" in p && p.synthetic))
+      const userText = textParts.map((p) => (p as any).text).join(" ")
       if (userText) {
         // Fire-and-forget: don't block prompt processing on memory learning
         SessionMemoryIntegration.learnFromMessage(userText).catch((error) => {
@@ -1629,6 +1630,46 @@ export namespace SessionPrompt {
     }
     template = template.trim()
 
+    // System commands: handle directly without AI (e.g., "skill" lists installed skills)
+    if (input.command === Command.Default.SKILL) {
+      const msgId = Identifier.ascending("message")
+      const now = Date.now()
+      const msg = (await Session.updateMessage({
+        id: msgId,
+        sessionID: input.sessionID,
+        role: "assistant",
+        parentID: input.messageID ?? Identifier.ascending("message"),
+        mode: agentName,
+        agent: agentName,
+        path: {
+          cwd: Instance.directory,
+          root: Instance.worktree,
+        },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: "",
+        providerID: "",
+        time: { created: now, completed: now },
+      })) as MessageV2.Assistant
+
+      const part = await Session.updatePart({
+        id: Identifier.ascending("part"),
+        messageID: msg.id,
+        sessionID: msg.sessionID,
+        type: "text",
+        text: template,
+      })
+
+      Bus.publish(Command.Event.Executed, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+        messageID: msg.id,
+      })
+
+      return { info: msg, parts: [part] } as MessageV2.WithParts
+    }
+
     const model = await (async () => {
       if (command.model) {
         return Provider.parseModel(command.model)
@@ -1672,15 +1713,15 @@ export namespace SessionPrompt {
     const parts =
       (agent.mode === "subagent" && command.subtask !== false) || command.subtask === true
         ? [
-          {
-            type: "subtask" as const,
-            agent: agent.name,
-            description: command.description ?? "",
-            command: input.command,
-            // TODO: how can we make task tool accept a more complex input?
-            prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
-          },
-        ]
+            {
+              type: "subtask" as const,
+              agent: agent.name,
+              description: command.description ?? "",
+              command: input.command,
+              // TODO: how can we make task tool accept a more complex input?
+              prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
+            },
+          ]
         : [...templateParts, ...(input.parts ?? [])]
 
     const result = (await prompt({

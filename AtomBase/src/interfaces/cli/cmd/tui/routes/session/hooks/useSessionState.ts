@@ -59,7 +59,7 @@ export function useSessionState() {
   const [showAssistantMetadata, setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode, setDiffWrapMode] = createSignal<"word" | "none">("word")
-  const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", true)
+  const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", false)
   const [autoFollow, setAutoFollow] = kv.signal("auto_follow", true)
 
   const wide = createMemo(() => dimensions().width > 120)

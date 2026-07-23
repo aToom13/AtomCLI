@@ -11,7 +11,7 @@ export function handleNamedError(input: unknown): string | null {
     const data = err.data || {}
 
     if (input.name === "MCP_SERVER_FAILED") {
-      return `MCP server "${data.name}" failed. Note, atomcli does not support MCP authentication yet.`
+      return `MCP server "${data.name}" failed.`
     }
     if (input.name === "BAD_CREDENTIAL") {
       const { providerID, modelID, suggestions } = data
@@ -56,7 +56,8 @@ export function FormatError(input: unknown) {
   }
   if (Config.JsonError.isInstance(input)) {
     return (
-      `Config file at ${(input as any).data.path} is not valid JSON(C)` + ((input as any).data.message ? `: ${(input as any).data.message}` : "")
+      `Config file at ${(input as any).data.path} is not valid JSON(C)` +
+      ((input as any).data.message ? `: ${(input as any).data.message}` : "")
     )
   }
   if (Config.ConfigDirectoryTypoError.isInstance(input)) {
@@ -68,7 +69,7 @@ export function FormatError(input: unknown) {
   if (Config.InvalidError.isInstance(input))
     return [
       `Configuration is invalid${(input as any).data.path && (input as any).data.path !== "config" ? ` at ${(input as any).data.path}` : ""}` +
-      ((input as any).data.message ? `: ${(input as any).data.message}` : ""),
+        ((input as any).data.message ? `: ${(input as any).data.message}` : ""),
       ...((input as any).data.issues?.map((issue) => "↳ " + issue.message + " " + issue.path.join(".")) ?? []),
     ].join("\n")
 
