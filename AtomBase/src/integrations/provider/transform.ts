@@ -278,9 +278,21 @@ export namespace ProviderTransform {
     if (id.includes("deepseek") || id.includes("minimax") || id.includes("glm") || id.includes("mistral")) return {}
 
     switch (model.api.npm) {
+      case "@atomcli/kilocode":
+      // Kilocode proxies to OpenRouter — use the same reasoning parameters
       case "@openrouter/ai-sdk-provider":
-        if (!model.id.includes("gpt") && !model.id.includes("gemini-3") && !model.id.includes("grok-4")) return {}
-        return Object.fromEntries(OPENAI_EFFORTS.map((effort) => [effort, { reasoning: { effort } }]))
+        // OpenRouter reasoning API: `enabled: false` and `max_tokens` are universally reliable.
+        // `effort` works on some models (Nemotron, GPT) but is silently ignored by others
+        // (auto-routed, StepFun, etc.). Use `enabled: false` for none and `max_tokens` for
+        // budget-based levels to ensure consistent behavior across all reasoning models.
+        return {
+          none:    { reasoning: { enabled: false } },
+          minimal: { reasoning: { max_tokens: 1024 } },
+          low:     { reasoning: { effort: "low" } },
+          medium:  { reasoning: { effort: "medium" } },
+          high:    { reasoning: { effort: "high" } },
+          xhigh:   { reasoning: { max_tokens: 32768 } },
+        }
 
       case "@ai-sdk/gateway":
         // NOTE: max_tokens CANNOT be set when reasoningEffort is used
@@ -441,7 +453,7 @@ export namespace ProviderTransform {
   ): Record<string, any> {
     const result: Record<string, any> = {}
 
-    if (model.api.npm === "@openrouter/ai-sdk-provider") {
+    if (model.api.npm === "@openrouter/ai-sdk-provider" || model.api.npm === "@atomcli/kilocode") {
       result["usage"] = {
         include: true,
       }
@@ -506,11 +518,9 @@ export namespace ProviderTransform {
       }
       return { thinkingConfig: { thinkingBudget: 0 } }
     }
-    if (model.providerID === "openrouter") {
-      if (model.api.id.includes("google")) {
-        return { reasoning: { enabled: false } }
-      }
-      return { reasoningEffort: "minimal" }
+    if (model.providerID === "openrouter" || model.providerID === "kilocode") {
+      // `reasoning: { enabled: false }` is universally reliable across all OpenRouter models
+      return { reasoning: { enabled: false } }
     }
     return {}
   }
@@ -540,6 +550,8 @@ export namespace ProviderTransform {
         return {
           ["gateway" as string]: options,
         }
+      case "@atomcli/kilocode":
+      // Kilocode proxies to OpenRouter — use the same provider namespace
       case "@openrouter/ai-sdk-provider":
         return {
           ["openrouter" as string]: options,

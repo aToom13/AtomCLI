@@ -69,43 +69,32 @@ bun turbo test
 - **`WORKFLOWS` map** in `orchestrate.ts` is bounded to `MAX_WORKFLOWS = 100` with 1-hour TTL cleanup. Do not remove this bound.
 - **Subagent permissions** in `OrchestrateTool` must always deny `todowrite`, `todoread`, and `task` for sub-agents.
 
-## MANDATORY: Chain + TodoWrite Usage
+## MANDATORY: TaskFlow & Autonomous Goal Loop Usage
 
-**Every multi-step task MUST use Chain (chainupdate) AND TodoWrite together.**
+**Every multi-step task MUST use TaskFlow (`taskflow`) and follow the Autonomous Goal Loop (`AUTONOMOUS_GOAL_LOOP`).**
 
 ### Rules
 
-1. **Chain first, always.** Before creating any TodoWrite list, call `chainupdate [action=start]`.
-2. **Update Chain frequently.** After every significant tool call, update Chain status:
+1. **TaskFlow first, always.** Before starting multi-step work, call `taskflow [action="start", plan=[...]]`.
+2. **Update TaskFlow frequently.** As work proceeds, update step and todo statuses:
    ```
-   chainupdate [action=update, status=analyzing]
-   chainupdate [action=update, status=implementing]
-   chainupdate [action=complete]
+   taskflow [action="update", step_id="0", status="running"]
+   taskflow [action="update", step_id="0", todo_id="0", todo_status="completed"]
+   taskflow [action="complete", step_id="0"]
    ```
-3. **Mark Chain steps done.** When a logical step finishes, call `chainupdate [action=complete]`.
-4. **Clear on finish.** When ALL work is done, call `chainupdate [action=clear]`.
-5. **TodoWrite requires Chain.** Never call `TodoWrite` without an active Chain. If you need a task list, start Chain first.
+3. **Follow the 3-Layered Iterative State Machine (`AUTONOMOUS_GOAL_LOOP`):**
+   - **Katman 1 (İcra):** Read → Edit → Verify mikro-döngüsü
+   - **Katman 2 (Strateji):** Kilometre taşı yönetimi (Plan → Execute → Evaluate → Adapt)
+   - **Katman 3 (Meta-Biliş):** Olay-tetikli öz-denetim (milestone tamamlandığında, beklenmedik keşifte, plan sapmasında)
+4. **Failure Journal (Başarısızlık Hafızası):** Kaydedilen başarısız yaklaşımları tekrarlamak YASAK. Bağlantılı başarısızlıkları konsolide et.
+5. **Clear on finish.** When ALL work is completed and verified, call `taskflow [action="clear"]`.
 
 ### Forbidden Patterns
 
-- ❌ `TodoWrite([...])` without prior `chainupdate [action=start]`
-- ❌ Calling `chainupdate [action=clear]` before all steps are done
-- ❌ Skipping Chain updates between steps
-- ❌ Completing work without marking Chain step done
-
-### Example Flow
-
-```
-1. chainupdate [action=start]                    # ALWAYS FIRST
-2. chainupdate [action=update, status=reading_requirements]
-3. TodoWrite([{ id: "1", content: "🔍 Analyze", status: "in_progress" }])
-4. ... do analysis ...
-5. chainupdate [action=update, status=implementing]
-6. chainupdate [action=complete]
-7. TodoWrite([{ id: "1", ..., status: "completed" }])
-8. ... next task ...
-9. chainupdate [action=clear]                    # LAST when done
-```
+- ❌ Calling deprecated `todowrite` or `todoread` directly (use `taskflow`)
+- ❌ Calling `taskflow [action="clear"]` before all steps are complete
+- ❌ Repeating a failed strategy without updating Failure Journal
+- ❌ Completing work without independent verification (`checker` audit for 3+ files)
 
 ## Known gotchas
 

@@ -63,6 +63,23 @@ describe("Truncate", () => {
       expect(result.content).not.toContain("line0")
     })
 
+    test("truncates from tail in smart mode when error is detected near end", async () => {
+      const lines = Array.from({ length: 10 }, (_, i) => (i === 9 ? "Error: failed to build" : `line${i}`)).join("\n")
+      const result = await Truncate.output(lines, { maxLines: 3, direction: "smart" })
+
+      expect(result.truncated).toBe(true)
+      expect(result.content).toContain("Error: failed to build")
+    })
+
+    test("truncates from head in smart mode when no error is present", async () => {
+      const lines = Array.from({ length: 10 }, (_, i) => `line${i}`).join("\n")
+      const result = await Truncate.output(lines, { maxLines: 3, direction: "smart" })
+
+      expect(result.truncated).toBe(true)
+      expect(result.content).toContain("line0")
+      expect(result.content).not.toContain("line9")
+    })
+
     test("uses default MAX_LINES and MAX_BYTES", () => {
       expect(Truncate.MAX_LINES).toBe(2000)
       expect(Truncate.MAX_BYTES).toBe(50 * 1024)

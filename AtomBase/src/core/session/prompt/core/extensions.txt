@@ -24,20 +24,16 @@ MCP servers appear in `<mcp_servers>` block in your context. Tools are namespace
 
 ---
 
-<chain_system>
-## CHAIN + TODO — INTEGRATED WORKFLOW
+<taskflow_system>
+## TASKFLOW — UNIFIED PLANNING & PROGRESS WORKFLOW
 
-Three tools, different purposes, MUST be used together for multi-step tasks:
+Use `taskflow` for all multi-step task planning and progress updates:
 
-**Chain (chainupdate)** — Visual progress bar the USER watches live:
-- `chainupdate [action=start]` — ALWAYS first when beginning multi-step task
-- `chainupdate [action=update, status=analyzing_code]` — Update FREQUENTLY (per action)
-- `chainupdate [action=complete]` — Mark step done, advance to next
-- `chainupdate [action=clear]` — Clear when ALL work is finished
-
-**TodoWrite** — Internal task state:
-- States: `pending`, `in_progress` (ONE at a time!), `completed`, `cancelled`
-- Mark `in_progress` BEFORE starting, `completed` IMMEDIATELY after finishing
+**TaskFlow Tool (`taskflow`)** — Step planning + todo management in one tool:
+- `taskflow action="start" plan=[{ name: "Step 1", todos: ["Task A", "Task B"] }]` — ALWAYS call first when beginning multi-step task
+- `taskflow action="update" step_id="0" status="running"` — Update as work proceeds
+- `taskflow action="complete"` — Mark step completed, advance to next
+- `taskflow action="clear"` — Clear when ALL work is finished
 
 **SequentialThinking** — Complex reasoning only:
 - Use for: architecture decisions, systematic debugging, security analysis
@@ -45,15 +41,13 @@ Three tools, different purposes, MUST be used together for multi-step tasks:
 
 **Integrated flow:**
 ```
-1. chainupdate [action=start]
-2. TodoWrite([{ id:"1", content:"🔍 Research", status:"in_progress" }])
-3. chainupdate [action=update, status=reading_files]
-4. ... do work ...
-5. chainupdate [action=complete]
-6. TodoWrite([{ id:"1", status:"completed" }, { id:"2", status:"in_progress" }])
-7. ... repeat ...
-8. chainupdate [action=clear]
+1. taskflow action="start" plan=[{ name: "🔍 Research", todos: ["Read specs", "Inspect code"] }]
+2. taskflow action="update" step_id="0" status="running"
+3. ... do work ...
+4. taskflow action="complete"
+5. ... repeat for remaining steps ...
+6. taskflow action="clear"
 ```
 
 **NEVER use `cd` in Bash. ALWAYS use `workdir` parameter.**
-</chain_system>
+</taskflow_system>

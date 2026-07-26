@@ -1,8 +1,10 @@
-import { test, expect } from "bun:test"
+import { test, expect, describe } from "bun:test"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "@/services/project/instance"
 import { Agent } from "@/integrations/agent/agent"
 import { PermissionNext } from "@/util/permission/next"
+import { ToolRegistry } from "@/integrations/tool/registry"
+import { Tool } from "@/integrations/tool/tool"
 
 // Helper to evaluate permission for a tool with wildcard pattern
 function evalPerm(agent: Agent.Info | undefined, permission: string): PermissionNext.Action | undefined {
@@ -536,5 +538,145 @@ test("explicit Truncate.DIR deny is respected", async () => {
       const build = await Agent.get("build")
       expect(PermissionNext.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
     },
+  })
+})
+
+// ── Explore Agent Tool Filtering Integration Tests ──
+
+const EXPLORE_ALLOWED_TOOLS = ["read", "find", "grep", "bash", "webfetch", "websearch", "codesearch", "skill", "memory", "taskflow"]
+const EXPLORE_DENIED_TOOLS = [
+  "edit",
+  "write",
+  "todowrite",
+  "todoread",
+  "batch",
+  "task",
+  "browser",
+  "self_maintenance",
+  "system_health",
+]
+
+describe("explore agent tool filtering", () => {
+  test("ToolRegistry.tools() returns only allowlisted tools for explore agent", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const explore = await Agent.get("explore")
+        expect(explore).toBeDefined()
+
+        const tools = await ToolRegistry.tools("atomcli", explore!)
+        const toolIds = tools.map((t) => t.id)
+
+        // All returned tools must be from the allowlist
+        for (const id of toolIds) {
+          expect(EXPLORE_ALLOWED_TOOLS).toContain(id)
+        }
+
+        // Every allowlisted tool (except skill/memory which may be unavailable) must be present
+        for (const allowed of EXPLORE_ALLOWED_TOOLS) {
+          if (allowed === "skill" || allowed === "memory") continue // optional tools
+          expect(toolIds).toContain(allowed)
+        }
+      },
+    })
+  })
+
+  test("ToolRegistry.tools() excludes destructive/write tools for explore agent", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const explore = await Agent.get("explore")
+        expect(explore).toBeDefined()
+
+        const tools = await ToolRegistry.tools("atomcli", explore!)
+        const toolIds = tools.map((t) => t.id)
+
+        // None of the denied tools should be present
+        for (const denied of EXPLORE_DENIED_TOOLS) {
+          expect(toolIds).not.toContain(denied)
+        }
+      },
+    })
+  })
+
+  test("PermissionNext.disabled() identifies write/edit tools as disabled for explore agent", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const explore = await Agent.get("explore")
+        expect(explore).toBeDefined()
+
+        const allToolIds = [...EXPLORE_ALLOWED_TOOLS, ...EXPLORE_DENIED_TOOLS]
+        const disabled = PermissionNext.disabled(allToolIds, explore!.permission)
+
+        // edit and write must be disabled
+        expect(disabled.has("edit")).toBe(true)
+        expect(disabled.has("write")).toBe(true)
+        expect(disabled.has("todowrite")).toBe(true)
+        expect(disabled.has("todoread")).toBe(true)
+
+        // read/search tools must NOT be disabled
+        expect(disabled.has("read")).toBe(false)
+        expect(disabled.has("grep")).toBe(false)
+        expect(disabled.has("bash")).toBe(false)
+        expect(disabled.has("webfetch")).toBe(false)
+        expect(disabled.has("websearch")).toBe(false)
+        expect(disabled.has("codesearch")).toBe(false)
+      },
+    })
+  })
+
+  test("explore agent permissions allow read/search but deny destructive actions", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const explore = await Agent.get("explore")
+        expect(explore).toBeDefined()
+
+        // Verify each allowed tool evaluates to "allow"
+        for (const tool of ["read", "grep", "bash", "webfetch", "websearch", "codesearch"]) {
+          expect(evalPerm(explore, tool)).toBe("allow")
+        }
+
+        // Verify each denied tool evaluates to "deny"
+        for (const tool of ["edit", "write", "todowrite", "todoread"]) {
+          expect(evalPerm(explore, tool)).toBe("deny")
+        }
+      },
+    })
+  })
+
+  test("coder agent (subagent) has full tool access (no tool allowlist)", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // coder should have no allowlist restriction
+        const toolsNoAgent = await ToolRegistry.tools("atomcli")
+        const toolsWithCoder = await ToolRegistry.tools("atomcli", await Agent.get("coder"))
+
+        // Without explicit allowlist, coder gets all tools
+        const coderTools = toolsWithCoder.map((t) => t.id)
+        expect(coderTools.length).toBeGreaterThan(EXPLORE_ALLOWED_TOOLS.length)
+        expect(coderTools).toContain("edit")
+        expect(coderTools).toContain("write")
+      },
+    })
+  })
+
+  test("decideTools returns correct allowlist for explore vs primary agents", async () => {
+    const { SessionPolicy } = await import("@/core/session/policy")
+
+    const exploreTools = SessionPolicy.decideTools("explore")
+    expect(exploreTools).toEqual(EXPLORE_ALLOWED_TOOLS)
+
+    // Primary agents return undefined (no filtering)
+    expect(SessionPolicy.decideTools("agent")).toBeUndefined()
+    expect(SessionPolicy.decideTools("coder")).toBeUndefined()
+    expect(SessionPolicy.decideTools("build")).toBeUndefined()
   })
 })

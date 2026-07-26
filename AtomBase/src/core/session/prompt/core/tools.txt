@@ -60,13 +60,9 @@ Chain with `&&`. Use `--no-pager` for git.
 
 ## TASK MANAGEMENT
 
-**TodoWrite** — `{ todos: [{id, content, status, priority?}] }` — Task state.
-One `in_progress` at a time. Use together with chainupdate for non-trivial tasks.
-States: `pending` → `in_progress` → `completed` | `cancelled`
+**TaskFlow** — `{ action: "start"|"update"|"complete"|"clear", plan?, step_id?, status? }` — Unified step planning and task progress updates.
 
-**TodoRead** — No params. Returns current task list.
-
-**Task** — `{ subagent_type: "general"|"explore", description, prompt }` — Blocking subagent.
+**Task** — `{ subagent_type: "general"|"explore"|"coder"|"checker"|"plan"|"build"|"reviewer", description, prompt }` — Blocking or background subagent. Available agent types are dynamically injected via `{agents}`.
 
 **Question** — `{ question, options?, multiple? }` — Ask user ONLY when genuinely blocked. Not for confirmations. Not for things tools can answer.
 
@@ -93,59 +89,28 @@ States: `pending` → `in_progress` → `completed` | `cancelled`
 | "How did we do this before?" | `memory search "<topic>"` |
 | New user preference or decision learned | `memory save "<fact>"` |
 
-**Rule:** Memory results → use as ground truth. No memory results → answer from context.
-
 ---
 
-## ORCHESTRATE — Multi-Agent Workflow Engine
+## ORCHESTRATE / AGENT — Subagent Lifecycle Engine
 
 **Use when:** Task can be broken into independent subtasks. See workflow.txt for auto-trigger rules.
 
-**Steps:**
-1. Plan: `{ action: "plan", tasks: [...] }` → returns workflowId
-2. Execute: `{ action: "execute", workflowId: "<id>" }`
-3. Status / Abort: `{ action: "status"|"abort", workflowId: "<id>" }`
+**Actions (aligned with agent tool):**
+- Spawn subagent: `{ action: "spawn", agent: "coder"|"checker"|"explore"|"plan"|"build"|"reviewer", prompt, session_id? }`
+- Workflow orchestration: `{ action: "workflow", workflow_action: "plan"|"execute", tasks: [...] }`
+- Status / Abort: `{ action: "status"|"abort" }`
 
-**Task fields:**
-- `id` — unique identifier
-- `prompt` — instruction for the agent
-- `agent` — which agent to use (default: `"coder"`)
-- `category` — for smart model routing (auto-inferred if omitted)
-- `dependsOn` — array of task IDs that must complete first
-- `model` — optional override, format `"provider/model"`
-
-**Available agents:**
+**Available Subagents:**
 
 | Agent | Role | Can edit files? |
 |-------|------|----------------|
-| `coder` | Code writing, debugging, refactor, features | Yes (default) |
-| `documenter` | Markdown/docs only (.md, .mdx, README, comments) | Docs only |
-| `analyst` | Read-only security & architecture analysis | No |
-| `explore` | Fast codebase search, grep, directory scan | No |
-| `checker` | Security + optimization audit, findings report only | No |
-| `general` | General reasoning, research, non-code tasks | Yes |
-
-**Task categories** (for model routing, independent of agent):
-`"coding"` | `"documentation"` | `"analysis"` | `"general"`
+| `coder` / `agent` | Code writing, debugging, refactor, features (Default) | Yes |
+| `build` | Greenfield application & feature scaffold | Yes |
+| `explore` | Fast read-only codebase search & grep | No |
+| `plan` | Read-only software architecture & implementation planning | No |
+| `checker` | Read-only security + optimization audit report | No |
+| `reviewer` | Read-only QA task output verification (PASS/FAIL) | No |
 
 **Max active agents: 6**
-
-**Parallel execution:**
-- Layer 1: Independent tasks run simultaneously
-- Layer 2: Dependent tasks run after their `dependsOn` layer completes
-
-**Example:**
-```js
-orchestrate({
-  action: "plan",
-  tasks: [
-    { id: "upgrade-axios", agent: "coder",   category: "coding",   prompt: "Upgrade axios to 1.15.0" },
-    { id: "upgrade-hono",  agent: "coder",   category: "coding",   prompt: "Upgrade hono to 4.12.12" },
-    { id: "fix-creds",     agent: "coder",   category: "coding",   prompt: "Fix OAuth credentials" },
-    { id: "verify",        agent: "checker", category: "analysis", prompt: "Audit all changes",
-      dependsOn: ["upgrade-axios", "upgrade-hono", "fix-creds"] }
-  ]
-})
-```
 
 </tool_usage>

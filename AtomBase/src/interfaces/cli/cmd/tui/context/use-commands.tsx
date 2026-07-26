@@ -122,6 +122,22 @@ export function useCommands() {
       },
     },
     {
+      title: "Cycle thinking level",
+      value: "variant.set",
+      keybind: "variant_set",
+      category: "Agent",
+      onSelect: () => {
+        local.model.variant.cycle()
+        const current = local.model.variant.current()
+        toast.show({
+          title: "Thinking Level",
+          message: current ? `Level: ${current.toUpperCase()} 🧠` : "Level: DEFAULT (medium) 🛡️",
+          variant: "info",
+          duration: 2500,
+        })
+      },
+    },
+    {
       title: "Switch agent",
       value: "agent.list",
       keybind: "agent_list",

@@ -14,6 +14,7 @@ import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
 import { Skill } from "@/integrations/skill"
 import { useToast } from "@tui/ui/toast"
+import { useLocal } from "@tui/context/local"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -83,6 +84,7 @@ export function Autocomplete(props: {
   const dimensions = useTerminalDimensions()
   const frecency = useFrecency()
   const toast = useToast()
+  const local = useLocal()
 
   const [store, setStore] = createStore({
     index: 0,
@@ -552,6 +554,55 @@ export function Autocomplete(props: {
             })
           } catch (e) {
             // Silently fail
+          }
+        },
+      },
+      {
+        display: "/think",
+        description: "set model thinking level (none/minimal/low/medium/high/max/xhigh/off)",
+        onSelect: () => {
+          const currentFilter = filter() ?? ""
+          const parts = currentFilter.trim().split(/\s+/)
+          const arg = parts.length > 1 ? parts[1].toLowerCase() : undefined
+          const validLevels = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"]
+
+          if (!arg) {
+            const current = local.model.variant.current()
+            toast.show({
+              title: "Thinking Level",
+              message: current ? `Current level: ${current.toUpperCase()} 🧠` : "Current level: DEFAULT (medium) 🧠",
+              variant: "info",
+              duration: 3000,
+            })
+            return
+          }
+
+          if (!validLevels.includes(arg)) {
+            toast.show({
+              title: "Thinking Level",
+              message: `Invalid level '${arg}'. Allowed: ${validLevels.join(", ")}`,
+              variant: "warning",
+              duration: 4000,
+            })
+            return
+          }
+
+          if (arg === "off") {
+            local.model.variant.set(undefined)
+            toast.show({
+              title: "Thinking Level",
+              message: "Reset to default level 🛡️",
+              variant: "info",
+              duration: 3000,
+            })
+          } else {
+            local.model.variant.set(arg)
+            toast.show({
+              title: "Thinking Level",
+              message: `Set to ${arg.toUpperCase()} 🧠`,
+              variant: "info",
+              duration: 3000,
+            })
           }
         },
       },

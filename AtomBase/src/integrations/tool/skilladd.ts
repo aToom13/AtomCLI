@@ -73,8 +73,14 @@ export const SkillAddTool = Tool.define("skilladd", {
       throw new Error("Invalid skill file: missing 'name' in frontmatter")
     }
 
-    const skillName = params.name || parsed.data.name
-    const skillDir = path.join(Global.Path.home, ".atomcli", "skills", skillName)
+    const rawSkillName = params.name || parsed.data.name
+    const sanitizedName = path.basename(rawSkillName)
+    const baseSkillsDir = path.join(Global.Path.home, ".atomcli", "skills")
+    const skillDir = path.resolve(baseSkillsDir, sanitizedName)
+
+    if (!skillDir.startsWith(baseSkillsDir) || sanitizedName.includes("..") || rawSkillName.includes("..")) {
+      throw new Error(`Invalid skill name "${rawSkillName}": path traversal detected`)
+    }
 
     await fs.mkdir(skillDir, { recursive: true })
     await fs.writeFile(path.join(skillDir, "SKILL.md"), content)
@@ -83,17 +89,17 @@ export const SkillAddTool = Tool.define("skilladd", {
     await Skill.reload()
 
     return {
-      title: `Installed skill: ${skillName}`,
+      title: `Installed skill: ${sanitizedName}`,
       output: [
-        `✓ Skill "${skillName}" installed successfully!`,
+        `✓ Skill "${sanitizedName}" installed successfully!`,
         ``,
-        `Location: ~/.atomcli/skills/${skillName}/SKILL.md`,
+        `Location: ~/.atomcli/skills/${sanitizedName}/SKILL.md`,
         `Description: ${parsed.data.description || "No description"}`,
         ``,
-        `The skill is now available. Use \`skill\` tool with name="${skillName}" to activate it.`,
+        `The skill is now available. Use \`skill\` tool with name="${sanitizedName}" to activate it.`,
       ].join("\n"),
       metadata: {
-        name: skillName,
+        name: sanitizedName,
         url: params.url,
         description: parsed.data.description,
       },

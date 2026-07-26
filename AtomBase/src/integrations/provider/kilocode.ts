@@ -77,6 +77,7 @@ interface KilocodeModelResponse {
       input_modalities?: string[] | null
       output_modalities?: string[] | null
     }
+    supported_parameters?: string[] | null
   }>
 }
 
@@ -119,6 +120,7 @@ export async function getKilocodeModels(token: string): Promise<Record<string, a
         contextWindow: model.context_length,
         maxTokens: model.max_completion_tokens || Math.ceil(model.context_length * 0.2),
         supportsImages: model.architecture?.input_modalities?.includes("image") ?? false,
+        supportsReasoning: model.supported_parameters?.includes("reasoning") ?? false,
         inputPrice,
         outputPrice,
       }

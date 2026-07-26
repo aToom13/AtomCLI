@@ -685,7 +685,7 @@ describe("ProviderTransform.variants", () => {
   })
 
   describe("@openrouter/ai-sdk-provider", () => {
-    test("returns empty object for non-qualifying models", () => {
+    test("returns reliable reasoning params for all reasoning-capable models", () => {
       const model = createMockModel({
         id: "openrouter/test-model",
         providerID: "openrouter",
@@ -696,10 +696,19 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      // none uses enabled: false (universally reliable across OpenRouter)
+      expect(result.none).toEqual({ reasoning: { enabled: false } })
+      // minimal and xhigh use max_tokens (universally reliable budget control)
+      expect(result.minimal).toEqual({ reasoning: { max_tokens: 1024 } })
+      expect(result.xhigh).toEqual({ reasoning: { max_tokens: 32768 } })
+      // low/medium/high use effort (standard OpenRouter reasoning API)
+      expect(result.low).toEqual({ reasoning: { effort: "low" } })
+      expect(result.medium).toEqual({ reasoning: { effort: "medium" } })
+      expect(result.high).toEqual({ reasoning: { effort: "high" } })
     })
 
-    test("gpt models return OPENAI_EFFORTS with reasoning", () => {
+    test("gpt models return reasoning variants", () => {
       const model = createMockModel({
         id: "openrouter/gpt-4",
         providerID: "openrouter",
@@ -711,11 +720,12 @@ describe("ProviderTransform.variants", () => {
       })
       const result = ProviderTransform.variants(model)
       expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(result.none).toEqual({ reasoning: { enabled: false } })
       expect(result.low).toEqual({ reasoning: { effort: "low" } })
       expect(result.high).toEqual({ reasoning: { effort: "high" } })
     })
 
-    test("gemini-3 returns OPENAI_EFFORTS with reasoning", () => {
+    test("gemini-3 returns reasoning variants", () => {
       const model = createMockModel({
         id: "openrouter/gemini-3-5-pro",
         providerID: "openrouter",
@@ -729,7 +739,7 @@ describe("ProviderTransform.variants", () => {
       expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
     })
 
-    test("grok-4 returns OPENAI_EFFORTS with reasoning", () => {
+    test("grok-4 returns reasoning variants", () => {
       const model = createMockModel({
         id: "openrouter/grok-4",
         providerID: "openrouter",

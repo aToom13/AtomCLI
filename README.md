@@ -29,24 +29,22 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v3.3.0)
+## What's New (v3.3.3)
 
-### Semantic Model Routing
+### Autonomous Goal Loop (`AUTONOMOUS_GOAL_LOOP`)
 
-- **LLM-based task classification** replaces the previous keyword-matching approach. AtomCLI now uses the smallest available free model to semantically understand the intent of each prompt before routing.
-- **Automatic adapter** — as free model availability changes, the classifier always picks from the current active pool. Falls back to keyword matching if the LLM call fails.
-- **Per-category model ratings** in Auto Router configuration. Rate each model separately for coding, documentation, analysis, and general tasks on a scale of -3 to +3.
-- **Auto Router config UI** accessible via `/autoconf`. Use arrow keys to navigate, Shift+E to expand per-category rating sub-rows, Space to toggle model exclusion.
+- **3-Layered Iterative State Machine** — Replaced linear `FULL_8_PHASE` checklist with a 3-layered iterative engine:
+  - **Layer 1 (Execution):** Rapid `Read → Edit → Verify` micro-loop in strict dependency order.
+  - **Layer 2 (Strategy):** Iterative milestone planning (`taskflow`), evaluation, and adaptation.
+  - **Layer 3 (Meta-Cognition):** Event-driven self-auditing triggered on major milestones, unexpected discoveries, or plan drift.
+- **Failure Journal (Consolidated Memory)** — Live living document tracking failed approaches. Prevents repeating identical or logically equivalent failed strategies, consolidating related failures over long-running sessions.
+- **Autonomous Escalation Protocol** — Eliminates rigid trial counters; agent uses self-judgment to escalate when facing genuine technical/business blockers.
 
-### Auto Router Improvements
+### Unified TaskFlow Engine & Prompt Consolidation
 
-- Smart Routing toggle, mode selector (speed/balanced/quality/reasoning), and per-category model overrides are all configurable from the TUI.
-- Mode selection now directly affects model scoring: `speed` penalizes reasoning models, `quality` and `reasoning` award them a bonus.
-- **Default routing mode changed to `quality`** for better out-of-the-box model selection.
-
-### Config Persistence Fix
-
-- **Correct Config Directory Targeting** — Fixed an issue where Auto Router settings saved from the TUI would target the global config file instead of the active project-level config. Requests now correctly pass the project directory context to the server.
+- **Unified TaskFlow (`taskflow`)** — Consolidated step planning and todo item tracking into a single unified interface.
+- **6-Step Thinking Pattern (`thinking-pattern.txt`)** — Enforced 6-step foundational reasoning model (*Source Check → Understanding → Contradiction Audit → Scope Boundaries → Side Effect Audit → Proof Burden*) prepended across all 6 agent modes.
+- **AtomCLI Design Skill Tree** — Integrated 22 specialized frontend design skills under `.atomcli/skills/` (`frontend-design`, `create-design-system`, `hi-fi-design`, `interactive-prototype`, etc.).
 
 ---
 

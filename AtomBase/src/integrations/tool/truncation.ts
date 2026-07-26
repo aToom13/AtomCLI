@@ -17,7 +17,7 @@ export namespace Truncate {
   export interface Options {
     maxLines?: number
     maxBytes?: number
-    direction?: "head" | "tail"
+    direction?: "head" | "tail" | "smart"
   }
 
   export async function cleanup() {
@@ -41,9 +41,15 @@ export namespace Truncate {
   export async function output(text: string, options: Options = {}, agent?: Agent.Info): Promise<Result> {
     const maxLines = options.maxLines ?? MAX_LINES
     const maxBytes = options.maxBytes ?? MAX_BYTES
-    const direction = options.direction ?? "head"
+    let direction = options.direction ?? "head"
     const lines = text.split("\n")
     const totalBytes = Buffer.byteLength(text, "utf-8")
+
+    if (direction === "smart") {
+      const last100 = lines.slice(-100).join("\n")
+      const hasError = /error|fail|exception|traceback|SyntaxError|TypeError|ERR_|FAILED|panic/i.test(last100)
+      direction = hasError ? "tail" : "head"
+    }
 
     if (lines.length <= maxLines && totalBytes <= maxBytes) {
       return { content: text, truncated: false }

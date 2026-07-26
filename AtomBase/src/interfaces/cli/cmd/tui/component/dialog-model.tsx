@@ -54,6 +54,11 @@ export function DialogModel(props: { providerID?: string }) {
         if (!provider) return []
         const model = provider.models[item.modelID]
         if (!model) return []
+        const variantText = model.variants
+          ? `🧠 ${Object.keys(model.variants).join("/")}`
+          : model.capabilities?.reasoning
+            ? "🧠 Reasoning"
+            : undefined
         return [
           {
             key: item,
@@ -62,7 +67,7 @@ export function DialogModel(props: { providerID?: string }) {
               modelID: model.id,
             },
             title: model.name ?? item.modelID,
-            description: provider.name,
+            description: [provider.name, variantText].filter(Boolean).join(" · "),
             category: "Favorites",
             disabled: false,
             footer: isFree(model) ? "Free" : undefined,
@@ -87,6 +92,11 @@ export function DialogModel(props: { providerID?: string }) {
         if (!provider) return []
         const model = provider.models[item.modelID]
         if (!model) return []
+        const variantText = model.variants
+          ? `🧠 ${Object.keys(model.variants).join("/")}`
+          : model.capabilities?.reasoning
+            ? "🧠 Reasoning"
+            : undefined
         return [
           {
             key: item,
@@ -95,7 +105,7 @@ export function DialogModel(props: { providerID?: string }) {
               modelID: model.id,
             },
             title: model.name ?? item.modelID,
-            description: provider.name,
+            description: [provider.name, variantText].filter(Boolean).join(" · "),
             category: "Recent",
             disabled: false,
             footer: isFree(model) ? "Free" : undefined,
@@ -131,14 +141,18 @@ export function DialogModel(props: { providerID?: string }) {
               providerID: provider.id,
               modelID: model,
             }
+            const variantText = info.variants
+              ? `🧠 ${Object.keys(info.variants).join("/")}`
+              : info.capabilities?.reasoning
+                ? "🧠 Reasoning"
+                : undefined
+            const isFav = favorites.some(
+              (item) => item.providerID === value.providerID && item.modelID === value.modelID,
+            )
             return {
               value,
               title: info.name ?? model,
-              description: favorites.some(
-                (item) => item.providerID === value.providerID && item.modelID === value.modelID,
-              )
-                ? "(Favorite)"
-                : undefined,
+              description: [isFav ? "(Favorite)" : undefined, variantText].filter(Boolean).join(" · ") || undefined,
               category: connected() ? provider.name : undefined,
               disabled: false,
               footer: isFree(info) ? "Free" : undefined,

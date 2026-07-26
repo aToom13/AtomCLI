@@ -494,6 +494,51 @@ export function Prompt(props: PromptProps) {
       exit()
       return
     }
+
+    if (trimmed.startsWith("/think")) {
+      const parts = trimmed.split(/\s+/)
+      const arg = parts.length > 1 ? parts[1].toLowerCase() : undefined
+      const validLevels = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"]
+
+      if (!arg) {
+        const current = local.model.variant.current()
+        toast.show({
+          title: "Thinking Level",
+          message: current ? `Current level: ${current.toUpperCase()} 🧠` : "Current level: DEFAULT (medium) 🧠",
+          variant: "info",
+          duration: 3000,
+        })
+      } else if (!validLevels.includes(arg)) {
+        toast.show({
+          title: "Thinking Level",
+          message: `Invalid level '${arg}'. Allowed: ${validLevels.join(", ")}`,
+          variant: "warning",
+          duration: 4000,
+        })
+      } else if (arg === "off") {
+        local.model.variant.set(undefined)
+        toast.show({
+          title: "Thinking Level",
+          message: "Reset to default level 🛡️",
+          variant: "info",
+          duration: 3000,
+        })
+      } else {
+        local.model.variant.set(arg)
+        toast.show({
+          title: "Thinking Level",
+          message: `Set to ${arg.toUpperCase()} 🧠`,
+          variant: "info",
+          duration: 3000,
+        })
+      }
+
+      input.clear()
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      return
+    }
     const selectedModel = local.model.current()
     if (!selectedModel) {
       promptModelWarning()

@@ -17,6 +17,7 @@ export namespace Skill {
     name: z.string(),
     description: z.string(),
     location: z.string(),
+    trigger_words: z.array(z.string()).optional(),
   })
   export type Info = z.infer<typeof Info>
 
@@ -50,7 +51,7 @@ export namespace Skill {
         return
       }
 
-      const parsed = Info.pick({ name: true, description: true }).safeParse(md.data)
+      const parsed = Info.pick({ name: true, description: true, trigger_words: true }).safeParse(md.data)
       if (!parsed.success) return
 
       // Warn on duplicate skill names
@@ -66,6 +67,7 @@ export namespace Skill {
         name: parsed.data.name,
         description: parsed.data.description,
         location: match,
+        trigger_words: parsed.data.trigger_words,
       }
     }
 
@@ -154,6 +156,19 @@ export namespace Skill {
 
   export async function all() {
     return state().then((x) => Object.values(x))
+  }
+
+  /**
+   * Scans user text for matching skill trigger_words.
+   */
+  export async function findAutoInjectCandidates(userPrompt: string): Promise<Info[]> {
+    const lower = userPrompt.toLowerCase()
+    const skills = await all()
+
+    return skills.filter((skill) => {
+      if (!skill.trigger_words || skill.trigger_words.length === 0) return false
+      return skill.trigger_words.some((word) => lower.includes(word.toLowerCase()))
+    })
   }
 
   export async function reload() {

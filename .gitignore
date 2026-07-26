@@ -34,8 +34,9 @@ release_bin/
 # Local config and temp files
 .atomcli.json
 docs/plans/
-taskdocuments/
 *.txt
+!AtomBase/src/core/session/prompt/**/*.txt
+!Prompts/**/*.txt
 .screenshots/
 coverage/
 
@@ -57,3 +58,5 @@ session-*.md
 # Generated SDK files (regenerated on each build)
 libs/sdk/openapi.json
 .atomcli/plan/
+.atomcli/plans/
+dependabot-open.jsonl

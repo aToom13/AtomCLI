@@ -35,7 +35,7 @@ export namespace SystemPrompt {
   export function provider(model: Provider.Model, agentName?: string) {
     // Map agent name to PromptManager AgentType
     // Known agent types get their specific prompts; others fall back to "agent"
-    const knownAgentTypes = ["agent", "explore", "plan", "build", "checker"] as const
+    const knownAgentTypes = ["agent", "explore", "plan", "build", "checker", "reviewer"] as const
     type KnownAgent = typeof knownAgentTypes[number]
     const agentType: KnownAgent = knownAgentTypes.includes(agentName as KnownAgent)
       ? (agentName as KnownAgent)
@@ -92,7 +92,7 @@ export namespace SystemPrompt {
       `  ISO timestamp: ${now.toISOString()}`,
       `</env>`,
       `<files>`,
-      `  ${project.vcs === "git" && false
+      `  ${project.vcs === "git"
         ? await Ripgrep.tree({
           cwd: Instance.directory,
           limit: 200,

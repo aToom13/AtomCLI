@@ -2,6 +2,8 @@ import z from "zod"
 import { Tool } from "./tool"
 import { Browser } from "../browser"
 import path from "path"
+import { assertExternalDirectory } from "./external-directory"
+import { Instance } from "@/services/project/instance"
 import { existsSync, mkdirSync } from "fs"
 
 const SCREENSHOT_DIR = path.join(process.cwd(), ".screenshots")
@@ -88,6 +90,11 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                 title: "Browser: Not Available",
                 metadata: { error: "Playwright not installed" },
             }
+        }
+
+        if (params.action === "screenshot") {
+            const targetWorkdir = params.workdir ? path.resolve(params.workdir) : Instance.directory
+            await assertExternalDirectory(ctx, targetWorkdir, { kind: "directory" })
         }
 
         const page = await Browser.getPage()
@@ -182,9 +189,10 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                     const name = params.name ? params.name.replace(/[^a-zA-Z0-9-_]/g, "_") : `screenshot-${timestamp}`
                     const filename = `${name}.png`
 
-                    const screenshotsDir = params.workdir
-                        ? path.join(params.workdir, ".screenshots")
-                        : path.join(process.cwd(), ".screenshots")
+                    const targetWorkdir = params.workdir ? path.resolve(params.workdir) : Instance.directory
+                    await assertExternalDirectory(ctx, targetWorkdir, { kind: "directory" })
+
+                    const screenshotsDir = path.join(targetWorkdir, ".screenshots")
 
                     if (!existsSync(screenshotsDir)) {
                         mkdirSync(screenshotsDir, { recursive: true })

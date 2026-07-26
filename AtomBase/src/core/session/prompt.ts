@@ -31,6 +31,7 @@ import { ReadTool } from "@/integrations/tool/read"
 import { FindTool } from "@/integrations/tool/find"
 import { FileTime } from "@/services/file/time"
 import { Flag } from "@/interfaces/flag/flag"
+import { Filesystem } from "@/util/util/filesystem"
 import { ulid } from "ulid"
 import { spawn } from "child_process"
 import { Command } from "@/interfaces/command"
@@ -529,6 +530,7 @@ export namespace SessionPrompt {
       msgs = insertReminders({
         messages: msgs,
         agent,
+        step,
       })
 
       // Track fallback model within this turn - if fallback occurred, continue with fallback model
@@ -995,6 +997,13 @@ export namespace SessionPrompt {
               // have to normalize, symbol search returns absolute paths
               // Decode the pathname since URL constructor doesn't automatically decode it
               const filepath = fileURLToPath(part.url)
+              if (
+                Instance.worktree &&
+                !Filesystem.contains(Instance.worktree, filepath) &&
+                !Filesystem.contains(Instance.directory, filepath)
+              ) {
+                throw new Error(`File path "${filepath}" is outside worktree boundary`)
+              }
               const stat = await Bun.file(filepath).stat()
 
               if (stat.isDirectory()) {
@@ -1295,7 +1304,7 @@ export namespace SessionPrompt {
     }
   }
 
-  function insertReminders(input: { messages: MessageV2.WithParts[]; agent: Agent.Info }) {
+  function insertReminders(input: { messages: MessageV2.WithParts[]; agent: Agent.Info; step: number }) {
     const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
     if (!userMessage) return input.messages
     if (input.agent.name === "plan") {
@@ -1320,6 +1329,24 @@ export namespace SessionPrompt {
         synthetic: true,
       })
     }
+
+    const hasChainCall = input.messages.some((msg) =>
+      msg.parts.some((p) => p.type === "tool" && (p.tool === "taskflow" || p.tool === "chainupdate")),
+    )
+    const hasChainReminder = userMessage.parts.some(
+      (p) => p.type === "text" && p.synthetic && p.text.includes("chain_reminder"),
+    )
+    if (input.step > 2 && !hasChainCall && !hasChainReminder && !["explore", "reviewer", "checker"].includes(input.agent.name)) {
+      userMessage.parts.push({
+        id: Identifier.ascending("part"),
+        messageID: userMessage.info.id,
+        sessionID: userMessage.info.sessionID,
+        type: "text",
+        text: "<chain_reminder>⚠️ Step threshold exceeded (>2 steps) without active progress plan. You SHOULD call taskflow [action=start] to initialize progress tracking for the user.</chain_reminder>",
+        synthetic: true,
+      })
+    }
+
     return input.messages
   }
 

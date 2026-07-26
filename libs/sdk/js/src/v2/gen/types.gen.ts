@@ -517,24 +517,7 @@ export type AgentConfig = {
    */
   maxSteps?: number
   permission?: PermissionConfig
-  [key: string]:
-    | unknown
-    | string
-    | number
-    | {
-        [key: string]: boolean
-      }
-    | boolean
-    | "subagent"
-    | "primary"
-    | "all"
-    | {
-        [key: string]: unknown
-      }
-    | string
-    | number
-    | PermissionConfig
-    | undefined
+  [key: string]: unknown
 }
 
 export type ProviderConfig = {
@@ -598,7 +581,7 @@ export type ProviderConfig = {
            * Disable this variant for the model
            */
           disabled?: boolean
-          [key: string]: unknown | boolean | undefined
+          [key: string]: unknown
         }
       }
     }
@@ -620,7 +603,7 @@ export type ProviderConfig = {
      * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
      */
     timeout?: number | false
-    [key: string]: unknown | string | boolean | number | false | undefined
+    [key: string]: unknown
   }
 }
 

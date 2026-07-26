@@ -18,6 +18,7 @@ import { Question } from "@/interfaces/question"
 import { AmendmentQueue } from "./amendment"
 import { ModelFallback } from "@/integrations/provider/fallback"
 import { SessionMemoryIntegration } from "../memory/integration/session"
+import { Token } from "@/util/util/token"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -261,7 +262,7 @@ export namespace SessionProcessor {
                       state: {
                         status: "error",
                         input: value.input,
-                        error: (value.error as any).toString(),
+                        error: value.error instanceof Error ? value.error.message : String(value.error ?? ""),
                         time: {
                           start: match.state.time.start,
                           end: Date.now(),
@@ -301,6 +302,23 @@ export namespace SessionProcessor {
                     usage: value.usage,
                     metadata: value.providerMetadata,
                   })
+                  const messageParts = await MessageV2.parts(input.assistantMessage.id)
+                  let reasoningChars = 0
+                  for (const p of messageParts) {
+                    if (p.type === "reasoning") {
+                      reasoningChars += (p.text || "").replace("[REDACTED]", "").length
+                    } else if (
+                      p.type === "tool" &&
+                      (p.tool === "sequentialthinking" || p.tool === "sequential_thinking")
+                    ) {
+                      const thought = (p.state as any)?.input?.thought || ""
+                      reasoningChars += thought.length
+                    }
+                  }
+                  const estimatedReasoningTokens = reasoningChars > 0 ? Token.estimate("x".repeat(reasoningChars)) : 0
+                  if (estimatedReasoningTokens > usage.tokens.reasoning) {
+                    usage.tokens.reasoning = estimatedReasoningTokens
+                  }
                   input.assistantMessage.finish = value.finishReason
                   input.assistantMessage.cost += usage.cost
                   input.assistantMessage.tokens = usage.tokens

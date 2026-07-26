@@ -514,7 +514,7 @@ export namespace Provider {
           family: id.split("/")[0],
           capabilities: {
             temperature: true,
-            reasoning: false,
+            reasoning: (info as any).supportsReasoning || false,
             attachment: (info as any).supportsImages || false,
             toolcall: true,
             input: {

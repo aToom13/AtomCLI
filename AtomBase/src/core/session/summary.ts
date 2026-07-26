@@ -97,7 +97,11 @@ export namespace SessionSummary {
     const messages = input.messages.filter(
       (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
     )
-    const msgWithParts = messages.find((m) => m.info.id === input.messageID)!
+    const msgWithParts = messages.find((m) => m.info.id === input.messageID)
+    if (!msgWithParts) {
+      log.warn("summarizeMessage: message not found", { messageID: input.messageID })
+      return
+    }
     const userMsg = msgWithParts.info as MessageV2.User
     const diffs = await computeDiff({ messages })
     userMsg.summary = {
@@ -106,7 +110,12 @@ export namespace SessionSummary {
     }
     await Session.updateMessage(userMsg)
 
-    const assistantMsg = messages.find((m) => m.info.role === "assistant")!.info as MessageV2.Assistant
+    const assistantMsgMatch = messages.find((m) => m.info.role === "assistant")
+    if (!assistantMsgMatch) {
+      log.warn("summarizeMessage: assistant message not found", { messageID: input.messageID })
+      return
+    }
+    const assistantMsg = assistantMsgMatch.info as MessageV2.Assistant
     const small =
       (await Provider.getSmallModel(assistantMsg.providerID)) ??
       (await Provider.getModel(assistantMsg.providerID, assistantMsg.modelID))

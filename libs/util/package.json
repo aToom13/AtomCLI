@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "remeda": "2.39.0",
     "zod": "catalog:"
   },
   "devDependencies": {

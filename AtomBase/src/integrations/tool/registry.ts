@@ -37,8 +37,9 @@ import { Truncate } from "./truncation"
 import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
 import { SelfMaintenanceTool } from "./self-maintenance"
-
 import { OrchestrateTool } from "./orchestrate"
+import { AgentTool } from "./agent-tool"
+import { TaskFlowTool } from "./taskflow"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -113,11 +114,10 @@ export namespace ToolRegistry {
       GrepTool,
       EditTool,
       WriteTool,
+      AgentTool,
       TaskTool,
+      TaskFlowTool,
       WebFetchTool,
-      TodoWriteTool,
-      TodoReadTool,
-      ChainUpdateTool,
       WebSearchTool,
       CodeSearchTool,
       FinanceAnalyzeTool,
@@ -130,14 +130,18 @@ export namespace ToolRegistry {
       SelfMaintenanceTool,
 
       OrchestrateTool,
-      TestGenTool,
-      DocsTool,
-      RefactorTool,
-      ReviewTool,
       ...(Flag.ATOMCLI_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
-      ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
+      ...(config.experimental?.batch_tool !== false ? [BatchTool] : []),
       ...custom,
     ]
+  }
+
+  export const AGENT_TOOL_ALLOW_LISTS: Record<string, string[]> = {
+    explore: ["read", "find", "grep", "bash", "webfetch", "websearch", "codesearch", "skill", "memory", "taskflow"],
+    checker: ["read", "grep", "find", "bash", "webfetch", "websearch", "codesearch", "skill", "memory", "system_health", "taskflow"],
+    reviewer: ["read", "find", "grep", "webfetch", "codesearch", "skill", "memory", "taskflow"],
+    analyst: ["read", "find", "grep", "bash", "webfetch", "websearch", "codesearch", "finance_analyze", "skill", "memory", "taskflow"],
+    documenter: ["read", "write", "edit", "find", "grep", "bash", "webfetch", "skill", "memory", "taskflow"],
   }
 
   export async function ids() {
@@ -145,23 +149,32 @@ export namespace ToolRegistry {
   }
 
   export async function tools(providerID: string, agent?: Agent.Info) {
-    const tools = await all()
+    const allTools = await all()
+    const allowList = agent?.name ? AGENT_TOOL_ALLOW_LISTS[agent.name] : undefined
+
+    let filteredTools = allTools.filter((t) => {
+      if (t.id === "codesearch") {
+        if (providerID !== "atomcli" && !Flag.ATOMCLI_ENABLE_EXA) return false
+      }
+      if (allowList) {
+        return allowList.includes(t.id)
+      }
+      return true
+    })
+
+    if (allowList && filteredTools.length === 0) {
+      log.warn("Agent tool allow list produced 0 tools, falling back to all tools", { agent: agent?.name })
+      filteredTools = allTools
+    }
+
     const result = await Promise.all(
-      tools
-        .filter((t) => {
-          // Enable codesearch for zen users OR via enable flag
-          if (t.id === "codesearch") {
-            return providerID === "atomcli" || Flag.ATOMCLI_ENABLE_EXA
-          }
-          return true
-        })
-        .map(async (t) => {
-          using _ = log.time(t.id)
-          return {
-            id: t.id,
-            ...(await t.init({ agent })),
-          }
-        }),
+      filteredTools.map(async (t) => {
+        using _ = log.time(t.id)
+        return {
+          id: t.id,
+          ...(await t.init({ agent })),
+        }
+      }),
     )
     return result
   }

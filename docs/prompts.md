@@ -66,10 +66,11 @@ AtomBase/src/core/session/prompt/
 |-- manager.ts              # Unified orchestrator (single entry point)
 |
 |-- core/                   # Base prompts (ALWAYS included)
+|   |-- thinking-pattern.txt #  6-step foundational reasoning model (MUST run first)
 |   |-- identity.txt        #   AI identity, personality, expertise areas
 |   |-- self-learning.txt   #   Learning system instructions
 |   |-- tools.txt           #   Tool usage guide (Read, Edit, Bash, etc.)
-|   |-- workflow.txt        #   5-stage workflow
+|   |-- workflow.txt        #   5 specialized loops + AUTONOMOUS_GOAL_LOOP
 |   |-- communication.txt   #   Communication style rules
 |   |-- code-editing.txt    #   Code editing rules and best practices
 |   |-- git-safety.txt      #   Git safety protocol
@@ -86,6 +87,7 @@ AtomBase/src/core/session/prompt/
 |   |-- explore.txt         #   Read-only exploration mode
 |   |-- plan.txt            #   Planning mode (editing prohibited)
 |   |-- build.txt           #   Application mode
+|   |-- checker.txt         #   Security & performance audit mode
 |   +-- reviewer.txt        #   QA verification (PASS/FAIL only)
 |
 +-- runtime/                # Runtime injections

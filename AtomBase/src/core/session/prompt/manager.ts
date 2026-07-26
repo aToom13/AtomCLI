@@ -3,8 +3,8 @@
  *
  * Architecture:
  *   prompt/
- *   ├── core/      7 base .txt prompts (always included)
- *   ├── agent/     5 agent-mode .txt prompts
+ *   ├── core/      8 base .txt prompts (thinking-pattern + 7 core, always included)
+ *   ├── agent/     6 agent-mode .txt prompts
  *   ├── runtime/   dynamic runtime injection snippets
  *   └── manager.ts ← THIS FILE
  *
@@ -18,6 +18,7 @@ import os from "os"
 
 // ─── Core Prompts (always included) ──────────────────────────
 
+import PROMPT_THINKING_PATTERN from "./core/thinking-pattern.txt"
 import PROMPT_IDENTITY from "./core/identity.txt"
 import PROMPT_TOOLS from "./core/tools.txt"
 import PROMPT_WORKFLOW from "./core/workflow.txt"
@@ -78,9 +79,10 @@ const AGENT_PROMPTS: Record<AgentType, string> = {
 
 /**
  * Core prompts that are ALWAYS included in every system prompt.
- * Order matters — identity first, then capabilities, then rules.
+ * Order matters — thinking-pattern first, then identity, then capabilities, then rules.
  */
 const CORE_PROMPTS = [
+  PROMPT_THINKING_PATTERN,
   PROMPT_IDENTITY,
   PROMPT_TOOLS,
   PROMPT_WORKFLOW,
@@ -107,7 +109,7 @@ Use when a task can be broken into multiple independent subtasks. Steps:
 3. Status/Abort: \`{ "action": "status"|"abort", "workflowId": "<id>" }\`
 
 Task categories: \`"coding"\` | \`"documentation"\` | \`"analysis"\` | \`"general"\`
-Task = blocking single subtask. Orchestrate = non-blocking parallel execution.
+Task = non-blocking background subagent. Orchestrate = blocking multi-step DAG execution.
 
 ## Agent Lifecycle — REUSE vs CREATE vs KILL (max 6 active agents)
 
@@ -116,22 +118,21 @@ Task = blocking single subtask. Orchestrate = non-blocking parallel execution.
 - **KILL**: Task complete or topic changed → abort session
 
 Before creating: always check if an existing session can be reused. Never pile up agents.
-Reuse: \`{ "action": "send", "sessionId": "<id>", "message": "..." }\`
 Kill: \`{ "action": "abort", "sessionId": "<id>" }\`
 </orchestrate_guide>`.trim()
 
-// ─── TodoWrite Details (compact — full guide is in extensions.txt) ────
+// ─── TaskFlow Details ─────────────────────────────────────────────────
 
-const TODOWRITE_DETAILS = `
-<chain_todo_reminder>
-## ⚠️ CRITICAL: Always use Chain + TodoWrite + SequentialThinking TOGETHER
+const TASKFLOW_DETAILS = `
+<taskflow_reminder>
+## ⚠️ CRITICAL: Use TaskFlow for Planning and Progress Tracking
 
-- **Chain** (chainupdate): Visual progress bar. Update FREQUENTLY — user watches this.
-- **TodoWrite**: Task state management. Only ONE in_progress at a time.
-- **SequentialThinking**: Use for complex reasoning and trade-off analysis.
-
-See \`<chain_system>\` in extensions for the complete integrated workflow.
-</chain_todo_reminder>
+- **TaskFlow** (\`taskflow\`): Unified step planning & todo tracking.
+- Call \`taskflow(action="start", plan=[...])\` at the beginning of multi-step tasks.
+- Call \`taskflow(action="update", ...)\` as steps and todos finish.
+- Call \`taskflow(action="complete")\` when a step completes.
+- Call \`taskflow(action="clear")\` when the task finishes.
+</taskflow_reminder>
 `.trim()
 
 // ─── Dynamic Context Generator ──────────────────────────────
@@ -171,6 +172,19 @@ async function generateDynamicContext(): Promise<string> {
   return parts.join("\n\n")
 }
 
+const CORE_PROMPTS_BY_AGENT: Record<string, string[]> = {
+  agent: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_GIT_SAFETY, PROMPT_EXTENSIONS],
+  build: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_GIT_SAFETY, PROMPT_EXTENSIONS],
+  plan: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
+  explore: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
+  checker: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
+  reviewer: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
+}
+
+function getCorePromptsForAgent(agent: string): string[] {
+  return CORE_PROMPTS_BY_AGENT[agent] ?? CORE_PROMPTS
+}
+
 // ─── PromptManager (Main Export) ─────────────────────────────
 
 /**
@@ -180,19 +194,21 @@ async function generateDynamicContext(): Promise<string> {
 function build(options: BuildOptions): string {
   const { modelId, agent = "agent", customSections = [] } = options
   const provider = detectProvider(modelId)
+  const coreSections = getCorePromptsForAgent(agent)
+  const isPrimary = agent === "agent" || agent === "build" || agent === "plan"
 
   const sections: string[] = [
-    // Core prompts from .txt files (identity, tools, workflow, etc.)
-    ...CORE_PROMPTS,
-    // Critical emphasis: read-before-edit
-    READ_BEFORE_EDIT_EMPHASIS,
-    // Detailed orchestrate instructions
-    ORCHESTRATE_DETAILS,
-    // Detailed TodoWrite instructions
-    TODOWRITE_DETAILS,
+    // Core prompts conditionally selected for agent
+    ...coreSections,
+    // Critical emphasis: read-before-edit (only if editing prompt included)
+    ...(coreSections.includes(PROMPT_CODE_EDITING) ? [READ_BEFORE_EDIT_EMPHASIS] : []),
+    // Detailed orchestrate instructions (primary agents only)
+    ...(isPrimary ? [ORCHESTRATE_DETAILS] : []),
+    // Detailed TaskFlow instructions
+    TASKFLOW_DETAILS,
     // Agent-specific behavior
-    AGENT_PROMPTS[agent],
-    // Custom sections (user-provided extras)
+    AGENT_PROMPTS[agent as AgentType],
+    // Custom sections
     ...customSections,
   ]
 
@@ -220,19 +236,22 @@ async function buildAsync(options: BuildOptions): Promise<string> {
     dynamicCtx = await generateDynamicContext()
   }
 
+  const coreSections = getCorePromptsForAgent(agent)
+  const isPrimary = agent === "agent" || agent === "build" || agent === "plan"
+
   const sections: string[] = [
-    // Core prompts from .txt files
-    ...CORE_PROMPTS,
+    // Core prompts conditionally selected for agent
+    ...coreSections,
     // Dynamic context (user profile + learning memory)
     ...(dynamicCtx ? [dynamicCtx] : []),
-    // Critical emphasis: read-before-edit
-    READ_BEFORE_EDIT_EMPHASIS,
-    // Detailed orchestrate instructions
-    ORCHESTRATE_DETAILS,
-    // Detailed TodoWrite instructions
-    TODOWRITE_DETAILS,
+    // Critical emphasis: read-before-edit (only if editing prompt included)
+    ...(coreSections.includes(PROMPT_CODE_EDITING) ? [READ_BEFORE_EDIT_EMPHASIS] : []),
+    // Detailed orchestrate instructions (primary agents only)
+    ...(isPrimary ? [ORCHESTRATE_DETAILS] : []),
+    // Detailed TaskFlow instructions
+    TASKFLOW_DETAILS,
     // Agent-specific behavior
-    AGENT_PROMPTS[agent],
+    AGENT_PROMPTS[agent as AgentType],
     // Custom sections
     ...customSections,
   ]
@@ -265,6 +284,7 @@ function getStats(options: BuildOptions): {
   const estimateTokens = (text: string) => Math.ceil(text.length / 4)
 
   const sections = [
+    { name: "thinking-pattern", tokens: estimateTokens(PROMPT_THINKING_PATTERN), chars: PROMPT_THINKING_PATTERN.length },
     { name: "identity", tokens: estimateTokens(PROMPT_IDENTITY), chars: PROMPT_IDENTITY.length },
     { name: "tools", tokens: estimateTokens(PROMPT_TOOLS), chars: PROMPT_TOOLS.length },
     { name: "workflow", tokens: estimateTokens(PROMPT_WORKFLOW), chars: PROMPT_WORKFLOW.length },
@@ -278,7 +298,7 @@ function getStats(options: BuildOptions): {
       chars: READ_BEFORE_EDIT_EMPHASIS.length,
     },
     { name: "orchestrate-guide", tokens: estimateTokens(ORCHESTRATE_DETAILS), chars: ORCHESTRATE_DETAILS.length },
-    { name: "todowrite-guide", tokens: estimateTokens(TODOWRITE_DETAILS), chars: TODOWRITE_DETAILS.length },
+    { name: "taskflow-guide", tokens: estimateTokens(TASKFLOW_DETAILS), chars: TASKFLOW_DETAILS.length },
     {
       name: `agent:${options.agent || "agent"}`,
       tokens: estimateTokens(AGENT_PROMPTS[options.agent || "agent"]),

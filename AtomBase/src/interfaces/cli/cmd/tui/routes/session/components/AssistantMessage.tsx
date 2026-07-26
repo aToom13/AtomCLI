@@ -56,6 +56,20 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
         return now() - start
     })
 
+    const reasoningTokens = createMemo(() => {
+        let chars = 0
+        for (const part of props.parts) {
+            if (part.type === "reasoning") {
+                chars += (part.text || "").replace("[REDACTED]", "").length
+            } else if (part.type === "tool" && ((part as any).tool === "sequentialthinking" || (part as any).tool === "sequential_thinking")) {
+                const thought = (part as any).state?.input?.thought || ""
+                chars += thought.length
+            }
+        }
+        const estimated = chars > 0 ? Math.round(chars / 3) : 0
+        return Math.max(props.message.tokens?.reasoning ?? 0, estimated)
+    })
+
     return (
         <>
             <For each={props.parts}>
@@ -103,6 +117,12 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
                             </span>{" "}
                             <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
                             <span style={{ fg: theme.textMuted }}> · {props.message.modelID}</span>
+                            <Show when={reasoningTokens() > 0}>
+                                <span style={{ fg: theme.textMuted }}> · 🧠 {reasoningTokens().toLocaleString()} tokens</span>
+                            </Show>
+                            <Show when={local.model.variant.current()}>
+                                <span style={{ fg: theme.accent }}> · 🧠 {local.model.variant.current()?.toUpperCase()}</span>
+                            </Show>
                             <Show when={duration() > 0}>
                                 <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
                             </Show>
