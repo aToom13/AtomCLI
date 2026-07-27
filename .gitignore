@@ -36,6 +36,7 @@ release_bin/
 docs/plans/
 *.txt
 !AtomBase/src/core/session/prompt/**/*.txt
+!AtomBase/src/integrations/agent/prompt/*.txt
 !Prompts/**/*.txt
 .screenshots/
 coverage/
