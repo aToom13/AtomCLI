@@ -1,6 +1,7 @@
 ---
 name: linux-sysadmin
 description: This skill should be used when users need Linux system administration tasks (`sudo`, `apt`, `systemctl`, etc.). Use for requests like "update system", "install package", "check disk", "sistemi güncelle", "paket yükle". Handles package management, services, security, and monitoring.
+trigger_words: [server, linux, sysadmin, bash script, shell, system admin, sunucu, sistem, update system, install package, sistemi güncelle, paket yükle, check disk, systemctl, apt install]
 ---
 
 # Linux System Administrator

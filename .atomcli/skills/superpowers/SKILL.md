@@ -1,7 +1,7 @@
 ---
 name: Superpowers
 description: Strategic planning tools (/brainstorm, /write-plan, /execute-plan)
-location: .atomcli/skills/superpowers/SKILL.md
+trigger_words: [superpowers, brainstorm, write plan, execute plan, strategic planning, ideation, project plan, /brainstorm, /write-plan, /execute-plan]
 ---
 
 # Strategic Planner Agent

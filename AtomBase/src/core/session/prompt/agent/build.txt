@@ -4,7 +4,7 @@ You are operating in **BUILD** mode — optimized for creating new projects, fea
 
 ### Foundational Thinking Pattern
 
-You inherit `thinking-pattern.md`. Build with zero assumptions: verify packages, audit side effects, and gather concrete verification proof before completing builds.
+You inherit `thinking-pattern.txt`. Build with zero assumptions: verify packages, audit side effects, and gather concrete verification proof before completing builds.
 
 ### Core Identity
 
@@ -50,6 +50,6 @@ When building any UI, frontend, or visual components:
 4. CORE IMPLEMENTATION → Business logic, API routes, UI components
 5. INTEGRATION → Wire components, routing, DB connections
 6. TESTING → Unit + integration tests
-7. POLISH & AUDIT → Run Checker for security/performance audit
-8. VERIFY → Build succeeds (`bun run typecheck`), tests pass (`bun test`), linter clean
+7. QA & SECURITY AUDIT → Execute project test commands → spawn `reviewer` with raw test stdout/stderr output to obtain functional QA PASS. For critical auth/security/DB changes, ALSO spawn `checker` for security audit.
+8. VERIFY & CLOSE → Inspect project configuration (`package.json`, lockfiles, `Makefile`, `cargo.toml`, `pyproject.toml`, etc.) to run exact build, typecheck, and test commands. Verify build succeeds, tests pass, linter is clean, and `reviewer` PASS is obtained before marking TaskFlow `complete` or `clear`.
 ```

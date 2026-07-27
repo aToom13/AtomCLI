@@ -29,22 +29,50 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v3.3.3)
+## What's New (v3.3.4)
 
-### Autonomous Goal Loop (`AUTONOMOUS_GOAL_LOOP`)
+### Prompt System Rewrite & Thinking Pattern
 
-- **3-Layered Iterative State Machine** — Replaced linear `FULL_8_PHASE` checklist with a 3-layered iterative engine:
-  - **Layer 1 (Execution):** Rapid `Read → Edit → Verify` micro-loop in strict dependency order.
-  - **Layer 2 (Strategy):** Iterative milestone planning (`taskflow`), evaluation, and adaptation.
-  - **Layer 3 (Meta-Cognition):** Event-driven self-auditing triggered on major milestones, unexpected discoveries, or plan drift.
-- **Failure Journal (Consolidated Memory)** — Live living document tracking failed approaches. Prevents repeating identical or logically equivalent failed strategies, consolidating related failures over long-running sessions.
-- **Autonomous Escalation Protocol** — Eliminates rigid trial counters; agent uses self-judgment to escalate when facing genuine technical/business blockers.
+- **Complete prompt rewrite** — All core prompts (`identity.txt`, `tools.txt`, `workflow.txt`, `code-editing.txt`, `communication.txt`, `extensions.txt`) rewritten for clarity, consistency, and reduced token overhead. Flattened and deduplicated agent prompt structure.
+- **6-Step Thinking Pattern (`thinking-pattern.txt`)** — Enforced foundational reasoning model (_Source Check → Understanding → Contradiction Audit → Scope Boundaries → Side Effect Audit → Proof Burden_) across all 6 agent modes.
+- **Removed legacy code** — Deleted old `message.ts`, `features.ts`, `plan-reminder.txt`. Streamlined compaction and status modules.
 
-### Unified TaskFlow Engine & Prompt Consolidation
+### Harness System (New)
 
-- **Unified TaskFlow (`taskflow`)** — Consolidated step planning and todo item tracking into a single unified interface.
-- **6-Step Thinking Pattern (`thinking-pattern.txt`)** — Enforced 6-step foundational reasoning model (*Source Check → Understanding → Contradiction Audit → Scope Boundaries → Side Effect Audit → Proof Burden*) prepended across all 6 agent modes.
-- **AtomCLI Design Skill Tree** — Integrated 22 specialized frontend design skills under `.atomcli/skills/` (`frontend-design`, `create-design-system`, `hi-fi-design`, `interactive-prototype`, etc.).
+- **HarnessState** — Centralized in-memory state machine enforcing `pending → running → completed/failed` transitions for TaskFlow steps. Includes edited files tracker and execution logs ring buffer for system reminder injection.
+- **ProjectDetector** — Auto-detects package manager, test, typecheck, lint, and build commands from project manifest files (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, etc.). Injects detected commands into the system prompt so the AI never guesses.
+- **Plan Auto-Save** — Plan agent output is automatically saved to `.atomcli/plan/latest.md` for persistence across sessions.
+
+### TUI / SubAgent Panel Redesign
+
+- **Adaptive 3-mode SubAgentPanel** — Compact (25–34 cols), Normal (35–47 cols), and Wide (48+ cols) display modes with terminal-aware auto-sizing. Live agent cards show status, current tool, and output preview.
+- **Context subagent improvements** — Better lifecycle management, activity display, and persistent waiting state.
+
+### Orchestrate Tool — Interrupt Recovery
+
+- **ESC/interrupt resilience** — Interrupted workflows can be re-executed; running tasks are reset to pending while completed tasks are preserved. No more lost progress on accidental interrupt.
+- **Blocking execution disclaimer** — Clear documentation that `execute` blocks until all sub-agents finish.
+
+### Independent Reviewer Agent
+
+- **New reviewer agent with real verification capabilities** — Can run tests, read git diffs, call APIs via bash, and validate web UIs via browser to render PASSED/REJECTED verdicts. Never modifies code.
+- **Dedicated `reviewer.txt` prompt** — Structured verification workflow.
+
+### Server & Error Handling
+
+- **Session message route** — Added proper try/catch error handling with structured logging. Stream errors are caught and reported instead of silent failures.
+
+### Installer Simplification
+
+- **install.sh & install.ps1** — Removed hardcoded embedded skill templates. Installers now copy skills from the bundled `.atomcli/skills/` directory instead of generating them inline. Cleaner, smaller, and easier to maintain.
+
+### Cleanup & Dependency Removal
+
+- **Removed unused packages** — `minimatch`, `quansync`, `seroval`, `@actions/artifact`, `@atomcli/function` (entire workspace package).
+- **Removed OpenAI Compat SDK vendored code** — Deleted all custom `openai-compatible` response handling files.
+- **Purged `libs/util/` dead code** — Removed 20+ unused utility files (`encode`, `identifier`, `path`, `retry`, `crypto`, `filesystem`, `eventloop`, `signal`, `keybind`, `lazy`, `i18n`, `lock`, `queue`, `rpc`, `timeout`, `token`, `wildcard`, `color`, `defer`, `context`, `fn`, `archive`, `ai-compat`, `date`, `iife`).
+- **Removed all `sst-env.d.ts` files** — Cleaned across all workspace packages.
+- **Memory path update** — Persistent memory moved from `~/.atomcli/memory.jsonl` → `~/.atomcli/memory/memories.json`.
 
 ---
 
@@ -56,7 +84,7 @@ Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you
 - **Multi-Provider Support** - Works with OpenAI, Anthropic, Google, Ollama, OpenRouter, and more
 - **Free Models Available** - Use built-in free providers (MiniMax, GLM, Kimi, GPT, and more) without API keys
 - **Antigravity Support** - Access Claude Sonnet and Gemini models for free via Google OAuth through the Antigravity plugin
-- **Unified Memory** - Persistent cross-session memory with offline semantic search (Turkish↔English). Stores preferences, decisions, and project context in `~/.atomcli/memory.jsonl`
+- **Unified Memory** - Persistent cross-session memory with offline semantic search (Turkish↔English). Stores preferences, decisions, and project context in `~/.atomcli/memory/memories.json`
 - **Code Intelligence** - File editing, code generation, debugging, and refactoring capabilities
 - **Session Management** - Save and continue conversations, branch sessions, and manage history
 - **Streaming Interrupt** - Send amendments while AI is writing (Shift+Enter)
@@ -347,7 +375,7 @@ Skills are stored in `~/.atomcli/skills/` and can be enabled/disabled per sessio
 | --------------------------------- | --------------------------------------- |
 | `~/.atomcli/atomcli.json`         | Global settings + MCP config            |
 | `<project>/.atomcli/atomcli.json` | Project-level config (overrides global) |
-| `~/.atomcli/memory.jsonl`         | Persistent memory (JSONL)               |
+| `~/.atomcli/memory/memories.json` | Persistent memory (JSON)                |
 | `~/.atomcli/skills/`              | Installed skills                        |
 | `~/.atomcli/data/`                | Sessions, cache, tool output            |
 

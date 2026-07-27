@@ -696,6 +696,12 @@ function Setup-OptionalFeatures {
     if ($installSkills) {
         Write-Step "Installing default skills..."
         $skillsDir = Join-Path $ConfigDir "skills"
+        New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
+
+        $bundledSkills = Join-Path $PSScriptRoot ".atomcli\skills"
+        if (Test-Path $bundledSkills) {
+            Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
 
         $ralph = Join-Path $skillsDir "ralph"
         New-Item -ItemType Directory -Force -Path $ralph | Out-Null
@@ -706,52 +712,20 @@ description: Friendly AI coding assistant with personality
 ---
 
 You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
-
-Your traits:
-- Encouraging and supportive
-- Uses casual, friendly language
-- Celebrates wins with the user
-- Explains concepts clearly
-- Occasionally uses emoji to express enthusiasm
-"@ -Encoding UTF8
-
-        $cr = Join-Path $skillsDir "code-review"
-        New-Item -ItemType Directory -Force -Path $cr | Out-Null
-        Set-Content -Path (Join-Path $cr "SKILL.md") -Value @"
----
-name: Code Review
-description: Automated code review with best practices
----
-
-When reviewing code, analyze for:
-1. Security - vulnerabilities, injection risks
-2. Performance - inefficiencies, memory leaks
-3. Readability - naming, structure, comments
-4. Best Practices - patterns, error handling
-5. Tests - coverage, edge cases
-
-Provide specific, actionable feedback with line references.
 "@ -Encoding UTF8
 
         $gc = Join-Path $skillsDir "git-commit"
         New-Item -ItemType Directory -Force -Path $gc | Out-Null
         Set-Content -Path (Join-Path $gc "SKILL.md") -Value @"
 ---
-name: Git Commit
+name: git-commit
 description: Generate conventional commit messages
 ---
 
-Generate commit messages following Conventional Commits format:
-
-<type>(<scope>): <description>
-
-[optional body]
-
-Types: feat, fix, docs, style, refactor, test, chore
-Keep first line under 72 characters.
+Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
 "@ -Encoding UTF8
 
-        Write-Success "Installed 3 default skills"
+        Write-Success "Installed default skills globally into ~/.atomcli/skills/"
     }
 
     if ($installMcps) {

@@ -1,7 +1,7 @@
 ---
 name: Algorithmic Art
 description: Generative art creation using p5.js and Processing
-location: .atomcli/skills/algorithmic-art/SKILL.md
+trigger_words: [generative art, algorithmic art, creative coding, p5.js, canvas animation, görsel sanat, generative, procedural art, art with code, interactive art]
 ---
 
 # Generative Artist

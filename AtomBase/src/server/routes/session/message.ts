@@ -6,6 +6,9 @@ import { Session } from "@/core/session"
 import { SessionPrompt } from "@/core/session/prompt"
 import { MessageV2 } from "@/core/session/message-v2"
 import { errors } from "../../error"
+import { Log } from "@/util/util/log"
+
+const log = Log.create({ service: "session.message.route" })
 
 export const SessionMessageRoute = new Hono()
     .get(
@@ -196,12 +199,26 @@ export const SessionMessageRoute = new Hono()
         async (c) => {
             c.status(200)
             c.header("Content-Type", "application/json")
-            return stream(c, async (stream) => {
-                const sessionID = c.req.valid("param").sessionID
-                const body = c.req.valid("json")
-                const msg = await SessionPrompt.prompt({ ...body, sessionID })
-                stream.write(JSON.stringify(msg))
-            })
+            return stream(
+                c,
+                async (stream) => {
+                    const sessionID = c.req.valid("param").sessionID
+                    const body = c.req.valid("json")
+                    try {
+                        const msg = await SessionPrompt.prompt({ ...body, sessionID })
+                        stream.write(JSON.stringify(msg))
+                    } catch (err) {
+                        const message = err instanceof Error ? err.message : String(err)
+                        log.error("prompt stream failed", { error: err, sessionID: c.req.valid("param").sessionID })
+                        stream.write(JSON.stringify({ error: message }))
+                    }
+                },
+                async (err, stream) => {
+                    // Hono's third argument: catches errors that escape the callback itself
+                    log.error("hono stream callback error", { error: err })
+                    await stream.write(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+                },
+            )
         },
     )
     .post(
@@ -228,10 +245,19 @@ export const SessionMessageRoute = new Hono()
         async (c) => {
             c.status(204)
             c.header("Content-Type", "application/json")
-            return stream(c, async () => {
-                const sessionID = c.req.valid("param").sessionID
-                const body = c.req.valid("json")
-                SessionPrompt.prompt({ ...body, sessionID })
-            })
+            return stream(
+                c,
+                async () => {
+                    const sessionID = c.req.valid("param").sessionID
+                    const body = c.req.valid("json")
+                    // Fire-and-forget: intentionally not awaited
+                    SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
+                        log.error("prompt_async failed", { error: err, sessionID })
+                    })
+                },
+                async (err) => {
+                    log.error("hono stream_async callback error", { error: err })
+                },
+            )
         },
     )

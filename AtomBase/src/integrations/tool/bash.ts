@@ -17,6 +17,7 @@ import { Shell } from "@/interfaces/shell/shell"
 
 import { BashArity } from "@/util/permission/arity"
 import { Truncate } from "./truncation"
+import { HarnessState } from "@/core/session/harness-state"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -293,6 +294,13 @@ export const BashTool = Tool.define("bash", async () => {
       if (resultMetadata.length > 0) {
         output += "\n\n<bash_metadata>\n" + resultMetadata.join("\n") + "\n</bash_metadata>"
       }
+
+      // Push to harness ring buffer so reviewer agent can access raw output
+      HarnessState.pushExecutionLog(ctx.sessionID, {
+        command: params.command,
+        output,
+        exitCode: proc.exitCode,
+      })
 
       return {
         title: params.description,

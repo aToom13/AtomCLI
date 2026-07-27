@@ -52,4 +52,4 @@ System prompt composition, directory structure, and customization guide.
 
 ---
 
-_AtomCLI Documentation - Version 3.2.4_
+_AtomCLI Documentation - Version 3.3.4_

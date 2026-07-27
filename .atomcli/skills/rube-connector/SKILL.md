@@ -1,7 +1,7 @@
 ---
 name: Rube MCP Connector
 description: Guide for connecting to 500+ apps via Composio Rube
-location: .atomcli/skills/rube-connector/SKILL.md
+trigger_words: [rube, connector, composio, integration, bağlantı, connect apps, mcp connector, external app, github integration, slack integration]
 ---
 
 # Rube MCP Integration Specialist

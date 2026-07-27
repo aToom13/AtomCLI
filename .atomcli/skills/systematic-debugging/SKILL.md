@@ -1,7 +1,7 @@
 ---
 name: Systematic Debugging
 description: Methodological root cause analysis and debugging workflow
-location: .atomcli/skills/systematic-debugging/SKILL.md
+trigger_words: [debug, hata ayıkla, debugging, diagnose, stack trace, root cause, sorun bul, why is this failing, investigate bug, reproduce issue]
 ---
 
 # Systematic Debugging Specialist

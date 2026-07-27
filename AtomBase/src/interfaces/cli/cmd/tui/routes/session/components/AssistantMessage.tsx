@@ -115,7 +115,7 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
                             >
                                 ▣{" "}
                             </span>{" "}
-                            <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
+                            <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.agent)}</span>
                             <span style={{ fg: theme.textMuted }}> · {props.message.modelID}</span>
                             <Show when={reasoningTokens() > 0}>
                                 <span style={{ fg: theme.textMuted }}> · 🧠 {reasoningTokens().toLocaleString()} tokens</span>

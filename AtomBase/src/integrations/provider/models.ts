@@ -2,7 +2,7 @@ import { Global } from "@/core/global"
 import { Log } from "@/util/util/log"
 import path from "path"
 import z from "zod"
-import { data } from "./models-macro" with { type: "macro" }
+import { data } from "./models-macro"
 import { Installation } from "@/services/installation"
 import { Flag } from "@/interfaces/flag/flag"
 

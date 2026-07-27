@@ -5,10 +5,12 @@ import { Filesystem } from "@/util/util/filesystem"
 import { Config } from "../config/config"
 import { Skill } from "@/integrations/skill/skill"
 import { MCP } from "@/integrations/mcp"
+import { ConfigMarkdown } from "../config/markdown"
 
 import { Instance } from "@/services/project/instance"
 import path from "path"
 import os from "os"
+import { ProjectDetector } from "./project-detector"
 
 // Unified prompt system
 import { PromptManager } from "./prompt/manager"
@@ -71,6 +73,10 @@ export namespace SystemPrompt {
     // Initialize session integration (profiles & preferences)
     await SessionMemoryIntegration.initialize()
 
+    // Detect project commands (test, typecheck, lint) from manifest files
+    const projectCommands = await ProjectDetector.detect(Instance.directory)
+    const projectCommandsBlock = ProjectDetector.format(projectCommands)
+
     const envBlock = [
       `## CURRENT DATE AND TIME (IMPORTANT!)`,
       ``,
@@ -91,6 +97,7 @@ export namespace SystemPrompt {
       `  Current datetime: ${dateStr} (${timezone})`,
       `  ISO timestamp: ${now.toISOString()}`,
       `</env>`,
+      ...(projectCommandsBlock ? [projectCommandsBlock] : []),
       `<files>`,
       `  ${project.vcs === "git"
         ? await Ripgrep.tree({
@@ -242,5 +249,40 @@ This helps you think through problems systematically before acting.
         .then((x) => (x ? "Instructions from: " + url + "\n" + x : "")),
     )
     return Promise.all([...foundFiles, ...foundUrls]).then((result) => result.filter(Boolean))
+  }
+
+  /**
+   * Surfaces skill suggestions based on trigger_words matching the user's message.
+   *
+   * DESIGN: This does NOT blindly inject full skill content — that bypasses model reasoning.
+   * Instead it emits a lightweight hint that tells the model "a relevant skill exists".
+   * The model then makes the semantic decision to call skill(action="load") and read it.
+   *
+   * trigger_words = surfacing mechanism (bring to attention)
+   * skill(action="load") = the model's own decision after understanding the task
+   */
+  export async function autoInjectSkills(userText: string): Promise<string> {
+    if (!userText.trim()) return ""
+
+    let candidates: Skill.Info[]
+    try {
+      candidates = await Skill.findAutoInjectCandidates(userText)
+    } catch {
+      return ""
+    }
+
+    if (candidates.length === 0) return ""
+
+    const top = candidates.slice(0, 3)
+
+    const hints = top.map((skill) => `  - **${skill.name}**: ${skill.description}`).join("\n")
+
+    return [
+      `<skill_suggestion>`,
+      `<!-- A skill may be relevant to this task. Read the description and decide if you should load it with skill(action="load", name="...") before starting. -->`,
+      `Potentially relevant skill(s) detected for this task:`,
+      hints,
+      `</skill_suggestion>`,
+    ].join("\n")
   }
 }

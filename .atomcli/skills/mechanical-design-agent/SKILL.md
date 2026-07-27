@@ -2,6 +2,7 @@
 name: mechanical-design-agent
 description: >-
   Turns a written mechanical/robotic description OR multi-angle object photos into a simulation-ready Gazebo model — entirely via code and math, no Blender/FreeCAD/GUI modeler. Use whenever the user wants to design, reverse-engineer, or reconstruct a physical object/mechanism (vehicles, chassis, wheels, suspensions, gear trains, robotic arms, organic/grown shapes like trees or droplets, or any assembly of rigid parts connected by joints) and get a watertight, physically-validated, plug-and-play Gazebo package (model.config + model.sdf + STL meshes). Trigger proactively for: CAD without a GUI, parametric/procedural 3D generation, CSG or SDF modeling, reverse-engineering a part from photos, URDF/SDF robot models, STL mesh generation, kinematic assemblies with joints, watertight-mesh or physics-validation needs — even without the words "Gazebo" or "skill". The tool for going from an idea or picture straight to code-generated, physically-checked, simulator-ready geometry.
+trigger_words: [mechanical, cad, solidworks, mechanical design, mühendislik, makine, gazebo, robot model, urdf, stl mesh, 3d model, kinematic, reverse engineer, robotic arm, parametric design]
 ---
 
 # Mechanical Design Agent

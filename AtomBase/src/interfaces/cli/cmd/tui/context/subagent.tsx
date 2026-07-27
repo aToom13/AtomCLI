@@ -42,7 +42,9 @@ const SubAgentContext = createContext<SubAgentContextValue>()
 
 export function SubAgentProvider(props: ParentProps) {
   const [agents, setAgents] = createSignal<ActiveSubAgent[]>([])
-  const [panelVisible, setPanelVisible] = createSignal(true)
+  // Start closed — panel opens automatically when the first sub-agent becomes active.
+  // This avoids taking up screen real estate when no agents are running.
+  const [panelVisible, setPanelVisible] = createSignal(false)
   const togglePanel = () => setPanelVisible((v) => !v)
 
   const addAgent = (agent: Omit<ActiveSubAgent, "status">) => {
@@ -56,10 +58,18 @@ export function SubAgentProvider(props: ParentProps) {
       }
       return [...prev, { ...agent, status: "running" }]
     })
+    // Auto-open panel when first agent becomes active
+    setPanelVisible(true)
   }
 
   const markDone = (sessionId: string) => {
     setAgents((prev) => prev.map((a) => (a.sessionId === sessionId ? { ...a, status: "waiting" as const } : a)))
+    // Auto-close panel when all agents are done/waiting (no more active work)
+    setAgents((current) => {
+      const hasActiveWork = current.some((a) => a.status === "running")
+      if (!hasActiveWork && current.length > 0) setPanelVisible(false)
+      return current
+    })
   }
 
   const markWaiting = (sessionId: string, lastOutput?: string) => {
@@ -83,7 +93,12 @@ export function SubAgentProvider(props: ParentProps) {
   }
 
   const removeAgent = (sessionId: string) => {
-    setAgents((prev) => prev.filter((a) => a.sessionId !== sessionId))
+    setAgents((prev) => {
+      const next = prev.filter((a) => a.sessionId !== sessionId)
+      // Auto-close when the last agent is removed
+      if (next.length === 0) setPanelVisible(false)
+      return next
+    })
   }
 
   const clear = () => {

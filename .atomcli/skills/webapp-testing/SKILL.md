@@ -1,7 +1,7 @@
 ---
 name: Webapp Testing
 description: Automated Playwright test generation and execution
-location: .atomcli/skills/webapp-testing/SKILL.md
+trigger_words: [test, testing, e2e, playwright, cypress, unit test, test yaz, write tests, integration test, test oluştur]
 ---
 
 # Webapp Testing QA Specialist

@@ -4,7 +4,10 @@ You are operating in **EXPLORE** mode — a specialized read-only analysis mode 
 
 ### Foundational Thinking Pattern
 
-You inherit `thinking-pattern.md`. Step 1 (Source Check) is paramount: state ONLY what you have explicitly viewed with tools.
+You inherit `thinking-pattern.txt`. Step 1 (Source Check) is paramount: state ONLY what you have explicitly viewed with tools.
+
+### Rule Precedence & Subagent Scope
+The tool restrictions and instructions in this mode file OVERRIDE any subagent spawn/orchestrate instructions found in core prompts (including workflow.txt). Instructions to spawn subagents apply ONLY to primary `agent`/`build` modes, NOT to this subagent. Your disallowed tools list is absolute.
 
 ### ⚠️ STRICT TOOL RESTRICTIONS (`disallowedTools`)
 

@@ -3,6 +3,7 @@ import { Tool } from "./tool"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { parseJsonIfString } from "@/util/util/zod"
+import { HarnessState } from "@/core/session/harness-state"
 
 const TaskFlowTodoSchema = z.object({
   id: z.string().optional(),
@@ -44,6 +45,10 @@ export const TaskFlowTool = Tool.define("taskflow", {
     "Use action='update' to update step or todo status as you execute.",
     "Use action='complete' when a step or the whole flow finishes.",
     "Use action='clear' when done.",
+    "",
+    "IMPORTANT: Steps must follow the state machine: pending → running → completed/failed.",
+    "You CANNOT complete or fail a step that has not been explicitly set to running first.",
+    "Only one step can be in 'running' state at a time.",
   ].join("\n"),
   parameters,
   async execute(params, ctx) {
@@ -61,6 +66,15 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
         if (params.plan && params.plan.length > 0) {
           await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
+
+          // Register steps in the harness state machine
+          const smSteps = params.plan
+            .filter((step) => step.name && step.name.length >= 2)
+            .map((step, idx) => ({
+              id: step.id ?? String(idx),
+              name: step.name,
+            }))
+          HarnessState.startPlan(ctx.sessionID, smSteps)
 
           for (let idx = 0; idx < params.plan.length; idx++) {
             const step = params.plan[idx]
@@ -89,7 +103,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
         return {
           title: `Taskflow started with ${params.plan?.length ?? 0} steps`,
-          output: `Taskflow initialized with ${params.plan?.length ?? 0} steps. Update step/todo progress as work proceeds.`,
+          output: `Taskflow initialized with ${params.plan?.length ?? 0} steps. Update step/todo progress as work proceeds.\n\nSTATE MACHINE RULES:\n- You MUST call update(status="running") before complete/fail\n- Only one step can run at a time`,
           metadata: { steps: params.plan?.length ?? 0, step_id: undefined, status: undefined },
         }
       }
@@ -104,6 +118,20 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
         if (params.status) {
           const mappedStatus = params.status === "completed" ? "complete" : params.status === "failed" ? "failed" : "running"
+
+          // Enforce state machine transition when setting to "running"
+          if (params.status === "running" && params.step_id !== undefined) {
+            try {
+              HarnessState.transitionStep(ctx.sessionID, params.step_id, "running")
+            } catch (err) {
+              return {
+                title: "Taskflow state machine violation",
+                output: String(err instanceof Error ? err.message : err),
+                metadata: { steps: undefined, step_id: params.step_id ?? "", status: "error" },
+              }
+            }
+          }
+
           if (params.step_id !== undefined) {
             const stepIdx = parseInt(params.step_id, 10)
             if (!isNaN(stepIdx)) {
@@ -129,6 +157,33 @@ export const TaskFlowTool = Tool.define("taskflow", {
       }
 
       case "complete": {
+        // Enforce state machine: step must be in running state
+        if (params.step_id !== undefined) {
+          try {
+            HarnessState.transitionStep(ctx.sessionID, params.step_id, "completed")
+          } catch (err) {
+            return {
+              title: "Taskflow state machine violation",
+              output: String(err instanceof Error ? err.message : err),
+              metadata: { steps: undefined, step_id: params.step_id, status: "error" },
+            }
+          }
+        } else {
+          // No step_id — completing "current" running step
+          const runningId = HarnessState.getRunningStep(ctx.sessionID)
+          if (runningId !== undefined) {
+            try {
+              HarnessState.transitionStep(ctx.sessionID, runningId, "completed")
+            } catch (err) {
+              return {
+                title: "Taskflow state machine violation",
+                output: String(err instanceof Error ? err.message : err),
+                metadata: { steps: undefined, step_id: undefined, status: "error" },
+              }
+            }
+          }
+        }
+
         await Bus.publish(TuiEvent.ChainCompleteStep, {
           output: params.output,
           sessionID: ctx.sessionID,
@@ -141,6 +196,33 @@ export const TaskFlowTool = Tool.define("taskflow", {
       }
 
       case "fail": {
+        // Enforce state machine: step must be in running state
+        if (params.step_id !== undefined) {
+          try {
+            HarnessState.transitionStep(ctx.sessionID, params.step_id, "failed")
+          } catch (err) {
+            return {
+              title: "Taskflow state machine violation",
+              output: String(err instanceof Error ? err.message : err),
+              metadata: { steps: undefined, step_id: params.step_id, status: "error" },
+            }
+          }
+        } else {
+          // No step_id — failing "current" running step
+          const runningId = HarnessState.getRunningStep(ctx.sessionID)
+          if (runningId !== undefined) {
+            try {
+              HarnessState.transitionStep(ctx.sessionID, runningId, "failed")
+            } catch (err) {
+              return {
+                title: "Taskflow state machine violation",
+                output: String(err instanceof Error ? err.message : err),
+                metadata: { steps: undefined, step_id: undefined, status: "error" },
+              }
+            }
+          }
+        }
+
         await Bus.publish(TuiEvent.ChainFailStep, {
           error: params.output || "Taskflow step failed",
           sessionID: ctx.sessionID,
@@ -153,10 +235,14 @@ export const TaskFlowTool = Tool.define("taskflow", {
       }
 
       case "clear": {
+        // Option B: warn + force clear
+        const { warnings } = HarnessState.clearPlan(ctx.sessionID)
         await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+
+        const warningText = warnings.length > 0 ? `\n\n${warnings.join("\n")}` : ""
         return {
           title: "Taskflow cleared",
-          output: "Taskflow cleared",
+          output: `Taskflow cleared${warningText}`,
           metadata: { steps: undefined, step_id: undefined, status: "cleared" },
         }
       }

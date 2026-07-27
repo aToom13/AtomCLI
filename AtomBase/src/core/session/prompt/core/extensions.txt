@@ -6,7 +6,18 @@ Skills are specialized instruction sets in `SKILL.md` files, discovered from:
 2. Global: `~/.atomcli/skills/**/SKILL.md`
 3. Bundled: `$ATOMCLI_INSTALL_DIR/.atomcli/skills/**/SKILL.md`
 
-**CRITICAL:** Actively match user requests to available skills. Read skill description, match request, load skill with `skill` tool, follow instructions exactly.
+**How skills work:**
+- Available skills and their descriptions are always listed in `<skills_available>` in your context.
+- If a `<skill_suggestion>` block appears, it means the system detected a potentially relevant skill based on your task. Read the description and decide — don't load it blindly, use your judgment.
+- To load a skill: `skill(action="load", name="skill-name")` — this returns the full skill instructions. Load it **before** writing code or a plan.
+
+**When to load a skill (semantic judgment, not keyword matching):**
+- UI / web / design task → check for `frontend-design`, `create-design-system`
+- Something broken, error, crash, bug → check for `systematic-debugging`, `error-diagnosis`
+- Writing tests → check for `webapp-testing`
+- Git operations → check for `git-commit`, `github-pr`
+- Documentation → check for `document-suite`
+- The question is: "Would following this skill's instructions make my output significantly better?"
 </skills_system>
 
 ---
@@ -24,30 +35,10 @@ MCP servers appear in `<mcp_servers>` block in your context. Tools are namespace
 
 ---
 
-<taskflow_system>
-## TASKFLOW — UNIFIED PLANNING & PROGRESS WORKFLOW
+<misc_rules>
+## MISCELLANEOUS RULES
 
-Use `taskflow` for all multi-step task planning and progress updates:
+**Never use `cd` in bash.** Always use the `workdir` parameter instead.
 
-**TaskFlow Tool (`taskflow`)** — Step planning + todo management in one tool:
-- `taskflow action="start" plan=[{ name: "Step 1", todos: ["Task A", "Task B"] }]` — ALWAYS call first when beginning multi-step task
-- `taskflow action="update" step_id="0" status="running"` — Update as work proceeds
-- `taskflow action="complete"` — Mark step completed, advance to next
-- `taskflow action="clear"` — Clear when ALL work is finished
-
-**SequentialThinking** — Complex reasoning only:
-- Use for: architecture decisions, systematic debugging, security analysis
-- Skip for: simple tasks, obvious solutions, direct questions
-
-**Integrated flow:**
-```
-1. taskflow action="start" plan=[{ name: "🔍 Research", todos: ["Read specs", "Inspect code"] }]
-2. taskflow action="update" step_id="0" status="running"
-3. ... do work ...
-4. taskflow action="complete"
-5. ... repeat for remaining steps ...
-6. taskflow action="clear"
-```
-
-**NEVER use `cd` in Bash. ALWAYS use `workdir` parameter.**
-</taskflow_system>
+**TaskFlow** (`taskflow` tool) governs all multi-step planning and progress tracking. Full usage rules are in workflow.txt. Quick reference: `start` → `update` → `complete` → `clear`.
+</misc_rules>

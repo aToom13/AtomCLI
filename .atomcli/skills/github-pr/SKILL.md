@@ -1,7 +1,7 @@
 ---
 name: GitHub PR
 description: Structured workflow for creating GitHub Pull Requests using gh CLI
-location: .atomcli/skills/github-pr/SKILL.md
+trigger_words: [pull request, pr, github pr, merge request, code review, open a pr, create pull request, gh pr, push and pr, review changes]
 ---
 
 # GitHub Pull Request Workflow

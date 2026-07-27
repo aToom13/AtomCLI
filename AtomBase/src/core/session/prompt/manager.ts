@@ -95,45 +95,8 @@ const CORE_PROMPTS = [
 // ─── Read-Before-Edit Emphasis ───────────────────────────────
 
 const READ_BEFORE_EDIT_EMPHASIS = `<critical_rule>
-You MUST Read() a file BEFORE you can Edit() it. The Edit tool WILL FAIL otherwise. Always verify your oldString EXACTLY matches current content.
+You MUST read() a file BEFORE you can edit() it. The edit tool WILL FAIL otherwise. Always verify your oldString EXACTLY matches current content.
 </critical_rule>`.trim()
-
-// ─── Orchestrate Tool Details ────────────────────────────────
-
-const ORCHESTRATE_DETAILS = `<orchestrate_guide>
-## Orchestrate Tool — Multi-Agent Workflow Engine
-
-Use when a task can be broken into multiple independent subtasks. Steps:
-1. Plan: \`{ "action": "plan", "tasks": [{ "id": "t1", "prompt": "...", "category": "coding", "dependsOn": [] }] }\` → returns workflowId
-2. Execute: \`{ "action": "execute", "workflowId": "<id>" }\` → runs in background
-3. Status/Abort: \`{ "action": "status"|"abort", "workflowId": "<id>" }\`
-
-Task categories: \`"coding"\` | \`"documentation"\` | \`"analysis"\` | \`"general"\`
-Task = non-blocking background subagent. Orchestrate = blocking multi-step DAG execution.
-
-## Agent Lifecycle — REUSE vs CREATE vs KILL (max 6 active agents)
-
-- **REUSE**: Same agent type + related context → send to existing session
-- **CREATE**: No suitable agent exists → create new
-- **KILL**: Task complete or topic changed → abort session
-
-Before creating: always check if an existing session can be reused. Never pile up agents.
-Kill: \`{ "action": "abort", "sessionId": "<id>" }\`
-</orchestrate_guide>`.trim()
-
-// ─── TaskFlow Details ─────────────────────────────────────────────────
-
-const TASKFLOW_DETAILS = `
-<taskflow_reminder>
-## ⚠️ CRITICAL: Use TaskFlow for Planning and Progress Tracking
-
-- **TaskFlow** (\`taskflow\`): Unified step planning & todo tracking.
-- Call \`taskflow(action="start", plan=[...])\` at the beginning of multi-step tasks.
-- Call \`taskflow(action="update", ...)\` as steps and todos finish.
-- Call \`taskflow(action="complete")\` when a step completes.
-- Call \`taskflow(action="clear")\` when the task finishes.
-</taskflow_reminder>
-`.trim()
 
 // ─── Dynamic Context Generator ──────────────────────────────
 
@@ -175,10 +138,10 @@ async function generateDynamicContext(): Promise<string> {
 const CORE_PROMPTS_BY_AGENT: Record<string, string[]> = {
   agent: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_GIT_SAFETY, PROMPT_EXTENSIONS],
   build: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_GIT_SAFETY, PROMPT_EXTENSIONS],
-  plan: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
-  explore: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
-  checker: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
-  reviewer: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
+  plan: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
+  explore: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
+  checker: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
+  reviewer: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
 }
 
 function getCorePromptsForAgent(agent: string): string[] {
@@ -193,19 +156,13 @@ function getCorePromptsForAgent(agent: string): string[] {
  */
 function build(options: BuildOptions): string {
   const { modelId, agent = "agent", customSections = [] } = options
-  const provider = detectProvider(modelId)
   const coreSections = getCorePromptsForAgent(agent)
-  const isPrimary = agent === "agent" || agent === "build" || agent === "plan"
 
   const sections: string[] = [
     // Core prompts conditionally selected for agent
     ...coreSections,
     // Critical emphasis: read-before-edit (only if editing prompt included)
     ...(coreSections.includes(PROMPT_CODE_EDITING) ? [READ_BEFORE_EDIT_EMPHASIS] : []),
-    // Detailed orchestrate instructions (primary agents only)
-    ...(isPrimary ? [ORCHESTRATE_DETAILS] : []),
-    // Detailed TaskFlow instructions
-    TASKFLOW_DETAILS,
     // Agent-specific behavior
     AGENT_PROMPTS[agent as AgentType],
     // Custom sections
@@ -228,8 +185,6 @@ async function buildAsync(options: BuildOptions): Promise<string> {
     includeUserProfile = true,
   } = options
 
-  const provider = detectProvider(modelId)
-
   // Load dynamic context
   let dynamicCtx = ""
   if (includeLearningMemory || includeUserProfile) {
@@ -237,7 +192,6 @@ async function buildAsync(options: BuildOptions): Promise<string> {
   }
 
   const coreSections = getCorePromptsForAgent(agent)
-  const isPrimary = agent === "agent" || agent === "build" || agent === "plan"
 
   const sections: string[] = [
     // Core prompts conditionally selected for agent
@@ -246,10 +200,6 @@ async function buildAsync(options: BuildOptions): Promise<string> {
     ...(dynamicCtx ? [dynamicCtx] : []),
     // Critical emphasis: read-before-edit (only if editing prompt included)
     ...(coreSections.includes(PROMPT_CODE_EDITING) ? [READ_BEFORE_EDIT_EMPHASIS] : []),
-    // Detailed orchestrate instructions (primary agents only)
-    ...(isPrimary ? [ORCHESTRATE_DETAILS] : []),
-    // Detailed TaskFlow instructions
-    TASKFLOW_DETAILS,
     // Agent-specific behavior
     AGENT_PROMPTS[agent as AgentType],
     // Custom sections
@@ -297,8 +247,6 @@ function getStats(options: BuildOptions): {
       tokens: estimateTokens(READ_BEFORE_EDIT_EMPHASIS),
       chars: READ_BEFORE_EDIT_EMPHASIS.length,
     },
-    { name: "orchestrate-guide", tokens: estimateTokens(ORCHESTRATE_DETAILS), chars: ORCHESTRATE_DETAILS.length },
-    { name: "taskflow-guide", tokens: estimateTokens(TASKFLOW_DETAILS), chars: TASKFLOW_DETAILS.length },
     {
       name: `agent:${options.agent || "agent"}`,
       tokens: estimateTokens(AGENT_PROMPTS[options.agent || "agent"]),

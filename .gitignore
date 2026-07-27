@@ -60,3 +60,19 @@ libs/sdk/openapi.json
 .atomcli/plan/
 .atomcli/plans/
 dependabot-open.jsonl
+
+# Auto-generated agent working directories
+.agents/
+
+# Cleanup manifests (auto-generated)
+.cleanup-manifest.json
+manifest.json
+
+# Local testing sandbox
+AtomBase/Testcli/
+
+# Auto-generated simulation harness logs (if any)
+simulate-harness*.log
+
+# SST environment type declarations (auto-generated)
+sst-env.d.ts

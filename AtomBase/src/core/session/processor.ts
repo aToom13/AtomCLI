@@ -19,6 +19,9 @@ import { AmendmentQueue } from "./amendment"
 import { ModelFallback } from "@/integrations/provider/fallback"
 import { SessionMemoryIntegration } from "../memory/integration/session"
 import { Token } from "@/util/util/token"
+import { HarnessState } from "./harness-state"
+import path from "path"
+import { Instance } from "@/services/project/instance"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -249,6 +252,18 @@ export namespace SessionProcessor {
                       },
                     })
 
+                    // Track edited files for system reminder injection
+                    if (match.tool === "edit" || match.tool === "write") {
+                      // filepath is in the output title (relative path) or metadata.filepath
+                      const filepath: string | undefined =
+                        (value.output.metadata as any)?.filepath ??
+                        value.output.title ??
+                        (match.state.input as any)?.filePath
+                      if (filepath) {
+                        HarnessState.addEditedFile(input.sessionID, filepath)
+                      }
+                    }
+
                     delete toolcalls[value.toolCallId]
                   }
                   break
@@ -351,6 +366,27 @@ export namespace SessionProcessor {
                     sessionID: input.sessionID,
                     messageID: input.assistantMessage.parentID,
                   })
+
+                  // Auto-save plan output to .atomcli/plan/latest.md for plan agent
+                  if (input.assistantMessage.agent === "plan") {
+                    try {
+                      const planParts = await MessageV2.parts(input.assistantMessage.id)
+                      const planText = planParts
+                        .filter((p) => p.type === "text" && !(p as any).synthetic)
+                        .map((p) => (p as any).text || "")
+                        .join("\n")
+                        .trim()
+                      if (planText) {
+                        const planDir = path.join(Instance.directory, ".atomcli", "plan")
+                        await Bun.write(path.join(planDir, "latest.md"), planText)
+                        log.info("plan saved to .atomcli/plan/latest.md", { sessionID: input.sessionID })
+                      }
+                    } catch (planErr) {
+                      // Non-fatal: plan save failure should not interrupt the session
+                      log.warn("failed to save plan.md", { error: planErr })
+                    }
+                  }
+
                   if (await SessionCompaction.isOverflow({ tokens: usage.tokens, model: input.model })) {
                     needsCompaction = true
                   }

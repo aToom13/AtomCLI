@@ -139,7 +139,7 @@ export namespace ToolRegistry {
   export const AGENT_TOOL_ALLOW_LISTS: Record<string, string[]> = {
     explore: ["read", "find", "grep", "bash", "webfetch", "websearch", "codesearch", "skill", "memory", "taskflow"],
     checker: ["read", "grep", "find", "bash", "webfetch", "websearch", "codesearch", "skill", "memory", "system_health", "taskflow"],
-    reviewer: ["read", "find", "grep", "webfetch", "codesearch", "skill", "memory", "taskflow"],
+    reviewer: ["read", "find", "grep", "bash", "browser", "webfetch", "codesearch", "skill", "memory", "taskflow"],
     analyst: ["read", "find", "grep", "bash", "webfetch", "websearch", "codesearch", "finance_analyze", "skill", "memory", "taskflow"],
     documenter: ["read", "write", "edit", "find", "grep", "bash", "webfetch", "skill", "memory", "taskflow"],
   }

@@ -1443,7 +1443,6 @@ export type AssistantMessage = {
   parentID: string
   modelID: string
   providerID: string
-  mode: string
   agent: string
   path: {
     cwd: string
@@ -1969,11 +1968,10 @@ export type Event =
   | EventFileCreated
   | EventFileDeleted
   | EventSessionStatus
-  | EventSessionIdle
   | EventSessionCompacted
-  | EventTodoUpdated
   | EventFileWatcherUpdated
   | EventVcsBranchUpdated
+  | EventTodoUpdated
 
 export type GlobalEvent = {
   directory: string
@@ -2229,17 +2227,25 @@ export type EventSessionStatus = {
   }
 }
 
-export type EventSessionIdle = {
-  type: "session.idle"
+export type EventSessionCompacted = {
+  type: "session.compacted"
   properties: {
     sessionID: string
   }
 }
 
-export type EventSessionCompacted = {
-  type: "session.compacted"
+export type EventFileWatcherUpdated = {
+  type: "file.watcher.updated"
   properties: {
-    sessionID: string
+    file: string
+    event: "add" | "change" | "unlink"
+  }
+}
+
+export type EventVcsBranchUpdated = {
+  type: "vcs.branch.updated"
+  properties: {
+    branch?: string
   }
 }
 
@@ -2267,21 +2273,6 @@ export type EventTodoUpdated = {
   properties: {
     sessionID: string
     todos: Array<Todo>
-  }
-}
-
-export type EventFileWatcherUpdated = {
-  type: "file.watcher.updated"
-  properties: {
-    file: string
-    event: "add" | "change" | "unlink"
-  }
-}
-
-export type EventVcsBranchUpdated = {
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
   }
 }
 

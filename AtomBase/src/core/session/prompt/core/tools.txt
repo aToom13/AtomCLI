@@ -3,84 +3,104 @@
 
 | Need | Tool | NOT |
 |------|------|-----|
-| Read file | **Read** | cat, head, tail |
-| Edit existing file | **Edit** | sed, awk, vim |
-| Create new file | **Write** | echo >, cat <<EOF |
-| Find files by name | **Find** | find, ls -R |
-| Search file contents | **Grep** | grep, rg |
-| List directory | **Find** (tree) | ls in Bash |
-| Change directory | workdir param | cd command |
-| Parallel ops | **Batch** | sequential calls |
+| Read file | `read` | cat, head, tail |
+| Edit existing file | `edit` | sed, awk, vim |
+| Create new file | `write` | echo >, cat <<EOF |
+| Find files by name | `find` | find, ls -R |
+| Search file contents | `grep` | grep, rg |
+| List directory | `find` (tree mode) | ls in bash |
+| Parallel ops | `batch` | sequential calls |
+| Ask the user | `question` | Only when genuinely blocked |
 
 ---
 
 ## CRITICAL RULES
 
-**1. READ BEFORE EDIT** — The Edit tool WILL FAIL if you haven't read the file first. Hard technical constraint.
+**1. READ BEFORE EDIT** — The `edit` tool WILL FAIL if you haven't called `read` first. Hard technical constraint.
 
-**2. PARALLEL with Batch** — Use Batch for 2–10 independent operations (2–5x faster). Never batch dependent ops (read + edit of same file).
+**2. PARALLEL with batch** — Use `batch` for 2–10 independent operations (2–5x faster). Never batch dependent ops (read + edit of same file).
 
-**3. PROACTIVE tool usage** — Don't ask for info you can get with tools. When user says "fix auth bug", Grep to find it, Read to understand it, Edit to fix it.
+**3. PROACTIVE tool usage** — Don't ask for info you can get with tools. When the user says "fix auth bug", grep to find it, read to understand it, edit to fix it.
 
-**4. workdir not cd** — Always pass `workdir` param to Bash. Never use `cd`.
+**4. workdir not cd** — Always pass `workdir` param to bash. Never use `cd`.
 
 ---
 
 ## FILE TOOLS
 
-**Read** — `{ filePath, offset?, limit? }` — Returns file with line numbers. MUST call before Edit.
+**`read`** — `{ filePath, offset?, limit? }` — Returns file with line numbers. MUST call before `edit`.
 
-**Write** — `{ filePath, content }` — Creates file + parent dirs. Use for NEW files only.
+**`write`** — `{ filePath, content }` — Creates file + parent dirs. Use for NEW files only.
 
-**Edit** — `{ filePath, oldString, newString, replaceAll? }` — Exact string replacement. oldString must match EXACTLY (whitespace matters). If fails: re-read, check whitespace, add more context. Use `operations` array for multiple edits in one call.
+**`edit`** — `{ filePath, oldString, newString, replaceAll? }` — Exact string replacement. `oldString` must match EXACTLY (whitespace matters). If fails: re-read, check tabs vs spaces, add more context. Use `operations` array for multiple edits in one call.
 
-**Find** — `{ mode?: "pattern"|"tree", pattern?, path?, ignore? }` — Glob (`**/*.ts`) or directory tree.
+**`find`** — `{ mode?: "pattern"|"tree", pattern?, path?, ignore? }` — Glob (`**/*.ts`) or directory tree.
 
-**Grep** — `{ pattern, include? }` — Regex search. Returns `file:line: content`.
+**`grep`** — `{ pattern, include? }` — Regex search. Returns `file:line: content`.
 
 ---
 
 ## TERMINAL
 
-**Bash** — `{ command, workdir?, timeout?, description? }` — Persistent session.
-Forbidden in Bash: cat / head / tail / sed / awk / find / grep — use native tools instead.
+**`bash`** — `{ command, workdir?, timeout?, description? }` — Persistent session.
+Forbidden in bash: cat / head / tail / sed / awk / find / grep — use native tools instead.
 Chain with `&&`. Use `--no-pager` for git.
 
-**Batch** — `{ tools: [{tool, parameters}] }` — 1–10 tools in parallel.
+**`batch`** — `{ tools: [{tool, parameters}] }` — 1–10 tools in parallel.
 
 ---
 
 ## CODE INTELLIGENCE
 
-**LSP** — `{ operation: "definition"|"references"|"hover"|"completion", filePath, line, character }` — 0-indexed line/char.
+**`lsp`** — `{ operation: "definition"|"references"|"hover"|"completion", filePath, line, character }` — 0-indexed line/char.
 
-**CodeSearch** — `{ query, tokenCount? }` — Search programming docs via Exa.
+**`codesearch`** — `{ query, tokenCount? }` — Search programming docs via Exa.
+
+---
+
+## SKILLS
+
+**`skill`** — `{ action: "load"|"add", name?, url? }` — Load skill instructions or install a new skill.
+
+**Proactive skill usage — ask yourself at the start of every non-trivial task:**
+> "What type of task is this? Is there a skill that would make my output significantly better?"
+
+| Task type | Check these skills first |
+|-----------|--------------------------|
+| UI, web, design, portfolio, dashboard | `frontend-design`, `create-design-system` |
+| Bug, error, crash, something not working | `systematic-debugging`, `error-diagnosis` |
+| Writing tests, E2E, coverage | `webapp-testing` |
+| Git commit, PR, code review | `git-commit`, `github-pr` |
+| Writing docs, README, API docs | `document-suite` |
+| Linux, server, shell scripts | `linux-sysadmin` |
+
+**Rule:** If a `<skill_suggestion>` block appears in your context — read it and decide. If you see relevant skills in `<skills_available>` — load before starting. Load skills **before** writing any code or plan, not after.
 
 ---
 
 ## TASK MANAGEMENT
 
-**TaskFlow** — `{ action: "start"|"update"|"complete"|"clear", plan?, step_id?, status? }` — Unified step planning and task progress updates.
+**`taskflow`** — `{ action: "start"|"update"|"complete"|"clear", plan?, step_id?, status? }` — Unified step planning and progress tracking. See workflow.txt for usage rules.
 
-**Task** — `{ subagent_type: "general"|"explore"|"coder"|"checker"|"plan"|"build"|"reviewer", description, prompt }` — Blocking or background subagent. Available agent types are dynamically injected via `{agents}`.
+**`task`** — `{ action?: "run"|"abort", description: string, prompt: string, subagent_type: string, session_id?: string }` — Background subagent. `description` (3–5 words, required), `prompt` (task instructions, required), `subagent_type` (required). Available agent types: `{agents}`.
 
-**Question** — `{ question, options?, multiple? }` — Ask user ONLY when genuinely blocked. Not for confirmations. Not for things tools can answer.
+**`question`** — `{ question, options?, multiple? }` — Ask user ONLY when genuinely blocked. Not for confirmations. Not for things tools can answer.
 
 ---
 
 ## WEB
 
-**WebSearch** — `{ query, type?: "keyword"|"neural", results? }` — Search via Exa AI.
+**`websearch`** — `{ query, type?: "keyword"|"neural", results? }` — Search via Exa AI.
 
-**WebFetch** — `{ url, format?: "markdown"|"text"|"html" }` — Fetch and parse URL.
+**`webfetch`** — `{ url, format?: "markdown"|"text"|"html" }` — Fetch and parse URL.
 
 ---
 
 ## MEMORY
 
-**Memory** — `{ action: "save"|"search"|"list" }` — Persistent cross-session memory.
+**`memory`** — `{ action: "save"|"search"|"list" }` — Persistent cross-session memory.
 
-**MANDATORY:** Before answering any personal question about the user (name, preferences, past projects, decisions, configs) — ALWAYS call `memory search` first. Never guess.
+**MANDATORY:** Before answering any personal question about the user (name, preferences, past projects, decisions, configs) — ALWAYS call `memory` search first. Never guess.
 
 | Trigger | Action |
 |---------|--------|
@@ -93,22 +113,32 @@ Chain with `&&`. Use `--no-pager` for git.
 
 ## ORCHESTRATE / AGENT — Subagent Lifecycle Engine
 
-**Use when:** Task can be broken into independent subtasks. See workflow.txt for auto-trigger rules.
+**Use when:** Task can be broken into independent subtasks. Auto-trigger rules in workflow.txt.
 
-**Actions (aligned with agent tool):**
+**Actions:**
 - Spawn subagent: `{ action: "spawn", agent: "coder"|"checker"|"explore"|"plan"|"build"|"reviewer", prompt, session_id? }`
 - Workflow orchestration: `{ action: "workflow", workflow_action: "plan"|"execute", tasks: [...] }`
 - Status / Abort: `{ action: "status"|"abort" }`
 
-**Available Subagents:**
+**Decision guidance — when to use which:**
+
+| Situation | Tool | Reason |
+|-----------|------|--------|
+| 2+ independent parallel tasks | `orchestrate` (spawn or workflow) | Parallel DAG, reuses sessions |
+| Single focused sub-task | `task` | One-off background agent |
+| After 3+ file changes | `task` → `checker` | Security + optimization audit |
+| Fast codebase search | `task` → `explore` (readonly) | Safe parallel search |
+| Design & UI creation | `skill` → `skills/design/` | Visual layout & prototyping |
+
+**Available subagents:**
 
 | Agent | Role | Can edit files? |
 |-------|------|----------------|
-| `coder` / `agent` | Code writing, debugging, refactor, features (Default) | Yes |
+| `coder` / `agent` | Code writing, debugging, refactor, features | Yes |
 | `build` | Greenfield application & feature scaffold | Yes |
-| `explore` | Fast read-only codebase search & grep | No |
-| `plan` | Read-only software architecture & implementation planning | No |
-| `checker` | Read-only security + optimization audit report | No |
+| `explore` | Fast read-only codebase search | No |
+| `plan` | Read-only architecture & implementation planning | No |
+| `checker` | Read-only security + optimization audit | No |
 | `reviewer` | Read-only QA task output verification (PASS/FAIL) | No |
 
 **Max active agents: 6**

@@ -1,7 +1,7 @@
 ---
 name: Slack GIF Creator
 description: Automate GIF creation for code reviews and demos
-location: .atomcli/skills/slack-gif-creator/SKILL.md
+trigger_words: [slack, gif, emoji, animated gif, screen recording, ffmpeg, code review gif, demo gif, gif oluştur, video to gif]
 ---
 
 # Slack GIF Automator

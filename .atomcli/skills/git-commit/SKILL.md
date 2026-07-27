@@ -1,7 +1,7 @@
 ---
 name: Git Commit
 description: Structured workflow for staging, committing, and verifying git changes safely
-location: .atomcli/skills/git-commit/SKILL.md
+trigger_words: [commit, git commit, stage changes, commit message, versiyonla, git add, make a commit, save changes, git stage, commit this]
 ---
 
 # Git Commit Workflow

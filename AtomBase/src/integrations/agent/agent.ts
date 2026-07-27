@@ -13,6 +13,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_REVIEWER from "./prompt/reviewer.txt"
 import { PermissionNext } from "@/util/permission/next"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 
@@ -129,14 +130,30 @@ export namespace Agent {
       },
       reviewer: {
         name: "reviewer",
-        description: `QA verification agent for sub-agent outputs. Reviews task results and passes/fails them silently. Never modifies code — only verifies.`,
+        description: `QA verification agent for sub-agent outputs. Independently runs tests, reads git diffs, calls APIs via bash, and validates web UIs via browser to verify work. Renders PASSED/REJECTED verdict. Never modifies code.`,
         options: {},
+        prompt: PROMPT_REVIEWER,
         permission: PermissionNext.merge(
           defaults,
           PermissionNext.fromConfig({
             "*": "deny",
             read: {
               "*": "allow",
+            },
+            // Allow read-only code exploration
+            grep: "allow",
+            glob: "allow",
+            codesearch: "allow",
+            // Allow test execution and API calls for independent verification.
+            bash: "allow",
+            // Allow browser for frontend/UI verification (e.g. Playwright).
+            browser: "allow",
+            // Disallow any file writes
+            edit: {
+              "*": "deny",
+            },
+            write: {
+              "*": "deny",
             },
           }),
           user,

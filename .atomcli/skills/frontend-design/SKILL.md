@@ -1,7 +1,7 @@
 ---
 name: frontend-design
 description: Guidelines for designing distinct, world-class frontend interfaces in AtomCLI without defaulting to generic, bland UI templates.
-location: .atomcli/skills/frontend-design/SKILL.md
+trigger_words: [portfolio, website, ui, interface, frontend, web app, landing page, dashboard, design, visual, arayüz, portfolyo, site yap, web sitesi, html css]
 ---
 
 # Frontend Design Skill — AtomCLI Design Tree

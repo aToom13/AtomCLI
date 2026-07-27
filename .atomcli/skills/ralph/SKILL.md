@@ -1,6 +1,7 @@
 ---
 name: ralph
 description: Autonomous coding loop agent based on the Ralph technique
+trigger_words: [ralph, autonomous agent, coding loop, self-correcting, autonomous developer, agent loop, ralph mode, iterative coding, fix plan, autonomous coding]
 ---
 
 # Ralph - Autonomous Developer Agent

@@ -49,6 +49,7 @@ import { LLM } from "./llm"
 import { iife } from "@/util/util/iife"
 import { Shell } from "@/interfaces/shell/shell"
 import { Skill } from "@/integrations/skill"
+import { HarnessState } from "./harness-state"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -338,7 +339,6 @@ export namespace SessionPrompt {
           role: "assistant",
           parentID: lastUser.id,
           sessionID,
-          mode: task.agent,
           agent: task.agent,
           path: {
             cwd: Instance.directory,
@@ -542,7 +542,6 @@ export namespace SessionPrompt {
           id: Identifier.ascending("message"),
           parentID: lastUser.id,
           role: "assistant",
-          mode: agent.name,
           agent: agent.name,
           path: {
             cwd: Instance.directory,
@@ -618,30 +617,31 @@ export namespace SessionPrompt {
 
       await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
 
-      const [environment, custom] = await Promise.all([SystemPrompt.environment(), SystemPrompt.custom()])
-
-      // Proactive Memory Recall
-      let memoryContext = ""
+      // Extract user text for context enrichment (memory recall + skill auto-injection)
+      let userText = ""
       const lastUserWithParts = lastUser ? msgs.find((m) => m.info.id === lastUser.id) : undefined
-      if (lastUserWithParts && lastUserWithParts.parts) {
-        const userText = lastUserWithParts.parts
+      if (lastUserWithParts?.parts) {
+        userText = lastUserWithParts.parts
           .filter((p) => p.type === "text")
           .map((p) => (p as any).text)
           .join(" ")
-
-        if (userText) {
-          // F13: static import — no dynamic import() in hot path
-          memoryContext = await recall(userText, {
-            sessionID: sessionID,
-            technology: "general", // Could be refined based on context
-          })
-        }
       }
+
+      // Run environment, custom rules, memory recall and skill auto-injection in parallel
+      const [environment, custom, memoryContext, autoSkillContext] = await Promise.all([
+        SystemPrompt.environment(),
+        SystemPrompt.custom(),
+        userText
+          ? recall(userText, { sessionID, technology: "general" })
+          : Promise.resolve(""),
+        userText
+          ? SystemPrompt.autoInjectSkills(userText)
+          : Promise.resolve(""),
+      ])
 
       const system = [...environment, ...custom]
-      if (memoryContext) {
-        system.push(memoryContext)
-      }
+      if (memoryContext) system.push(memoryContext)
+      if (autoSkillContext) system.push(autoSkillContext)
 
       const result = await processor.process({
         user: lastUser,
@@ -1304,46 +1304,138 @@ export namespace SessionPrompt {
     }
   }
 
-  function insertReminders(input: { messages: MessageV2.WithParts[]; agent: Agent.Info; step: number }) {
+  export function insertReminders(input: { messages: MessageV2.WithParts[]; agent: Agent.Info; step: number }) {
     const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
     if (!userMessage) return input.messages
+
+    const sessionID = userMessage.info.sessionID
+
+    let aggregatedReminders: string[] = []
+
     if (input.agent.name === "plan") {
-      userMessage.parts.push({
-        id: Identifier.ascending("part"),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        // TODO: consider expanding using the full plan reminder (see runtime/plan-reminder.txt)
-        text: PROMPT_PLAN,
-        synthetic: true,
-      })
+      const alreadyHasPlan = input.messages.some(m => m.parts.some(p => p.type === "text" && (p as any).synthetic && (p as any).text === PROMPT_PLAN))
+      if (!alreadyHasPlan) aggregatedReminders.push(PROMPT_PLAN)
     }
+
     const wasPlan = input.messages.some((msg) => msg.info.role === "assistant" && msg.info.agent === "plan")
     if (wasPlan && input.agent.name === "build") {
-      userMessage.parts.push({
-        id: Identifier.ascending("part"),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        text: BUILD_SWITCH,
-        synthetic: true,
-      })
+      const alreadyHasSwitch = input.messages.some(m => m.parts.some(p => p.type === "text" && (p as any).synthetic && (p as any).text === BUILD_SWITCH))
+      if (!alreadyHasSwitch) aggregatedReminders.push(BUILD_SWITCH)
+
+      // Plan→Build barrier: require an active taskflow plan before writing code
+      const hasActivePlan = HarnessState.hasActivePlan(sessionID)
+      if (!hasActivePlan && input.step <= 2) {
+        const alreadyHasBarrier = input.messages.some(m => m.parts.some(
+          (p) => p.type === "text" && (p as any).synthetic && (p as any).text?.includes("plan_barrier")
+        ))
+        if (!alreadyHasBarrier) {
+          aggregatedReminders.push([
+            "<plan_barrier>",
+            "⛔ PLAN→BUILD TRANSITION BARRIER",
+            "No active taskflow plan found. Before writing any code you MUST:",
+            '1. Call taskflow [action="start", plan=[...]] to load the plan steps',
+            "2. Set the first step to running with taskflow update before proceeding",
+            "Do NOT skip this step. Jumping directly to code without an active taskflow violates the AUTONOMOUS_GOAL_LOOP rules.",
+            "</plan_barrier>",
+          ].join("\n"))
+        }
+      }
     }
 
     const hasChainCall = input.messages.some((msg) =>
       msg.parts.some((p) => p.type === "tool" && (p.tool === "taskflow" || p.tool === "chainupdate")),
     )
-    const hasChainReminder = userMessage.parts.some(
-      (p) => p.type === "text" && p.synthetic && p.text.includes("chain_reminder"),
-    )
+    const hasChainReminder = input.messages.some(m => m.parts.some(
+      (p) => p.type === "text" && (p as any).synthetic && (p as any).text?.includes("chain_reminder")
+    ))
     if (input.step > 2 && !hasChainCall && !hasChainReminder && !["explore", "reviewer", "checker"].includes(input.agent.name)) {
-      userMessage.parts.push({
-        id: Identifier.ascending("part"),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        text: "<chain_reminder>⚠️ Step threshold exceeded (>2 steps) without active progress plan. You SHOULD call taskflow [action=start] to initialize progress tracking for the user.</chain_reminder>",
-        synthetic: true,
+      aggregatedReminders.push("<chain_reminder>⚠️ Step threshold exceeded (>2 steps) without active progress plan. You SHOULD call taskflow [action=start] to initialize progress tracking for the user.</chain_reminder>")
+    }
+
+    // ── Harness: BLOCKING ORCHESTRATION MODE reminder ─────────────────────
+    // When orchestrate(action="execute") is running, inject a hard reminder
+    // so the main agent cannot claim it is doing parallel work. This is a
+    // harness-level enforcement, not a prompt-level suggestion.
+    if (!["reviewer", "checker", "explore", "plan"].includes(input.agent.name)) {
+      const activeWorkflowId = HarnessState.getActiveWorkflowId(sessionID)
+      if (activeWorkflowId) {
+        const alreadyHasOrchestratorReminder = input.messages.some((m) =>
+          m.parts.some(
+            (p) =>
+              p.type === "text" &&
+              (p as any).synthetic &&
+              (p as any).text?.includes("orchestrator_blocking"),
+          ),
+        )
+        if (!alreadyHasOrchestratorReminder) {
+          aggregatedReminders.push(
+            [
+              `<orchestrator_blocking workflowId="${activeWorkflowId}">`,
+              `⛔ BLOCKING ORCHESTRATION MODE — workflow ${activeWorkflowId} is executing.`,
+              `ALL sub-agents are running. You CANNOT do any other work right now.`,
+              `Do NOT claim you are doing anything in parallel. You are blocked until all tasks complete.`,
+              `When orchestration finishes, you will receive the combined results automatically.`,
+              `</orchestrator_blocking>`,
+            ].join("\n"),
+          )
+        }
+      }
+    }
+
+    // ── Dynamic edit-count reminders (harness enforcement) ──────────────────
+    if (!["reviewer", "checker", "plan", "explore"].includes(input.agent.name)) {
+      const editCount = HarnessState.getEditedFileCount(sessionID)
+      const hasCritical = HarnessState.hasCriticalEdit(sessionID)
+      const alreadyHasEditReminder = input.messages.some(m => m.parts.some(
+        (p) => p.type === "text" && (p as any).synthetic && (p as any).text?.includes("edit_reminder")
+      ))
+
+      if (!alreadyHasEditReminder) {
+        if (hasCritical) {
+          aggregatedReminders.push([
+            "<edit_reminder type=\"critical\">",
+            "⚠️ System Reminder: A CRITICAL file (auth/config/database/migration/env/secret) was modified.",
+            "You MUST verify correctness before continuing. Run the project typecheck and test commands now.",
+            "</edit_reminder>",
+          ].join("\n"))
+        } else if (editCount >= 5) {
+          aggregatedReminders.push([
+            `<edit_reminder type="high" count="${editCount}">`,
+            `⚠️ System Reminder: ${editCount}+ file edits detected in this session.`,
+            "You CANNOT execute taskflow action='clear' or declare task complete without:",
+            "1. Running the project test and typecheck commands",
+            "2. Spawning the reviewer subagent with the raw test outputs",
+            "</edit_reminder>",
+          ].join("\n"))
+        } else if (editCount >= 3) {
+          aggregatedReminders.push([
+            `<edit_reminder type="medium" count="${editCount}">`,
+            `⚠️ System Reminder: ${editCount} files have been modified in this session.`,
+            "You CANNOT continue directly. You MUST check taskflow list and verify the plan is on track.",
+            "</edit_reminder>",
+          ].join("\n"))
+        }
+      }
+    }
+
+    if (aggregatedReminders.length > 0) {
+      input.messages.push({
+        info: {
+          id: Identifier.ascending("message"),
+          sessionID: sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: input.agent.name,
+          model: (userMessage.info as MessageV2.User).model,
+        } as MessageV2.User,
+        parts: aggregatedReminders.map(text => ({
+          id: Identifier.ascending("part"),
+          messageID: "", // Replaced during generation, but not needed for in-memory mapping
+          sessionID: sessionID,
+          type: "text",
+          text: text,
+          synthetic: true,
+        } as MessageV2.TextPart)),
       })
     }
 
@@ -1403,7 +1495,6 @@ export namespace SessionPrompt {
       id: Identifier.ascending("message"),
       sessionID: input.sessionID,
       parentID: userMsg.id,
-      mode: input.agent,
       agent: input.agent,
       cost: 0,
       path: {
@@ -1666,7 +1757,6 @@ export namespace SessionPrompt {
         sessionID: input.sessionID,
         role: "assistant",
         parentID: input.messageID ?? Identifier.ascending("message"),
-        mode: agentName,
         agent: agentName,
         path: {
           cwd: Instance.directory,

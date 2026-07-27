@@ -1,7 +1,7 @@
 ---
 name: Document Suite
 description: Processing for PDF, Excel, Word, Swagger, and PlantUML
-location: .atomcli/skills/document-suite/SKILL.md
+trigger_words: [document, documentation, readme, docs, dökümantasyon, belge yaz, pdf, excel, swagger, openapi]
 ---
 
 # Document Processing Specialist

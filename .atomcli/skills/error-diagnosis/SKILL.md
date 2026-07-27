@@ -1,7 +1,7 @@
 ---
 name: Error Diagnosis
 description: Systematic error analysis and fix workflow for build failures, test errors, and runtime exceptions
-location: .atomcli/skills/error-diagnosis/SKILL.md
+trigger_words: [error, exception, crash, not working, broken, çöktü, hata, çalışmıyor, build failed, runtime error]
 ---
 
 # Error Diagnosis Specialist

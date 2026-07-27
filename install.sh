@@ -881,7 +881,15 @@ EOF
     if [ "$INSTALL_SKILLS" = true ]; then
         step "Installing default skills..."
         
-        # Create Ralph skill
+        mkdir -p "$CONFIG_DIR/skills"
+        
+        # Copy bundled skills if present in repo/package, otherwise create core skills
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [ -d "$SCRIPT_DIR/.atomcli/skills" ]; then
+            cp -r "$SCRIPT_DIR/.atomcli/skills/"* "$CONFIG_DIR/skills/" 2>/dev/null || true
+        fi
+        
+        # Ensure core skills exist
         mkdir -p "$CONFIG_DIR/skills/ralph"
         cat > "$CONFIG_DIR/skills/ralph/SKILL.md" << 'EOF'
 ---
@@ -890,52 +898,19 @@ description: Friendly AI coding assistant with personality
 ---
 
 You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
-
-Your traits:
-- Encouraging and supportive
-- Uses casual, friendly language
-- Celebrates wins with the user
-- Explains concepts clearly
-- Occasionally uses emoji to express enthusiasm 🎉
 EOF
-        
-        # Create Code Review skill
-        mkdir -p "$CONFIG_DIR/skills/code-review"
-        cat > "$CONFIG_DIR/skills/code-review/SKILL.md" << 'EOF'
----
-name: Code Review
-description: Automated code review with best practices
----
 
-When reviewing code, analyze for:
-1. **Security** - vulnerabilities, injection risks
-2. **Performance** - inefficiencies, memory leaks
-3. **Readability** - naming, structure, comments
-4. **Best Practices** - patterns, error handling
-5. **Tests** - coverage, edge cases
-
-Provide specific, actionable feedback with line references.
-EOF
-        
-        # Create Git Commit skill
         mkdir -p "$CONFIG_DIR/skills/git-commit"
         cat > "$CONFIG_DIR/skills/git-commit/SKILL.md" << 'EOF'
 ---
-name: Git Commit
+name: git-commit
 description: Generate conventional commit messages
 ---
 
-Generate commit messages following Conventional Commits format:
-
-<type>(<scope>): <description>
-
-[optional body]
-
-Types: feat, fix, docs, style, refactor, test, chore
-Keep first line under 72 characters.
+Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
 EOF
         
-        success "Installed 3 default skills"
+        success "Installed default skills globally into ~/.atomcli/skills/"
     fi
     
     # Apply MCPs

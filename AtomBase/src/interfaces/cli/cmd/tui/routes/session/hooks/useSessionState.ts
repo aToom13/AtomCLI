@@ -6,6 +6,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { MacOSScrollAccel } from "@opentui/core"
 import { useKV } from "../../../context/kv"
 import { CustomSpeedScroll } from "../context"
+import { useSubAgents } from "@tui/context/subagent"
 
 export type SessionState = ReturnType<typeof useSessionState>
 
@@ -16,6 +17,7 @@ export function useSessionState() {
   const local = useLocal()
   const kv = useKV()
   const dimensions = useTerminalDimensions()
+  const subAgentCtx = useSubAgents()
 
   const session = createMemo(() => sync.session.get(route.sessionID))
 
@@ -72,7 +74,20 @@ export function useSessionState() {
   })
 
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+
+  // SubAgent panel width — mirrors computePanelWidth() in SubAgentPanel.tsx exactly.
+  // If you change breakpoints there, update here too.
+  const subAgentPanelWidth = createMemo(() => {
+    if (!subAgentCtx.panelVisible() || subAgentCtx.agents().length === 0) return 0
+    const w = dimensions().width
+    if (w < 90) return 25
+    if (w < 120) return 30
+    if (w < 150) return 40
+    if (w < 180) return 50
+    return 58
+  })
+
+  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - subAgentPanelWidth() - 4)
 
   const scrollAcceleration = createMemo(() => {
     const tui = sync.data.config.tui
@@ -83,7 +98,7 @@ export function useSessionState() {
       return new CustomSpeedScroll(tui.scroll_speed)
     }
 
-    return new CustomSpeedScroll(3)
+    return new CustomSpeedScroll(8)
   })
 
   return {

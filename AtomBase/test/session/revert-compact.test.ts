@@ -51,7 +51,6 @@ describe("revert + compact workflow", () => {
           id: Identifier.ascending("message"),
           role: "assistant",
           sessionID,
-          mode: "default",
           agent: "default",
           path: {
             cwd: tmp.path,
@@ -111,7 +110,6 @@ describe("revert + compact workflow", () => {
           id: Identifier.ascending("message"),
           role: "assistant",
           sessionID,
-          mode: "default",
           agent: "default",
           path: {
             cwd: tmp.path,
@@ -225,7 +223,6 @@ describe("revert + compact workflow", () => {
           id: Identifier.ascending("message"),
           role: "assistant",
           sessionID,
-          mode: "default",
           agent: "default",
           path: {
             cwd: tmp.path,

@@ -11,8 +11,11 @@ import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { SubAgent } from "./subagent"
 import { WorkflowFS } from "./workflow-fs"
+import { HarnessState } from "@/core/session/harness-state"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
+
+⚠️ **BLOCKING TOOL**: The execute action blocks until ALL sub-agents finish. You CANNOT do other work while execute is running. Do not say "I'll also do X while sub-agents work" — this is impossible. Plan all tasks upfront and let sub-agents handle them.
 
 **HOW TO USE (2 steps):**
 1. Call with action="plan" to validate your workflow
@@ -42,8 +45,9 @@ When smart_model_routing is enabled, each task automatically gets the best model
 \`\`\`json
 { "action": "execute", "workflowId": "<returned-id>" }
 \`\`\`
-→ Runs all tasks and waits for completion. Returns combined results from all sub-agents.
+→ Runs all tasks and BLOCKS until completion. Returns combined results from all sub-agents.
 Full results are also written to \`.atomcli/runs/<workflowId>/\` on disk for review.
+If interrupted (ESC), call execute again with the same workflowId to restart pending tasks.
 
 **STEP 3 (optional) - Status:**
 \`\`\`json
@@ -454,10 +458,19 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         }
 
         if (workflow.status === "running") {
-          return {
-            title: "Error",
-            output: "Workflow is already running",
-            metadata: { error: true },
+          // ESC/interrupt recovery: reset interrupted workflow so it can be re-executed.
+          // Pending tasks stay pending; completed tasks stay completed — only running tasks
+          // are reset to pending so they can be retried from where things left off.
+          log.warn("workflow re-execute after interrupt: resetting running tasks to pending", {
+            workflowId: params.workflowId,
+          })
+          for (const task of workflow.tasks) {
+            const r = workflow.results[task.id]
+            if (r.status === "running") {
+              r.status = "pending"
+              r.error = undefined
+              r.startedAt = undefined
+            }
           }
         }
 
@@ -468,6 +481,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           taskIndexMap[t.id] = i
         })
         log.info("workflow executing", { workflowId: params.workflowId })
+
+        // ── Harness: lock orchestrator so insertReminders() knows we're blocking
+        HarnessState.lockOrchestrator(ctx.sessionID, params.workflowId!)
 
         const config = await Config.get()
 
@@ -584,7 +600,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   try {
                     // Try to reuse existing session for this agent type
                     const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
-                    const existingSessionId = AGENT_SESSION_MAP.get(sessionKey)
+                    const existingSessionId =
+                      AGENT_SESSION_MAP.get(sessionKey) ??
+                      // ESC recovery: fall back to stored result.sessionId if AGENT_SESSION_MAP
+                      // was cleared (e.g. server restart). Keeps context in the same child session.
+                      result.sessionId
 
                     const promptParts = await SessionPrompt.resolvePromptParts(fullPrompt)
 
@@ -615,22 +635,33 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     const reviewerAgent = await Agent.get("reviewer")
                     const reviewerModel = await selectModel("analysis", fallbackModel)
 
+                    // Inject harness execution logs so reviewer can cross-reference
+                    // real test output instead of relying on agent-provided summaries.
+                    // IMPORTANT: Use sub-agent's sessionID (spawnResult.sessionId), NOT the
+                    // orchestrator's sessionID (ctx.sessionID). Bash commands run by the
+                    // sub-agent are logged under the sub-agent's session, not the parent's.
+                    const harnessLogs = HarnessState.formatLogsForPrompt(spawnResult.sessionId)
+
                     const reviewPrompt = [
                       `<task>`,
                       task.prompt,
                       `</task>`,
                       ``,
-                      `<output>`,
+                      `<output attempt="${attempt + 1}">`,
                       spawnResult.output,
                       `</output>`,
+                      ...(harnessLogs ? [``, harnessLogs] : []),
                       ``,
-                      `Review the output above. Does it correctly complete the task?`,
-                      `Respond in English. Your response must start with exactly "PASS" or "FAIL" on the first line (no markdown, no extra text before). Then add your reason.`,
-                      ``,
-                      `Example:`,
-                      `PASS`,
-                      `The output correctly lists all files and their descriptions.`,
+                      attempt > 0
+                        ? `This is retry #${attempt + 1}. Your previous REJECTED verdict was correct — re-verify independently.`
+                        : `Review the output above. Does it correctly complete the task?`,
+                      `Respond in English. Start with exactly "VERDICT: PASSED" or "VERDICT: REJECTED" on the first line.`,
                     ].join("\n")
+
+                    // ── Persistent QA session: one reviewer per task, reused across retries.
+                    // This prevents "reviewer shopping" where a new reviewer without context
+                    // accepts work that a previous reviewer correctly rejected.
+                    const existingQASessionId = HarnessState.getQASession(ctx.sessionID, task.id)
 
                     const reviewResult = await SubAgent.spawn({
                       parentSessionID: ctx.sessionID,
@@ -638,8 +669,14 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       model: reviewerModel,
                       permissions: SubAgent.buildFromAgent(reviewerAgent),
                       parts: [{ type: "text", text: reviewPrompt }],
-                      description: `[QA] ${task.id}`,
+                      description: `[QA${attempt > 0 ? ` retry ${attempt}` : ""}] ${task.id}`,
+                      sessionId: existingQASessionId,
                     })
+
+                    // Register QA session after first spawn so retries reuse it
+                    if (!existingQASessionId) {
+                      HarnessState.setQASession(ctx.sessionID, task.id, reviewResult.sessionId)
+                    }
 
                     const reviewText = reviewResult.output.trim()
                     const firstLine = reviewText
@@ -647,7 +684,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       .replace(/^[#*\s]+/, "")
                       .trim()
 
-                    if (/^PASS\b/i.test(firstLine)) {
+                    if (/^VERDICT:\s*PASSED\b/i.test(firstLine) || /^PASS\b/i.test(firstLine)) {
                       // ✅ QA passed
                       result.status = "completed"
                       result.output = spawnResult.output
@@ -773,6 +810,16 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         } catch (err) {
           log.error("blocking: workflow execution failed", { error: (err as Error).message })
           workflow.status = "failed"
+        } finally {
+          // ── Harness: always release orchestrator lock, even on error
+          HarnessState.unlockOrchestrator(ctx.sessionID)
+          // Clean up QA sessions for completed/failed tasks
+          for (const task of workflow.tasks) {
+            const r = workflow.results[task.id]
+            if (r.status === "completed" || r.status === "failed" || r.status === "skipped") {
+              HarnessState.clearQASession(ctx.sessionID, task.id)
+            }
+          }
         }
         log.info("blocking: workflow completed", {
           workflowId: params.workflowId,
