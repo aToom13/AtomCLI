@@ -202,7 +202,11 @@ export const RunCommand = cmd({
             UI.error(err)
           }
 
-          if (event.type === "session.idle" && event.properties.sessionID === sessionID) {
+          if (
+            event.type === "session.status" &&
+            event.properties.sessionID === sessionID &&
+            event.properties.status.type === "idle"
+          ) {
             break
           }
 
