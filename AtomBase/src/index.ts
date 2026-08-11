@@ -51,12 +51,19 @@ process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
     e: e instanceof Error ? e.message : e,
   })
+  const formatted = FormatError(e)
+  if (formatted) UI.error(formatted)
 })
 
 process.on("uncaughtException", (e) => {
   Log.Default.error("exception", {
     e: e instanceof Error ? e.message : e,
   })
+  const formatted = FormatError(e)
+  if (formatted) {
+    UI.error(formatted)
+    process.exit(1)
+  }
 })
 
 const cli = yargs(hideBin(process.argv))

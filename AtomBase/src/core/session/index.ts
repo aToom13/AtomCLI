@@ -11,6 +11,7 @@ import { Installation } from "@/services/installation"
 import { Storage } from "../storage/storage"
 import { Log } from "@/util/util/log"
 import { MessageV2 } from "./message-v2"
+import { HarnessState } from "./harness-state"
 import { Instance } from "@/services/project/instance"
 import { fn } from "@/util/util/fn"
 import { Command } from "@/interfaces/command"
@@ -376,6 +377,25 @@ export namespace Session {
       await unshare(sessionID).catch((e) => log.warn("unshare failed", { sessionID, error: (e as Error).message }))
       // Remove the session itself
       await Storage.remove(["session", project.id, sessionID])
+      // Free in-memory harness state (taskflow steps, edited files, execution
+      // logs, review verdicts, reviewer session mappings) for the session and
+      // every descendant removed above — prevents unbounded memory growth.
+      // Preserve edited-file tracking for the review gate: deleting a session
+      // wipes its in-memory HarnessState (including editedFiles), so an agent
+      // could bypass review by deleting the sessions that made the edits.
+      // Merge each removed session's edits into the removed session's parent
+      // tracker first (idempotent — mergeEditedFiles only adds unseen files).
+      // A main session (no parent) has no gate to preserve — its edits die
+      // with it.
+      if (session.parentID) {
+        for (const id of [sessionID, ...allDescendants]) {
+          HarnessState.mergeEditedFiles(session.parentID, id)
+        }
+      }
+      for (const id of [sessionID, ...allDescendants]) {
+        HarnessState.reset(id)
+        HarnessState.clearAllQASessions(id)
+      }
       Bus.publish(Event.Deleted, {
         info: session,
       })

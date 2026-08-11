@@ -631,12 +631,8 @@ export namespace SessionPrompt {
       const [environment, custom, memoryContext, autoSkillContext] = await Promise.all([
         SystemPrompt.environment(),
         SystemPrompt.custom(),
-        userText
-          ? recall(userText, { sessionID, technology: "general" })
-          : Promise.resolve(""),
-        userText
-          ? SystemPrompt.autoInjectSkills(userText)
-          : Promise.resolve(""),
+        userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
+        userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
       ])
 
       const system = [...environment, ...custom]
@@ -1310,26 +1306,49 @@ export namespace SessionPrompt {
 
     const sessionID = userMessage.info.sessionID
 
-    let aggregatedReminders: string[] = []
+    // Single pass: collect synthetic text + metadata to avoid 6 separate O(n×m) scans.
+    // Each .some(m => m.parts.some(...)) previously scanned ALL messages × ALL parts.
+    // Now one pass builds a Set for O(1) lookups instead.
+    const syntheticTexts = new Set<string>()
+    let hasTaskflowCall = false
+    let wasPlan = false
 
-    if (input.agent.name === "plan") {
-      const alreadyHasPlan = input.messages.some(m => m.parts.some(p => p.type === "text" && (p as any).synthetic && (p as any).text === PROMPT_PLAN))
-      if (!alreadyHasPlan) aggregatedReminders.push(PROMPT_PLAN)
+    for (const msg of input.messages) {
+      if (msg.info.role === "assistant" && msg.info.agent === "plan") wasPlan = true
+      for (const part of msg.parts) {
+        if (part.type === "tool" && (part.tool === "taskflow" || part.tool === "chainupdate")) {
+          hasTaskflowCall = true
+        }
+        if (part.type === "text" && (part as any).synthetic) {
+          syntheticTexts.add((part as any).text)
+        }
+      }
     }
 
-    const wasPlan = input.messages.some((msg) => msg.info.role === "assistant" && msg.info.agent === "plan")
+    // Fast substring check across all synthetic texts
+    const hasSyntheticText = (substr: string) => {
+      for (const text of syntheticTexts) {
+        if (text.includes(substr)) return true
+      }
+      return false
+    }
+
+    let aggregatedReminders: string[] = []
+
+    if (input.agent.name === "plan" && !syntheticTexts.has(PROMPT_PLAN)) {
+      aggregatedReminders.push(PROMPT_PLAN)
+    }
+
     if (wasPlan && input.agent.name === "build") {
-      const alreadyHasSwitch = input.messages.some(m => m.parts.some(p => p.type === "text" && (p as any).synthetic && (p as any).text === BUILD_SWITCH))
-      if (!alreadyHasSwitch) aggregatedReminders.push(BUILD_SWITCH)
+      if (!syntheticTexts.has(BUILD_SWITCH)) {
+        aggregatedReminders.push(BUILD_SWITCH)
+      }
 
       // Plan→Build barrier: require an active taskflow plan before writing code
       const hasActivePlan = HarnessState.hasActivePlan(sessionID)
-      if (!hasActivePlan && input.step <= 2) {
-        const alreadyHasBarrier = input.messages.some(m => m.parts.some(
-          (p) => p.type === "text" && (p as any).synthetic && (p as any).text?.includes("plan_barrier")
-        ))
-        if (!alreadyHasBarrier) {
-          aggregatedReminders.push([
+      if (!hasActivePlan && input.step <= 2 && !hasSyntheticText("plan_barrier")) {
+        aggregatedReminders.push(
+          [
             "<plan_barrier>",
             "⛔ PLAN→BUILD TRANSITION BARRIER",
             "No active taskflow plan found. Before writing any code you MUST:",
@@ -1337,48 +1356,36 @@ export namespace SessionPrompt {
             "2. Set the first step to running with taskflow update before proceeding",
             "Do NOT skip this step. Jumping directly to code without an active taskflow violates the AUTONOMOUS_GOAL_LOOP rules.",
             "</plan_barrier>",
-          ].join("\n"))
-        }
+          ].join("\n"),
+        )
       }
     }
 
-    const hasChainCall = input.messages.some((msg) =>
-      msg.parts.some((p) => p.type === "tool" && (p.tool === "taskflow" || p.tool === "chainupdate")),
-    )
-    const hasChainReminder = input.messages.some(m => m.parts.some(
-      (p) => p.type === "text" && (p as any).synthetic && (p as any).text?.includes("chain_reminder")
-    ))
-    if (input.step > 2 && !hasChainCall && !hasChainReminder && !["explore", "reviewer", "checker"].includes(input.agent.name)) {
-      aggregatedReminders.push("<chain_reminder>⚠️ Step threshold exceeded (>2 steps) without active progress plan. You SHOULD call taskflow [action=start] to initialize progress tracking for the user.</chain_reminder>")
+    if (
+      input.step > 2 &&
+      !hasTaskflowCall &&
+      !hasSyntheticText("chain_reminder") &&
+      !["explore", "reviewer", "checker"].includes(input.agent.name)
+    ) {
+      aggregatedReminders.push(
+        "<chain_reminder>⚠️ Step threshold exceeded (>2 steps) without active progress plan. You SHOULD call taskflow [action=start] to initialize progress tracking for the user.</chain_reminder>",
+      )
     }
 
     // ── Harness: BLOCKING ORCHESTRATION MODE reminder ─────────────────────
-    // When orchestrate(action="execute") is running, inject a hard reminder
-    // so the main agent cannot claim it is doing parallel work. This is a
-    // harness-level enforcement, not a prompt-level suggestion.
     if (!["reviewer", "checker", "explore", "plan"].includes(input.agent.name)) {
       const activeWorkflowId = HarnessState.getActiveWorkflowId(sessionID)
-      if (activeWorkflowId) {
-        const alreadyHasOrchestratorReminder = input.messages.some((m) =>
-          m.parts.some(
-            (p) =>
-              p.type === "text" &&
-              (p as any).synthetic &&
-              (p as any).text?.includes("orchestrator_blocking"),
-          ),
+      if (activeWorkflowId && !hasSyntheticText("orchestrator_blocking")) {
+        aggregatedReminders.push(
+          [
+            `<orchestrator_blocking workflowId="${activeWorkflowId}">`,
+            `⛔ BLOCKING ORCHESTRATION MODE — workflow ${activeWorkflowId} is executing.`,
+            `ALL sub-agents are running. You CANNOT do any other work right now.`,
+            `Do NOT claim you are doing anything in parallel. You are blocked until all tasks complete.`,
+            `When orchestration finishes, you will receive the combined results automatically.`,
+            `</orchestrator_blocking>`,
+          ].join("\n"),
         )
-        if (!alreadyHasOrchestratorReminder) {
-          aggregatedReminders.push(
-            [
-              `<orchestrator_blocking workflowId="${activeWorkflowId}">`,
-              `⛔ BLOCKING ORCHESTRATION MODE — workflow ${activeWorkflowId} is executing.`,
-              `ALL sub-agents are running. You CANNOT do any other work right now.`,
-              `Do NOT claim you are doing anything in parallel. You are blocked until all tasks complete.`,
-              `When orchestration finishes, you will receive the combined results automatically.`,
-              `</orchestrator_blocking>`,
-            ].join("\n"),
-          )
-        }
       }
     }
 
@@ -1386,34 +1393,29 @@ export namespace SessionPrompt {
     if (!["reviewer", "checker", "plan", "explore"].includes(input.agent.name)) {
       const editCount = HarnessState.getEditedFileCount(sessionID)
       const hasCritical = HarnessState.hasCriticalEdit(sessionID)
-      const alreadyHasEditReminder = input.messages.some(m => m.parts.some(
-        (p) => p.type === "text" && (p as any).synthetic && (p as any).text?.includes("edit_reminder")
-      ))
 
-      if (!alreadyHasEditReminder) {
+      if (!hasSyntheticText("edit_reminder")) {
         if (hasCritical) {
-          aggregatedReminders.push([
-            "<edit_reminder type=\"critical\">",
-            "⚠️ System Reminder: A CRITICAL file (auth/config/database/migration/env/secret) was modified.",
-            "You MUST verify correctness before continuing. Run the project typecheck and test commands now.",
-            "</edit_reminder>",
-          ].join("\n"))
-        } else if (editCount >= 5) {
-          aggregatedReminders.push([
-            `<edit_reminder type="high" count="${editCount}">`,
-            `⚠️ System Reminder: ${editCount}+ file edits detected in this session.`,
-            "You CANNOT execute taskflow action='clear' or declare task complete without:",
-            "1. Running the project test and typecheck commands",
-            "2. Spawning the reviewer subagent with the raw test outputs",
-            "</edit_reminder>",
-          ].join("\n"))
-        } else if (editCount >= 3) {
-          aggregatedReminders.push([
-            `<edit_reminder type="medium" count="${editCount}">`,
-            `⚠️ System Reminder: ${editCount} files have been modified in this session.`,
-            "You CANNOT continue directly. You MUST check taskflow list and verify the plan is on track.",
-            "</edit_reminder>",
-          ].join("\n"))
+          aggregatedReminders.push(
+            [
+              '<edit_reminder type="critical">',
+              "⚠️ System Reminder: A CRITICAL file (auth/config/database/migration/env/secret) was modified.",
+              "You MUST verify correctness before continuing. Run the project typecheck and test commands now.",
+              "</edit_reminder>",
+            ].join("\n"),
+          )
+        } else if (editCount >= 1) {
+          aggregatedReminders.push(
+            [
+              `<edit_reminder type="high" count="${editCount}">`,
+              `⚠️ System Reminder: ${editCount}+ file edit(s) detected in this session.`,
+              "The review gate is ACTIVE: taskflow action='clear' is code-level blocked until the",
+              "reviewer sub-agent returns PASS on your changes. Before calling clear:",
+              "1. Run the project test and typecheck commands and capture raw output",
+              "2. Fix any failures — the reviewer will independently verify with raw logs",
+              "</edit_reminder>",
+            ].join("\n"),
+          )
         }
       }
     }
@@ -1428,14 +1430,17 @@ export namespace SessionPrompt {
           agent: input.agent.name,
           model: (userMessage.info as MessageV2.User).model,
         } as MessageV2.User,
-        parts: aggregatedReminders.map(text => ({
-          id: Identifier.ascending("part"),
-          messageID: "", // Replaced during generation, but not needed for in-memory mapping
-          sessionID: sessionID,
-          type: "text",
-          text: text,
-          synthetic: true,
-        } as MessageV2.TextPart)),
+        parts: aggregatedReminders.map(
+          (text) =>
+            ({
+              id: Identifier.ascending("part"),
+              messageID: "", // Replaced during generation, but not needed for in-memory mapping
+              sessionID: sessionID,
+              type: "text",
+              text: text,
+              synthetic: true,
+            }) as MessageV2.TextPart,
+        ),
       })
     }
 

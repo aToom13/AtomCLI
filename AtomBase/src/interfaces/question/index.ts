@@ -21,7 +21,7 @@ export namespace Question {
   export const Info = z
     .object({
       question: z.string().describe("Complete question"),
-      header: z.string().max(12).describe("Very short label (max 12 chars)"),
+      header: z.string().max(96).describe("Short label (max 96 chars)"),
       type: z.enum(["select", "text", "password"]).optional().default("select").describe("Input type"),
       placeholder: z.string().optional().describe("Placeholder text for input"),
       options: z.array(Option).optional().describe("Available choices (required for select type)"),

@@ -32,6 +32,38 @@ export interface ExecutionLog {
   timestamp: number
 }
 
+/**
+ * Verdict produced by the blocking reviewer sub-agent for the MAIN agent's
+ * edits. Persisted per session so re-reviews can be skipped when nothing
+ * changed since the last PASS, and so FAIL attempts accumulate context
+ * (prevents reset-shopping by the main agent).
+ *
+ * STATUS MEANING:
+ *   - "pass"  — last review PASSED the file set recorded in `fileSet`.
+ *   - "fail"  — last review REJECTED the file set; needsReview stays true
+ *               until a review passes. Also used for invalidated verdicts
+ *               (new edits landed) — attempts are reset to 0 so the reviewer
+ *               can re-spawn.
+ *   - "pending" — a review claim is IN PROGRESS (set by beginReview). This is
+ *               the ONLY meaning of "pending". It is never produced by
+ *               invalidation — doing so would wedge `taskflow clear` because
+ *               beginReview refuses to re-claim a pending verdict.
+ */
+export interface ReviewVerdict {
+  status: "pass" | "fail" | "pending"
+  /** Reviewer's reason — for fail this is the list of issues to fix */
+  reason?: string
+  /** Edited file set that was reviewed (snapshot at review time) */
+  fileSet: string[]
+  /** Consecutive fail attempts so far (resets when the file set changes) */
+  attempts: number
+  /** Lifetime fail attempts across file-set changes — never resets, prevents reset-shopping */
+  totalFailAttempts: number
+  reviewedAt: number
+  /** Previous verdict preserved while a review claim is pending — restored by releaseReview */
+  prev?: ReviewVerdict
+}
+
 export interface SessionHarness {
   /** TaskFlow state machine */
   steps: TaskFlowStep[]
@@ -39,15 +71,38 @@ export interface SessionHarness {
   editedFiles: Set<string>
   /** Ring buffer of last N bash executions */
   executionLogs: ExecutionLog[]
+  /** Reviewer verdict for the main agent's edits, if a review ran */
+  reviewVerdict?: ReviewVerdict
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_EXECUTION_LOGS = 5
 const MAX_LOG_BYTES = 10_000
+const MAX_COMMAND_BYTES = 2_000
+
+/** Hard cap on tracked edited files per session — prevents unbounded memory growth. */
+export const MAX_EDITED_FILES_TRACKED = 1_000
+/** Lifetime fail ceiling multiplier: max_attempts * this = total fails allowed before block. */
+export const REVIEW_TOTAL_ATTEMPT_MULTIPLIER = 3
 
 /** Files matching this pattern trigger an immediate critical-edit warning */
 const CRITICAL_FILE_RE = /(auth|config|database|migration|\.env|secret|password|credential)/i
+
+/**
+ * Escape untrusted text for embedding inside XML-tagged prompt sections.
+ * File paths and execution-log output are attacker-influenceable (repo/test
+ * content can print fake closing tags), so escape before wrapping to prevent
+ * prompt-injection via XML tag breakout.
+ */
+export function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
+}
 
 // ─── State factory (per project instance) ────────────────────────────────────
 
@@ -68,6 +123,14 @@ function getSession(sessionID: string): SessionHarness {
   return session
 }
 
+/** Compare two file lists ignoring order (used for verdict staleness). */
+function sameFileSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  const sortedA = [...a].sort()
+  const sortedB = [...b].sort()
+  return sortedA.every((f, i) => f === sortedB[i])
+}
+
 // ─── TaskFlowStateMachine ─────────────────────────────────────────────────────
 
 export namespace HarnessState {
@@ -86,11 +149,7 @@ export namespace HarnessState {
    * Transition a specific step to a new status.
    * Throws a descriptive ToolError string on invalid transitions.
    */
-  export function transitionStep(
-    sessionID: string,
-    stepId: string,
-    to: "running" | "completed" | "failed",
-  ): void {
+  export function transitionStep(sessionID: string, stepId: string, to: "running" | "completed" | "failed"): void {
     const s = getSession(sessionID)
     const step = s.steps.find((x) => x.id === stepId)
 
@@ -175,8 +234,19 @@ export namespace HarnessState {
    * Record that a file was modified. Relative or absolute path — both accepted.
    */
   export function addEditedFile(sessionID: string, filePath: string): void {
-    getSession(sessionID).editedFiles.add(filePath)
-    log.info("file edit tracked", { sessionID, filePath, total: getSession(sessionID).editedFiles.size })
+    const s = getSession(sessionID)
+    if (s.editedFiles.size >= MAX_EDITED_FILES_TRACKED && !s.editedFiles.has(filePath)) {
+      log.warn("edited file tracking cap reached — ignoring new file", {
+        sessionID,
+        filePath,
+        cap: MAX_EDITED_FILES_TRACKED,
+      })
+      return
+    }
+    s.editedFiles.add(filePath)
+    // A new edit makes any previous PASS stale — force re-review.
+    invalidateReviewVerdict(sessionID)
+    log.info("file edit tracked", { sessionID, filePath, total: s.editedFiles.size })
   }
 
   /** How many distinct files have been modified in this session. */
@@ -197,6 +267,178 @@ export namespace HarnessState {
     return Array.from(getSession(sessionID).editedFiles)
   }
 
+  /**
+   * Merge edited files from a child/descendant session into a target session's
+   * tracker. Sub-agent edits are tracked under the sub-agent's OWN session ID
+   * (processor.ts records edits with the session that ran the tool), so without
+   * aggregation a main agent could bypass the review gate by delegating all
+   * edits to sub-agents (task/orchestrate). Called by the review gate at clear
+   * time so the gate reviews the union of parent + descendant edits.
+   *
+   * Returns the number of files newly added to the target.
+   */
+  export function mergeEditedFiles(targetSessionID: string, sourceSessionID: string): number {
+    const source = getSession(sourceSessionID)
+    if (source.editedFiles.size === 0) return 0
+    const target = getSession(targetSessionID)
+    let added = 0
+    for (const f of source.editedFiles) {
+      if (!target.editedFiles.has(f)) {
+        if (target.editedFiles.size >= MAX_EDITED_FILES_TRACKED) break
+        target.editedFiles.add(f)
+        added++
+      }
+    }
+    if (added > 0) {
+      invalidateReviewVerdict(targetSessionID)
+      log.info("merged edited files across sessions", { targetSessionID, sourceSessionID, added })
+    }
+    return added
+  }
+
+  // ── ReviewVerdictRegistry ────────────────────────────────────────────────
+  //
+  // Tracks the reviewer verdict for the MAIN agent's edits. The gate currently
+  // runs on `taskflow clear` (review-gate.ts is the ONLY caller of needsReview).
+  // A turn-end safety net in processor.ts is deferred to Phase 2 — do not rely
+  // on this registry being consulted at turn end yet.
+  //
+  // A verdict is stale (and needsReview becomes true) whenever:
+  //   - no verdict exists yet, or
+  //   - the last verdict was a fail (retry), or
+  //   - the edited file set changed since the last review.
+
+  /**
+   * Claim the right to run a review. Atomic guard against double-spawn:
+   * the ai SDK executes multiple tool calls in one message in parallel, so
+   * two concurrent `taskflow clear` calls could both see "no verdict" and
+   * both spawn a reviewer. Because this function is synchronous, only the
+   * first caller wins — subsequent callers get `false` and short-circuit.
+   *
+   * Returns true if this caller may proceed to spawn the reviewer.
+   */
+  export function beginReview(sessionID: string): boolean {
+    const s = getSession(sessionID)
+    if (s.reviewVerdict?.status === "pending") return false
+    const prev = s.reviewVerdict
+    s.reviewVerdict = {
+      status: "pending",
+      fileSet: getEditedFiles(sessionID),
+      attempts: prev ? prev.attempts : 0,
+      totalFailAttempts: prev ? prev.totalFailAttempts : 0,
+      reviewedAt: Date.now(),
+      prev,
+    }
+    return true
+  }
+
+  /**
+   * Release a claimed review without recording a verdict. Used when the
+   * reviewer could not run (infrastructure error) — the pending claim must be
+   * cleared so the next `taskflow clear` can re-attempt the review instead of
+   * being permanently wedged behind a stale `pending` verdict.
+   */
+  export function releaseReview(sessionID: string): void {
+    const s = getSession(sessionID)
+    if (s.reviewVerdict?.status !== "pending") return
+    const prev = s.reviewVerdict.prev
+    s.reviewVerdict = prev
+    log.warn("review claim released without verdict", { sessionID })
+  }
+
+  /**
+   * Record the reviewer's verdict for the reviewed edited file set.
+   *
+   * The verdict is recorded against the file set SNAPSHOT taken at
+   * `beginReview` time (the set the reviewer actually saw), NOT the live set
+   * at record time. If parallel edits land while the review runs, the verdict
+   * covers the snapshot and `needsReview` sees the live set differs — forcing
+   * a re-review instead of letting a PASS cover files the reviewer never saw.
+   *
+   * Fail attempts only accumulate while the reviewed file set is UNCHANGED
+   * between attempts. If the agent fixes issues (changing the file set),
+   * `invalidateReviewVerdict` resets attempts to 0, so a fresh review can
+   * re-run — prevents permanent exhaustion deadlock on a stale file set.
+   */
+  export function recordReviewVerdict(sessionID: string, verdict: { status: "pass" | "fail"; reason?: string }): void {
+    const s = getSession(sessionID)
+    const prev = s.reviewVerdict
+    // Record against the beginReview snapshot when a claim exists, otherwise
+    // the current file set (direct calls in tests / simple flows).
+    const fileSet = prev ? prev.fileSet : getEditedFiles(sessionID)
+    s.reviewVerdict = {
+      status: verdict.status,
+      reason: verdict.reason,
+      fileSet,
+      attempts: verdict.status === "fail" ? (prev ? prev.attempts + 1 : 1) : 0,
+      totalFailAttempts:
+        verdict.status === "fail" ? (prev?.totalFailAttempts ?? 0) + 1 : (prev?.totalFailAttempts ?? 0),
+      reviewedAt: Date.now(),
+    }
+    log.info("review verdict recorded", {
+      sessionID,
+      status: verdict.status,
+      attempts: s.reviewVerdict.attempts,
+      totalFailAttempts: s.reviewVerdict.totalFailAttempts,
+    })
+  }
+
+  /** Current review verdict, if any review has run. */
+  export function getReviewVerdict(sessionID: string): ReviewVerdict | undefined {
+    return getSession(sessionID).reviewVerdict
+  }
+
+  /**
+   * True if a blocking review must run before the main agent is allowed to
+   * finish. False when: no files were edited, a PASS covers the current file
+   * set, or no review is pending/required.
+   */
+  export function needsReview(sessionID: string): boolean {
+    const files = getEditedFiles(sessionID)
+    if (files.length === 0) return false
+    const verdict = getSession(sessionID).reviewVerdict
+    if (!verdict) return true
+    if (verdict.status !== "pass") return true
+    // PASS is stale if new edits landed after the review snapshot
+    return !sameFileSet(verdict.fileSet, files)
+  }
+
+  /**
+   * Invalidate a stored verdict when a new edit lands after the review.
+   *
+   * PASS → fail with attempts = 0 (re-review required). A FAIL is only
+   * invalidated when the edited file set CHANGES — that proves the agent fixed
+   * different content, so attempts reset and the reviewer can re-spawn (escape
+   * from exhaustion). Editing a file already in the reviewed set keeps the FAIL
+   * and its attempts.
+   *
+   * NOTE: invalidation NEVER sets status = "pending". `pending` is reserved for
+   * an in-progress review claim (beginReview); beginReview refuses to re-claim
+   * a pending verdict, so an invalidated verdict left as `pending` would
+   * permanently wedge `taskflow clear`. `needsReview` already returns true for
+   * both "fail" and a stale "pass" (file-set mismatch), so a "fail" with
+   * attempts = 0 is a safe, re-claimable representation of "needs review".
+   */
+  export function invalidateReviewVerdict(sessionID: string): void {
+    const s = getSession(sessionID)
+    if (!s.reviewVerdict) return
+    if (s.reviewVerdict.status === "pass") {
+      s.reviewVerdict.status = "fail"
+      s.reviewVerdict.attempts = 0
+      s.reviewVerdict.reason = "Invalidated: new edits landed after last review"
+      log.info("review verdict invalidated by new edit", { sessionID })
+      return
+    }
+    if (s.reviewVerdict.status === "fail") {
+      const fileSet = getEditedFiles(sessionID)
+      if (!sameFileSet(s.reviewVerdict.fileSet, fileSet)) {
+        s.reviewVerdict.attempts = 0
+        s.reviewVerdict.reason = "Invalidated: edited file set changed after failed review"
+        log.info("fail verdict invalidated by changed file set", { sessionID })
+      }
+    }
+  }
+
   // ── ExecutionLogs ─────────────────────────────────────────────────────────
 
   /**
@@ -209,11 +451,13 @@ export namespace HarnessState {
   ): void {
     const s = getSession(sessionID)
     const truncated =
-      entry.output.length > MAX_LOG_BYTES
-        ? entry.output.slice(0, MAX_LOG_BYTES) + "\n\n[...truncated]"
-        : entry.output
+      entry.output.length > MAX_LOG_BYTES ? entry.output.slice(0, MAX_LOG_BYTES) + "\n\n[...truncated]" : entry.output
+    const command =
+      entry.command.length > MAX_COMMAND_BYTES
+        ? entry.command.slice(0, MAX_COMMAND_BYTES) + "\n\n[...command truncated]"
+        : entry.command
 
-    s.executionLogs.push({ ...entry, output: truncated, timestamp: Date.now() })
+    s.executionLogs.push({ ...entry, command, output: truncated, timestamp: Date.now() })
 
     // Enforce ring buffer size
     if (s.executionLogs.length > MAX_EXECUTION_LOGS) {
@@ -242,8 +486,8 @@ export namespace HarnessState {
         const exitInfo = l.exitCode !== null ? ` exit_code="${l.exitCode}"` : ""
         return [
           `  <command_${i + 1}${exitInfo}>`,
-          `    <cmd>${l.command}</cmd>`,
-          `    <output>${l.output.trim()}</output>`,
+          `    <cmd>${escapeXmlText(l.command)}</cmd>`,
+          `    <output>${escapeXmlText(l.output.trim())}</output>`,
           `  </command_${i + 1}>`,
         ].join("\n")
       })
@@ -256,6 +500,8 @@ export namespace HarnessState {
 
   /** Full reset of harness state for a session (e.g. on session close). */
   export function reset(sessionID: string): void {
+    REVIEWER_SESSION_MAP.delete(sessionID)
+    REVIEWER_SESSION_TS.delete(sessionID)
     store().delete(sessionID)
   }
 
@@ -302,6 +548,32 @@ export namespace HarnessState {
   // Key: "parentSessionId:taskId" → QA reviewer session ID
 
   const QA_SESSION_MAP: Map<string, string> = new Map()
+  const QA_SESSION_TS: Map<string, number> = new Map()
+  const QA_SESSION_TTL_MS = 60 * 60 * 1000
+  const MAX_QA_SESSIONS = 100
+
+  function pruneQASessions(): void {
+    const now = Date.now()
+    for (const [key, ts] of QA_SESSION_TS) {
+      if (now - ts > QA_SESSION_TTL_MS) {
+        QA_SESSION_MAP.delete(key)
+        QA_SESSION_TS.delete(key)
+      }
+    }
+    while (QA_SESSION_MAP.size > MAX_QA_SESSIONS) {
+      let oldest: string | undefined
+      let oldestTs = Infinity
+      for (const [key, ts] of QA_SESSION_TS) {
+        if (ts < oldestTs) {
+          oldestTs = ts
+          oldest = key
+        }
+      }
+      if (oldest === undefined) break
+      QA_SESSION_MAP.delete(oldest)
+      QA_SESSION_TS.delete(oldest)
+    }
+  }
 
   /**
    * Retrieve the persistent QA session ID for a task, if one exists.
@@ -311,10 +583,16 @@ export namespace HarnessState {
   }
 
   /**
-   * Register a QA session ID for a task after first spawn.
+   * Register a QA session ID for a task after first spawn. Bounded: entries
+   * older than 1 hour are pruned on set; when the map exceeds the cap the
+   * oldest entries (by timestamp) are evicted — mirrors the reviewer session
+   * registry to prevent unbounded memory growth in long-lived servers.
    */
   export function setQASession(orchestratorSessionID: string, taskId: string, qaSessionId: string): void {
-    QA_SESSION_MAP.set(`${orchestratorSessionID}:${taskId}`, qaSessionId)
+    pruneQASessions()
+    const key = `${orchestratorSessionID}:${taskId}`
+    QA_SESSION_MAP.set(key, qaSessionId)
+    QA_SESSION_TS.set(key, Date.now())
     log.info("QA session registered", { orchestratorSessionID, taskId, qaSessionId })
   }
 
@@ -322,7 +600,9 @@ export namespace HarnessState {
    * Clear QA session mapping for a task (e.g. on workflow cleanup).
    */
   export function clearQASession(orchestratorSessionID: string, taskId: string): void {
-    QA_SESSION_MAP.delete(`${orchestratorSessionID}:${taskId}`)
+    const key = `${orchestratorSessionID}:${taskId}`
+    QA_SESSION_MAP.delete(key)
+    QA_SESSION_TS.delete(key)
   }
 
   /**
@@ -331,7 +611,79 @@ export namespace HarnessState {
   export function clearAllQASessions(orchestratorSessionID: string): void {
     const prefix = `${orchestratorSessionID}:`
     for (const key of QA_SESSION_MAP.keys()) {
-      if (key.startsWith(prefix)) QA_SESSION_MAP.delete(key)
+      if (key.startsWith(prefix)) {
+        QA_SESSION_MAP.delete(key)
+        QA_SESSION_TS.delete(key)
+      }
     }
+  }
+
+  // ── MainReviewerSessionRegistry ──────────────────────────
+  //
+  // One persistent reviewer session per MAIN agent session. The reviewer is
+  // reused across all review attempts for a session so it accumulates context
+  // of every previous FAIL verdict and cannot be "reset-shopped" by the main
+  // agent (same rationale as QASessionRegistry, but for the main loop).
+  //
+  // Key: sessionID → reviewer session ID
+  //
+  // Bounded: entries older than 1 hour are pruned on set (mirrors
+  // MAX_WORKFLOWS pattern in orchestrate.ts); when the map exceeds the cap the
+  // oldest entries are evicted. This prevents unbounded memory growth in
+  // long-lived server sessions.
+
+  const REVIEWER_SESSION_MAP: Map<string, string> = new Map()
+  const REVIEWER_SESSION_TS: Map<string, number> = new Map()
+  const REVIEWER_SESSION_TTL_MS = 60 * 60 * 1000
+  const MAX_REVIEWER_SESSIONS = 100
+
+  function pruneReviewerSessions(): void {
+    const now = Date.now()
+    for (const [key, ts] of REVIEWER_SESSION_TS) {
+      if (now - ts > REVIEWER_SESSION_TTL_MS) {
+        REVIEWER_SESSION_MAP.delete(key)
+        REVIEWER_SESSION_TS.delete(key)
+      }
+    }
+    while (REVIEWER_SESSION_MAP.size > MAX_REVIEWER_SESSIONS) {
+      // Evict by MIN timestamp, not insertion order — timestamps can diverge
+      // from insertion order after resets/re-registrations.
+      let oldest: string | undefined
+      let oldestTs = Infinity
+      for (const [key, ts] of REVIEWER_SESSION_TS) {
+        if (ts < oldestTs) {
+          oldestTs = ts
+          oldest = key
+        }
+      }
+      if (oldest === undefined) break
+      REVIEWER_SESSION_MAP.delete(oldest)
+      REVIEWER_SESSION_TS.delete(oldest)
+    }
+  }
+
+  /**
+   * Retrieve the persistent reviewer session ID for a main session.
+   */
+  export function getReviewerSession(sessionID: string): string | undefined {
+    return REVIEWER_SESSION_MAP.get(sessionID)
+  }
+
+  /**
+   * Register the reviewer session ID for a main session after first spawn.
+   */
+  export function setReviewerSession(sessionID: string, reviewerSessionId: string): void {
+    pruneReviewerSessions()
+    REVIEWER_SESSION_MAP.set(sessionID, reviewerSessionId)
+    REVIEWER_SESSION_TS.set(sessionID, Date.now())
+    log.info("main reviewer session registered", { sessionID, reviewerSessionId })
+  }
+
+  /**
+   * Clear the reviewer session mapping for a main session (e.g. on reset).
+   */
+  export function clearReviewerSession(sessionID: string): void {
+    REVIEWER_SESSION_MAP.delete(sessionID)
+    REVIEWER_SESSION_TS.delete(sessionID)
   }
 }

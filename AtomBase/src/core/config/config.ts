@@ -1113,6 +1113,27 @@ export namespace Config {
         })
         .optional()
         .describe("Retry configuration for Agent mode"),
+      review: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .default(true)
+            .describe(
+              "Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are " +
+                "reviewed by the reviewer agent before taskflow clear is allowed to complete.",
+            ),
+          max_attempts: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .default(3)
+            .describe("Maximum consecutive FAIL verdicts before the review gate escalates to the user"),
+        })
+        .passthrough()
+        .optional()
+        .describe("Automatic reviewer gate configuration for the main agent"),
       provider: z
         .record(z.string(), Provider)
         .optional()

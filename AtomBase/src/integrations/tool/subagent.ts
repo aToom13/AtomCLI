@@ -61,9 +61,22 @@ export namespace SubAgent {
    * This is used for special agents like "reviewer" that should have
    * restricted permissions ("*": "deny", read: { "*": "allow" }) regardless
    * of what permissions the parent session has.
+   *
+   * Hard-deny enforcement: every "deny" rule the agent declares is re-appended
+   * AFTER the merged ruleset. PermissionNext.evaluate() uses findLast, so the
+   * last matching rule wins — this guarantees the agent's own deny rules can
+   * never be overridden by user config or YOLO-style flat merges.
    */
   export function buildFromAgent(agent: Agent.Info): PermissionNext.Rule[] {
-    return PermissionNext.merge(agent.permission ?? [], BASE_DENIED_PERMISSIONS)
+    // Re-append the agent's SPECIFIC deny rules after the merged ruleset so
+    // they can never be overridden by user config or YOLO flat merges. The
+    // universal catch-all deny ("*": "*") is the allowlist baseline, NOT a
+    // hard deny — it must stay before the explicit allows (e.g. the
+    // reviewer's read: {"*": "allow"}) or findLast would let it shadow them.
+    const hardDenies = (agent.permission ?? []).filter(
+      (r) => r.action === "deny" && !(r.permission === "*" && r.pattern === "*"),
+    )
+    return PermissionNext.merge(agent.permission ?? [], hardDenies, BASE_DENIED_PERMISSIONS)
   }
 
   export interface SpawnConfig {

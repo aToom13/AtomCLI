@@ -281,10 +281,60 @@ class PendingQuestion {
     final rawQuestions = json['questions'] as List? ?? [];
     return PendingQuestion(
       reqId: json['req_id'] as String? ?? '',
-      sessionId: json['sessionID'] as String? ?? json['sessionId'] as String? ?? '',
+      sessionId:
+          json['sessionID'] as String? ?? json['sessionId'] as String? ?? '',
       questions: rawQuestions
           .map((q) => QuestionInfo.fromJson(q as Map<String, dynamic>))
           .toList(),
+    );
+  }
+}
+
+/// Chat message model for messaging feature
+class ChatMessage {
+  final String id;
+  final String role; // 'user', 'assistant', 'system'
+  final String content;
+  final int timestamp;
+  final bool isStreaming;
+  final String? error;
+
+  const ChatMessage({
+    required this.id,
+    required this.role,
+    required this.content,
+    required this.timestamp,
+    this.isStreaming = false,
+    this.error,
+  });
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    return ChatMessage(
+      id: json['id'] as String? ?? '',
+      role: json['role'] as String? ?? 'system',
+      content: json['content'] as String? ?? json['text'] as String? ?? '',
+      timestamp:
+          json['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+      isStreaming: json['isStreaming'] as bool? ?? false,
+      error: json['error'] as String?,
+    );
+  }
+
+  ChatMessage copyWith({
+    String? id,
+    String? role,
+    String? content,
+    int? timestamp,
+    bool? isStreaming,
+    String? error,
+  }) {
+    return ChatMessage(
+      id: id ?? this.id,
+      role: role ?? this.role,
+      content: content ?? this.content,
+      timestamp: timestamp ?? this.timestamp,
+      isStreaming: isStreaming ?? this.isStreaming,
+      error: error ?? this.error,
     );
   }
 }

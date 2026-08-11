@@ -1,6 +1,17 @@
 {
   "$schema": "https://atomcli.ai/config.json",
-  "model": "atomcli/minimax-m2.5-free",
+  "model": "atomcli/deepseek-v4-flash-free",
+  "agent": {
+    "reviewer": {
+      "disable": true,
+      "options": {},
+      "permission": {}
+    }
+  },
+  "review": {
+    "enabled": true,
+    "max_attempts": 3
+  },
   "provider": {
     "atomcli": {
       "models": {

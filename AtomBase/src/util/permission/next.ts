@@ -14,8 +14,11 @@ import { Flag } from "@/interfaces/flag/flag"
 export namespace PermissionNext {
   const log = Log.create({ service: "permission" })
 
-  // Permissions that are NEVER auto-allowed, even in YOLO or autonomous mode
-  const YOLO_EXEMPT_PERMISSIONS = ["window_control"]
+  // Permissions that are NEVER auto-allowed, even in YOLO or autonomous mode.
+  // edit/write/task/todowrite/todoread are exempt so sub-agent deny rules
+  // (e.g. the reviewer's read-only baseline) stay effective under YOLO — the
+  // ruleset is still evaluated for these instead of being blindly auto-allowed.
+  const YOLO_EXEMPT_PERMISSIONS = ["window_control", "edit", "write", "task", "todowrite", "todoread"]
 
   export const Action = z.enum(["allow", "deny", "ask"]).meta({
     ref: "PermissionAction",
@@ -135,13 +138,41 @@ export namespace PermissionNext {
       // YOLO mode: auto-allow everything except exempt permissions (e.g., window_control)
       // Activated by: --yolo/--autonomous CLI flag, ATOMCLI_YOLO/ATOMCLI_AUTONOMOUS env, or config agent_mode
       if (Flag.ATOMCLI_YOLO && !YOLO_EXEMPT_PERMISSIONS.includes(input.permission)) {
+        // Deny rules stay effective even in YOLO: a YOLO parent must not
+        // auto-allow a sub-agent call that its own merged ruleset explicitly
+        // denies (e.g. the reviewer's read-only bash overlay). Evaluate the
+        // FINAL verdict per pattern (findLast semantics, no storage read)
+        // before the auto-allow shortcut — an explicit allow (e.g. the
+        // reviewer's read: {"*": "allow"}) wins over the catch-all baseline,
+        // while unlisted tools still fall back to the catch-all deny.
+        const denyRules: Rule[] = []
+        for (const pattern of input.patterns ?? []) {
+          const rule = evaluate(input.permission, pattern, input.ruleset)
+          if (rule.action === "deny") denyRules.push(rule)
+        }
+        if (denyRules.length > 0) {
+          log.warn("YOLO mode: deny rule overrides auto-allow", { permission: input.permission, denyRules })
+          throw new DeniedError(denyRules)
+        }
         log.info("YOLO mode: auto-allowing", { permission: input.permission })
         return
       }
       const s = await state()
       const { ruleset, ...request } = input
+      // Hard denies from the passed ruleset (agent overlays / config) must win
+      // over stored user approvals, otherwise a reviewer's read-only bash
+      // overlay could be bypassed by an "always" approval stored earlier.
+      // Re-append the ruleset's deny rules after s.approved so findLast picks
+      // the deny for matching patterns — approvals still work for everything
+      // that is not explicitly denied. The universal catch-all deny ("*": "*")
+      // is excluded: it is the allowlist baseline, not a hard deny, and
+      // re-appending it would shadow the agent's explicit allows (e.g. the
+      // reviewer's read: {"*": "allow"}).
+      const hardDenies = ruleset.filter(
+        (rule) => rule.action === "deny" && !(rule.permission === "*" && rule.pattern === "*"),
+      )
       for (const pattern of request.patterns ?? []) {
-        const rule = evaluate(request.permission, pattern, ruleset, s.approved)
+        const rule = evaluate(request.permission, pattern, ruleset, s.approved, hardDenies)
         log.info("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny")
           throw new DeniedError(ruleset.filter((r) => Wildcard.match(request.permission, r.permission)))

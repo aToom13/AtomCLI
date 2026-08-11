@@ -120,7 +120,7 @@ describe("HarnessState Unit Tests", () => {
 })
 
 describe("SessionPrompt Synthetic Reminders", () => {
-  test("injects medium reminder for 3 edited files", async () => {
+  test("injects high reminder for 3 edited files (review gate active)", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
       directory: tmp.path,
@@ -143,7 +143,8 @@ describe("SessionPrompt Synthetic Reminders", () => {
         const reminderMsg = updated[updated.length - 1]
         expect(reminderMsg.info.role).toBe("user")
         expect((reminderMsg.parts[0] as MessageV2.TextPart).synthetic).toBe(true)
-        expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain('<edit_reminder type="medium" count="3">')
+        expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain('<edit_reminder type="high" count="3">')
+        expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain("reviewer sub-agent")
       },
     })
   })
@@ -170,7 +171,8 @@ describe("SessionPrompt Synthetic Reminders", () => {
         expect(reminderMsg.info.role).toBe("user")
         expect((reminderMsg.parts[0] as MessageV2.TextPart).synthetic).toBe(true)
         expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain('<edit_reminder type="high" count="5">')
-        expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain("reviewer subagent")
+        expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain("reviewer sub-agent")
+        expect((reminderMsg.parts[0] as MessageV2.TextPart).text).toContain("code-level blocked")
       },
     })
   })
@@ -522,4 +524,3 @@ describe("insertReminders - orchestrator_blocking tag", () => {
     })
   })
 })
-

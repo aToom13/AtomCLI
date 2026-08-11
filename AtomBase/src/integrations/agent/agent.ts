@@ -145,7 +145,104 @@ export namespace Agent {
             glob: "allow",
             codesearch: "allow",
             // Allow test execution and API calls for independent verification.
-            bash: "allow",
+            // Deny-pattern overlay: block common exfil/download primitives so a
+            // reviewer consuming untrusted repo content (harness logs, pasted
+            // requests) cannot be social-engineered into fetching/executing
+            // remote payloads. Defense-in-depth — the read-only edit/write
+            // denies below are the primary boundary.
+            bash: {
+              "*": "allow",
+              // network fetch / exfil primitives
+              "curl *": "deny",
+              "/usr/bin/curl*": "deny",
+              "/bin/curl*": "deny",
+              "wget *": "deny",
+              "/usr/bin/wget*": "deny",
+              "/bin/wget*": "deny",
+              "nc *": "deny",
+              "ncat *": "deny",
+              "*nc -e*": "deny",
+              "*ncat -e*": "deny",
+              "telnet *": "deny",
+              "openssl s_client*": "deny",
+              "*socat*": "deny",
+              "mkfifo *": "deny",
+              // privilege escalation / permission changes
+              "sudo *": "deny",
+              "chmod *": "deny",
+              "chown *": "deny",
+              // inline code execution primitives
+              "*python -c*": "deny",
+              "*python2 -c*": "deny",
+              "*python3 -c*": "deny",
+              "*node -e*": "deny",
+              "*node --eval*": "deny",
+              "*ruby -e*": "deny",
+              "*perl -e*": "deny",
+              "*php -r*": "deny",
+              "*sh -c*": "deny",
+              "*sh -i*": "deny",
+              "*bash -i*": "deny",
+              // decoding / reverse shells
+              "*base64 -d*": "deny",
+              "*base64 --decode*": "deny",
+              "*/dev/tcp*": "deny",
+              // destructive file/git operations
+              "rm -rf *": "deny",
+              "rm -fr *": "deny",
+              "git clean*": "deny",
+              "git reset --hard*": "deny",
+              "git checkout .*": "deny",
+              "git checkout --*": "deny",
+              "git checkout -f*": "deny",
+              // command substitution / indirection (bypass attempts)
+              "*$(curl*": "deny",
+              "*$(wget*": "deny",
+              "*$(nc*": "deny",
+              "*$(ncat*": "deny",
+              "*$(mkfifo*": "deny",
+              "*eval *": "deny",
+              "*xargs *": "deny",
+              "*bash -c*": "deny",
+              // network-capable git operations (exfil / cloning payloads)
+              "*git push*": "deny",
+              "*git fetch*": "deny",
+              "*git clone*": "deny",
+              // remote shell / file transfer primitives
+              "*ssh *": "deny",
+              "*scp *": "deny",
+              "*busybox wget*": "deny",
+              "*busybox curl*": "deny",
+              "*busybox nc*": "deny",
+              // pipeline exfil (cat file | curl / python)
+              "*| curl*": "deny",
+              "*| wget*": "deny",
+              "*| nc*": "deny",
+              "*| ncat*": "deny",
+              // inline runtime executors
+              "*bun -e*": "deny",
+              "*npx *": "deny",
+              "*deno eval*": "deny",
+              "*deno run*": "deny",
+              "*python3 /tmp/*": "deny",
+              "*python2 /tmp/*": "deny",
+              "*python /tmp/*": "deny",
+              "*cat * | python3*": "deny",
+              "*cat * | python2*": "deny",
+              "*cat * | python*": "deny",
+              // package runners / installers — arbitrary package download +
+              // postinstall code execution is a network fetch/exfil vector
+              "*bunx *": "deny",
+              "*bun i *": "deny",
+              "*bun install *": "deny",
+              "*npm *": "deny",
+              "*npx -y*": "deny",
+              "*pnpm dlx*": "deny",
+              "*yarn dlx*": "deny",
+              "*pip install *": "deny",
+              "*pip3 install *": "deny",
+              "*pip2 install *": "deny",
+            },
             // Allow browser for frontend/UI verification (e.g. Playwright).
             browser: "allow",
             // Disallow any file writes

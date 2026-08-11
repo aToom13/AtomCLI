@@ -543,7 +543,18 @@ test("explicit Truncate.DIR deny is respected", async () => {
 
 // ── Explore Agent Tool Filtering Integration Tests ──
 
-const EXPLORE_ALLOWED_TOOLS = ["read", "find", "grep", "bash", "webfetch", "websearch", "codesearch", "skill", "memory", "taskflow"]
+const EXPLORE_ALLOWED_TOOLS = [
+  "read",
+  "find",
+  "grep",
+  "bash",
+  "webfetch",
+  "websearch",
+  "codesearch",
+  "skill",
+  "memory",
+  "taskflow",
+]
 const EXPLORE_DENIED_TOOLS = [
   "edit",
   "write",
@@ -678,5 +689,50 @@ describe("explore agent tool filtering", () => {
     expect(SessionPolicy.decideTools("agent")).toBeUndefined()
     expect(SessionPolicy.decideTools("coder")).toBeUndefined()
     expect(SessionPolicy.decideTools("build")).toBeUndefined()
+  })
+})
+
+test("reviewer agent bash overlay denies substitution/exfil primitives", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const reviewer = await Agent.get("reviewer")
+      expect(reviewer).toBeDefined()
+      const bashDenies = (reviewer!.permission ?? [])
+        .filter((r) => r.permission === "bash" && r.action === "deny")
+        .map((r) => r.pattern)
+
+      // Each of these must exist as a deny pattern so the overlay cannot be
+      // bypassed via command substitution, unlisted git/ssh primitives, or
+      // inline runtime executors.
+      for (const pattern of [
+        "*$(curl*",
+        "*eval *",
+        "*xargs *",
+        "*git push*",
+        "*git fetch*",
+        "*git clone*",
+        "*ssh *",
+        "*npx *",
+        "*deno eval*",
+        "*bun -e*",
+        "*cat * | python3*",
+        "*busybox wget*",
+        // package runners / installers (arbitrary package download + exec)
+        "*bunx *",
+        "*bun i *",
+        "*bun install *",
+        "*npm *",
+        "*npx -y*",
+        "*pnpm dlx*",
+        "*yarn dlx*",
+        "*pip install *",
+        "*pip3 install *",
+        "*pip2 install *",
+      ]) {
+        expect(bashDenies).toContain(pattern)
+      }
+    },
   })
 })

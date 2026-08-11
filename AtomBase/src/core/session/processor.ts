@@ -27,6 +27,21 @@ export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
   const log = Log.create({ service: "session.processor" })
 
+  // AI SDK can emit tool input as a raw JSON string when tool call args fail to
+  // parse (e.g. malformed JSON from the model). MessageV2.ToolState.input requires
+  // a record, so normalize strings before persisting.
+  function normalizeToolInput(input: unknown): Record<string, any> {
+    if (input && typeof input === "object" && !Array.isArray(input)) return input as Record<string, any>
+    if (typeof input === "string") {
+      try {
+        const parsed = JSON.parse(input)
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, any>
+      } catch {}
+      return { raw: input }
+    }
+    return {}
+  }
+
   export type Info = Awaited<ReturnType<typeof create>>
   export type ProcessResult = {
     status: "compact" | "stop" | "continue"
@@ -57,9 +72,12 @@ export namespace SessionProcessor {
       partFromToolCall(toolCallID: string) {
         return toolcalls[toolCallID]
       },
-      async process(streamInput: LLM.StreamInput, options?: {
-        enableAmendments?: boolean
-      }) {
+      async process(
+        streamInput: LLM.StreamInput,
+        options?: {
+          enableAmendments?: boolean
+        },
+      ) {
         log.info("process")
         needsCompaction = false
 
@@ -72,8 +90,8 @@ export namespace SessionProcessor {
         try {
           const userMsg = streamInput.user
           const userParts = await MessageV2.parts(userMsg.id)
-          const textParts = userParts.filter(p => p.type === "text" && !("synthetic" in p && p.synthetic))
-          userMessageText = textParts.map(p => (p as any).text).join(" ")
+          const textParts = userParts.filter((p) => p.type === "text" && !("synthetic" in p && p.synthetic))
+          userMessageText = textParts.map((p) => (p as any).text).join(" ")
         } catch (error) {
           log.warn("Failed to get user message text", { error })
         }
@@ -190,12 +208,13 @@ export namespace SessionProcessor {
                 case "tool-call": {
                   const match = toolcalls[value.toolCallId]
                   if (match) {
+                    const toolInput = normalizeToolInput(value.input)
                     const part = await Session.updatePart({
                       ...match,
                       tool: value.toolName,
                       state: {
                         status: "running",
-                        input: value.input,
+                        input: toolInput,
                         time: {
                           start: Date.now(),
                         },
@@ -214,7 +233,7 @@ export namespace SessionProcessor {
                           p.type === "tool" &&
                           p.tool === value.toolName &&
                           p.state.status !== "pending" &&
-                          JSON.stringify(p.state.input) === JSON.stringify(value.input),
+                          JSON.stringify(p.state.input) === JSON.stringify(toolInput),
                       )
                     ) {
                       const agent = await Agent.get(input.assistantMessage.agent)
@@ -224,7 +243,7 @@ export namespace SessionProcessor {
                         sessionID: input.assistantMessage.sessionID,
                         metadata: {
                           tool: value.toolName,
-                          input: value.input,
+                          input: toolInput,
                         },
                         always: [value.toolName],
                         ruleset: agent.permission,
@@ -240,7 +259,7 @@ export namespace SessionProcessor {
                       ...match,
                       state: {
                         status: "completed",
-                        input: value.input,
+                        input: normalizeToolInput(value.input),
                         output: value.output.output,
                         metadata: value.output.metadata,
                         title: value.output.title,
@@ -276,7 +295,7 @@ export namespace SessionProcessor {
                       ...match,
                       state: {
                         status: "error",
-                        input: value.input,
+                        input: normalizeToolInput(value.input),
                         error: value.error instanceof Error ? value.error.message : String(value.error ?? ""),
                         time: {
                           start: match.state.time.start,
@@ -441,10 +460,9 @@ export namespace SessionProcessor {
                     // Learn from assistant response — fire-and-forget.
                     // This is a background memory operation (LLM API call) and must NOT
                     // block the stream finish path, which is what drives the UI response timer.
-                    SessionMemoryIntegration.learnFromResponse(
-                      currentText.text,
-                      userMessageText
-                    ).catch(error => log.error("Failed to learn from assistant response", { error }))
+                    SessionMemoryIntegration.learnFromResponse(currentText.text, userMessageText).catch((error) =>
+                      log.error("Failed to learn from assistant response", { error }),
+                    )
                   }
                   currentText = undefined
                   break
@@ -494,8 +512,10 @@ export namespace SessionProcessor {
                         const fallbackModel = await Provider.getModel(parsed.providerID, parsed.modelID)
 
                         // Skip if same as current model
-                        if (fallbackModel.providerID === streamInput.model.providerID &&
-                          fallbackModel.id === streamInput.model.id) {
+                        if (
+                          fallbackModel.providerID === streamInput.model.providerID &&
+                          fallbackModel.id === streamInput.model.id
+                        ) {
                           continue
                         }
 
@@ -524,7 +544,7 @@ export namespace SessionProcessor {
                           message: `Switching to ${fallbackModel.providerID}/${fallbackModel.id} (${retry})`,
                           next: Date.now() + 1000,
                         })
-                        await SessionRetry.sleep(1000, input.abort).catch(() => { })
+                        await SessionRetry.sleep(1000, input.abort).catch(() => {})
                         break
                       } catch (modelErr) {
                         log.warn("failed to load fallback model", {
@@ -551,7 +571,7 @@ export namespace SessionProcessor {
                 message: retry,
                 next: Date.now() + delay,
               })
-              await SessionRetry.sleep(delay, input.abort).catch(() => { })
+              await SessionRetry.sleep(delay, input.abort).catch(() => {})
               continue
             }
             input.assistantMessage.error = error

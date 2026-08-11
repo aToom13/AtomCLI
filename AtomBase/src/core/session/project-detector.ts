@@ -49,23 +49,32 @@ async function readText(p: string): Promise<string | null> {
 }
 
 export namespace ProjectDetector {
+  const cache = new Map<string, ProjectCommands>()
+
   /**
    * Detect project commands from common manifest files in the given directory.
+   * Results are cached per directory — manifest files don't change mid-session.
    * Never throws — returns empty notes on any failure.
    */
   export async function detect(cwd: string): Promise<ProjectCommands> {
+    const cached = cache.get(cwd)
+    if (cached) return cached
+
     const result: ProjectCommands = { notes: [] }
 
     try {
-      await detectPackageJson(cwd, result)
-      await detectCargo(cwd, result)
-      await detectPython(cwd, result)
-      await detectGo(cwd, result)
-      await detectMakefile(cwd, result)
+      await Promise.all([
+        detectPackageJson(cwd, result),
+        detectCargo(cwd, result),
+        detectPython(cwd, result),
+        detectGo(cwd, result),
+        detectMakefile(cwd, result),
+      ])
     } catch (error) {
       log.warn("project detection failed", { error })
     }
 
+    cache.set(cwd, result)
     return result
   }
 
@@ -98,7 +107,7 @@ export namespace ProjectDetector {
     const scripts = (pkg.scripts as Record<string, string> | undefined) ?? {}
 
     // Detect package manager
-    const hasBunLock = await fileExists(path.join(cwd, "bun.lockb")) || await fileExists(path.join(cwd, "bun.lock"))
+    const hasBunLock = (await fileExists(path.join(cwd, "bun.lockb"))) || (await fileExists(path.join(cwd, "bun.lock")))
     const hasPnpmLock = await fileExists(path.join(cwd, "pnpm-lock.yaml"))
     const hasYarnLock = await fileExists(path.join(cwd, "yarn.lock"))
 
@@ -207,7 +216,10 @@ export namespace ProjectDetector {
     if (!result.test && targets.includes("test")) {
       result.test = `make test (detected via Makefile target "test")`
     }
-    if (!result.typecheck && (targets.includes("typecheck") || targets.includes("type-check") || targets.includes("check"))) {
+    if (
+      !result.typecheck &&
+      (targets.includes("typecheck") || targets.includes("type-check") || targets.includes("check"))
+    ) {
       const target = targets.find((t) => t === "typecheck" || t === "type-check" || t === "check")!
       result.typecheck = `make ${target} (detected via Makefile target)`
     }

@@ -3,7 +3,12 @@ import { Tool } from "./tool"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { parseJsonIfString } from "@/util/util/zod"
+import { Session } from "@/core/session"
 import { HarnessState } from "@/core/session/harness-state"
+import { runBlockingReview } from "./review-gate"
+import { Log } from "@/util/util/log"
+
+const log = Log.create({ service: "taskflow" })
 
 const TaskFlowTodoSchema = z.object({
   id: z.string().optional(),
@@ -27,15 +32,18 @@ const parameters = z.object({
     .describe("List of steps with optional todos for action='start'"),
   step_id: z.string().optional().describe("Step ID or index (0-based) for update/complete/fail"),
   todo_id: z.string().optional().describe("Optional Todo ID or index (0-based) for update"),
-  status: z
-    .enum(["pending", "running", "completed", "failed"])
-    .optional()
-    .describe("Step status for update"),
+  status: z.enum(["pending", "running", "completed", "failed"]).optional().describe("Step status for update"),
   todo_status: z
     .enum(["pending", "in_progress", "completed", "cancelled"])
     .optional()
     .describe("Todo status for update"),
   output: z.string().optional().describe("Output or completion message"),
+  force: z
+    .boolean()
+    .optional()
+    .describe(
+      "User-approved force clear: bypass the review gate when action='clear'. Only use when the user explicitly instructed you to force-clear despite a blocked review.",
+    ),
 })
 
 export const TaskFlowTool = Tool.define("taskflow", {
@@ -117,7 +125,8 @@ export const TaskFlowTool = Tool.define("taskflow", {
         }
 
         if (params.status) {
-          const mappedStatus = params.status === "completed" ? "complete" : params.status === "failed" ? "failed" : "running"
+          const mappedStatus =
+            params.status === "completed" ? "complete" : params.status === "failed" ? "failed" : "running"
 
           // Enforce state machine transition when setting to "running"
           if (params.status === "running" && params.step_id !== undefined) {
@@ -235,14 +244,89 @@ export const TaskFlowTool = Tool.define("taskflow", {
       }
 
       case "clear": {
+        // ── REVIEW GATE (primary) ─────────────────────────────────────────
+        // Blocking reviewer sub-agent verifies the main agent's edits before
+        // clear is allowed to complete. On FAIL the clear is NOT performed —
+        // the main agent wakes in the same turn, fixes the issues, and calls
+        // clear again. Sub-agent sessions are exempt (orchestrate already has
+        // its own QA loop). The gate is skipped when review.enabled=false or
+        // no files were edited (handled inside runBlockingReview).
+        // NOTE: Session.get validates the ID synchronously (fn wrapper) and
+        // throws for non-session IDs — wrap in try/catch, not .catch().
+        let sessionInfo: any = null
+        try {
+          sessionInfo = await Session.get(ctx.sessionID)
+        } catch {
+          sessionInfo = null
+        }
+        const isSubAgent = sessionInfo?.parentID != null
+        let reviewBypassed = false
+
+        if (!isSubAgent) {
+          const review = await runBlockingReview(ctx.sessionID)
+
+          if (!review.passed && !params.force) {
+            const verdict = HarnessState.getReviewVerdict(ctx.sessionID)
+            const attempts = verdict?.attempts ?? 1
+
+            // Branch on the failure mode so the agent gets accurate guidance:
+            // infra errors are NOT code issues to fix — retry or escalate.
+            const header = review.error
+              ? "⛔ REVIEW ERROR: taskflow clear is blocked — the review could not run"
+              : review.exhausted
+                ? "⛔ REVIEW EXHAUSTED: taskflow clear is blocked — review attempts exhausted"
+                : "⛔ REVIEW FAILED: taskflow clear is blocked"
+
+            const fixInstruction = review.error
+              ? "The reviewer could not run due to an infrastructure error. Retry taskflow clear, or escalate to the user."
+              : review.exhausted
+                ? "Review attempts are exhausted. Escalate to the user for a decision — do not force clear."
+                : "Fix the issues reported below, then call taskflow clear again."
+
+            const reason = review.error
+              ? "Review infrastructure error — no reviewer verdict was produced. This is not a code issue; retry the review."
+              : (review.reason ?? "Reviewer returned no reason.")
+
+            return {
+              title: "Taskflow clear blocked by review",
+              output: [header, `Attempt ${attempts}.`, "", fixInstruction, "", reason].join("\n"),
+              metadata: { steps: undefined, step_id: undefined, status: "blocked" },
+            }
+          }
+
+          if (!review.passed && params.force) {
+            // Forcing a clear past a blocked review is a privileged action —
+            // require a distinct explicit approval ("taskflow.force") instead
+            // of reusing the generic taskflow ask, so the bypass cannot happen
+            // silently. always: [] makes the approval per-occurrence only — a
+            // stored "always" grant would let the agent force-clear silently
+            // for the rest of the project session. Throws if the user rejects.
+            await ctx.ask({
+              permission: "taskflow.force",
+              patterns: ["*"],
+              always: [],
+              metadata: {},
+            })
+            reviewBypassed = true
+            log.warn("taskflow clear: review gate bypassed by explicit force", {
+              sessionID: ctx.sessionID,
+              exhausted: review.exhausted,
+              error: review.error,
+            })
+          }
+        }
+
         // Option B: warn + force clear
         const { warnings } = HarnessState.clearPlan(ctx.sessionID)
         await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
 
+        const reviewBypassNote = reviewBypassed
+          ? "\n\n⚠️ Review gate bypassed via force — edits were NOT independently verified."
+          : ""
         const warningText = warnings.length > 0 ? `\n\n${warnings.join("\n")}` : ""
         return {
           title: "Taskflow cleared",
-          output: `Taskflow cleared${warningText}`,
+          output: `Taskflow cleared${reviewBypassNote}${warningText}`,
           metadata: { steps: undefined, step_id: undefined, status: "cleared" },
         }
       }
