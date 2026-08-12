@@ -1,11 +1,6 @@
 {
   "$schema": "https://atomcli.ai/config.json",
-  "model": "atomcli/deepseek-v4-flash-free",
-  "agent": {},
-  "review": {
-    "enabled": true,
-    "max_attempts": 3
-  },
+  "model": "atomcli/minimax-m2.5-free",
   "provider": {
     "atomcli": {
       "models": {
@@ -22,7 +17,11 @@
   "mcp": {
     "sequential-thinking": {
       "type": "local",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
       "enabled": true
     }
   },

@@ -43,6 +43,7 @@ export namespace Installation {
   export type Info = z.infer<typeof Info>
 
   export async function info() {
+    await cleanupOldExecutables()
     return {
       version: VERSION,
       latest: await latest(),
@@ -153,7 +154,70 @@ export namespace Installation {
     return "atomcli"
   }
 
+  export async function cleanupOldExecutables() {
+    try {
+      if (process.platform === "win32") {
+        const fs = await import("fs/promises")
+        const execDir = path.dirname(process.execPath)
+        const oldPath = path.join(execDir, "atomcli.exe.old")
+        await fs.unlink(oldPath).catch(() => {})
+      }
+    } catch {}
+  }
+
+  export async function upgradeWindowsNative(target: string) {
+    const versionTag = target.startsWith("v") ? target : `v${target}`
+    const binaryName = "atomcli-windows-x64.exe"
+    const url = `https://github.com/aToom13/AtomCLI/releases/download/${versionTag}/${binaryName}`
+
+    log.info("downloading windows binary natively", { versionTag, url })
+    const res = await fetch(url)
+    if (!res.ok) {
+      throw new Error(`Failed to download release asset ${versionTag}: ${res.status} ${res.statusText}`)
+    }
+
+    const arrayBuffer = await res.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
+    if (buffer.length === 0) {
+      throw new Error("Downloaded binary asset is empty")
+    }
+
+    const currentExecPath = process.execPath
+    const execDir = path.dirname(currentExecPath)
+    const oldPath = path.join(execDir, "atomcli.exe.old")
+    const tempPath = path.join(execDir, `atomcli-new-${Date.now()}.exe`)
+
+    await Bun.write(tempPath, buffer)
+
+    const fs = await import("fs/promises")
+    // Clean up any leftover .old binary first
+    await fs.unlink(oldPath).catch(() => {})
+
+    // Atomic Swap: rename active -> .old, rename temp -> active
+    try {
+      await fs.rename(currentExecPath, oldPath)
+    } catch (e: any) {
+      await fs.unlink(tempPath).catch(() => {})
+      throw new Error(`Could not rename active binary: ${e.message}`)
+    }
+
+    try {
+      await fs.rename(tempPath, currentExecPath)
+    } catch (e: any) {
+      // Revert rename if swap failed
+      await fs.rename(oldPath, currentExecPath).catch(() => {})
+      await fs.unlink(tempPath).catch(() => {})
+      throw new Error(`Could not replace binary: ${e.message}`)
+    }
+
+    log.info("windows binary upgraded successfully", { target: versionTag, path: currentExecPath })
+
+    // Clean up old executable once unlocked
+    await fs.unlink(oldPath).catch(() => {})
+  }
+
   export async function upgrade(method: Method, target: string) {
+    await cleanupOldExecutables()
     let cmd
     switch (method) {
       case "git": {
@@ -198,14 +262,22 @@ export namespace Installation {
         })
         break
       }
-      case "windows":
-        cmd =
-          $`powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex; Update-AtomCLI"`.env(
+      case "windows": {
+        try {
+          await upgradeWindowsNative(target)
+          log.info("upgraded natively", { method, target })
+          return
+        } catch (e: any) {
+          log.warn("native windows upgrade failed, using safe script fallback", { error: e.message })
+          const tempPs1 = path.join(process.env.TEMP || "C:\\Windows\\Temp", `atomcli-update-${Date.now()}.ps1`)
+          cmd = $`powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1' -OutFile '${tempPs1}'; & '${tempPs1}' -Update"`.env(
             {
               ...process.env,
             },
           )
+        }
         break
+      }
       default:
         throw new Error(`Unknown method: ${method}`)
     }

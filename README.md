@@ -29,50 +29,26 @@ AtomCLI is an open-source, terminal-based AI coding assistant that helps develop
 
 Unlike cloud-based solutions, AtomCLI stores all your data locally and gives you full control over which AI providers you use.
 
-## What's New (v3.3.4)
+## What's New (v3.3.6)
 
-### Prompt System Rewrite & Thinking Pattern
+### Security Updates
 
-- **Complete prompt rewrite** — All core prompts (`identity.txt`, `tools.txt`, `workflow.txt`, `code-editing.txt`, `communication.txt`, `extensions.txt`) rewritten for clarity, consistency, and reduced token overhead. Flattened and deduplicated agent prompt structure.
-- **6-Step Thinking Pattern (`thinking-pattern.txt`)** — Enforced foundational reasoning model (_Source Check → Understanding → Contradiction Audit → Scope Boundaries → Side Effect Audit → Proof Burden_) across all 6 agent modes.
-- **Removed legacy code** — Deleted old `message.ts`, `features.ts`, `plan-reminder.txt`. Streamlined compaction and status modules.
+- Updated `hono` to v4.13.1, resolving multiple CVEs: CORS wildcard reflection with credentials, bodyLimit middleware bypass for chunked requests, and JSX cross-request data disclosure in SSR mode.
+- Updated `@ai-sdk/provider-utils` to v3.0.32, resolving a ReDoS vulnerability in provider utility parsing.
+- Added `.github/dependabot.yml` for automated dependency and CI update tracking.
 
-### Harness System (New)
+### Windows Upgrade — Native Binary Swap
 
-- **HarnessState** — Centralized in-memory state machine enforcing `pending → running → completed/failed` transitions for TaskFlow steps. Includes edited files tracker and execution logs ring buffer for system reminder injection.
-- **ProjectDetector** — Auto-detects package manager, test, typecheck, lint, and build commands from project manifest files (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, etc.). Injects detected commands into the system prompt so the AI never guesses.
-- **Plan Auto-Save** — Plan agent output is automatically saved to `.atomcli/plan/latest.md` for persistence across sessions.
+- Replaced the PowerShell `irm ... | iex` upgrade flow, which was incorrectly flagged as a Remote Access Trojan by Windows Defender / AMSI.
+- The `atomcli upgrade` command on Windows now downloads the new binary to a temporary path, renames the running executable to `.old`, and atomically swaps in the new one. This eliminates the PowerShell remote-execution pattern entirely.
+- On startup, stale `atomcli.exe.old` artifacts from previous upgrades are automatically removed to prevent disk space accumulation.
 
-### TUI / SubAgent Panel Redesign
+### Bug Fixes
 
-- **Adaptive 3-mode SubAgentPanel** — Compact (25–34 cols), Normal (35–47 cols), and Wide (48+ cols) display modes with terminal-aware auto-sizing. Live agent cards show status, current tool, and output preview.
-- **Context subagent improvements** — Better lifecycle management, activity display, and persistent waiting state.
-
-### Orchestrate Tool — Interrupt Recovery
-
-- **ESC/interrupt resilience** — Interrupted workflows can be re-executed; running tasks are reset to pending while completed tasks are preserved. No more lost progress on accidental interrupt.
-- **Blocking execution disclaimer** — Clear documentation that `execute` blocks until all sub-agents finish.
-
-### Independent Reviewer Agent
-
-- **New reviewer agent with real verification capabilities** — Can run tests, read git diffs, call APIs via bash, and validate web UIs via browser to render PASSED/REJECTED verdicts. Never modifies code.
-- **Dedicated `reviewer.txt` prompt** — Structured verification workflow.
-
-### Server & Error Handling
-
-- **Session message route** — Added proper try/catch error handling with structured logging. Stream errors are caught and reported instead of silent failures.
-
-### Installer Simplification
-
-- **install.sh & install.ps1** — Removed hardcoded embedded skill templates. Installers now copy skills from the bundled `.atomcli/skills/` directory instead of generating them inline. Cleaner, smaller, and easier to maintain.
-
-### Cleanup & Dependency Removal
-
-- **Removed unused packages** — `minimatch`, `quansync`, `seroval`, `@actions/artifact`, `@atomcli/function` (entire workspace package).
-- **Removed OpenAI Compat SDK vendored code** — Deleted all custom `openai-compatible` response handling files.
-- **Purged `libs/util/` dead code** — Removed 20+ unused utility files (`encode`, `identifier`, `path`, `retry`, `crypto`, `filesystem`, `eventloop`, `signal`, `keybind`, `lazy`, `i18n`, `lock`, `queue`, `rpc`, `timeout`, `token`, `wildcard`, `color`, `defer`, `context`, `fn`, `archive`, `ai-compat`, `date`, `iife`).
-- **Removed all `sst-env.d.ts` files** — Cleaned across all workspace packages.
-- **Memory path update** — Persistent memory moved from `~/.atomcli/memory.jsonl` → `~/.atomcli/memory/memories.json`.
+- Fixed a crash in the orchestrator: `Agent.get("reviewer")` could return `undefined` when no reviewer agent was defined, causing `SubAgent.buildFromAgent` to throw an unhandled error. A proper guard is now in place.
+- Hardened `PermissionNext.merge()` to safely ignore `undefined` rulesets passed as arguments.
+- Resolved a potential permission evaluation error in `AgentTool` when the caller agent context had no associated permission ruleset.
+- Added `abort` to the list of valid actions in the orchestrator's unknown-action error message.
 
 ---
 

@@ -78,6 +78,9 @@ describe("tool.browser integration", () => {
                 const originalGetPage = Browser.getPage
                 Browser.getPage = mock(async () => mockPage as any)
 
+                const originalAvailable = Browser.isPlaywrightAvailable
+                Browser.isPlaywrightAvailable = mock(async () => true)
+
                 try {
                     await tool.execute({ action: "navigate", url: "http://example.com" }, ctx)
                     expect(mockPage.goto).toHaveBeenCalled()
@@ -86,6 +89,30 @@ describe("tool.browser integration", () => {
                     expect(mockPage.click).toHaveBeenCalled()
                 } finally {
                     Browser.getPage = originalGetPage
+                    Browser.isPlaywrightAvailable = originalAvailable
+                }
+            },
+        })
+    })
+    test("reports install hint when playwright is unavailable", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const tool = await BrowserTool.init()
+
+                const originalAvailable = Browser.isPlaywrightAvailable
+                const originalHint = Browser.getInstallHint
+                Browser.isPlaywrightAvailable = mock(async () => false)
+                Browser.getInstallHint = mock(() => "bun add -g playwright && bunx playwright install chromium")
+
+                try {
+                    const result = await tool.execute({ action: "navigate", url: "http://example.com" } as any, ctx)
+                    expect(result.title).toContain("Not Available")
+                    expect(result.output).toContain("bun add -g playwright")
+                } finally {
+                    Browser.isPlaywrightAvailable = originalAvailable
+                    Browser.getInstallHint = originalHint
                 }
             },
         })

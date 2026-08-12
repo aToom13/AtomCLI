@@ -111,6 +111,24 @@ has() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Detect Linux distro family from /etc/os-release (debian | arch | fedora | other | "")
+detect_distro() {
+    if [ ! -f /etc/os-release ]; then
+        echo ""
+        return
+    fi
+    local id id_like combined
+    id=$(grep -E '^ID=' /etc/os-release 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+    id_like=$(grep -E '^ID_LIKE=' /etc/os-release 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+    combined="$id $id_like"
+    case "$combined" in
+        *debian*|*ubuntu*) echo "debian" ;;
+        *arch*|*cachyos*)  echo "arch" ;;
+        *fedora*|*rhel*|*centos*) echo "fedora" ;;
+        *) echo "other" ;;
+    esac
+}
+
 # Check dependencies
 check_dependencies() {
     echo ""
@@ -361,6 +379,18 @@ EOF
     fi
     success "Cloned repository"
     
+    # Read the playwright version pinned in AtomBase/package.json so the
+    # standalone ~/.atomcli/playwright install matches it exactly (mismatched
+    # versions cause "Executable doesn't exist" browser failures).
+    PLAYWRIGHT_VERSION=$(grep -o '"playwright": *"[^"]*"' AtomCLI/AtomBase/package.json 2>/dev/null | head -1 | sed 's/.*"playwright": *"//;s/"//')
+    if ! [[ "$PLAYWRIGHT_VERSION" =~ ^[0-9]+.[0-9]+.[0-9]+$ ]]; then
+        warn "Could not read a valid pinned playwright version; installing unpinned"
+        PLAYWRIGHT_VERSION=""
+    fi
+    if [ -n "$PLAYWRIGHT_VERSION" ]; then
+        info "Pinned playwright version: $PLAYWRIGHT_VERSION"
+    fi
+    
     cd AtomCLI
     
     step "Installing dependencies..."
@@ -404,7 +434,11 @@ EOF
     
     # Install Playwright package explicitly in AtomBase
     step "Installing Playwright package..."
-    (cd AtomBase && bun add playwright > /dev/null 2>&1) || warn "Could not install playwright package"
+    if [ -n "$PLAYWRIGHT_VERSION" ]; then
+        (cd AtomBase && bun add "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) || warn "Could not install playwright package"
+    else
+        (cd AtomBase && bun add playwright > /dev/null 2>&1) || warn "Could not install playwright package"
+    fi
     success "Playwright package installed"
     
     # Install Playwright browsers
@@ -554,7 +588,11 @@ EOF
         if has bun; then
             step "Installing Playwright package via bun..."
             bun init -y > /dev/null 2>&1 || true
-            (bun add playwright > /dev/null 2>&1) &
+            if [ -n "$PLAYWRIGHT_VERSION" ]; then
+                (bun add "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) &
+            else
+                (bun add playwright > /dev/null 2>&1) &
+            fi
             spin $! "Installing Playwright package..."
             
             if [ -d "node_modules/playwright" ]; then
@@ -565,10 +603,14 @@ EOF
                 spin $! "Installing Chromium..."
                 success "Chromium installed"
                 
-                # Try to install system deps
-                if command -v sudo >/dev/null 2>&1; then
+                # Try to install system deps (Debian/Ubuntu only — apt-based)
+                if [ "$(detect_distro)" = "debian" ] && command -v sudo >/dev/null 2>&1; then
                     info "Installing system dependencies (may require password)..."
                     sudo bunx playwright install-deps chromium 2>/dev/null || warn "Could not auto-install system deps"
+                elif [ "$(detect_distro)" = "arch" ]; then
+                    info "Arch-based system detected — Playwright install-deps is apt-only, skipping."
+                    info "If the browser fails to launch, install system libraries via pacman:"
+                    info "  sudo pacman -S --needed nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3 gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence"
                 fi
             else
                 warn "Could not install Playwright package"
@@ -576,7 +618,11 @@ EOF
         elif has npm; then
             step "Installing Playwright package via npm..."
             npm init -y > /dev/null 2>&1 || true
-            (npm install playwright > /dev/null 2>&1) &
+            if [ -n "$PLAYWRIGHT_VERSION" ]; then
+                (npm install "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) &
+            else
+                (npm install playwright > /dev/null 2>&1) &
+            fi
             spin $! "Installing Playwright package..."
             
             if [ -d "node_modules/playwright" ]; then
@@ -587,10 +633,14 @@ EOF
                 spin $! "Installing Chromium..."
                 success "Chromium installed"
                 
-                # Try to install system deps
-                if command -v sudo >/dev/null 2>&1; then
+                # Try to install system deps (Debian/Ubuntu only — apt-based)
+                if [ "$(detect_distro)" = "debian" ] && command -v sudo >/dev/null 2>&1; then
                     info "Installing system dependencies (may require password)..."
                     sudo npx playwright install-deps chromium 2>/dev/null || warn "Could not auto-install system deps"
+                elif [ "$(detect_distro)" = "arch" ]; then
+                    info "Arch-based system detected — Playwright install-deps is apt-only, skipping."
+                    info "If the browser fails to launch, install system libraries via pacman:"
+                    info "  sudo pacman -S --needed nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3 gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence"
                 fi
             else
                 warn "Could not install Playwright package"

@@ -5,7 +5,6 @@ import { FindTool } from "./find"
 import { GrepTool } from "./grep"
 import { BatchTool } from "./batch"
 import { ReadTool } from "./read"
-import { TaskTool } from "./task"
 import { TodoWriteTool, TodoReadTool } from "./todo"
 import { ChainUpdateTool } from "./chainupdate"
 import { WebFetchTool } from "./webfetch"
@@ -37,7 +36,6 @@ import { Truncate } from "./truncation"
 import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
 import { SelfMaintenanceTool } from "./self-maintenance"
-import { OrchestrateTool } from "./orchestrate"
 import { AgentTool } from "./agent-tool"
 import { TaskFlowTool } from "./taskflow"
 
@@ -116,7 +114,6 @@ export namespace ToolRegistry {
       EditTool,
       WriteTool,
       AgentTool,
-      TaskTool,
       TaskFlowTool,
       WebFetchTool,
       WebSearchTool,
@@ -130,7 +127,6 @@ export namespace ToolRegistry {
       SystemHealthTool,
       SelfMaintenanceTool,
 
-      OrchestrateTool,
       ...(Flag.ATOMCLI_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool !== false ? [BatchTool] : []),
       ...custom,

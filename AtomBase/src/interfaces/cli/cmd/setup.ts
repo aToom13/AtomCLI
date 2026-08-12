@@ -1,7 +1,7 @@
 import type { Argv } from "yargs"
 import { cmd } from "./cmd"
 import { UI } from "../ui"
-import { Browser } from "@/integrations/browser"
+import { Browser, detectLinuxDistro, resolveBundledPlaywrightVersion } from "@/integrations/browser"
 import { $ } from "bun"
 import { Log } from "@/util/util/log"
 
@@ -45,6 +45,10 @@ export const SetupCommand = cmd({
         console.log("   • Chromium browser binary (~100MB)")
         console.log("")
 
+        const pwVersion = await resolveBundledPlaywrightVersion()
+        const pwSpec = pwVersion ? `playwright@${pwVersion}` : "playwright"
+        const pwPin = pwVersion ? ` (pinned to bundled v${pwVersion})` : ""
+
         const shouldInstall = await new Promise<boolean>((resolve) => {
             process.stdout.write("Install now? [Y/n] ")
             process.stdin.once("data", (data) => {
@@ -56,9 +60,7 @@ export const SetupCommand = cmd({
         if (!shouldInstall) {
             console.log("\n❌ Installation cancelled.")
             console.log("\n💡 You can install manually later:")
-            console.log("   bun add -g playwright && bunx playwright install chromium")
-            console.log("   # or")
-            console.log("   npm install -g playwright && npx playwright install chromium")
+            console.log(`   ${Browser.getInstallHint()}`)
             return
         }
 
@@ -67,11 +69,11 @@ export const SetupCommand = cmd({
         try {
             // Try bun first, fall back to npm
             try {
-                console.log("📦 Installing playwright package via bun...")
-                await $`bun add -g playwright`.quiet()
+                console.log(`📦 Installing playwright package via bun${pwPin}...`)
+                await $`bun add -g ${pwSpec}`.quiet()
             } catch {
-                console.log("📦 Installing playwright package via npm...")
-                await $`npm install -g playwright`.quiet()
+                console.log(`📦 Installing playwright package via npm${pwPin}...`)
+                await $`npm install -g ${pwSpec}`.quiet()
             }
 
             console.log("🌐 Installing Chromium browser...")
@@ -81,8 +83,17 @@ export const SetupCommand = cmd({
                 await $`npx playwright install chromium`.quiet()
             }
 
+            // On Arch-based systems, install-deps is not available (apt-only).
+            if (detectLinuxDistro() === "arch") {
+                console.log("\n🔧 Arch-based system detected — skipping `install-deps` (apt-only).")
+                console.log("   If the browser fails to launch, install system libraries:")
+                console.log("   sudo pacman -S --needed nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3 gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence")
+            }
+
             // Verify installation
             console.log("\n✅ Verifying installation...")
+            // Clear cached availability so the re-check reflects the new install
+            Browser.resetPlaywrightCheck()
             const nowAvailable = await Browser.isPlaywrightAvailable()
 
             if (nowAvailable) {
@@ -92,6 +103,7 @@ export const SetupCommand = cmd({
                 console.log('   atomcli --message "browser: navigate to https://example.com"')
             } else {
                 console.log("\n⚠️  Installation completed but verification failed.")
+                console.log(`   ${Browser.getInstallHint()}`)
                 console.log("🔄 Please restart atomcli and try again.")
             }
         } catch (e: any) {
@@ -99,9 +111,7 @@ export const SetupCommand = cmd({
             console.log("\n❌ Installation failed:")
             console.log(`   ${e.message}`)
             console.log("\n💡 Try installing manually:")
-            console.log("   bun add -g playwright && bunx playwright install chromium")
-            console.log("   # or")
-            console.log("   npm install -g playwright && npx playwright install chromium")
+            console.log(`   ${Browser.getInstallHint()}`)
             process.exit(1)
         }
     },

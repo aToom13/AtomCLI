@@ -2,16 +2,18 @@ import z from "zod"
 import { Tool } from "./tool"
 import { TaskTool } from "./task"
 import { OrchestrateTool } from "./orchestrate"
+import { Agent } from "../agent/agent"
+import { PermissionNext } from "@/util/permission/next"
 
 const parameters = z.object({
   action: z
     .enum(["spawn", "workflow", "abort", "status"])
     .default("spawn")
     .describe(
-      "Action to perform: 'spawn' for a single subagent task, 'workflow' for a multi-task DAG, 'abort' to cancel, 'status' to check progress",
+      "Action to perform: 'spawn' for a single blocking sub-agent task, 'workflow' for a multi-task DAG, 'abort' to cancel, 'status' to check progress",
     ),
 
-  // Parameters for action='spawn' (subagent task execution)
+  // Parameters for action='spawn' (single sub-agent task, blocking)
   subagent_type: z
     .string()
     .optional()
@@ -39,21 +41,52 @@ const parameters = z.object({
     .optional()
     .describe("Task list for action='workflow' plan"),
 
-  session_id: z.string().optional().describe("Session ID to continue or abort"),
+  session_id: z.string().optional().describe("Session ID to continue (spawn) or abort"),
 })
+
+/**
+ * Stable, filesystem-safe task id derived from the human-readable description.
+ * Repeated spawns with the same description reuse the same sub-agent session
+ * (context continuity via OrchestrateTool's AGENT_SESSION_MAP).
+ */
+const safeTaskId = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || "task"
 
 export const AgentTool = Tool.define("agent", async (ctx) => {
   const taskToolInstance = await TaskTool.init(ctx)
   const orchestrateToolInstance = await OrchestrateTool.init(ctx)
 
+  // List accessible sub-agent types so the LLM knows valid subagent_type values
+  const agents = await Agent.list().then((x) => x.filter((a) => a.mode !== "primary"))
+  const caller = ctx?.agent
+  const accessibleAgents = caller
+    ? agents.filter((a) => PermissionNext.evaluate("task", a.name, caller.permission ?? []).action !== "deny")
+    : agents
+  const agentList = accessibleAgents
+    .map((a) => `- ${a.name}: ${a.description ?? "Sub-agent for delegated work."}`)
+    .join("\n")
+
   const description = [
-    "Unified Agent tool for launching background subagents or executing multi-step DAG workflows.",
+    "Unified Agent tool — the single tool for running sub-agents and multi-step workflows.",
+    "",
+    "⚠️ **BLOCKING TOOL**: action='spawn' BLOCKS until the sub-agent finishes AND passes",
+    "independent reviewer QA (auto-retried up to 2 times on rejection). You CANNOT do other",
+    'work while a spawn is running. Do not say "I\'ll also do X while sub-agents work".',
     "",
     "ACTIONS:",
-    "1. action='spawn': Run a single background subagent (specify subagent_type, prompt, description)",
-    "2. action='workflow': Execute a multi-task DAG workflow with parallel execution (workflow_action='plan'|'execute')",
-    "3. action='abort': Cancel a running subagent session or workflow (specify session_id or workflowId)",
-    "4. action='status': Check workflow or subagent status (specify workflowId or session_id)",
+    "1. action='spawn': Run a single sub-agent task (specify subagent_type, prompt, description).",
+    "   Blocking with reviewer QA verification. This is the DEFAULT action.",
+    "2. action='workflow': Execute a multi-task DAG workflow (workflow_action='plan'|'execute').",
+    "   'plan' first, then 'execute' with the returned workflowId.",
+    "3. action='abort': Cancel a running sub-agent session or workflow (specify session_id or workflowId)",
+    "4. action='status': Check workflow or sub-agent status (specify workflowId or session_id)",
+    "",
+    "AVAILABLE SUB-AGENT TYPES:",
+    agentList,
   ].join("\n")
 
   return {
@@ -62,6 +95,27 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     async execute(params: z.infer<typeof parameters>, ctx) {
       if (params.action === "workflow") {
         const wfAction = params.workflow_action || (params.tasks ? "plan" : "execute")
+
+        // Permission gate — the same "task" permission that guards spawn must also
+        // guard the workflow path, otherwise agent(action='workflow', tasks=[...])
+        // would bypass the sub-agent spawn control entirely.
+        if (params.tasks && !ctx.extra?.bypassAgentCheck) {
+          for (const t of params.tasks) {
+            // Must mirror OrchestrateTool's default (orchestrate.ts: `agent: t.agent || "coder"`),
+            // otherwise tasks without an explicit agent bypass the spawn permission gate.
+            const agent = t.agent ?? "coder"
+            await ctx.ask({
+              permission: "task",
+              patterns: [agent],
+              always: ["*"],
+              metadata: {
+                description: t.id,
+                subagent_type: agent,
+              },
+            })
+          }
+        }
+
         return orchestrateToolInstance.execute(
           {
             action: wfAction as any,
@@ -93,17 +147,49 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
         throw new Error("Parameter 'workflowId' or 'session_id' is required for action='status'")
       }
 
-      // Default: action === "spawn" (single subagent task)
-      return taskToolInstance.execute(
+      // ─── action === "spawn": single sub-agent task, BLOCKING with reviewer QA ───
+      if (!params.subagent_type || !params.prompt || !params.description) {
+        throw new Error("subagent_type, prompt, and description are required when starting a task")
+      }
+
+      // Permission gate — same permission id as TaskTool.run so existing rules keep working
+      if (!ctx.extra?.bypassAgentCheck) {
+        await ctx.ask({
+          permission: "task",
+          patterns: [params.subagent_type],
+          always: ["*"],
+          metadata: {
+            description: params.description,
+            subagent_type: params.subagent_type,
+          },
+        })
+      }
+
+      // Delegate to a single-task blocking workflow: OrchestrateTool plan + execute.
+      // This gives spawn the orchestrator behavior: reviewer QA gate, retries, Chain UI
+      // progress, and results written to .atomcli/runs/<workflowId>/.
+      const taskId = safeTaskId(params.description)
+      const planResult = await orchestrateToolInstance.execute(
         {
-          action: "run",
-          subagent_type: params.subagent_type,
-          prompt: params.prompt,
-          description: params.description,
-          session_id: params.session_id,
+          action: "plan",
+          tasks: [
+            {
+              id: taskId,
+              prompt: params.prompt,
+              agent: params.subagent_type,
+              sessionId: params.session_id,
+            },
+          ],
         },
         ctx,
       )
+
+      const workflowId = planResult.metadata?.workflowId
+      if (planResult.metadata?.error || !workflowId) {
+        return planResult
+      }
+
+      return orchestrateToolInstance.execute({ action: "execute", workflowId }, ctx)
     },
   }
 })

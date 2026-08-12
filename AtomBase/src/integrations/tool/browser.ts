@@ -77,12 +77,10 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
         const isAvailable = await Browser.isPlaywrightAvailable()
         if (!isAvailable) {
             return {
-                output: `❌ Browser tool unavailable: Playwright is not installed.
+                output: `❌ Browser tool unavailable: Playwright is not installed or the Chromium executable is missing.
 
 📦 To install Playwright, run one of these commands:
-   • bun add -g playwright && bunx playwright install chromium
-   • npm install -g playwright && npx playwright install chromium
-   • yarn global add playwright && npx playwright install chromium
+   • ${Browser.getInstallHint().split("\n").map((line) => line.trim().replace(/^•\\s*/, "")).join("\n   • ")}
 
 🌐 Or visit: https://playwright.dev/docs/intro
 

@@ -72,6 +72,7 @@ interface TaskNode {
   category: TaskCategory
   dependsOn: string[]
   model?: string // Optional: specific model (e.g. "atomcli/minimax-m2.5-free")
+  sessionId?: string // Optional: existing sub-agent session to continue
 }
 
 interface WorkflowState {
@@ -300,6 +301,7 @@ const TaskSchema = z.object({
     .string()
     .optional()
     .describe("Specific model to use (e.g. 'atomcli/minimax-m2.5-free'). If not specified, smart routing is used"),
+  sessionId: z.string().optional().describe("Existing sub-agent session ID to continue (optional)"),
 })
 
 export const OrchestrateTool = Tool.define("orchestrate", {
@@ -332,6 +334,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           category: t.category || inferCategory(t.prompt),
           dependsOn: t.dependsOn || [],
           model: t.model, // Include specified model
+          sessionId: t.sessionId, // Include explicit session continuation
         }))
 
         // Validate DAG
@@ -485,15 +488,24 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         // ── Harness: lock orchestrator so insertReminders() knows we're blocking
         HarnessState.lockOrchestrator(ctx.sessionID, params.workflowId!)
 
-        const config = await Config.get()
-
-        // Get the parent message model as fallback
-        const parentMsg = await MessageV2.get({
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-        })
-        if (parentMsg.info.role !== "assistant") {
-          return { title: "Error", output: "Not assistant message", metadata: { error: true } }
+        // Pre-flight reads can throw (Config/MessageV2) and the early-return path
+        // exits before the runWorkflow try/finally — release the lock on every exit
+        // so insertReminders() never gets stuck in "BLOCKING ORCHESTRATION MODE".
+        let config: Awaited<ReturnType<typeof Config.get>>
+        let parentMsg: MessageV2.WithParts
+        try {
+          config = await Config.get()
+          parentMsg = await MessageV2.get({
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+          })
+          if (parentMsg.info.role !== "assistant") {
+            HarnessState.unlockOrchestrator(ctx.sessionID)
+            return { title: "Error", output: "Not assistant message", metadata: { error: true } }
+          }
+        } catch (e) {
+          HarnessState.unlockOrchestrator(ctx.sessionID)
+          throw e
         }
         const fallbackModel = {
           providerID: parentMsg.info.providerID,
@@ -598,9 +610,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 ) {
                   lastAttemptCount = attempt
                   try {
-                    // Try to reuse existing session for this agent type
+                    // Try to reuse existing session for this agent type.
+                    // Priority: explicit task.sessionId (explicit continuation wins)
+                    //        → AGENT_SESSION_MAP (auto-reuse from prior workflow runs)
+                    //        → result.sessionId (ESC recovery / server restart)
                     const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
                     const existingSessionId =
+                      task.sessionId ??
                       AGENT_SESSION_MAP.get(sessionKey) ??
                       // ESC recovery: fall back to stored result.sessionId if AGENT_SESSION_MAP
                       // was cleared (e.g. server restart). Keeps context in the same child session.
@@ -617,6 +633,12 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       description: `[${task.category}] ${task.id}`,
                       sessionId: existingSessionId ?? undefined,
                       title: `[${task.category}] ${task.id} (@${task.agent})`,
+                      // primary_tools = tools reserved for primary agents — deny them
+                      // in sub-agents so LLM-initiated spawns keep the same boundary
+                      // that TaskTool.run applied (config.ts documents this option).
+                      deniedTools: Object.fromEntries(
+                        (config.experimental?.primary_tools ?? []).map((t) => [t, false]),
+                      ),
                     })
 
                     // Store mapping for future reuse if new session was created
@@ -633,6 +655,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                     // ─── REVIEWER QA: verify sub-agent output ─────────────
                     const reviewerAgent = await Agent.get("reviewer")
+                    if (!reviewerAgent) {
+                      throw new Error("Unknown agent: reviewer")
+                    }
                     const reviewerModel = await selectModel("analysis", fallbackModel)
 
                     // Inject harness execution logs so reviewer can cross-reference
@@ -970,7 +995,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
       default:
         return {
           title: "Unknown Action",
-          output: "Unknown action. Valid actions: plan, execute, status",
+          output: "Unknown action. Valid actions: plan, execute, status, abort",
           metadata: { error: true },
         }
     }

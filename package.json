@@ -36,7 +36,7 @@
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
       "ai": "5.0.97",
-      "hono": "4.12.32",
+      "hono": "4.13.1",
       "hono-openapi": "1.1.2",
       "fuzzysort": "3.1.0",
       "luxon": "3.6.1",
@@ -73,7 +73,7 @@
     "@atomcli/sdk": "workspace:*",
     "@aws-sdk/client-s3": "3.933.0",
     "@modelcontextprotocol/sdk": "1.27.1",
-    "hono": "4.12.32",
+    "hono": "4.13.1",
     "typescript": "catalog:"
   },
   "repository": {

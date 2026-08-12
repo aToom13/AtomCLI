@@ -561,7 +561,7 @@ const EXPLORE_DENIED_TOOLS = [
   "todowrite",
   "todoread",
   "batch",
-  "task",
+  "agent",
   "browser",
   "self_maintenance",
   "system_health",

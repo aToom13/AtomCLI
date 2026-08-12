@@ -4,6 +4,7 @@ import { Identifier } from "@/core/id/id"
 import { PermissionNext } from "@/util/permission/next"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
+import { SessionReuse } from "./session-reuse"
 import type { Agent } from "../agent/agent"
 
 /**
@@ -124,6 +125,11 @@ export namespace SubAgent {
     let session: any = null
     if (config.sessionId) {
       session = await Session.get(config.sessionId).catch(() => null)
+      // Security: only reuse sessions created by this same parent. A caller-controlled
+      // sessionId must not continue an unrelated session (cross-session context leak).
+      if (session && !SessionReuse.isAllowed(session, config.parentSessionID)) {
+        session = null
+      }
       if (session) {
         try {
           await Bus.publish(TuiEvent.SubAgentReactivate, {

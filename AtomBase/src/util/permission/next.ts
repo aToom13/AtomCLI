@@ -58,7 +58,7 @@ export namespace PermissionNext {
   }
 
   export function merge(...rulesets: Ruleset[]): Ruleset {
-    return rulesets.flat()
+    return rulesets.filter(Boolean).flat()
   }
 
   export const Request = z

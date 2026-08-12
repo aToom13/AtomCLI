@@ -2,9 +2,9 @@
 # https://github.com/aToom13/AtomCLI
 #
 # Install:   irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex
-# Uninstall: irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex; Uninstall-AtomCLI
-# Update:    irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex; Update-AtomCLI
-# Source:    irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex; Install-AtomCLI -FromSource
+# Update:    atomcli upgrade  (or: iwr https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 -OutFile update.ps1; .\update.ps1 -Update)
+# Uninstall: iwr https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 -OutFile uninstall.ps1; .\uninstall.ps1 -Uninstall
+# Source:    iwr https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 -OutFile build.ps1; .\build.ps1 -FromSource
 
 param(
     [switch]$Uninstall,

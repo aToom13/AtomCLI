@@ -823,6 +823,20 @@ export type Config = {
     ask_user_after?: number
   }
   /**
+   * Automatic reviewer gate configuration for the main agent
+   */
+  review?: {
+    /**
+     * Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are reviewed by the reviewer agent before taskflow clear is allowed to complete.
+     */
+    enabled?: boolean
+    /**
+     * Maximum consecutive FAIL verdicts before the review gate escalates to the user
+     */
+    max_attempts?: number
+    [key: string]: unknown
+  }
+  /**
    * Custom provider configurations and model overrides
    */
   provider?: {
@@ -1001,7 +1015,7 @@ export type QuestionInfo = {
    */
   question: string
   /**
-   * Very short label (max 12 chars)
+   * Short label (max 96 chars)
    */
   header: string
   /**
@@ -2874,6 +2888,20 @@ export type ConfigUpdateData = {
     agent_retry?: {
       max_retries?: number
       ask_user_after?: number
+    }
+    /**
+     * Automatic reviewer gate configuration for the main agent
+     */
+    review?: {
+      /**
+       * Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are reviewed by the reviewer agent before taskflow clear is allowed to complete.
+       */
+      enabled?: boolean
+      /**
+       * Maximum consecutive FAIL verdicts before the review gate escalates to the user
+       */
+      max_attempts?: number
+      [key: string]: unknown
     }
     /**
      * Custom provider configurations and model overrides

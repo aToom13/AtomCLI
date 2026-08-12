@@ -684,6 +684,17 @@ export class Config extends HeyApiClient {
         max_retries?: number
         ask_user_after?: number
       }
+      review?: {
+        /**
+         * Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are reviewed by the reviewer agent before taskflow clear is allowed to complete.
+         */
+        enabled?: boolean
+        /**
+         * Maximum consecutive FAIL verdicts before the review gate escalates to the user
+         */
+        max_attempts?: number
+        [key: string]: unknown
+      }
       provider?: {
         [key: string]: ProviderConfig
       }
@@ -862,6 +873,7 @@ export class Config extends HeyApiClient {
             { in: "body", key: "agent" },
             { in: "body", key: "agent_mode" },
             { in: "body", key: "agent_retry" },
+            { in: "body", key: "review" },
             { in: "body", key: "provider" },
             { in: "body", key: "mcp" },
             { in: "body", key: "formatter" },

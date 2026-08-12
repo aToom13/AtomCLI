@@ -121,6 +121,71 @@ describe("AgentTool", () => {
     })
   })
 
+  test("action='workflow' permission gate asks default 'coder' when task omits agent", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const instance = await AgentTool.init({})
+        const askCalls: Array<{ permission: string; patterns: string[]; metadata: any }> = []
+        const recordingCtx = {
+          ...dummyCtx,
+          ask: async (req: any) => {
+            askCalls.push(req)
+          },
+        }
+        const result = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [
+              { id: "no-agent-task", prompt: "Do something" },
+              { id: "explicit-agent-task", prompt: "Do another", agent: "explore" },
+            ],
+          },
+          recordingCtx,
+        )
+
+        expect(result.title).toBeDefined()
+        expect(askCalls.length).toBe(2)
+        expect(askCalls[0].permission).toBe("task")
+        expect(askCalls[0].patterns).toEqual(["coder"])
+        expect(askCalls[0].metadata.subagent_type).toBe("coder")
+        expect(askCalls[1].patterns).toEqual(["explore"])
+        expect(askCalls[1].metadata.subagent_type).toBe("explore")
+      },
+    })
+  })
+
+  test("action='workflow' skips permission gate when bypassAgentCheck is set", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const instance = await AgentTool.init({})
+        const askCalls: Array<{ permission: string }> = []
+        const bypassCtx = {
+          ...dummyCtx,
+          extra: { bypassAgentCheck: true },
+          ask: async (req: any) => {
+            askCalls.push(req)
+          },
+        }
+        const result = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [{ id: "no-agent-task", prompt: "Do something" }],
+          },
+          bypassCtx,
+        )
+
+        expect(result.title).toBeDefined()
+        expect(askCalls.length).toBe(0)
+      },
+    })
+  })
+
   test("action='abort' with session_id delegates to TaskTool abort", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
