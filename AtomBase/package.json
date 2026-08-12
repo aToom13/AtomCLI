@@ -68,7 +68,7 @@
     "@ai-sdk/provider-utils": "3.0.32",
     "@ai-sdk/togetherai": "1.0.30",
     "@ai-sdk/vercel": "1.0.31",
-    "@ai-sdk/xai": "2.0.42",
+    "@ai-sdk/xai": "4.0.33",
     "@atomcli/companion": "workspace:*",
     "@atomcli/plugin": "workspace:*",
     "@atomcli/script": "workspace:*",
