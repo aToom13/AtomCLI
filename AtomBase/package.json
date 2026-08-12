@@ -91,7 +91,7 @@
     "@solid-primitives/scheduled": "1.5.2",
     "@standard-schema/spec": "1.1.0",
     "@xstate/solid": "2.0.0",
-    "@zip.js/zip.js": "2.7.62",
+    "@zip.js/zip.js": "2.8.36",
     "ai": "catalog:",
     "bonjour-service": "1.4.4",
     "bun-pty": "0.4.4",
