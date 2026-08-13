@@ -27,6 +27,8 @@ jobs:
         run: |
           VERSION="$(bun -e 'console.log(require("./AtomBase/package.json").version)')"
           test "v${VERSION}" = "${GITHUB_REF_NAME}"
+          echo "ATOMCLI_VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "ATOMCLI_CHANNEL=latest" >> "${GITHUB_ENV}"
           test -s RELEASE_NOTES.md
           test "$(sed -n '1p' RELEASE_NOTES.md)" = "# AtomCLI ${GITHUB_REF_NAME}"
           RELEASE_NOTES_FILE=RELEASE_NOTES.md bun -e '

@@ -27,6 +27,7 @@ AtomCLI v3.3.7 focuses on a more responsive terminal interface, a clearer model-
 
 - Updated the project release version to 3.3.7.
 - Added broader CI, platform smoke testing, installer validation, and generated SDK checks.
+- Fixed Windows ARM64 release packaging by including its native file-watcher binding and aligning watcher packages across release targets.
 - Tightened ignore rules so local configuration, credentials, dependencies, logs, plans, runs, session data, build output, and release staging files remain local.
 - Updated repository documentation, development instructions, provider guidance, skill guidance, MCP guidance, prompt architecture, and release hygiene checks.
 
