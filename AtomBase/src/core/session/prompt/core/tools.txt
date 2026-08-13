@@ -18,7 +18,7 @@
 
 **1. READ BEFORE EDIT** — The `edit` tool WILL FAIL if you haven't called `read` first. Hard technical constraint.
 
-**2. PARALLEL with batch** — Use `batch` for 2–10 independent operations (2–5x faster). Never batch dependent ops (read + edit of same file).
+**2. PARALLEL with batch** — Use `batch` for 2–10 independent read-only operations. Never batch dependent or state-changing operations.
 
 **3. PROACTIVE tool usage** — Don't ask for info you can get with tools. When the user says "fix auth bug", grep to find it, read to understand it, edit to fix it.
 
@@ -46,7 +46,7 @@
 Forbidden in bash: cat / head / tail / sed / awk / find / grep — use native tools instead.
 Chain with `&&`. Use `--no-pager` for git.
 
-**`batch`** — `{ tools: [{tool, parameters}] }` — 1–10 tools in parallel.
+**`batch`** — `{ tool_calls: [{tool, parameters}] }` — 1–10 read-only tools, with up to four running concurrently.
 
 ---
 

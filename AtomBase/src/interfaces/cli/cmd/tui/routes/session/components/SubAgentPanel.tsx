@@ -1,5 +1,4 @@
 import { For, Show, createMemo } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
 import { useSync } from "@tui/context/sync"
 import { useRoute } from "@tui/context/route"
 import { useTheme } from "@tui/context/theme"
@@ -16,8 +15,8 @@ import { Identifier } from "@/core/id/id"
  *   normal  (35–47 cols): bordered cards, status badge, tool activity
  *   wide    (48+ cols):   full cards with description + text preview
  *
- * MINIMUM width is 25 chars. Below that the panel hides entirely (handled
- * by the auto-close logic in subagent.tsx context when terminal < 75 cols).
+ * Width is computed centrally by SessionLayout so the chat, Files and
+ * inspector panels always agree on the remaining space.
  *
  * OPENTUI RULE: Never nest <text> inside <text>. Use <box flexDirection="row">
  * with sibling <text> nodes for multi-color rows.
@@ -31,35 +30,14 @@ function getDisplayMode(pw: number): DisplayMode {
   return "wide"
 }
 
-/**
- * Compute panel width from terminal columns.
- *
- * MINIMUM: 25 chars — enough for "⟳ @agentType" + status.
- * If terminal is < 75 cols, subagent context auto-hides the panel,
- * so this function always returns a usable width.
- *
- *   terminal < 90   →  25  (compact, tight)
- *   terminal < 120  →  30  (compact, roomier)
- *   terminal < 150  →  40  (normal)
- *   terminal < 180  →  50  (wide)
- *   terminal >= 180 →  58  (wide, spacious)
- */
-export function computePanelWidth(terminalWidth: number): number {
-  if (terminalWidth < 90) return 25
-  if (terminalWidth < 120) return 30
-  if (terminalWidth < 150) return 40
-  if (terminalWidth < 180) return 50
-  return 58
-}
-
 interface Props {
+  width: number
   agents: ActiveSubAgent[]
   onToggle?: () => void
 }
 
 export function SubAgentPanel(props: Props) {
-  const dimensions = useTerminalDimensions()
-  const pw = createMemo(() => computePanelWidth(dimensions().width))
+  const pw = createMemo(() => props.width)
   const mode = createMemo(() => getDisplayMode(pw()))
   const running = createMemo(() => props.agents.filter((a) => a.status === "running").length)
   const waiting = createMemo(() => props.agents.filter((a) => a.status === "waiting").length)
@@ -180,7 +158,6 @@ function AgentCard(props: CardProps) {
   const sdk = useSDK()
   const subAgentCtx = useSubAgents()
 
-  const isDone = () => props.agent.status === "done"
   const isWaiting = () => props.agent.status === "waiting"
   const isRunning = () => props.agent.status === "running"
 
@@ -190,9 +167,9 @@ function AgentCard(props: CardProps) {
   const lastTool = createMemo(() => parts().findLast((p: any) => p.type === "tool" && p.state?.status === "running") as any)
   const lastText = createMemo(() => parts().findLast((p: any) => p.type === "text") as any)
 
-  const statusColor = () => (isDone() ? theme.textMuted : isWaiting() ? theme.warning : theme.success)
-  const cardBorder = () => (isDone() ? theme.border : isWaiting() ? theme.warning : theme.success)
-  const statusIcon = () => (isDone() ? "✓" : isWaiting() ? "⏸" : "⟳")
+  const statusColor = () => (isWaiting() ? theme.warning : theme.success)
+  const cardBorder = () => (isWaiting() ? theme.warning : theme.success)
+  const statusIcon = () => (isWaiting() ? "⏸" : "⟳")
 
   // Inner width: pw − border(2) − padding(2)
   const inner = () => Math.max(6, props.pw - 4)
@@ -201,9 +178,7 @@ function AgentCard(props: CardProps) {
   const textChars = () => Math.max(4, inner() - 1)
 
   const killAgent = async () => {
-    if (isRunning() || isWaiting()) {
-      await sdk.client.session.abort({ sessionID: props.agent.sessionId }).catch(() => {})
-    }
+    await sdk.client.session.abort({ sessionID: props.agent.sessionId }).catch(() => {})
     subAgentCtx.removeAgent(props.agent.sessionId)
   }
   const openSession = () => navigate({ type: "session", sessionID: props.agent.sessionId })
@@ -260,7 +235,7 @@ function AgentCard(props: CardProps) {
       {/* Header: @type + status */}
       <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} paddingTop={1} backgroundColor={theme.backgroundElement}>
         <text fg={theme.accent}>{"@" + props.agent.agentType.slice(0, typeChars())}</text>
-        <text fg={statusColor()}>{statusIcon() + (props.mode === "wide" ? (isDone() ? " done" : isWaiting() ? " idle" : " run") : "")}</text>
+        <text fg={statusColor()}>{statusIcon() + (props.mode === "wide" ? (isWaiting() ? " idle" : " run") : "")}</text>
       </box>
 
       {/* Description — wide only */}
@@ -285,9 +260,6 @@ function AgentCard(props: CardProps) {
         </Show>
         <Show when={isWaiting()}>
           <text fg={theme.warning}>{"Bekliyor…"}</text>
-        </Show>
-        <Show when={isDone()}>
-          <text fg={theme.success}>{"Tamamlandı"}</text>
         </Show>
       </box>
 

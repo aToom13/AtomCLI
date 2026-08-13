@@ -1,43 +1,14 @@
-# AtomCLI Source Code
+# AtomBase source tree
 
-Main source code directory for AtomCLI.
+| Directory       | Responsibility                                                                        |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `core/`         | configuration, global paths, sessions, storage, IDs, snapshots, and shared core state |
+| `integrations/` | providers, agents, tools, MCP, ACP, browser, plugins, skills, and language servers    |
+| `interfaces/`   | CLI commands, terminal UI, command interfaces, flags, and formatting                  |
+| `server/`       | Hono server, route registration, companion bridge, and API routes                     |
+| `services/`     | project instances, installation, authentication, files, patches, and worktrees        |
+| `util/`         | Bun, permission, sharing, and general utility code                                    |
 
-## Overview
+`index.ts` registers the CLI. `shim.ts` establishes runtime compatibility before command imports. Use `@/*` and `@tui/*` aliases instead of long relative imports.
 
-This directory contains the core implementation of AtomCLI, organized into focused modules for maintainability and clarity.
-
-## Key Modules
-
-### Core Systems
-- **[cli/](cli/README.md)** - CLI commands and TUI implementation
-- **[session/](session/README.md)** - Session and message handling
-- **[agent/](agent/README.md)** - AI agent implementation
-- **[provider/](provider/README.md)** - AI provider integrations
-- **[tool/](tool/README.md)** - Agent tool implementations
-
-### Infrastructure
-- **[server/](server/README.md)** - HTTP server and API routes
-- **[config/](config/README.md)** - Configuration management
-- **[bus/](bus/README.md)** - Event bus system
-- **[mcp/](mcp/README.md)** - MCP server management
-
-### Utilities
-- **[util/](util/README.md)** - Shared utilities
-- **[file/](file/README.md)** - File system operations
-- **[auth/](auth/README.md)** - Authentication
-- **[permission/](permission/README.md)** - Permission system
-
-## Entry Points
-
-- `index.ts` - Main application entry point
-- `shim.ts` - Runtime shims and polyfills
-
-## Documentation
-
-- [Development Guide](../../docs/DEVELOPMENT.md) - Architecture and modules
-- [Main README](../../README.md) - Project overview
-
-## Navigation
-
-- **Parent**: [AtomBase/](../README.md)
-- **Root**: [AtomCLI](../../README.md)
+For architecture and validation requirements, see the [development guide](../../docs/DEVELOPMENT.md).

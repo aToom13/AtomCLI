@@ -41,7 +41,6 @@ export const SetupCommand = cmd({
 
         // Ask for confirmation
         console.log("\n🚀 This will install:")
-        console.log("   • playwright package (npm/bun)")
         console.log("   • Chromium browser binary (~100MB)")
         console.log("")
 
@@ -67,21 +66,8 @@ export const SetupCommand = cmd({
         console.log("\n⏳ Installing Playwright...")
 
         try {
-            // Try bun first, fall back to npm
-            try {
-                console.log(`📦 Installing playwright package via bun${pwPin}...`)
-                await $`bun add -g ${pwSpec}`.quiet()
-            } catch {
-                console.log(`📦 Installing playwright package via npm${pwPin}...`)
-                await $`npm install -g ${pwSpec}`.quiet()
-            }
-
-            console.log("🌐 Installing Chromium browser...")
-            try {
-                await $`bunx playwright install chromium`.quiet()
-            } catch {
-                await $`npx playwright install chromium`.quiet()
-            }
+            console.log(`🌐 Installing Chromium with Bun${pwPin}...`)
+            await $`bunx ${pwSpec} install chromium`.quiet()
 
             // On Arch-based systems, install-deps is not available (apt-only).
             if (detectLinuxDistro() === "arch") {

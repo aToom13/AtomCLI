@@ -279,7 +279,11 @@ async function getShellConfigFile(): Promise<string | null> {
     const content = await Bun.file(file)
       .text()
       .catch(() => "")
-    if (content.includes("# atomcli") || content.includes(".atomcli/bin")) {
+    if (
+      content.toLowerCase().includes("# atomcli") ||
+      content.includes(".atomcli/bin") ||
+      content.includes("AtomCLI tab completion")
+    ) {
       return file
     }
   }
@@ -297,21 +301,26 @@ async function cleanShellConfig(file: string) {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    if (trimmed === "# atomcli") {
+    if (trimmed.toLowerCase() === "# atomcli" || trimmed === "# AtomCLI tab completion") {
       skip = true
       continue
     }
 
     if (skip) {
       skip = false
-      if (trimmed.includes(".atomcli/bin") || trimmed.includes("fish_add_path")) {
+      if (
+        trimmed.includes(".atomcli/bin") ||
+        trimmed.includes("fish_add_path") ||
+        (trimmed.startsWith(".") && trimmed.includes("atomcli") && trimmed.includes("completion"))
+      ) {
         continue
       }
     }
 
     if (
       (trimmed.startsWith("export PATH=") && trimmed.includes(".atomcli/bin")) ||
-      (trimmed.startsWith("fish_add_path") && trimmed.includes(".atomcli"))
+      (trimmed.startsWith("fish_add_path") && trimmed.includes(".atomcli")) ||
+      (trimmed.startsWith(".") && trimmed.includes("atomcli") && trimmed.includes("completion"))
     ) {
       continue
     }

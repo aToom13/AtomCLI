@@ -1,55 +1,18 @@
 # AtomCLI Documentation
 
-Welcome to the AtomCLI documentation hub. This directory contains comprehensive guides for using and developing with AtomCLI.
+This directory contains the maintained, source-checked documentation for AtomCLI.
 
----
+- [Development guide](DEVELOPMENT.md): repository layout, local development, builds, tests, configuration, API generation, and pre-release hygiene.
+- [Provider guide](PROVIDERS.md): authentication, model selection, local models, and provider overrides.
+- [MCP guide](MCP-GUIDE.md): MCP configuration and CLI workflows.
+- [Skills guide](SKILLS-GUIDE.md): discovery, installation, and authoring of `SKILL.md` files.
+- [Prompt architecture](prompts.md): the prompt assembly pipeline and its source locations.
 
-## Documentation Guides
+The command-line interface is the authority for current command options:
 
-### [Development Guide](DEVELOPMENT.md)
+```sh
+atomcli --help
+atomcli <command> --help
+```
 
-Complete developer documentation covering architecture, modules, CLI commands, and development workflow.
-
-**Topics**: Project structure, core modules, provider integration, tool system, MCP integration, testing, security guidelines.
-
-### [Providers Guide](PROVIDERS.md)
-
-AI provider configuration and setup guide.
-
-**Topics**: Free providers, paid providers, local providers (Ollama), API key setup, configuration, provider comparison.
-
-### [MCP Guide](MCP-GUIDE.md)
-
-Model Context Protocol server installation and development.
-
-**Topics**: Popular MCP servers, installation, configuration, creating custom MCP servers, troubleshooting.
-
-### [Skills Guide](SKILLS-GUIDE.md)
-
-Skill development and usage guide.
-
-**Topics**: Skill file format, creating skills, example skills, best practices, sharing skills.
-
-### [Prompt System Architecture](prompts.md)
-
-System prompt composition, directory structure, and customization guide.
-
-**Topics**: PromptManager API, core/provider/agent/runtime prompt layers, .txt file organization, read-before-edit rule, token statistics, custom section injection.
-
----
-
-## Quick Links
-
-- [Main README](../README.md) - Project overview
-- [SDK README](../libs/sdk/README.md) - JavaScript SDK
-- [Libs README](../libs/README.md) - Shared libraries
-
----
-
-## Assets
-
-- [assets/](assets/) - Documentation images and media
-
----
-
-_AtomCLI Documentation - Version 3.3.4_
+For generated API clients, see [the SDK README](../libs/sdk/README.md).

@@ -2,6 +2,7 @@ import { Log } from "@/util/util/log"
 import fs from "fs"
 import path from "path"
 import os from "os"
+import { Global } from "@/core/global"
 
 // Type-only imports for Playwright types
 import type { Browser as PlaywrightBrowser, BrowserContext, Page } from "playwright"
@@ -47,7 +48,6 @@ export class BrowserManager {
   private context: BrowserContext | null = null
   private page: Page | null = null
   private log = Log.create({ service: "browser" })
-  private screenshotDir = path.join(process.cwd(), ".screenshots")
   private consoleLogs: string[] = []
   private playwrightAvailable: boolean | null = null
   private playwrightPath: string = "playwright"
@@ -77,7 +77,7 @@ export class BrowserManager {
       // 1. Standard dynamic import (local node_modules, NODE_PATH)
       "playwright",
       // 2. AtomCLI directory (where install.sh installs it)
-      path.join(os.homedir(), ".atomcli", "playwright", "node_modules", "playwright"),
+      path.join(Global.Path.root, "playwright", "node_modules", "playwright"),
       // 3. Legacy config directory (backward compatibility)
       path.join(
         process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
@@ -149,9 +149,7 @@ export class BrowserManager {
    */
   public getInstallHint(): string {
     const version = this.playwrightVersion ? `@${this.playwrightVersion}` : ""
-    const base =
-      `bun add -g playwright${version} && bunx playwright install chromium\n` +
-      `   • npm install -g playwright${version} && npx playwright install chromium`
+    const base = `bunx playwright${version} install chromium`
 
     if (detectLinuxDistro() === "arch") {
       const pacmanDeps = [
@@ -190,20 +188,6 @@ export class BrowserManager {
     return base
   }
 
-  private cleanScreenshots() {
-    if (fs.existsSync(this.screenshotDir)) {
-      try {
-        this.log.info("clearing previous screenshots")
-        fs.rmSync(this.screenshotDir, { recursive: true, force: true })
-        fs.mkdirSync(this.screenshotDir, { recursive: true })
-      } catch (e: any) {
-        this.log.error("failed to clean screenshots", { error: e.message })
-      }
-    } else {
-      fs.mkdirSync(this.screenshotDir, { recursive: true })
-    }
-  }
-
   private async init() {
     // Check if Playwright is available first
     const available = await this.isPlaywrightAvailable()
@@ -213,8 +197,7 @@ export class BrowserManager {
         ? `\nExpected browser executable: ${this.playwrightExpectedExecutable}`
         : ""
       throw new Error(
-        `Playwright is not available. Please install it with: bun add -g playwright${version} && bunx playwright install chromium\n` +
-          `Or run: npx playwright@${this.playwrightVersion ?? "latest"} install chromium${expectedExe}`,
+        `Playwright is not available. Install its Chromium binary with: bunx playwright${version} install chromium${expectedExe}`,
       )
     }
 
@@ -228,18 +211,26 @@ export class BrowserManager {
 
     if (!this.browser) {
       try {
-        this.log.info("launching browser (headed)")
         const { chromium } = await this.getPlaywright()
-        this.browser = await chromium.launch({
-          headless: false,
-          args: ["--no-sandbox", "--disable-setuid-sandbox"],
-        })
+        const headless =
+          process.platform !== "darwin" &&
+          process.platform !== "win32" &&
+          !process.env.DISPLAY &&
+          !process.env.WAYLAND_DISPLAY
+        const args = process.platform === "linux" && process.geteuid?.() === 0
+          ? ["--no-sandbox", "--disable-setuid-sandbox"]
+          : []
+        this.log.info("launching browser", { headless })
+        this.browser = await chromium.launch({ headless, args })
       } catch (e: any) {
         this.log.warn("headed launch failed, falling back to headless", { error: e.message })
         const { chromium } = await this.getPlaywright()
         this.browser = await chromium.launch({
           headless: true,
-          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+          args:
+            process.platform === "linux" && process.geteuid?.() === 0
+              ? ["--no-sandbox", "--disable-setuid-sandbox"]
+              : [],
         })
       }
     }
@@ -247,6 +238,7 @@ export class BrowserManager {
     if (!this.context) {
       this.context = await this.browser!.newContext({
         viewport: { width: 1280, height: 720 },
+        hasTouch: true,
       })
 
       // Inject click visualization script
@@ -293,13 +285,15 @@ export class BrowserManager {
 
       // Improved logging for debug
       this.page.on("console", (msg) => {
-        const text = `[${msg.type()}] ${msg.text()}`
+        const text = `[${msg.type()}] ${msg.text()}`.slice(0, 10_000)
         this.consoleLogs.push(text)
+        if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
         this.log.debug(`console: ${text}`)
       })
       this.page.on("pageerror", (err) => {
-        const text = `[error] ${err.message}`
+        const text = `[error] ${err.message}`.slice(0, 10_000)
         this.consoleLogs.push(text)
+        if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
         this.log.error(`pageerror: ${text}`)
       })
     }

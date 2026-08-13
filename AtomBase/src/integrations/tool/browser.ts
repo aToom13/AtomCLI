@@ -3,13 +3,10 @@ import { Tool } from "./tool"
 import { Browser } from "../browser"
 import path from "path"
 import { assertExternalDirectory } from "./external-directory"
-import { Instance } from "@/services/project/instance"
-import { existsSync, mkdirSync } from "fs"
 
-const SCREENSHOT_DIR = path.join(process.cwd(), ".screenshots")
-if (!existsSync(SCREENSHOT_DIR)) {
-    mkdirSync(SCREENSHOT_DIR, { recursive: true })
-}
+const MAX_BROWSER_OUTPUT = 100_000
+import { Instance } from "@/services/project/instance"
+import fs from "fs/promises"
 
 export const BrowserTool = Tool.define("browser", {
     description: `Control a real web browser to navigate, interact, and inspect web pages.
@@ -28,6 +25,7 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
         action: z.enum([
             "navigate",
             "click",
+            "tap",
             "type",
             "press",
             "clear",
@@ -45,34 +43,60 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
         ]).describe("Action to perform"),
 
         // Common parameters
-        url: z.string().optional().describe("URL to navigate to (required for 'navigate')"),
-        selector: z.string().optional().describe("CSS selector to interact with (required for click, type, press, clear, drag, hover)"),
-        script: z.string().optional().describe("JavaScript code to execute (required for 'evaluate')"),
+        url: z.string().max(8192).optional().describe("URL to navigate to (required for 'navigate')"),
+        selector: z.string().max(4096).optional().describe("CSS selector to interact with (required for click, type, press, clear, drag, hover)"),
+        script: z.string().max(100_000).optional().describe("JavaScript code to execute (required for 'evaluate')"),
 
         // specific parameters
-        text: z.string().optional().describe("Text to type (required for 'type')"),
-        key: z.string().optional().describe("Key to press e.g. 'Enter', 'Control+C', 'ArrowDown' (required for 'press')"),
-        delay: z.number().optional().describe("Delay between keystrokes in ms for 'type' (default: 50ms)"),
+        text: z.string().max(100_000).optional().describe("Text to type (required for 'type')"),
+        key: z.string().max(100).optional().describe("Key to press e.g. 'Enter', 'Control+C', 'ArrowDown' (required for 'press')"),
+        delay: z.number().min(0).max(5_000).optional().describe("Delay between keystrokes in ms for 'type' (default: 50ms)"),
 
         // Click options
         button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button (default: left)"),
-        clickCount: z.number().optional().describe("Number of clicks (default: 1, set 2 for double-click)"),
+        clickCount: z.number().int().min(1).max(3).optional().describe("Number of clicks (default: 1, set 2 for double-click)"),
 
         // Scroll options
         direction: z.enum(["up", "down", "left", "right", "top", "bottom"]).optional().describe("Scroll direction (required for 'scroll')"),
-        amount: z.number().optional().describe("Scroll amount in pixels (default: 500 for up/down)"),
+        amount: z.number().min(1).max(100_000).optional().describe("Scroll amount in pixels (default: 500 for up/down)"),
 
         // Drag options
-        targetSelector: z.string().optional().describe("Target element selector to drop onto (required for 'drag')"),
+        targetSelector: z.string().max(4096).optional().describe("Target element selector to drop onto (required for 'drag')"),
 
         // new params
-        name: z.string().optional().describe("Custom name for the screenshot file (without extension)"),
-        workdir: z.string().optional().describe("Absolute path to the working directory where .screenshots should be created"),
+        name: z.string().max(200).optional().describe("Custom name for the screenshot file (without extension)"),
+        workdir: z.string().max(4096).optional().describe("Absolute path to the working directory where .screenshots should be created"),
 
         // Screenshot
         fullPage: z.boolean().optional().describe("Capture full page screenshot (default: false)"),
     }),
     async execute(params, ctx) {
+        if (params.action === "close") {
+            await Browser.close()
+            return { output: "Browser closed", title: "Browser: close", metadata: {} }
+        }
+
+        if (params.action === "console_logs") {
+            const logs = Browser.getLogs()
+            Browser.clearLogs()
+            const output = logs.length > 0 ? logs.join("\n").slice(-MAX_BROWSER_OUTPUT) : "No console logs available."
+            return {
+                output,
+                title: "Browser: console_logs",
+                metadata: { count: logs.length },
+            }
+        }
+
+        if (params.action === "navigate" && !params.url) throw new Error("URL is required for navigate")
+        if (["click", "tap", "type", "clear", "drag", "hover"].includes(params.action) && !params.selector) {
+            throw new Error(`Selector is required for ${params.action}`)
+        }
+        if (params.action === "type" && params.text === undefined) throw new Error("Text is required for type")
+        if (params.action === "press" && !params.key) throw new Error("Key is required for press")
+        if (params.action === "scroll" && !params.direction) throw new Error("Direction is required for scroll")
+        if (params.action === "drag" && !params.targetSelector) throw new Error("TargetSelector is required for drag")
+        if (params.action === "evaluate" && !params.script) throw new Error("Script is required for evaluate")
+
         // Check if Playwright is available before trying to use it
         const isAvailable = await Browser.isPlaywrightAvailable()
         if (!isAvailable) {
@@ -94,6 +118,27 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
             const targetWorkdir = params.workdir ? path.resolve(params.workdir) : Instance.directory
             await assertExternalDirectory(ctx, targetWorkdir, { kind: "directory" })
         }
+
+        let permissionTarget = params.selector ?? params.action
+        if (params.action === "navigate") {
+            if (!params.url) throw new Error("URL is required for navigate")
+            let target: URL
+            try {
+                target = new URL(params.url)
+            } catch {
+                throw new Error("A valid absolute URL is required for navigate")
+            }
+            if (target.protocol !== "http:" && target.protocol !== "https:") {
+                throw new Error("Browser navigation supports only http:// and https:// URLs")
+            }
+            permissionTarget = target.toString()
+        }
+        await ctx.ask({
+            permission: "browser",
+            patterns: [`${params.action}:${permissionTarget}`],
+            always: [`${params.action}:*`],
+            metadata: { action: params.action, target: permissionTarget },
+        })
 
         const page = await Browser.getPage()
 
@@ -118,10 +163,16 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                     result = `Clicked ${params.selector}`
                     break
 
+                case "tap":
+                    if (!params.selector) throw new Error("Selector is required for tap")
+                    await page.tap(params.selector)
+                    result = `Tapped ${params.selector}`
+                    break
+
                 case "type":
                     if (!params.selector) throw new Error("Selector is required for type")
                     if (params.text === undefined) throw new Error("Text is required for type")
-                    await page.type(params.selector, params.text, { delay: params.delay || 50 })
+                    await page.type(params.selector, params.text, { delay: params.delay ?? 50 })
                     result = `Typed text into ${params.selector}`
                     break
 
@@ -142,10 +193,9 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                     break
 
                 case "read":
-                    // If no selector, read full body
                     const content = params.selector
-                        ? await page.textContent(params.selector)
-                        : await page.content()
+                        ? await page.locator(params.selector).evaluate((element, max) => (element.textContent ?? "").slice(0, max), MAX_BROWSER_OUTPUT)
+                        : await page.evaluate((max) => document.documentElement.outerHTML.slice(0, max), MAX_BROWSER_OUTPUT)
                     result = content || "No content found"
                     break
 
@@ -165,7 +215,8 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                         else if (params.direction === "bottom") await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
                         else if (params.direction === "up") await page.mouse.wheel(0, -amount)
                         else if (params.direction === "down") await page.mouse.wheel(0, amount)
-                        // left/right scroll on window is rare but valid
+                        else if (params.direction === "left") await page.mouse.wheel(-amount, 0)
+                        else if (params.direction === "right") await page.mouse.wheel(amount, 0)
                     }
                     result = `Scrolled ${params.direction}`
                     break
@@ -192,11 +243,21 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
 
                     const screenshotsDir = path.join(targetWorkdir, ".screenshots")
 
-                    if (!existsSync(screenshotsDir)) {
-                        mkdirSync(screenshotsDir, { recursive: true })
-                    }
+                    await fs.mkdir(screenshotsDir, { recursive: true })
 
                     const filepath = path.join(screenshotsDir, filename)
+
+                    if (params.fullPage) {
+                        const dimensions = await page.evaluate(() => ({
+                            width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+                            height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+                        }))
+                        if (dimensions.width > 32_767 || dimensions.height > 32_767 || dimensions.width * dimensions.height > 25_000_000) {
+                            throw new Error(
+                                `Full-page screenshot is too large (${dimensions.width}x${dimensions.height}); use a viewport screenshot instead`,
+                            )
+                        }
+                    }
 
                     await page.screenshot({
                         path: filepath,
@@ -224,32 +285,28 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
 
                 case "evaluate":
                     if (!params.script) throw new Error("Script is required for evaluate")
-                    const evalResult = await page.evaluate((s) => {
+                    const evalResult = await page.evaluate(({ script, max }) => {
                         try {
                             // eslint-disable-next-line no-eval
-                            return eval(s);
+                            const value = eval(script)
+                            if (typeof value === "string") return value.slice(0, max)
+                            try {
+                                return JSON.stringify(value).slice(0, max)
+                            } catch {
+                                return String(value).slice(0, max)
+                            }
                         } catch (e) {
                             return e instanceof Error ? e.message : String(e);
                         }
-                    }, params.script);
-                    result = typeof evalResult === 'object' ? JSON.stringify(evalResult) : String(evalResult)
+                    }, { script: params.script, max: MAX_BROWSER_OUTPUT });
+                    result = String(evalResult)
                     break
 
-                case "console_logs":
-                    const logs = Browser.getLogs()
-                    result = logs.length > 0 ? logs.join("\n") : "No console logs available."
-                    Browser.clearLogs()
-                    break
-
-                case "close":
-                    await Browser.close()
-                    result = "Browser closed"
-                    break
             }
 
-            if (params.action !== "close" && !metadata.title) {
-                metadata.title = await page.title()
-                metadata.url = page.url()
+            if (!metadata.title) {
+                metadata.title = (await page.title()).slice(0, 2_000)
+                metadata.url = page.url().slice(0, 8_192)
             }
 
             return {

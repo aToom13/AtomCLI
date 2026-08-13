@@ -1,9 +1,9 @@
 /**
  * Performance Profiler Command
- * 
+ *
  * Analyzes code for performance issues, Big-O complexity, and anti-patterns.
  * Detects N+1 queries, memory leaks, and inefficient algorithms.
- * 
+ *
  * Usage: atomcli perf --analyze
  */
 
@@ -17,7 +17,6 @@ export namespace PerformanceProfiler {
   const log = Log.create({ service: "perf" })
 
   export interface PerfOptions {
-    analyze?: boolean
     files?: string[]
     threshold?: number
   }
@@ -177,13 +176,16 @@ export namespace PerformanceProfiler {
   /**
    * Analyze file for performance issues
    */
-  export async function analyzeFile(filePath: string): Promise<{
+  export async function analyzeFile(
+    filePath: string,
+    threshold = 10,
+  ): Promise<{
     issues: PerformanceIssue[]
     complexity: ComplexityAnalysis[]
   }> {
     const issues: PerformanceIssue[] = []
     const complexity: ComplexityAnalysis[] = []
-    
+
     const content = await fs.readFile(filePath, "utf-8")
     const lines = content.split("\n")
 
@@ -192,39 +194,40 @@ export namespace PerformanceProfiler {
       return { issues: [], complexity: [] }
     }
 
-    // Check for anti-patterns
+    // Check the whole file so multi-line patterns (for example nested loops)
+    // are not missed simply because their braces are on different lines.
+    for (const antiPattern of ANTI_PATTERNS) {
+      const match = content.match(antiPattern.pattern)
+      if (!match || match.index === undefined) continue
+      const lineNumber = content.slice(0, match.index).split("\n").length
+      issues.push({
+        file: filePath,
+        line: lineNumber,
+        type: antiPattern.type,
+        severity: antiPattern.severity,
+        message: antiPattern.message,
+        description: `Line ${lineNumber} may have performance issues: ${antiPattern.name}`,
+        suggestion: antiPattern.suggestion,
+      })
+    }
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
       const lineNumber = i + 1
-
-      for (const antiPattern of ANTI_PATTERNS) {
-        if (antiPattern.pattern.test(line)) {
-          issues.push({
-            file: filePath,
-            line: lineNumber,
-            type: antiPattern.type,
-            severity: antiPattern.severity,
-            message: antiPattern.message,
-            description: `Line ${lineNumber} may have performance issues: ${antiPattern.name}`,
-            suggestion: antiPattern.suggestion,
-          })
-        }
-      }
-
       // Analyze function complexity
       const funcMatch = line.match(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/)
       if (funcMatch) {
         const funcComplexity = analyzeFunctionComplexity(content, i, funcMatch[1])
         if (funcComplexity) {
           complexity.push(funcComplexity)
-          
+
           // Add issue if complexity is high
-          if (funcComplexity.cyclomatic > 10) {
+          if (funcComplexity.cyclomatic > threshold) {
             issues.push({
               file: filePath,
               line: lineNumber,
               type: "complexity",
-              severity: funcComplexity.cyclomatic > 20 ? "critical" : "high",
+              severity: funcComplexity.cyclomatic > threshold * 2 ? "critical" : "high",
               message: `High cyclomatic complexity (${funcComplexity.cyclomatic})`,
               description: `Function ${funcComplexity.function} has high complexity`,
               suggestion: "Refactor into smaller functions or reduce branching logic",
@@ -241,69 +244,50 @@ export namespace PerformanceProfiler {
   function isMinified(content: string): boolean {
     const lines = content.split("\n")
     const avgLineLength = content.length / lines.length
-    return avgLineLength > 200 || lines.length < 5
+    return avgLineLength > 200 || lines.some((line) => line.length > 1000)
   }
 
-  function analyzeFunctionComplexity(
-    content: string,
-    startLine: number,
-    funcName: string
-  ): ComplexityAnalysis | null {
+  function analyzeFunctionComplexity(content: string, startLine: number, funcName: string): ComplexityAnalysis | null {
     const lines = content.split("\n")
     let braceCount = 0
     let inFunction = false
-    let cyclomatic = 1
-    let nestedLoops = 0
-    let maxNestedLoops = 0
-    let hasRecursion = false
-    let currentNested = 0
+    const body: string[] = []
 
     for (let i = startLine; i < lines.length; i++) {
       const line = lines[i]
-      const trimmed = line.trim()
-
-      // Count braces
       const openBraces = (line.match(/\{/g) || []).length
       const closeBraces = (line.match(/\}/g) || []).length
 
       if (!inFunction && openBraces > 0) {
         inFunction = true
+        body.push(line.slice(line.indexOf("{") + 1))
+      } else if (inFunction) {
+        body.push(line)
       }
 
       if (inFunction) {
         braceCount += openBraces - closeBraces
-
-        // Check for branching
-        if (/\b(if|else|case|default|\?\s*:|\|\||&&)\b/.test(trimmed)) {
-          cyclomatic++
-        }
-
-        // Check for loops
-        if (/\b(for|while|do)\b/.test(trimmed)) {
-          currentNested++
-          nestedLoops = Math.max(nestedLoops, currentNested)
-        }
-
-        if (trimmed.startsWith("}")) {
-          currentNested = Math.max(0, currentNested - 1)
-        }
-
-        // Check for recursion
-        if (new RegExp(`\\b${funcName}\\s*\\(`).test(trimmed)) {
-          hasRecursion = true
-        }
-
-        // Function ends
         if (braceCount <= 0) {
           break
         }
       }
     }
 
-    // Determine Big-O
+    if (!inFunction) return null
+
+    const bodyText = body.join("\n")
+    const escapedName = funcName.replace(/\W/g, "\\$&")
+    const hasRecursion = new RegExp("\\b" + escapedName + "\\s*\\(").test(bodyText)
+    const decisions =
+      (bodyText.match(/\b(?:if|for|while|case|catch)\b/g) || []).length +
+      (bodyText.match(/&&|\|\|/g) || []).length +
+      (bodyText.match(/\?(?![?.])/g) || []).length
+    const cyclomatic = 1 + decisions
+    const maxNestedLoops = analyzeLoopNesting(bodyText)
+
     let bigO = "O(1)"
     if (hasRecursion) {
-      bigO = "O(n) or worse"
+      bigO = "input-dependent (recursive)"
     } else if (maxNestedLoops >= 3) {
       bigO = "O(n³)"
     } else if (maxNestedLoops === 2) {
@@ -322,6 +306,36 @@ export namespace PerformanceProfiler {
     }
   }
 
+  function analyzeLoopNesting(body: string) {
+    const tokens = body.match(/\bfor\s*\(|\bwhile\s*\(|\bdo\b|[{}]/g) ?? []
+    const loopScopes: number[] = []
+    let braceDepth = 0
+    let pendingLoops = 0
+    let loopCount = 0
+    let maximum = 0
+
+    for (const token of tokens) {
+      if (token !== "{" && token !== "}") {
+        pendingLoops++
+        loopCount++
+        continue
+      }
+      if (token === "{") {
+        braceDepth++
+        while (pendingLoops > 0) {
+          loopScopes.push(braceDepth)
+          pendingLoops--
+        }
+        maximum = Math.max(maximum, loopScopes.length)
+        continue
+      }
+      while (loopScopes.at(-1) === braceDepth) loopScopes.pop()
+      braceDepth = Math.max(0, braceDepth - 1)
+    }
+
+    return Math.max(maximum, loopCount > 0 ? 1 : 0)
+  }
+
   /**
    * Run full performance analysis
    */
@@ -330,24 +344,21 @@ export namespace PerformanceProfiler {
     const complexity: ComplexityAnalysis[] = []
     let filesAnalyzed = 0
 
-    // Find files to analyze
-    const glob = new Bun.Glob("**/*.{ts,js,tsx,jsx}")
-    const excludePatterns = [
-      "node_modules",
-      "dist",
-      "build",
-      ".git",
-      "*.test.",
-      "*.spec.",
-    ]
+    const excludePatterns = ["node_modules", "dist", "build", ".git", ".test.", ".spec."]
 
-    for await (const file of glob.scan(".")) {
-      if (excludePatterns.some((p) => file.includes(p))) {
+    const files = options.files?.length ? [...options.files] : []
+    if (files.length === 0) {
+      const glob = new Bun.Glob("**/*.{ts,js,tsx,jsx}")
+      for await (const file of glob.scan(".")) files.push(file)
+    }
+
+    for (const file of files) {
+      if (!options.files?.length && excludePatterns.some((p) => file.includes(p))) {
         continue
       }
 
       try {
-        const result = await analyzeFile(file)
+        const result = await analyzeFile(file, options.threshold)
         issues.push(...result.issues)
         complexity.push(...result.complexity)
         filesAnalyzed++
@@ -364,9 +375,7 @@ export namespace PerformanceProfiler {
       medium: issues.filter((i) => i.severity === "medium").length,
       low: issues.filter((i) => i.severity === "low").length,
       averageComplexity:
-        complexity.length > 0
-          ? complexity.reduce((acc, c) => acc + c.cyclomatic, 0) / complexity.length
-          : 0,
+        complexity.length > 0 ? complexity.reduce((acc, c) => acc + c.cyclomatic, 0) / complexity.length : 0,
       filesAnalyzed,
     }
 
@@ -381,41 +390,28 @@ export namespace PerformanceProfiler {
     }
   }
 
-  function generateRecommendations(
-    issues: PerformanceIssue[],
-    complexity: ComplexityAnalysis[]
-  ): string[] {
+  function generateRecommendations(issues: PerformanceIssue[], complexity: ComplexityAnalysis[]): string[] {
     const recommendations: string[] = []
     const issueTypes = new Set(issues.map((i) => i.type))
 
     if (issueTypes.has("complexity")) {
-      recommendations.push(
-        "Consider refactoring functions with high cyclomatic complexity (>10)"
-      )
+      recommendations.push("Consider refactoring functions with high cyclomatic complexity (>10)")
     }
 
     if (issueTypes.has("n-plus-one")) {
-      recommendations.push(
-        "Review database queries in loops - consider eager loading or batching"
-      )
+      recommendations.push("Review database queries in loops - consider eager loading or batching")
     }
 
     if (issueTypes.has("memory")) {
-      recommendations.push(
-        "Check for memory leaks - ensure event listeners and intervals are cleaned up"
-      )
+      recommendations.push("Check for memory leaks - ensure event listeners and intervals are cleaned up")
     }
 
     if (complexity.some((c) => c.bigO === "O(n²)" || c.bigO === "O(n³)")) {
-      recommendations.push(
-        "Optimize nested loops - consider using Maps/Sets for O(1) lookup"
-      )
+      recommendations.push("Optimize nested loops - consider using Maps/Sets for O(1) lookup")
     }
 
     if (issueTypes.has("async")) {
-      recommendations.push(
-        "Review async operations - use Promise.all() for concurrent operations"
-      )
+      recommendations.push("Review async operations - use Promise.all() for concurrent operations")
     }
 
     return recommendations
@@ -493,12 +489,6 @@ export const PerfCommand = cmd({
   describe: "Analyze code for performance issues and complexity",
   builder: (yargs) =>
     yargs
-      .option("analyze", {
-        type: "boolean",
-        alias: "a",
-        describe: "Run performance analysis",
-        default: true,
-      })
       .option("files", {
         type: "string",
         alias: "f",
@@ -529,7 +519,6 @@ export const PerfCommand = cmd({
       console.log("⚡ Running performance analysis...\n")
 
       const result = await PerformanceProfiler.analyze({
-        analyze: args.analyze,
         files: args.files?.split(","),
         threshold: args.threshold,
       })

@@ -1,16 +1,19 @@
-# companion
+# AtomCLI mobile companion
 
-AtomCLI Mobile Companion App
+This Flutter application is the mobile companion for AtomCLI. Its package metadata and supported Dart SDK are defined in `pubspec.yaml`.
 
-## Getting Started
+The CLI enables pairing when started with the companion network option:
 
-This project is a starting point for a Flutter application.
+```sh
+atomcli serve --companion
+```
 
-A few resources to get you started if this is your first Flutter project:
+That mode binds the server for pairing, creates a pairing token, and prints companion connection information. The companion app uses the bridge and pairing facilities supplied by `libs/companion/`.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Use the standard Flutter workflow from this directory:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```sh
+flutter pub get
+flutter test
+flutter run
+```

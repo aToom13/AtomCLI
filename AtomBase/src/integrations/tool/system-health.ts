@@ -1,365 +1,308 @@
 import z from "zod"
+import os from "os"
+import path from "path"
+import { statfs } from "fs/promises"
 import { Tool } from "./tool"
-import { execSync } from "child_process"
-import * as os from "os"
-import * as fs from "fs"
-import * as path from "path"
 
-const DESCRIPTION = `System health monitoring and management tool.
+const COMMAND_TIMEOUT_MS = 5_000
+const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+
+const DESCRIPTION = `Read-only system health diagnostics.
 
 Provides:
-- CPU, RAM, Disk, GPU usage monitoring
-- Process management (list, kill)
-- System optimization suggestions
-- Resource cleanup options
+- CPU, memory, disk, uptime, platform, and architecture information
+- A bounded list of high-CPU processes
+- Best-effort GPU information
 
-**USE PROACTIVELY:**
-- Check system health periodically during long operations
-- Kill high-resource processes if needed
-- Monitor system resources before heavy operations
+This tool never terminates processes, removes files, or clears package-manager caches.`
 
-**ACTIONS:**
-- "check": Get current system health status (CPU, RAM, Disk, GPU)
-- "processes": List top resource-consuming processes
-- "kill": Terminate a process by PID
-- "optimize": Clean up system resources (cache, temp files)
-- "gpu": Detailed GPU information`
+type CommandResult = {
+  exitCode: number
+  stdout: string
+  stderr: string
+}
 
-export const SystemHealthTool = Tool.define("system_health", {
+async function runCommand(command: string[], signal: AbortSignal): Promise<CommandResult> {
+  if (signal.aborted) throw signal.reason
+
+  const subprocess = Bun.spawn(command, {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const stop = () => {
+    try {
+      subprocess.kill()
+    } catch {}
+  }
+  signal.addEventListener("abort", stop, { once: true })
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    stop()
+  }, COMMAND_TIMEOUT_MS)
+
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      subprocess.exited,
+      readBounded(subprocess.stdout, stop),
+      readBounded(subprocess.stderr, stop),
+    ])
+    if (signal.aborted) throw signal.reason
+    if (timedOut) throw new Error(`${command[0]} timed out after ${COMMAND_TIMEOUT_MS} ms`)
+    return { exitCode, stdout, stderr }
+  } finally {
+    clearTimeout(timeout)
+    signal.removeEventListener("abort", stop)
+  }
+}
+
+async function readBounded(stream: ReadableStream<Uint8Array>, stop: () => void) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  const parts: string[] = []
+  let bytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > MAX_COMMAND_OUTPUT_BYTES) {
+        stop()
+        await reader.cancel().catch(() => {})
+        throw new Error(`Command output exceeds ${MAX_COMMAND_OUTPUT_BYTES} bytes`)
+      }
+      parts.push(decoder.decode(value, { stream: true }))
+    }
+    parts.push(decoder.decode())
+    return parts.join("")
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function cpuTotals() {
+  return os.cpus().reduce(
+    (total, cpu) => {
+      total.idle += cpu.times.idle
+      total.all += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq
+      return total
+    },
+    { idle: 0, all: 0 },
+  )
+}
+
+async function cpuUsagePercent() {
+  const before = cpuTotals()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  const after = cpuTotals()
+  const elapsed = after.all - before.all
+  return elapsed > 0 ? ((elapsed - (after.idle - before.idle)) / elapsed) * 100 : 0
+}
+
+function gib(bytes: number) {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
+}
+
+async function diskUsage() {
+  const root = path.parse(process.cwd()).root || "/"
+  const stats = await statfs(root, { bigint: true })
+  const total = Number(stats.blocks * stats.bsize)
+  const free = Number(stats.bavail * stats.bsize)
+  return { root, total, free, usedPercent: total > 0 ? ((total - free) / total) * 100 : 0 }
+}
+
+type ProcessInfo = {
+  pid: string
+  user: string
+  cpu: number
+  memory: string
+  command: string
+}
+
+type SystemHealthMetadata = {
+  platform: NodeJS.Platform
+  count?: number
+  cpuPercent?: number
+  cpuCount?: number
+  loadAverage?: number[]
+  memory?: { total: number; free: number }
+  disk?: Awaited<ReturnType<typeof diskUsage>>
+  uptime?: number
+  arch?: string
+}
+
+function parseUnixProcesses(output: string): ProcessInfo[] {
+  return output
+    .split("\n")
+    .map((line) => line.trim().match(/^(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(.*)$/))
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .map((match) => ({
+      pid: match[1],
+      user: match[2],
+      cpu: Number(match[3]) || 0,
+      memory: `${match[4]}%`,
+      command: match[5],
+    }))
+    .sort((a, b) => b.cpu - a.cpu)
+    .slice(0, 15)
+}
+
+function parseWindowsProcesses(output: string): ProcessInfo[] {
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(0, 15)
+    .map((line) => {
+      const columns = Array.from(line.matchAll(/"((?:[^"]|"")*)"(?:,|$)/g), (match) =>
+        match[1].replaceAll('""', '"'),
+      )
+      return {
+        pid: columns[1] ?? "?",
+        user: "-",
+        cpu: 0,
+        memory: columns[4] ?? "?",
+        command: columns[0] ?? line,
+      }
+    })
+}
+
+async function processes(signal: AbortSignal) {
+  const command =
+    process.platform === "win32"
+      ? ["tasklist", "/FO", "CSV", "/NH"]
+      : ["ps", "-axo", "pid=,user=,%cpu=,%mem=,command="]
+  const result = await runCommand(command, signal)
+  if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `${command[0]} exited with ${result.exitCode}`)
+  return process.platform === "win32" ? parseWindowsProcesses(result.stdout) : parseUnixProcesses(result.stdout)
+}
+
+function processTable(items: ProcessInfo[]) {
+  if (items.length === 0) return "No process information available."
+  const rows = items.map(
+    (item) =>
+      `| ${item.pid} | ${item.user.slice(0, 16)} | ${item.cpu.toFixed(1)} | ${item.memory} | ${item.command.slice(0, 80)} |`,
+  )
+  return ["| PID | User | CPU% | Memory | Command |", "|---:|---|---:|---:|---|", ...rows].join("\n")
+}
+
+async function fallbackGpuInfo(signal: AbortSignal) {
+  if (process.platform === "darwin") {
+    return runCommand(["system_profiler", "SPDisplaysDataType", "-detailLevel", "mini"], signal)
+  }
+  if (process.platform === "win32") {
+    return runCommand(
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM,DriverVersion | Format-List | Out-String",
+      ],
+      signal,
+    )
+  }
+  if (process.platform === "freebsd") return runCommand(["pciconf", "-lv"], signal)
+  return runCommand(["lspci", "-nn"], signal)
+}
+
+async function gpuInfo(signal: AbortSignal) {
+  try {
+    const nvidia = await runCommand(
+      [
+        "nvidia-smi",
+        "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+        "--format=csv,noheader",
+      ],
+      signal,
+    )
+    if (nvidia.exitCode === 0 && nvidia.stdout.trim()) return nvidia.stdout.trim()
+  } catch {
+    if (signal.aborted) throw signal.reason
+  }
+
+  try {
+    const fallback = await fallbackGpuInfo(signal)
+    if (fallback.exitCode !== 0) return "GPU information is unavailable on this system."
+    const lines = fallback.stdout
+      .split(/\r?\n/)
+      .filter((line) => {
+        if (process.platform === "linux") return /vga|3d|display/i.test(line)
+        if (process.platform === "freebsd") return /vga|display/i.test(line)
+        return true
+      })
+      .slice(0, 100)
+    return lines.join("\n").trim() || "No GPU was detected."
+  } catch {
+    if (signal.aborted) throw signal.reason
+    return "GPU information is unavailable on this system."
+  }
+}
+
+const parameters = z.object({
+  action: z.enum(["check", "processes", "gpu"]).describe("The read-only diagnostic to perform"),
+})
+
+export const SystemHealthTool = Tool.define<typeof parameters, SystemHealthMetadata>("system_health", {
   description: DESCRIPTION,
-  parameters: z.object({
-    action: z.enum(["check", "processes", "kill", "optimize", "gpu"]).describe("The action to perform"),
-    pid: z.number().optional().describe("Process ID to kill (for 'kill' action)"),
-    signal: z.enum(["SIGTERM", "SIGKILL"]).optional().describe("Signal to send (default: SIGTERM)"),
-  }),
-  async execute(params, ctx): Promise<any> {
-    switch (params.action) {
-      case "check": {
-        const cpuLoad = os.loadavg()
-        const totalMem = os.totalmem()
-        const freeMem = os.freemem()
-        const usedMemPercent = (((totalMem - freeMem) / totalMem) * 100).toFixed(1)
-
-        // Get disk usage
-        let diskInfo = "Unknown"
-        try {
-          if (process.platform === "win32") {
-            const wmic = execSync("wmic logicaldisk where \"DeviceID='C:'\" get FreeSpace,Size /format:list", {
-              encoding: "utf-8",
-            })
-            const freeMatch = wmic.match(/FreeSpace=(\d+)/)
-            const sizeMatch = wmic.match(/Size=(\d+)/)
-            if (freeMatch && sizeMatch) {
-              const freeGB = (parseInt(freeMatch[1]) / 1073741824).toFixed(1)
-              const totalGB = (parseInt(sizeMatch[1]) / 1073741824).toFixed(1)
-              diskInfo = `C: ${freeGB}G free / ${totalGB}G total`
-            }
-          } else if (process.platform === "linux" || process.platform === "darwin") {
-            diskInfo = execSync("df -h / | tail -1", { encoding: "utf-8" }).trim()
-          } else {
-            diskInfo = "Disk info only available on Linux/macOS/Windows"
-          }
-        } catch {}
-
-        // Get uptime
-        const uptime = os.uptime()
-        const uptimeHours = Math.floor(uptime / 3600)
-        const uptimeMins = Math.floor((uptime % 3600) / 60)
-
+  parameters,
+  async execute(params, ctx) {
+    if (params.action === "processes") {
+      try {
+        const items = await processes(ctx.abort)
         return {
-          title: "System Health Check",
-          output: `## System Status
-
-**CPU Load:**
-- 1 min: ${cpuLoad[0].toFixed(2)}
-- 5 min: ${cpuLoad[1].toFixed(2)}
-- 15 min: ${cpuLoad[2].toFixed(2)}
-
-**Memory:**
-- Total: ${(totalMem / 1024 / 1024 / 1024).toFixed(1)} GB
-- Free: ${(freeMem / 1024 / 1024 / 1024).toFixed(1)} GB
-- Used: ${usedMemPercent}%
-
-**Disk (root):**
-${diskInfo}
-
-**Uptime:** ${uptimeHours}h ${uptimeMins}m
-
-**Platform:** ${os.platform()} ${os.release()}
-**Arch:** ${os.arch()}`,
-          metadata: {
-            cpuLoad,
-            memory: { total: totalMem, free: freeMem, usedPercent: parseFloat(usedMemPercent) },
-            uptime,
-          },
+          title: "System Processes",
+          output: processTable(items),
+          metadata: { count: items.length, platform: process.platform },
         }
-      }
-
-      case "processes": {
-        let output = "## Top Processes by CPU\n\n"
-        output += "| PID    | User     | CPU%  | MEM%  | Command\n"
-        output += "|--------|----------|-------|-------|------------------\n"
-
-        try {
-          if (process.platform === "win32") {
-            const result = execSync("tasklist /FO CSV /NH", { encoding: "utf-8" })
-            const lines = result.trim().split("\n").slice(0, 15)
-            for (const line of lines) {
-              const cols = line.split(",").map((c) => c.replace(/"/g, "").trim())
-              const cmd = cols[0].substring(0, 30)
-              const pid = cols[1]
-              const mem = cols[4]
-              output += `| ${pid.padEnd(6)} | ${"".padEnd(8)} | ${"".padEnd(5)} | ${mem.padEnd(5)} | ${cmd}\n`
-            }
-          } else if (process.platform === "linux") {
-            const result = execSync("ps aux --sort=-%cpu | head -15", { encoding: "utf-8" })
-            const lines = result.trim().split("\n").slice(1) // Skip header
-
-            for (const line of lines) {
-              const parts = line.split(/\s+/)
-              const user = parts[0].substring(0, 8)
-              const pid = parts[1]
-              const cpu = parts[2]
-              const mem = parts[3]
-              const cmd = parts.slice(10).join(" ").substring(0, 30)
-              output += `| ${pid.padEnd(6)} | ${user.padEnd(8)} | ${cpu.padEnd(5)} | ${mem.padEnd(5)} | ${cmd}\n`
-            }
-          } else if (process.platform === "darwin") {
-            // macOS ps doesn't support --sort, so we get all and sort in JS
-            const result = execSync("ps aux", { encoding: "utf-8" })
-            const lines = result.trim().split("\n").slice(1) // Skip header
-            const processes = lines
-              .map((line) => {
-                const parts = line.split(/\s+/)
-                if (parts.length < 11) return null
-                return {
-                  user: parts[0].substring(0, 8),
-                  pid: parts[1],
-                  cpu: parseFloat(parts[2]),
-                  mem: parts[3],
-                  cmd: parts.slice(10).join(" ").substring(0, 30),
-                }
-              })
-              .filter(Boolean)
-              .sort((a, b) => b!.cpu - a!.cpu)
-              .slice(0, 15)
-
-            for (const proc of processes) {
-              output += `| ${proc!.pid.padEnd(6)} | ${proc!.user.padEnd(8)} | ${proc!.cpu.toFixed(1).padEnd(5)} | ${proc!.mem.padEnd(5)} | ${proc!.cmd}\n`
-            }
-          } else {
-            output += "Process list only available on Linux/macOS/Windows\n"
-          }
-        } catch (e) {
-          output += "Error getting process list: " + (e as Error).message
-        }
-
+      } catch (error) {
         return {
-          title: "Top Processes",
-          output,
-          metadata: {
-            cpuLoad: undefined,
-            memory: undefined,
-            uptime: undefined,
-            pid: undefined,
-            signal: undefined,
-            error: undefined,
-            freedBytes: undefined,
-          },
+          title: "System Processes",
+          output: `Process information is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          metadata: { count: 0, platform: process.platform },
         }
       }
+    }
 
-      case "kill": {
-        if (!params.pid) {
-          return {
-            title: "Error",
-            output: "PID is required for kill action",
-            metadata: {
-              cpuLoad: undefined,
-              memory: undefined,
-              uptime: undefined,
-              pid: undefined,
-              signal: undefined,
-              error: undefined,
-              freedBytes: undefined,
-            },
-          }
-        }
-
-        const signal = params.signal || "SIGTERM"
-
-        try {
-          if (process.platform === "win32") {
-            execSync(`taskkill /pid ${params.pid} /T ${signal === "SIGKILL" ? "/F" : ""}`.trim())
-          } else {
-            process.kill(params.pid, signal)
-          }
-          return {
-            title: `Process ${params.pid} terminated`,
-            output: `Sent ${signal} to process ${params.pid}`,
-            metadata: {
-              pid: params.pid,
-              signal,
-              cpuLoad: undefined,
-              memory: undefined,
-              uptime: undefined,
-              error: undefined,
-              freedBytes: undefined,
-            },
-          }
-        } catch (e) {
-          return {
-            title: "Failed to kill process",
-            output: `Error: ${(e as Error).message}`,
-            metadata: {
-              error: (e as Error).message,
-              cpuLoad: undefined,
-              memory: undefined,
-              uptime: undefined,
-              pid: undefined,
-              signal: undefined,
-              freedBytes: undefined,
-            },
-          }
-        }
+    if (params.action === "gpu") {
+      return {
+        title: "GPU Status",
+        output: await gpuInfo(ctx.abort),
+        metadata: { platform: process.platform },
       }
+    }
 
-      case "optimize": {
-        let output = "## System Optimization\n\n"
-        let freed = 0
+    const [cpuPercent, disk] = await Promise.all([cpuUsagePercent(), diskUsage().catch(() => undefined)])
+    const totalMemory = os.totalmem()
+    const freeMemory = os.freemem()
+    const uptime = os.uptime()
+    const loadAverage = os.loadavg()
+    const diskLine = disk
+      ? `${disk.root}: ${gib(disk.free)} free / ${gib(disk.total)} total (${disk.usedPercent.toFixed(1)}% used)`
+      : "Unavailable"
 
-        // Clear package manager cache (if exists)
-        try {
-          // npm cache
-          execSync("npm cache clean --force", { encoding: "utf-8", stdio: "pipe" })
-          output += "- npm cache cleaned\n"
-        } catch {}
-
-        // Clear temp files (older than 1 day) - Linux/macOS only
-        if (process.platform === "linux" || process.platform === "darwin") {
-          try {
-            const result = execSync("find /tmp -type f -mtime +1 -print -delete 2>/dev/null | wc -l", {
-              encoding: "utf-8",
-            })
-            output += `- Cleaned ${result.trim()} old temp files\n`
-          } catch {}
-        } else if (process.platform === "win32") {
-          // Windows temp cleanup
-          try {
-            execSync('cmd /c "del /q /f /s %TEMP%\\* 2>nul"', { encoding: "utf-8" })
-            output += "- Windows temp files cleaned\n"
-          } catch {}
-        }
-
-        // Sync filesystem buffers (Linux/macOS only)
-        if (process.platform === "linux" || process.platform === "darwin") {
-          try {
-            execSync("sync", { encoding: "utf-8" })
-            output += "- Filesystem buffers synced\n"
-          } catch {}
-        }
-
-        output += "\nOptimization complete."
-
-        return {
-          title: "System Optimized",
-          output,
-          metadata: {
-            freedBytes: freed,
-            cpuLoad: undefined,
-            memory: undefined,
-            uptime: undefined,
-            pid: undefined,
-            signal: undefined,
-            error: undefined,
-          },
-        }
-      }
-
-      case "gpu": {
-        let output = "## GPU Information\n\n"
-
-        // Check for NVIDIA GPU (Linux/Windows only)
-        if (process.platform === "linux" || process.platform === "win32") {
-          try {
-            const gpuInfo = execSync(
-              process.platform === "win32"
-                ? "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader"
-                : "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null",
-              { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-            ).trim()
-
-            if (gpuInfo) {
-              const lines = gpuInfo.split("\n")
-              let gpuIndex = 0
-              for (const line of lines) {
-                const [name, memTotal, memUsed, memFree, util, temp] = line.split(", ")
-                output += `**GPU ${gpuIndex}:**\n`
-                output += `- Name: ${name}\n`
-                output += `- Memory: ${memUsed.trim()} / ${memTotal.trim()} used (${memFree.trim()} free)\n`
-                output += `- Utilization: ${util.trim()}\n`
-                output += `- Temperature: ${temp.trim()}\n\n`
-                gpuIndex++
-              }
-
-              // Add GPU processes
-              try {
-                const gpuProcesses = execSync(
-                  process.platform === "win32"
-                    ? "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader"
-                    : "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null",
-                  { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
-                ).trim()
-                if (gpuProcesses) {
-                  output += "**GPU Processes:**\n"
-                  output += "| PID | Process | Memory |\n"
-                  output += "|-----|---------|--------|\n"
-                  for (const line of gpuProcesses.split("\n").slice(0, 10)) {
-                    const [pid, name, mem] = line.split(", ")
-                    output += `| ${pid} | ${name} | ${mem} |\n`
-                  }
-                }
-              } catch {}
-            }
-          } catch {
-            output += "No NVIDIA GPU detected or nvidia-smi not available.\n"
-          }
-        } else {
-          output += "NVIDIA GPU detection only available on Linux/Windows.\n"
-        }
-
-        // Check for AMD GPU (Linux only)
-        if (process.platform === "linux") {
-          try {
-            const amdGpu = execSync("lspci | grep -i vga | grep -i amd", { encoding: "utf-8" }).trim()
-            if (amdGpu) {
-              output += `\n**AMD GPU detected:**\n${amdGpu}\n`
-            } else {
-              output += "\nNo AMD GPU detected via lspci.\n"
-            }
-          } catch {
-            output += "\nAMD GPU detection failed (lspci not available).\n"
-          }
-        } else if (process.platform === "win32") {
-          output += "\nAMD GPU detection not available on Windows.\n"
-        } else {
-          output += "\nAMD GPU detection only available on Linux.\n"
-        }
-
-        return {
-          title: "GPU Status",
-          output,
-          metadata: {
-            cpuLoad: undefined,
-            memory: undefined,
-            uptime: undefined,
-            pid: undefined,
-            signal: undefined,
-            error: undefined,
-            freedBytes: undefined,
-          },
-        }
-      }
+    return {
+      title: "System Health Check",
+      output: [
+        "## System Status",
+        "",
+        `- CPU: ${cpuPercent.toFixed(1)}% across ${os.cpus().length} logical cores`,
+        `- Load average (1/5/15m): ${loadAverage.map((value) => value.toFixed(2)).join(" / ")}`,
+        `- Memory: ${gib(totalMemory - freeMemory)} used / ${gib(totalMemory)} total`,
+        `- Disk: ${diskLine}`,
+        `- Uptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+        `- Platform: ${os.platform()} ${os.release()} (${os.arch()})`,
+      ].join("\n"),
+      metadata: {
+        cpuPercent,
+        cpuCount: os.cpus().length,
+        loadAverage,
+        memory: { total: totalMemory, free: freeMemory },
+        disk,
+        uptime,
+        platform: os.platform(),
+        arch: os.arch(),
+      },
     }
   },
 })

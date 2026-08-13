@@ -18,6 +18,7 @@ $ErrorActionPreference = "Stop"
 # Installation directories
 $InstallDir = if ($env:ATOMCLI_INSTALL_DIR) { $env:ATOMCLI_INSTALL_DIR } else { "$env:LOCALAPPDATA\AtomCLI\bin" }
 $ConfigDir  = if ($env:ATOMCLI_CONFIG_DIR)  { $env:ATOMCLI_CONFIG_DIR  } else { "$env:USERPROFILE\.atomcli" }
+$PlaywrightVersion = "1.62.0"
 
 # ─────────────────────────────────────────────────────────────
 # Output helpers
@@ -30,12 +31,12 @@ function Write-Info    { param([string]$M) Write-Host "   $M" -ForegroundColor D
 
 function Show-Banner {
     Write-Host ""
-    Write-Host "    ███████╗ ██████╗ ███████╗  ███╗ ███     ██████╗██╗     ██╗" -ForegroundColor Cyan
-    Write-Host "    ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║  ██╔════╝██║     ██║" -ForegroundColor Cyan
-    Write-Host "    ███████║   ██║   ██║   ██║██╔████╔██║  ██║     ██║     ██║" -ForegroundColor Cyan
-    Write-Host "    ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║  ██║     ██║     ██║" -ForegroundColor Cyan
-    Write-Host "    ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║  ╚██████╗███████╗██║" -ForegroundColor Cyan
-    Write-Host "    ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝   ╚═════╝╚══════╝╚═╝" -ForegroundColor Cyan
+    Write-Host "  █████╗ ████████╗ ██████╗ ███╗   ███╗   ██████╗██╗     ██╗" -ForegroundColor Cyan
+    Write-Host " ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║  ██╔════╝██║     ██║" -ForegroundColor Cyan
+    Write-Host " ███████║   ██║   ██║   ██║██╔████╔██║  ██║     ██║     ██║" -ForegroundColor Cyan
+    Write-Host " ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║  ██║     ██║     ██║" -ForegroundColor Cyan
+    Write-Host " ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║  ╚██████╗███████╗██║" -ForegroundColor Cyan
+    Write-Host " ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝   ╚═════╝╚══════╝╚═╝" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "    Terminal AI Coding Assistant - by Atom13" -ForegroundColor DarkGray
     Write-Host ""
@@ -154,41 +155,6 @@ function Test-Dependencies {
         }
     }
 
-    # ── Node.js ───────────────────────────────────────────────
-    $script:NodeOk = $false
-    if (Test-Command "node") {
-        $nv = (node --version) -replace 'v',''
-        $major = [int]($nv.Split('.')[0])
-        if ($major -ge 18) {
-            Write-Success "node v$nv"
-            $script:NodeOk = $true
-        } else {
-            Write-Warn "node v$nv is too old (18+ required for MCP)"
-            $script:NodeOk = $false
-        }
-    } else {
-        Write-Warn "node not found (needed for MCP servers and Playwright)"
-    }
-
-    if (-not $script:NodeOk) {
-        if (Test-WingetAvailable) {
-            Write-Step "Installing Node.js LTS via winget..."
-            winget install --id OpenJS.NodeJS.LTS -e --source winget `
-                --accept-package-agreements --accept-source-agreements `
-                --silent 2>&1 | Out-Null
-            Refresh-Path
-            if (Test-Command "node") {
-                $nv = (node --version) -replace 'v',''
-                Write-Success "node v$nv installed"
-                $script:NodeOk = $true
-            } else {
-                Write-Warn "Node.js install failed. MCP servers will not work."
-            }
-        } else {
-            Write-Warn "winget not available. Node.js install skipped."
-        }
-    }
-
     # ── Bun ───────────────────────────────────────────────────
     if (Test-Command "bun") {
         Write-Success "bun $(bun --version)"
@@ -206,7 +172,7 @@ function Install-Bun {
     Write-Step "Installing Bun..."
     try {
         Invoke-WithSpinner -Message "Installing Bun..." -Action {
-            powershell -c "irm bun.sh/install.ps1 | iex" 2>&1 | Out-Null
+            powershell -c "irm https://bun.sh/install.ps1 | iex" 2>&1 | Out-Null
         }
         Refresh-Path
         $bunPath = "$env:USERPROFILE\.bun\bin"
@@ -244,6 +210,48 @@ function Get-LatestRelease {
         return $r.tag_name
     } catch {
         return $null
+    }
+}
+
+function Test-ReleaseChecksum {
+    param(
+        [Parameter(Mandatory)][string]$BinaryPath,
+        [Parameter(Mandatory)][string]$ManifestPath,
+        [Parameter(Mandatory)][string]$AssetName
+    )
+
+    if (-not (Test-Path -LiteralPath $BinaryPath) -or -not (Test-Path -LiteralPath $ManifestPath)) {
+        return $false
+    }
+
+    $expected = $null
+    foreach ($line in Get-Content -LiteralPath $ManifestPath) {
+        if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and
+            [string]::Equals($Matches[2], $AssetName, [System.StringComparison]::Ordinal)) {
+            $expected = $Matches[1]
+            break
+        }
+    }
+    if (-not $expected) { return $false }
+
+    $actual = (Get-FileHash -LiteralPath $BinaryPath -Algorithm SHA256).Hash
+    return [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-ReleaseDownloadInfo {
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][ValidateSet("x64", "arm64")][string]$Arch
+    )
+
+    $normalizedVersion = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+    $assetName = "atomcli-windows-$Arch.exe"
+    $releaseBase = "https://github.com/aToom13/AtomCLI/releases/download/$normalizedVersion"
+    [PSCustomObject]@{
+        Version = $normalizedVersion
+        AssetName = $assetName
+        AssetUrl = "$releaseBase/$assetName"
+        ChecksumUrl = "$releaseBase/SHA256SUMS"
     }
 }
 
@@ -354,34 +362,45 @@ function Install-Binary {
     Write-Step "Downloading AtomCLI..."
 
     $version = if ($script:SelectedVersion) { "v$($script:SelectedVersion)" } else { Get-LatestRelease }
-    $binaryName = "atomcli-windows-x64.exe"
 
     if ($version) {
-        $url        = "https://github.com/aToom13/AtomCLI/releases/download/$version/$binaryName"
+        $release = Get-ReleaseDownloadInfo -Version $version -Arch $script:ArchType
+        $binaryName = $release.AssetName
+        $url = $release.AssetUrl
+        $checksumUrl = $release.ChecksumUrl
         $targetPath = Join-Path $InstallDir "atomcli.exe"
+        $partialPath = "$targetPath.partial.$PID"
+        $manifestPath = Join-Path $InstallDir "SHA256SUMS.partial.$PID"
         try {
             Invoke-WithSpinner -Message "Downloading $version..." -Action {
-                param($u, $t)
+                param($u, $t, $cu, $ct)
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 $web = New-Object System.Net.WebClient
                 $web.DownloadFile($u, $t)
-            } -ArgumentList $url, $targetPath
+                $web.DownloadFile($cu, $ct)
+            } -ArgumentList $url, $partialPath, $checksumUrl, $manifestPath
 
-            # fallback — spinner runs in job so file written there; re-run direct
-            if (-not (Test-Path $targetPath) -or (Get-Item $targetPath).Length -eq 0) {
-                throw "Empty download"
+            if (-not (Test-Path -LiteralPath $partialPath) -or (Get-Item -LiteralPath $partialPath).Length -eq 0) {
+                throw "Empty binary download"
             }
-            Write-Success "Downloaded AtomCLI $version"
+            if (-not (Test-ReleaseChecksum -BinaryPath $partialPath -ManifestPath $manifestPath -AssetName $binaryName)) {
+                throw "SHA-256 checksum verification failed"
+            }
+            Move-Item -LiteralPath $partialPath -Destination $targetPath -Force
+            Write-Success "Downloaded and verified AtomCLI $version"
             return
         } catch {
-            Write-Warn "Binary not found in releases, falling back to source build... ($($_.Exception.Message))"
+            Write-Warn "Binary download or verification failed, falling back to source build... ($($_.Exception.Message))"
+        } finally {
+            Remove-Item -LiteralPath $partialPath, $manifestPath -Force -ErrorAction SilentlyContinue
         }
     }
 
-    Invoke-SourceBuild
+    Invoke-SourceBuild -Version $version
 }
 
 function Invoke-SourceBuild {
+    param([string]$Version)
     Write-Step "Building from source..."
     Write-Info "(First install can take 10-20 min on slow connections)"
     Write-Host ""
@@ -393,7 +412,15 @@ function Invoke-SourceBuild {
     try {
         # Clone
         Write-Step "Cloning repository..."
-        $cloneJob = Start-Job -ScriptBlock { param($wd); Set-Location $wd; git clone --depth 1 https://github.com/aToom13/AtomCLI.git 2>&1 } -ArgumentList $tempDir
+        $cloneJob = Start-Job -ScriptBlock {
+            param($wd, $version)
+            Set-Location $wd
+            if ($version) {
+                git clone --depth 1 --branch $version https://github.com/aToom13/AtomCLI.git 2>&1
+            } else {
+                git clone --depth 1 https://github.com/aToom13/AtomCLI.git 2>&1
+            }
+        } -ArgumentList $tempDir, $Version
         $chars = @('|','/','-','\'); $ci = 0
         while ($cloneJob.State -eq 'Running') {
             Write-Host "`r$($chars[$ci % 4]) Cloning...   " -NoNewline -ForegroundColor Blue
@@ -418,20 +445,6 @@ function Invoke-SourceBuild {
         Write-Host "`r                                                     `r" -NoNewline
         $depsOut = Receive-Job $depsJob; Remove-Job $depsJob
         Write-Success "Dependencies installed"
-
-        # Install Playwright package in AtomBase
-        Write-Step "Installing Playwright package..."
-        Push-Location AtomBase
-        $pwPkg = Start-Job -ScriptBlock { param($wd); Set-Location $wd; bun add playwright 2>&1 } -ArgumentList $PWD.Path
-        $pi = 0
-        while ($pwPkg.State -eq 'Running') {
-            Write-Host "`r$($chars[$pi % 4]) Installing Playwright...   " -NoNewline -ForegroundColor Blue
-            Start-Sleep -Milliseconds 200; $pi++
-        }
-        Write-Host "`r                                    `r" -NoNewline
-        Receive-Job $pwPkg | Out-Null; Remove-Job $pwPkg
-        Write-Success "Playwright package installed"
-        Pop-Location
 
         Set-Location AtomBase
 
@@ -494,11 +507,6 @@ function Invoke-SourceBuild {
 # Playwright browser setup
 # ─────────────────────────────────────────────────────────────
 function Install-PlaywrightBrowsers {
-    if (-not $script:NodeOk) {
-        Write-Warn "Skipping Playwright browsers (Node.js not available)"
-        return
-    }
-
     $playwrightDir = Join-Path $ConfigDir "playwright"
     New-Item -ItemType Directory -Force -Path $playwrightDir | Out-Null
 
@@ -510,7 +518,7 @@ function Install-PlaywrightBrowsers {
     Push-Location $playwrightDir
     try {
         Write-Step "Installing Playwright package..."
-        $pwJob = Start-Job -ScriptBlock { param($wd); Set-Location $wd; bun init -y 2>&1; bun add playwright 2>&1 } -ArgumentList $PWD.Path
+        $pwJob = Start-Job -ScriptBlock { param($wd, $version); Set-Location $wd; bun init -y 2>&1; bun add --exact "playwright@$version" 2>&1 } -ArgumentList $PWD.Path, $PlaywrightVersion
         $chars = @('|','/','-','\'); $pi = 0
         while ($pwJob.State -eq 'Running') {
             Write-Host "`r$($chars[$pi % 4]) Installing Playwright package...   " -NoNewline -ForegroundColor Blue
@@ -537,7 +545,7 @@ function Install-PlaywrightBrowsers {
             Write-Success "Chromium installed"
         } else {
             Write-Warn "Could not install Playwright package"
-            Write-Info "Run manually: cd $playwrightDir && bun add playwright && bunx playwright install chromium"
+            Write-Info "Run manually: cd $playwrightDir && bun add --exact playwright@$PlaywrightVersion && bunx playwright install chromium"
         }
     } finally {
         Pop-Location
@@ -557,6 +565,32 @@ function Add-ToPath {
     } else {
         Write-Info "Already in PATH"
     }
+}
+
+function Install-Completion {
+    Write-Step "Installing PowerShell tab completion..."
+    $binary = Join-Path $InstallDir "atomcli.exe"
+    $completionDir = Join-Path $ConfigDir "completions"
+    $completionFile = Join-Path $completionDir "atomcli.ps1"
+    New-Item -ItemType Directory -Force -Path $completionDir | Out-Null
+
+    & $binary completion powershell | Set-Content -LiteralPath $completionFile -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item -LiteralPath $completionFile -Force -ErrorAction SilentlyContinue
+        Write-Warn "Could not generate PowerShell tab completion"
+        return
+    }
+
+    $profilePath = $PROFILE.CurrentUserAllHosts
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $profilePath) | Out-Null
+    if (-not (Test-Path -LiteralPath $profilePath)) {
+        New-Item -ItemType File -Force -Path $profilePath | Out-Null
+    }
+    $sourceLine = ". '$completionFile'"
+    if (-not (Select-String -LiteralPath $profilePath -SimpleMatch $sourceLine -Quiet)) {
+        Add-Content -LiteralPath $profilePath -Value "`n# AtomCLI tab completion`n$sourceLine"
+    }
+    Write-Success "Installed PowerShell tab completion"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -651,16 +685,11 @@ function Setup-OptionalFeatures {
     Write-Host "  |  MCP Servers (Model Context Protocol)      |" -ForegroundColor Yellow
     Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Yellow
     Write-Host "  |  - Seq-Thinking   complex reasoning        |" -ForegroundColor DarkGray
-    Write-Host "  |  (Requires Node.js 18+)                    |" -ForegroundColor DarkGray
+    Write-Host "  |  (Runs through Bun)                        |" -ForegroundColor DarkGray
     Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Yellow
     Write-Host ""
-    $installMcps = $false
-    if ($script:NodeOk) {
-        $installMcps = Prompt-YesNo "Install default MCP servers?"
-        if ($installMcps) { Write-Success "MCP servers will be installed" } else { Write-Info "Skipping MCP servers" }
-    } else {
-        Write-Warn "Node.js 18+ not available - skipping MCP servers"
-    }
+    $installMcps = Prompt-YesNo "Install default MCP servers?"
+    if ($installMcps) { Write-Success "MCP servers will be installed" } else { Write-Info "Skipping MCP servers" }
     Write-Host ""
 
     # ── Apply ─────────────────────────────────────────────────
@@ -737,7 +766,7 @@ Generate commit messages following Conventional Commits format: feat, fix, docs,
   "mcp": {
     "sequential-thinking": {
       "type": "local",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "command": ["bunx", "@modelcontextprotocol/server-sequential-thinking"],
       "enabled": true
     }
   }
@@ -822,6 +851,22 @@ function Uninstall-AtomCLI {
         Write-Success "Removed from PATH"
     }
 
+
+    $completionFile = Join-Path (Join-Path $ConfigDir "completions") "atomcli.ps1"
+    $profilePath = $PROFILE.CurrentUserAllHosts
+    if (Test-Path -LiteralPath $profilePath) {
+        $lines = Get-Content -LiteralPath $profilePath
+        $filtered = @()
+        $skipNext = $false
+        foreach ($line in $lines) {
+            if ($skipNext) { $skipNext = $false; if ($line -eq ". '$completionFile'") { continue } }
+            if ($line -eq "# AtomCLI tab completion") { $skipNext = $true; continue }
+            if ($line -eq ". '$completionFile'") { continue }
+            $filtered += $line
+        }
+        Set-Content -LiteralPath $profilePath -Value $filtered -Encoding UTF8
+    }
+
     Write-Host ""
     Write-Host "  Remove configuration and data? ($ConfigDir)" -ForegroundColor Yellow
     Write-Info "  (includes skills, sessions, settings)"
@@ -864,6 +909,7 @@ function Update-AtomCLI {
 
     Install-Binary -FromSource:($script:InstallFromSource -eq $true)
     Add-ToPath
+    Install-Completion
     Test-Installation
 
     Write-Host ""
@@ -880,7 +926,11 @@ function Update-AtomCLI {
 # ─────────────────────────────────────────────────────────────
 function Get-SystemInfo {
     $script:OsType   = "windows"
-    $script:ArchType = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+    $runtimeArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    $script:ArchType = if ($runtimeArch -eq "arm64") { "arm64" } elseif ($runtimeArch -eq "x64") { "x64" } else { "unsupported" }
+    if ($script:ArchType -eq "unsupported") {
+        throw "AtomCLI supports Windows x64 and ARM64; detected architecture: $runtimeArch"
+    }
     Write-Info "OS: $script:OsType | Arch: $script:ArchType"
 }
 
@@ -894,6 +944,7 @@ function Install-AtomCLI {
     Install-Binary -FromSource:$FromSource
     Install-PlaywrightBrowsers
     Add-ToPath
+    Install-Completion
     Initialize-Config
     Setup-OptionalFeatures
     Test-Installation
@@ -903,7 +954,8 @@ function Install-AtomCLI {
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────
-if ($Help)      { Show-Help }
+if ($env:ATOMCLI_INSTALLER_LIBRARY_ONLY -eq "1") { return }
+elseif ($Help)      { Show-Help }
 elseif ($Uninstall) { Uninstall-AtomCLI }
 elseif ($Update)    { Update-AtomCLI }
 elseif ($Source)    { Install-AtomCLI -FromSource }

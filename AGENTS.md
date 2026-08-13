@@ -6,14 +6,24 @@
 - **Monorepo root is not the main package.** All primary development happens in `AtomBase/`. Root `bun turbo` delegates to packages; run package-specific commands from within each package dir.
 - **SDK codegen is required after any server API change.** After modifying routes in `AtomBase/src/server/`, regenerate the SDK:
   ```sh
-  cd AtomBase && bun run dev generate > ../libs/sdk/js/openapi.json
-  cd libs/sdk/js && bun run build
+  cd AtomBase
+  bun run dev generate > ../libs/sdk/js/openapi.json
+  cd ../libs/sdk/js
+  bun run build
   ```
   Do not manually edit files in `libs/sdk/js/src/v2/gen/` — they are auto-generated.
-- **Releases are triggered by `v*` git tags only.** CI builds and publishes on tag push. Do not manually push to `AtomBase/dist/` or `release_assets/`.
+- **Releases are triggered by `v*` git tags only.** CI builds and publishes on tag push. The supported entrypoint is root `release.sh`; do not manually push to `AtomBase/dist/` or `release_assets/`.
 - **`AtomBase/dist/` is wiped on every build.** `build.ts` runs `rm -rf dist` unconditionally. Never store anything in `dist/`.
-- **The `.atomcli/` and `.claude/` directories at repo root are bundled into every binary release.** Changes there take effect in the next `bun run build` in `AtomBase/`.
+- **Tracked release assets under `.atomcli/` and `.claude/` are bundled into every binary release.** Local configuration, credentials, package manifests/locks, dependencies, plans, runs, and session state in those directories must remain ignored and must never be force-added.
 - `strict: false` in both `tsconfig.json` files is intentional. Do not enable strict mode.
+
+## Git and release hygiene
+
+- Never commit credentials, local configuration, generated binaries, logs, session transcripts, test sandboxes, or release staging directories.
+- Before a release, inspect `git status --short`, `git status --short --ignored`, and `git ls-files -ci --exclude-standard`. The last command must produce no output; tracked files must not also be ignored.
+- Do not use `git add -f` to bypass repository ignore rules for `.atomcli/` or `.claude/` runtime state.
+- Do not push commits or tags, create a release, or publish packages unless the user explicitly authorizes that exact action.
+- When release authorization is explicit, validate with `./release.sh --dry-run` and use `./release.sh`. Do not replace its exact-tag push with `git push --tags`. `RELEASE_NOTES.md` must match the package version and contain no emoji.
 
 ## Validation before finishing
 
@@ -38,7 +48,7 @@ bun turbo test
 - **`ai` SDK must not be top-level imported** in files built with `--conditions=browser`. Use `import type` for types; use `await import(...)` for runtime. Violating this causes Bun ESM resolution failures silently.
 - **Tools** are registered via `Tool.define()` in `AtomBase/src/integrations/tool/`. The wrapper automatically validates Zod schema, truncates output (2000 lines / 50 KB), and sets `metadata.truncated`. Only set `metadata.truncated` yourself if your tool handles truncation internally.
 - **Agents** are defined in `AtomBase/src/integrations/agent/agent.ts` in the `state` factory (native, compiled-in). User-defined agents come from `.atomcli/agent/*.md` files with YAML frontmatter — those extend/override native agents, not replace them.
-- **Config precedence** (highest first): `ATOMCLI_CONFIG_CONTENT` env → project `atomcli.jsonc/json` → global config → remote well-known.
+- **Config precedence** (highest first): `ATOMCLI_CONFIG_CONTENT` env → project `atomcli.jsonc/json` or `mcp.json` → `ATOMCLI_CONFIG` file → global config → remote well-known.
 - **Model specifier format**: `"providerID/modelID"` string (e.g., `"atomcli/minimax-m2.5-free"`). Split on first `/`.
 - **Server default port**: 4096. Falls back to any available port if 4096 is taken.
 - **`Instance.state()`** is the DI/singleton pattern for per-project cached state. Use it for any module that needs project-scoped initialization. Never use module-level mutable state unless it is explicitly bounded.
@@ -46,20 +56,20 @@ bun turbo test
 
 ## Important locations
 
-| Location                                         | Purpose                                                         |
-| ------------------------------------------------ | --------------------------------------------------------------- |
-| `AtomBase/src/integrations/tool/`                | All tool implementations                                        |
-| `AtomBase/src/integrations/agent/agent.ts`       | Native agent definitions + permission defaults                  |
-| `AtomBase/src/integrations/provider/provider.ts` | Provider registry, custom loaders, model resolution             |
-| `AtomBase/src/core/config/config.ts`             | Config schema, loading order, agent/plugin/command file loading |
-| `AtomBase/src/server/server.ts`                  | Hono server, route registration, CORS                           |
-| `AtomBase/script/build.ts`                       | Cross-platform binary build (clears dist/, copies `.atomcli/`)  |
-| `AtomBase/test/preload.ts`                       | Test environment setup (XDG dirs, provider key clearing)        |
-| `AtomBase/test/tool/fixtures/`                   | Test fixtures incl. required `models-api.json`                  |
-| `libs/sdk/js/src/v2/gen/`                        | Auto-generated SDK — do not edit manually                       |
-| `libs/companion/`                                | @atomcli/companion — pairing auth, mobile bridge, discovery     |
-| `companion/`                                     | Flutter mobile companion app (Android/iOS)                      |
-| `.atomcli/` (repo root)                          | Bundled skills/agents — included in every release binary        |
+| Location                                         | Purpose                                                          |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| `AtomBase/src/integrations/tool/`                | All tool implementations                                         |
+| `AtomBase/src/integrations/agent/agent.ts`       | Native agent definitions + permission defaults                   |
+| `AtomBase/src/integrations/provider/provider.ts` | Provider registry, custom loaders, model resolution              |
+| `AtomBase/src/core/config/config.ts`             | Config schema, loading order, agent/plugin/command file loading  |
+| `AtomBase/src/server/server.ts`                  | Hono server, route registration, CORS                            |
+| `AtomBase/script/build.ts`                       | Cross-platform binary build (clears dist/, copies `.atomcli/`)   |
+| `AtomBase/test/preload.ts`                       | Test environment setup (XDG dirs, provider key clearing)         |
+| `AtomBase/test/tool/fixtures/`                   | Test fixtures incl. required `models-api.json`                   |
+| `libs/sdk/js/src/v2/gen/`                        | Auto-generated SDK — do not edit manually                        |
+| `libs/companion/`                                | @atomcli/companion — pairing auth, mobile bridge, discovery      |
+| `companion/`                                     | Flutter mobile companion app (Android/iOS)                       |
+| `.atomcli/` (repo root)                          | Tracked bundled skills/agents; local runtime state stays ignored |
 
 ## Change safety rules
 

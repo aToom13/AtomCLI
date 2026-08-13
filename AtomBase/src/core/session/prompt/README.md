@@ -1,18 +1,5 @@
-# Prompt Directory — AtomCLI
+# Session prompt assets
 
-Bu dizin, AI modeline gönderilen sistem prompt'larının tüm bileşenlerini barındırır.
+This directory contains the static and runtime prompt pieces used by the session prompt manager. `manager.ts` is the assembly entrypoint; `core/`, `provider/`, `agent/`, and `runtime/` hold the corresponding instruction layers.
 
-## Yapı
-
-```
-prompt/
-├── manager.ts          # Birleşik orkestratör — TEK GİRİŞ NOKTASI
-├── core/               # Temel promptlar (her zaman dahil)
-├── provider/           # Sağlayıcıya özel optimizasyonlar
-├── agent/              # Ajan modu davranışları
-└── runtime/            # Çalışma zamanı enjeksiyonları
-```
-
-## Detaylı Döküman
-
-📄 **[docs/prompts.md](../../../docs/prompts.md)** — Prompt sisteminin kapsamlı dökümantasyonu.
+Read the manager and the relevant asset before changing prompt content or order. The maintained overview is [docs/prompts.md](../../../../../docs/prompts.md).

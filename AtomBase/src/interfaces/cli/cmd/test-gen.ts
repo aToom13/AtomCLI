@@ -327,10 +327,10 @@ describe("myFunction", () => {
       let command: string
       switch (framework) {
         case "jest":
-          command = `npx jest "${testPath}"`
+          command = `bunx jest "${testPath}"`
           break
         case "vitest":
-          command = `npx vitest run "${testPath}"`
+          command = `bunx vitest run "${testPath}"`
           break
         case "bun":
         default:

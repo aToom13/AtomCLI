@@ -1,60 +1,16 @@
-# Build Scripts
+# AtomBase scripts
 
-Build and maintenance scripts for AtomCLI.
+This directory contains package maintenance scripts. `build.ts` is the production build entrypoint used by `bun run build`.
 
-## Overview
+The build clears `AtomBase/dist/`, bundles supported targets, and copies repository-root `.atomcli/` and `.claude/` directories into release output. Keep local configuration, credentials, package manifests/locks, dependencies, plans, runs, and session state ignored so only tracked skills and agents enter a clean release checkout. Releases are triggered only by pushing a `v*` tag, and package publication uses Bun.
 
-This directory contains scripts for building, publishing, and maintaining the AtomCLI project.
+Use:
 
-## Scripts
-
-### Build Scripts
-
-- **`build.ts`** - Main build script
-  - Compiles TypeScript to JavaScript
-  - Bundles for multiple platforms
-  - Outputs to `dist/` directory
-
-### Publishing Scripts
-
-- **`publish.ts`** - Publish to npm registry
-- **`publish-registries.ts`** - Publish to multiple registries
-- **`schema.ts`** - Generate JSON schemas
-
-### Installation Scripts
-
-- **`postinstall.mjs`** - Post-installation setup
-  - Runs after `npm install`
-  - Sets up development environment
-
-## Usage
-
-```bash
-# Build for all platforms
+```sh
+cd AtomBase
 bun run build
-
-# Publish to npm
-bun run publish
-
-# Generate schemas
-bun run schema
 ```
 
-## Build Output
+See the [development guide](../../docs/DEVELOPMENT.md) for validation and SDK generation requirements.
 
-Binaries are output to `dist/` for each platform:
-- `atomcli-linux-x64/`
-- `atomcli-linux-arm64/`
-- `atomcli-darwin-x64/`
-- `atomcli-darwin-arm64/`
-- `atomcli-windows-x64/`
-
-## Documentation
-
-- [Development Guide](../../docs/DEVELOPMENT.md) - Build workflow
-- [Main README](../../README.md) - Project overview
-
-## Navigation
-
-- **Parent**: [AtomBase/](../README.md)
-- **Root**: [AtomCLI](../../README.md)
+Do not invoke publishing scripts directly for a GitHub release. From the repository root, use `./release.sh --dry-run` to validate and `./release.sh` to commit, push the exact version tag, and wait for the release workflow.

@@ -18,12 +18,13 @@ const operations = [
   "incomingCalls",
   "outgoingCalls",
 ] as const
+const MAX_RESULTS = 100
 
 export const LspTool = Tool.define("lsp", {
   description: DESCRIPTION,
   parameters: z.object({
     operation: z.enum(operations).describe("The LSP operation to perform"),
-    filePath: z.string().describe("The absolute or relative path to the file"),
+    filePath: z.string().min(1).max(4096).describe("The absolute or relative path to the file"),
     line: z.number().int().min(1).describe("The line number (1-based, as shown in editors)"),
     character: z.number().int().min(1).describe("The character offset (1-based, as shown in editors)"),
   }),
@@ -82,14 +83,16 @@ export const LspTool = Tool.define("lsp", {
       }
     })()
 
+    const limited = result.slice(0, MAX_RESULTS)
     const output = (() => {
       if (result.length === 0) return `No results found for ${args.operation}`
-      return JSON.stringify(result, null, 2)
+      const suffix = result.length > MAX_RESULTS ? `\n\n... ${result.length - MAX_RESULTS} more results omitted` : ""
+      return JSON.stringify(limited, null, 2) + suffix
     })()
 
     return {
       title,
-      metadata: { result },
+      metadata: { results: result.length, limited: result.length > MAX_RESULTS },
       output,
     }
   },

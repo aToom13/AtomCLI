@@ -1,6 +1,9 @@
 import z from "zod"
 import { Tool } from "./tool"
 import DESCRIPTION from "./codesearch.txt"
+import { Http } from "./http"
+
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 const API_CONFIG = {
   BASE_URL: "https://mcp.exa.ai",
@@ -37,16 +40,18 @@ export const CodeSearchTool = Tool.define("codesearch", {
   parameters: z.object({
     query: z
       .string()
+      .min(1)
+      .max(2_000)
       .describe(
         "Search query to find relevant context for APIs, Libraries, and SDKs. For example, 'React useState hook examples', 'Python pandas dataframe filtering', 'Express.js middleware', 'Next js partial prerendering configuration'",
       ),
     tokensNum: z
       .number()
       .min(1000)
-      .max(50000)
+      .max(12000)
       .default(5000)
       .describe(
-        "Number of tokens to return (1000-50000). Default is 5000 tokens. Adjust this value based on how much context you need - use lower values for focused queries and higher values for comprehensive documentation.",
+        "Number of tokens to return (1000-12000). Default is 5000; focused requests reduce latency and memory use.",
       ),
   }),
   async execute(params, ctx) {
@@ -89,14 +94,12 @@ export const CodeSearchTool = Tool.define("codesearch", {
         signal: AbortSignal.any([controller.signal, ctx.abort]),
       })
 
-      clearTimeout(timeoutId)
-
       if (!response.ok) {
-        const errorText = await response.text()
+        const errorText = await Http.readText(response, 64 * 1024)
         throw new Error(`Code search error (${response.status}): ${errorText}`)
       }
 
-      const responseText = await response.text()
+      const responseText = await Http.readText(response, MAX_RESPONSE_BYTES)
 
       // Parse SSE response
       const lines = responseText.split("\n")
@@ -120,13 +123,14 @@ export const CodeSearchTool = Tool.define("codesearch", {
         metadata: {},
       }
     } catch (error) {
-      clearTimeout(timeoutId)
-
       if (error instanceof Error && error.name === "AbortError") {
+        if (ctx.abort.aborted) throw ctx.abort.reason
         throw new Error("Code search request timed out")
       }
 
       throw error
+    } finally {
+      clearTimeout(timeoutId)
     }
   },
 })

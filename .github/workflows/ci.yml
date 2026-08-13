@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Typecheck, test, and scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck monorepo
+        run: bun turbo typecheck
+
+      - name: Test monorepo
+        run: bun turbo test
+        env:
+          ATOMCLI_TEST_HOME: ${{ runner.temp }}/atomcli-test-home
+
+      - name: Check generated SDK is current
+        run: git diff --exit-code -- libs/sdk/js/src/v2/gen
+
+      - name: Check installer syntax
+        run: bash -n install.sh
+
+      - name: Test installer checksum verification
+        run: bash .github/scripts/test-install-sh.sh
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+
+      - name: Lint shell installer
+        run: shellcheck --severity=error install.sh .github/scripts/test-install-sh.sh

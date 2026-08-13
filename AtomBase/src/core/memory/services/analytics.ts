@@ -5,7 +5,6 @@
  * Tracks learning effectiveness and provides improvement suggestions.
  */
 
-import os from "os"
 import path from "path"
 import fs from "fs/promises"
 
@@ -18,6 +17,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.analytics" })
 
@@ -25,7 +25,7 @@ const log = Log.create({ service: "memory.analytics" })
 // CONSTANTS
 // ============================================================================
 
-const ANALYTICS_DIR = ".atomcli/analytics"
+const ANALYTICS_DIR = "analytics"
 const ANALYTICS_FILE = "analytics.json"
 
 // ============================================================================
@@ -41,7 +41,7 @@ export class AnalyticsService {
   }
 
   constructor() {
-    this.analyticsPath = path.join(os.homedir(), ANALYTICS_DIR, ANALYTICS_FILE)
+    this.analyticsPath = path.join(Global.Path.root, ANALYTICS_DIR, ANALYTICS_FILE)
   }
 
   // ============================================================================

@@ -5,19 +5,11 @@ import { FindTool } from "./find"
 import { GrepTool } from "./grep"
 import { BatchTool } from "./batch"
 import { ReadTool } from "./read"
-import { TodoWriteTool, TodoReadTool } from "./todo"
-import { ChainUpdateTool } from "./chainupdate"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
-import { SkillAddTool } from "./skilladd"
-import { McpAddTool } from "./mcpadd"
 import { MemoryTool } from "./memory"
-import { TestGenTool } from "./test-gen"
-import { DocsTool } from "./docs"
-import { RefactorTool } from "./refactor"
-import { ReviewTool } from "./review"
 import type { Agent } from "../agent/agent"
 import { Tool } from "./tool"
 import { Instance } from "@/services/project/instance"
@@ -28,16 +20,34 @@ import z from "zod"
 import { Plugin } from "../plugin"
 import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
-import { FinanceAnalyzeTool } from "./finance"
 import { Flag } from "@/interfaces/flag/flag"
 import { Log } from "@/util/util/log"
-import { LspTool } from "./lsp"
 import { Truncate } from "./truncation"
 import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
-import { SelfMaintenanceTool } from "./self-maintenance"
 import { AgentTool } from "./agent-tool"
 import { TaskFlowTool } from "./taskflow"
+
+const LazyFinanceAnalyzeTool: Tool.Info = {
+  id: "finance_analyze",
+  init: async (initCtx) => ({
+    description: "Analyze a stock, ETF, commodity, forex, index, or cryptocurrency with market and technical data.",
+    parameters: z.object({
+      symbol: z.string().min(1).max(32).describe("Asset symbol, for example BTC, AAPL, OIL, EURUSD, or SPX"),
+      type: z.enum(["crypto", "stock", "etf", "commodity", "forex", "index"]).optional(),
+      detailed: z.boolean().optional().default(true),
+    }),
+    execute: async (args, ctx) => {
+      const implementation = await import("./finance").then((mod) => mod.FinanceAnalyzeTool.init(initCtx))
+      return implementation.execute(args as any, ctx)
+    },
+  }),
+}
+
+const LazyLspTool: Tool.Info = {
+  id: "lsp",
+  init: async (initCtx) => import("./lsp").then((mod) => mod.LspTool.init(initCtx)),
+}
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -118,16 +128,13 @@ export namespace ToolRegistry {
       WebFetchTool,
       WebSearchTool,
       CodeSearchTool,
-      FinanceAnalyzeTool,
+      LazyFinanceAnalyzeTool,
       SkillTool,
-      SkillAddTool,
-      McpAddTool,
       MemoryTool,
       BrowserTool,
       SystemHealthTool,
-      SelfMaintenanceTool,
 
-      ...(Flag.ATOMCLI_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
+      ...(Flag.ATOMCLI_EXPERIMENTAL_LSP_TOOL ? [LazyLspTool] : []),
       ...(config.experimental?.batch_tool !== false ? [BatchTool] : []),
       ...custom,
     ]
@@ -169,11 +176,12 @@ export namespace ToolRegistry {
     return all().then((x) => x.map((t) => t.id))
   }
 
-  export async function tools(providerID: string, agent?: Agent.Info) {
+  export async function tools(providerID: string, agent?: Agent.Info, requested?: ReadonlySet<string>) {
     const allTools = await all()
     const allowList = agent?.name ? AGENT_TOOL_ALLOW_LISTS[agent.name] : undefined
 
     let filteredTools = allTools.filter((t) => {
+      if (requested && !requested.has(t.id)) return false
       if (t.id === "codesearch") {
         if (providerID !== "atomcli" && !Flag.ATOMCLI_ENABLE_EXA) return false
       }
@@ -183,7 +191,7 @@ export namespace ToolRegistry {
       return true
     })
 
-    if (allowList && filteredTools.length === 0) {
+    if (!requested && allowList && filteredTools.length === 0) {
       log.warn("Agent tool allow list produced 0 tools, falling back to all tools", { agent: agent?.name })
       filteredTools = allTools
     }

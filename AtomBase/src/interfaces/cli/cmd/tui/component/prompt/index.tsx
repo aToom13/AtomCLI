@@ -15,7 +15,7 @@ import { usePromptStash } from "./stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useCommandDialog } from "../dialog-command"
-import { useRenderer } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Editor } from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
@@ -31,6 +31,8 @@ import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
+import { SessionLayout } from "@tui/routes/session/layout"
+import { SlashCommand } from "./slash-command"
 
 export type PromptProps = {
   sessionID?: string
@@ -40,6 +42,7 @@ export type PromptProps = {
   ref?: (ref: PromptRef) => void
   hint?: JSX.Element
   showPlaceholder?: boolean
+  width?: number
 }
 
 export type PromptRef = {
@@ -73,6 +76,14 @@ export function Prompt(props: PromptProps) {
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const dimensions = useTerminalDimensions()
+  const verticalMode = createMemo(() => SessionLayout.verticalMode(dimensions().height))
+  const promptWidth = createMemo(() => props.width ?? dimensions().width - 4)
+  const compact = createMemo(() => promptWidth() < 52)
+  const narrow = createMemo(() => promptWidth() < 72)
+  const modelLabel = createMemo(() =>
+    Locale.truncateMiddle(local.model.parsed().model, Math.max(8, promptWidth() - (compact() ? 16 : 28))),
+  )
 
   function promptModelWarning() {
     toast.show({
@@ -485,6 +496,104 @@ export function Prompt(props: PromptProps) {
     },
   ])
 
+  function clearPrompt() {
+    input.clear()
+    input.extmarks.clear()
+    setStore("prompt", { input: "", parts: [] })
+    setStore("extmarkToPartIndex", new Map())
+  }
+
+  async function updateMode(mode: "autonomous" | "safe") {
+    try {
+      await sdk.client.config.update({ body: { agent_mode: mode } } as any)
+      sync.set("config", "agent_mode" as any, mode)
+      if (mode === "autonomous") process.env.ATOMCLI_AUTONOMOUS = "1"
+      else delete process.env.ATOMCLI_AUTONOMOUS
+      toast.show({
+        title: "Tool approvals",
+        message: mode === "autonomous" ? "Autonomous mode enabled" : "Safe mode enabled",
+        variant: "info",
+      })
+    } catch (error) {
+      toast.show({
+        title: "Tool approvals",
+        message: error instanceof Error ? error.message : "Could not update approval mode",
+        variant: "error",
+      })
+    }
+  }
+
+  async function executeSlashCommand(info: SlashCommand.Info, argumentsText = "") {
+    clearPrompt()
+    switch (info.action) {
+      case "command.show":
+        command.show()
+        return
+      case "mode.autonomous":
+        await updateMode("autonomous")
+        return
+      case "mode.safe":
+        await updateMode("safe")
+        return
+      case "smart-model.toggle": {
+        const current = (sync.data.config as any)?.experimental?.smart_model_routing === true
+        const enabled = !current
+        try {
+          await sdk.client.config.update({ body: { experimental: { smart_model_routing: enabled } } } as any)
+          sync.set("config", "experimental" as any, {
+            ...((sync.data.config as any).experimental || {}),
+            smart_model_routing: enabled,
+          })
+          toast.show({
+            title: "Smart model routing",
+            message: enabled ? "Enabled" : "Disabled",
+            variant: "info",
+          })
+        } catch (error) {
+          toast.show({
+            title: "Smart model routing",
+            message: error instanceof Error ? error.message : "Could not update model routing",
+            variant: "error",
+          })
+        }
+        return
+      }
+      case "think.set": {
+        const level = argumentsText.toLowerCase() || undefined
+        const valid = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"]
+        if (!level) {
+          const current = local.model.variant.current()
+          toast.show({
+            title: "Thinking level",
+            message: current ? `Current level: ${current.toUpperCase()}` : "Current level: DEFAULT",
+            variant: "info",
+          })
+          return
+        }
+        if (!valid.includes(level)) {
+          toast.show({
+            title: "Thinking level",
+            message: `Invalid level '${level}'. Allowed: ${valid.join(", ")}`,
+            variant: "warning",
+          })
+          return
+        }
+        local.model.variant.set(level === "off" ? undefined : level)
+        toast.show({
+          title: "Thinking level",
+          message: level === "off" ? "Reset to the model default" : `Set to ${level.toUpperCase()}`,
+          variant: "info",
+        })
+        return
+      }
+      case "prompt.editor":
+        command.trigger(info.action, "prompt")
+        return
+      default:
+        command.trigger(info.action)
+    }
+  }
+
   async function submit() {
     if (props.disabled) return
     if (autocomplete?.visible) return
@@ -495,48 +604,24 @@ export function Prompt(props: PromptProps) {
       return
     }
 
-    if (trimmed.startsWith("/think")) {
-      const parts = trimmed.split(/\s+/)
-      const arg = parts.length > 1 ? parts[1].toLowerCase() : undefined
-      const validLevels = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"]
+    const builtin = SlashCommand.parse(trimmed, {
+      session: !!props.sessionID,
+      sharing: sync.data.config.share !== "disabled",
+    })
+    if (builtin) {
+      await executeSlashCommand(builtin.command, builtin.arguments)
+      return
+    }
 
-      if (!arg) {
-        const current = local.model.variant.current()
-        toast.show({
-          title: "Thinking Level",
-          message: current ? `Current level: ${current.toUpperCase()} 🧠` : "Current level: DEFAULT (medium) 🧠",
-          variant: "info",
-          duration: 3000,
-        })
-      } else if (!validLevels.includes(arg)) {
-        toast.show({
-          title: "Thinking Level",
-          message: `Invalid level '${arg}'. Allowed: ${validLevels.join(", ")}`,
-          variant: "warning",
-          duration: 4000,
-        })
-      } else if (arg === "off") {
-        local.model.variant.set(undefined)
-        toast.show({
-          title: "Thinking Level",
-          message: "Reset to default level 🛡️",
-          variant: "info",
-          duration: 3000,
-        })
-      } else {
-        local.model.variant.set(arg)
-        toast.show({
-          title: "Thinking Level",
-          message: `Set to ${arg.toUpperCase()} 🧠`,
-          variant: "info",
-          duration: 3000,
-        })
-      }
-
-      input.clear()
-      input.extmarks.clear()
-      setStore("prompt", { input: "", parts: [] })
-      setStore("extmarkToPartIndex", new Map())
+    if (
+      trimmed.startsWith("/") &&
+      !sync.data.command.some((item) => item.name === trimmed.slice(1).split(/\s+/, 1)[0])
+    ) {
+      toast.show({
+        title: "Unknown command",
+        message: `${trimmed.split(/\s+/, 1)[0]} is not an available command`,
+        variant: "warning",
+      })
       return
     }
     const selectedModel = local.model.current()
@@ -813,6 +898,7 @@ export function Prompt(props: PromptProps) {
         fileStyleId={fileStyleId}
         agentStyleId={agentStyleId}
         promptPartTypeId={() => promptPartTypeId}
+        onSlashCommand={(info) => void executeSlashCommand(info)}
       />
       <box ref={(r) => (anchor = r)} visible={props.visible !== false}>
         <box
@@ -825,9 +911,9 @@ export function Prompt(props: PromptProps) {
           }}
         >
           <box
-            paddingLeft={2}
-            paddingRight={2}
-            paddingTop={1}
+            paddingLeft={compact() ? 1 : 2}
+            paddingRight={compact() ? 1 : 2}
+            paddingTop={verticalMode() === "normal" ? 1 : 0}
             flexShrink={0}
             backgroundColor={theme.backgroundElement}
             flexGrow={1}
@@ -837,7 +923,7 @@ export function Prompt(props: PromptProps) {
               textColor={keybind.leader ? theme.textMuted : theme.text}
               focusedTextColor={keybind.leader ? theme.textMuted : theme.text}
               minHeight={1}
-              maxHeight={6}
+              maxHeight={verticalMode() === "tight" ? 2 : verticalMode() === "compact" ? 3 : 6}
               onContentChange={() => {
                 const value = input.plainText
                 setStore("prompt", "input", value)
@@ -1027,17 +1113,19 @@ export function Prompt(props: PromptProps) {
               cursorColor={theme.text}
               syntaxStyle={syntax()}
             />
-            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1}>
+            <box flexDirection="row" flexShrink={0} paddingTop={verticalMode() === "normal" ? 1 : 0} gap={1}>
               <text fg={highlight()}>
                 {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
               </text>
               <Show when={store.mode === "normal"}>
                 <box flexDirection="row" gap={1}>
                   <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
-                    {local.model.parsed().model}
+                    {modelLabel()}
                   </text>
-                  <text fg={theme.textMuted}>{local.model.parsed().provider}</text>
-                  <Show when={showVariant()}>
+                  <Show when={!narrow()}>
+                    <text fg={theme.textMuted}>{local.model.parsed().provider}</text>
+                  </Show>
+                  <Show when={showVariant() && !compact()}>
                     <text fg={theme.textMuted}>·</text>
                     <text>
                       <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
@@ -1074,108 +1162,110 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
-        <box flexDirection="row" justifyContent="space-between">
-          <Show when={status().type !== "idle"} fallback={<text />}>
-            <box
-              flexDirection="row"
-              gap={1}
-              flexGrow={1}
-              justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
-            >
-              <box flexShrink={0} flexDirection="row" gap={1}>
-                <box marginLeft={1}>
-                  <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                    <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                  </Show>
-                </box>
-                <box flexDirection="row" gap={1} flexShrink={0}>
-                  {(() => {
-                    const retry = createMemo(
-                      (): { type: "retry"; attempt: number; message: string; next: number } | undefined => {
-                        const s = status()
-                        if (s.type !== "retry") return
-                        return s as any
-                      },
-                    )
-                    const message = createMemo(() => {
-                      const r = retry()
-                      if (!r) return
-                      if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
-                        return "gemini is way too hot right now"
-                      if (r.message.length > 80) return r.message.slice(0, 80) + "..."
-                      return r.message
-                    })
-                    const isTruncated = createMemo(() => {
-                      const r = retry()
-                      if (!r) return false
-                      return r.message.length > 120
-                    })
-                    const [seconds, setSeconds] = createSignal(0)
-                    onMount(() => {
-                      const timer = setInterval(() => {
-                        const next = retry()?.next
-                        if (next) setSeconds(Math.round((next - Date.now()) / 1000))
-                      }, 1000)
-
-                      onCleanup(() => {
-                        clearInterval(timer)
+        <Show when={status().type !== "idle" || verticalMode() === "normal"}>
+          <box flexDirection="row" justifyContent="space-between">
+            <Show when={status().type !== "idle"} fallback={<text />}>
+              <box
+                flexDirection="row"
+                gap={1}
+                flexGrow={1}
+                justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
+              >
+                <box flexShrink={0} flexDirection="row" gap={1}>
+                  <box marginLeft={1}>
+                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
+                      <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
+                    </Show>
+                  </box>
+                  <box flexDirection="row" gap={1} flexShrink={0}>
+                    {(() => {
+                      const retry = createMemo(
+                        (): { type: "retry"; attempt: number; message: string; next: number } | undefined => {
+                          const s = status()
+                          if (s.type !== "retry") return
+                          return s as any
+                        },
+                      )
+                      const message = createMemo(() => {
+                        const r = retry()
+                        if (!r) return
+                        if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
+                          return "gemini is way too hot right now"
+                        if (r.message.length > 80) return r.message.slice(0, 80) + "..."
+                        return r.message
                       })
-                    })
-                    const handleMessageClick = () => {
-                      const r = retry()
-                      if (!r) return
-                      if (isTruncated()) {
-                        DialogAlert.show(dialog, "Retry Error", r.message)
+                      const isTruncated = createMemo(() => {
+                        const r = retry()
+                        if (!r) return false
+                        return r.message.length > 120
+                      })
+                      const [seconds, setSeconds] = createSignal(0)
+                      onMount(() => {
+                        const timer = setInterval(() => {
+                          const next = retry()?.next
+                          if (next) setSeconds(Math.round((next - Date.now()) / 1000))
+                        }, 1000)
+
+                        onCleanup(() => {
+                          clearInterval(timer)
+                        })
+                      })
+                      const handleMessageClick = () => {
+                        const r = retry()
+                        if (!r) return
+                        if (isTruncated()) {
+                          DialogAlert.show(dialog, "Retry Error", r.message)
+                        }
                       }
-                    }
 
-                    const retryText = () => {
-                      const r = retry()
-                      if (!r) return ""
-                      const baseMessage = message()
-                      const truncatedHint = isTruncated() ? " (click to expand)" : ""
-                      const retryInfo = ` [retrying ${seconds() > 0 ? `in ${seconds()}s ` : ""}attempt #${r.attempt}]`
-                      return baseMessage + truncatedHint + retryInfo
-                    }
+                      const retryText = () => {
+                        const r = retry()
+                        if (!r) return ""
+                        const baseMessage = message()
+                        const truncatedHint = isTruncated() ? " (click to expand)" : ""
+                        const retryInfo = ` [retrying ${seconds() > 0 ? `in ${seconds()}s ` : ""}attempt #${r.attempt}]`
+                        return baseMessage + truncatedHint + retryInfo
+                      }
 
-                    return (
-                      <Show when={retry()}>
-                        <box onMouseUp={handleMessageClick}>
-                          <text fg={theme.error}>{retryText()}</text>
-                        </box>
-                      </Show>
-                    )
-                  })()}
+                      return (
+                        <Show when={retry()}>
+                          <box onMouseUp={handleMessageClick}>
+                            <text fg={theme.error}>{retryText()}</text>
+                          </box>
+                        </Show>
+                      )
+                    })()}
+                  </box>
                 </box>
+                <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
+                  esc{" "}
+                  <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
+                    {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                  </span>
+                </text>
               </box>
-              <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
-                esc{" "}
-                <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                  {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                </span>
-              </text>
-            </box>
-          </Show>
-          <Show when={status().type !== "retry"}>
-            <box gap={2} flexDirection="row">
-              <Switch>
-                <Match when={store.mode === "normal"}>
-                  <text fg={theme.text}>
-                    {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>switch agent</span>
-                  </text>
-                  <text fg={theme.text}>
-                    {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
-                  </text>
-                </Match>
-                <Match when={store.mode === "shell"}>
-                  <text fg={theme.text}>
-                    esc <span style={{ fg: theme.textMuted }}>exit shell mode</span>
-                  </text>
-                </Match>
-              </Switch>
-            </box>
-          </Show>
-        </box>
+            </Show>
+            <Show when={status().type !== "retry" && promptWidth() >= 64 && verticalMode() === "normal"}>
+              <box gap={2} flexDirection="row">
+                <Switch>
+                  <Match when={store.mode === "normal"}>
+                    <text fg={theme.text}>
+                      {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>switch agent</span>
+                    </text>
+                    <text fg={theme.text}>
+                      {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
+                    </text>
+                  </Match>
+                  <Match when={store.mode === "shell"}>
+                    <text fg={theme.text}>
+                      esc <span style={{ fg: theme.textMuted }}>exit shell mode</span>
+                    </text>
+                  </Match>
+                </Switch>
+              </box>
+            </Show>
+          </box>
+        </Show>
       </box>
     </>
   )

@@ -9,6 +9,7 @@ import type { AssistantMessage as AssistantMessageType, Part } from "@atomcli/sd
 import { ReasoningPart } from "./ReasoningPart"
 import { TextPart } from "./TextPart"
 import { ToolPart } from "./ToolPart"
+import { useSession } from "../context"
 
 const PART_MAPPING = {
     text: TextPart,
@@ -20,6 +21,7 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
     const local = useLocal()
     const { theme } = useTheme()
     const sync = useSync()
+    const session = useSession()
     const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
 
     // Whether the message is done (finished, aborted, or errored)
@@ -69,6 +71,8 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
         const estimated = chars > 0 ? Math.round(chars / 3) : 0
         return Math.max(props.message.tokens?.reasoning ?? 0, estimated)
     })
+    const compact = createMemo(() => session.width < 58)
+    const modelLabel = createMemo(() => Locale.truncateMiddle(props.message.modelID, compact() ? 18 : 32))
 
     return (
         <>
@@ -104,7 +108,7 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
             <Switch>
                 <Match when={props.last || isDone() || props.message.error?.name === "MessageAbortedError"}>
                     <box paddingLeft={3}>
-                        <text marginTop={1}>
+                        <text marginTop={session.verticalMode === "normal" ? 1 : 0} wrapMode="word">
                             <span
                                 style={{
                                     fg:
@@ -116,11 +120,11 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
                                 ▣{" "}
                             </span>{" "}
                             <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.agent)}</span>
-                            <span style={{ fg: theme.textMuted }}> · {props.message.modelID}</span>
-                            <Show when={reasoningTokens() > 0}>
+                            <span style={{ fg: theme.textMuted }}> · {modelLabel()}</span>
+                            <Show when={reasoningTokens() > 0 && !compact()}>
                                 <span style={{ fg: theme.textMuted }}> · 🧠 {reasoningTokens().toLocaleString()} tokens</span>
                             </Show>
-                            <Show when={local.model.variant.current()}>
+                            <Show when={local.model.variant.current() && session.width >= 70}>
                                 <span style={{ fg: theme.accent }}> · 🧠 {local.model.variant.current()?.toUpperCase()}</span>
                             </Show>
                             <Show when={duration() > 0}>

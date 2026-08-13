@@ -18,6 +18,8 @@ export interface ChainContextValue {
     /** Legacy: global chain accessor (returns chain for "global" key) */
     chain: Accessor<AgentChain | null>
     setChain: Setter<AgentChain | null>
+    /** Restore a session chain from persisted tool parts after reconnect/restart. */
+    hydrateChain: (sessionID: string, chain: AgentChain | null) => void
 
     // Session-scoped chain operations (sessionID optional for backwards compat)
     startChain: (mode?: "safe" | "autonomous", sessionID?: string) => void
@@ -191,11 +193,35 @@ export function ChainProvider(props: ParentProps) {
 
     // Legacy: global chain accessor that tries the global key
     const globalChain = () => chains()[GLOBAL_KEY] ?? null
+    const setGlobalChain = ((value: AgentChain | null | ((previous: AgentChain | null) => AgentChain | null)) => {
+        const next = typeof value === "function" ? value(globalChain()) : value
+        setChains((prev) => {
+            if (!next) {
+                const updated = { ...prev }
+                delete updated[GLOBAL_KEY]
+                return updated
+            }
+            return { ...prev, [GLOBAL_KEY]: next }
+        })
+        return next
+    }) as Setter<AgentChain | null>
+    const hydrateChain = (sessionID: string, chain: AgentChain | null) => {
+        setChains((prev) => {
+            if (!chain) {
+                if (!prev[sessionID]) return prev
+                const updated = { ...prev }
+                delete updated[sessionID]
+                return updated
+            }
+            return { ...prev, [sessionID]: chain }
+        })
+    }
 
     const value: ChainContextValue = {
         getChain: getChainForSession,
         chain: globalChain,
-        setChain: (() => { }) as any,
+        setChain: setGlobalChain,
+        hydrateChain,
         startChain,
         addStep,
         updateStepStatus,
@@ -225,6 +251,7 @@ export function useChain() {
             getChain: () => null,
             chain,
             setChain: () => { },
+            hydrateChain: () => { },
             startChain: () => { },
             addStep: () => { },
             updateStepStatus: () => { },

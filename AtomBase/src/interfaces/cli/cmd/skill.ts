@@ -3,6 +3,7 @@ import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
 import { Skill } from "@/integrations/skill"
 import { ConfigMarkdown } from "@/core/config/markdown"
+import { SkillInstaller } from "@/integrations/skill/installer"
 import { Instance } from "@/services/project/instance"
 import { Global } from "@/core/global"
 import path from "path"
@@ -126,51 +127,18 @@ export const SkillAddCommand = cmd({
     UI.empty()
     prompts.intro("Add Skill")
 
-    let rawUrl = args.url
-
-    // Convert GitHub blob URL to raw URL
-    if (rawUrl.includes("github.com") && rawUrl.includes("/blob/")) {
-      rawUrl = rawUrl.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-    }
-
-    // If it's a short form like user/repo/path, construct full URL
-    if (!rawUrl.startsWith("http")) {
-      rawUrl = `https://raw.githubusercontent.com/${rawUrl}`
-    }
-
-    // If no file extension, assume SKILL.md
-    if (!rawUrl.endsWith(".md")) {
-      rawUrl = rawUrl.endsWith("/") ? rawUrl + "SKILL.md" : rawUrl + "/SKILL.md"
-    }
-
     const spinner = prompts.spinner()
-    spinner.start(`Fetching ${rawUrl}`)
+    spinner.start(`Fetching ${args.url}`)
 
     try {
-      const response = await fetch(rawUrl)
-      if (!response.ok) {
-        spinner.stop(`Failed to fetch: ${response.status} ${response.statusText}`)
-        prompts.outro("")
-        return
-      }
+      const installed = await SkillInstaller.install({
+        url: args.url,
+        name: args.name,
+        signal: new AbortController().signal,
+      })
+      await Skill.reload()
 
-      const content = await response.text()
-
-      // Parse to extract name
-      const parsed = await ConfigMarkdown.parseString(content)
-      if (!parsed || !parsed.data.name) {
-        spinner.stop("Invalid SKILL.md: missing name in frontmatter")
-        prompts.outro("")
-        return
-      }
-
-      const skillName = args.name || parsed.data.name
-      const skillDir = path.join(Global.Path.home, ".atomcli", "skills", skillName)
-
-      await fs.mkdir(skillDir, { recursive: true })
-      await fs.writeFile(path.join(skillDir, "SKILL.md"), content)
-
-      spinner.stop(`Skill "${skillName}" installed to ~/.atomcli/skills/${skillName}/`)
+      spinner.stop(`Skill "${installed.name}" installed to ${installed.directory}`)
       prompts.outro("Run `atomcli skill list` to see all skills")
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

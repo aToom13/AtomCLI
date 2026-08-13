@@ -5,8 +5,6 @@ import fs from "fs/promises"
 import z from "zod"
 import { NamedError } from "@atomcli/util/error"
 import { lazy } from "@/util/util/lazy"
-import { $ } from "bun"
-
 import { ZipReader, BlobReader, BlobWriter } from "@zip.js/zip.js"
 import { Log } from "@/util/util/log"
 
@@ -88,16 +86,51 @@ export namespace Ripgrep {
   export type Begin = z.infer<typeof Begin>
   export type End = z.infer<typeof End>
   export type Summary = z.infer<typeof Summary>
+  const VERSION = "15.2.0"
+  const MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
   const PLATFORM = {
     "arm64-darwin": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
     "arm64-linux": {
-      platform: "aarch64-unknown-linux-gnu",
+      platform: "aarch64-unknown-linux-musl",
       extension: "tar.gz",
     },
+    "arm64-win32": { platform: "aarch64-pc-windows-msvc", extension: "zip" },
     "x64-darwin": { platform: "x86_64-apple-darwin", extension: "tar.gz" },
     "x64-linux": { platform: "x86_64-unknown-linux-musl", extension: "tar.gz" },
     "x64-win32": { platform: "x86_64-pc-windows-msvc", extension: "zip" },
   } as const
+
+  async function readBounded(response: Response, maxBytes: number): Promise<Uint8Array<ArrayBuffer>> {
+    const declaredSize = Number(response.headers.get("content-length") ?? 0)
+    if (declaredSize > maxBytes) throw new Error(`Download exceeds ${maxBytes} bytes`)
+    if (!response.body) return new Uint8Array()
+
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > maxBytes) {
+          await reader.cancel()
+          throw new Error(`Download exceeds ${maxBytes} bytes`)
+        }
+        chunks.push(value)
+      }
+    } finally {
+      reader.releaseLock()
+    }
+
+    const result = new Uint8Array(new ArrayBuffer(total))
+    let offset = 0
+    for (const chunk of chunks) {
+      result.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return result
+  }
 
   export const ExtractionFailedError = NamedError.create(
     "RipgrepExtractionFailedError",
@@ -111,6 +144,7 @@ export namespace Ripgrep {
     "RipgrepUnsupportedPlatformError",
     z.object({
       platform: z.string(),
+      hint: z.string().optional(),
     }),
   )
 
@@ -131,65 +165,89 @@ export namespace Ripgrep {
     if (!(await file.exists())) {
       const platformKey = `${process.arch}-${process.platform}` as keyof typeof PLATFORM
       const config = PLATFORM[platformKey]
-      if (!config) throw new UnsupportedPlatformError({ platform: platformKey })
+      if (!config) {
+        throw new UnsupportedPlatformError({
+          platform: platformKey,
+          hint: process.platform === "freebsd" ? "Install ripgrep with: pkg install ripgrep" : undefined,
+        })
+      }
 
-      const version = "14.1.1"
-      const filename = `ripgrep-${version}-${config.platform}.${config.extension}`
-      const url = `https://github.com/BurntSushi/ripgrep/releases/download/${version}/${filename}`
+      const filename = `ripgrep-${VERSION}-${config.platform}.${config.extension}`
+      const url = `https://github.com/BurntSushi/ripgrep/releases/download/${VERSION}/${filename}`
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30_000)
 
-      const response = await fetch(url)
-      if (!response.ok) throw new DownloadFailedError({ url, status: response.status })
+      let buffer: Uint8Array<ArrayBuffer>
+      try {
+        const [response, checksumResponse] = await Promise.all([
+          fetch(url, { signal: controller.signal }),
+          fetch(`${url}.sha256`, { signal: controller.signal }),
+        ])
+        if (!response.ok) throw new DownloadFailedError({ url, status: response.status })
+        if (!checksumResponse.ok) throw new DownloadFailedError({ url: `${url}.sha256`, status: checksumResponse.status })
 
-      const buffer = await response.arrayBuffer()
+        buffer = await readBounded(response, MAX_ARCHIVE_BYTES)
+        const checksumBytes = await readBounded(checksumResponse, 4 * 1024)
+        const expectedChecksum = new TextDecoder().decode(checksumBytes).trim().split(/\s+/, 1)[0]?.toLowerCase()
+        const actualChecksum = new Bun.CryptoHasher("sha256").update(buffer).digest("hex")
+        if (!expectedChecksum || actualChecksum !== expectedChecksum) {
+          throw new Error(`Checksum mismatch for ${filename}`)
+        }
+      } finally {
+        clearTimeout(timeout)
+      }
+
       const archivePath = path.join(Global.Path.bin, filename)
       await Bun.write(archivePath, buffer)
-      if (config.extension === "tar.gz") {
-        const args = ["tar", "-xzf", archivePath, "--strip-components=1"]
+      try {
+        if (config.extension === "tar.gz") {
+          const args = ["tar", "-xzf", archivePath, "--strip-components=1"]
 
-        if (platformKey.endsWith("-darwin")) args.push("--include=*/rg")
-        if (platformKey.endsWith("-linux")) args.push("--wildcards", "*/rg")
+          if (platformKey.endsWith("-darwin")) args.push("--include=*/rg")
+          if (platformKey.endsWith("-linux")) args.push("--wildcards", "*/rg")
 
-        const proc = Bun.spawn(args, {
-          cwd: Global.Path.bin,
-          stderr: "pipe",
-          stdout: "pipe",
-        })
-        await proc.exited
-        if (proc.exitCode !== 0)
-          throw new ExtractionFailedError({
-            filepath,
-            stderr: await Bun.readableStreamToText(proc.stderr),
+          const proc = Bun.spawn(args, {
+            cwd: Global.Path.bin,
+            stderr: "pipe",
+            stdout: "pipe",
           })
-      }
-      if (config.extension === "zip") {
-        const zipFileReader = new ZipReader(new BlobReader(new Blob([await Bun.file(archivePath).arrayBuffer()])))
-        const entries = await zipFileReader.getEntries()
-        let rgEntry: any
-        for (const entry of entries) {
-          if (entry.filename.endsWith("rg.exe")) {
-            rgEntry = entry
-            break
+          await proc.exited
+          if (proc.exitCode !== 0)
+            throw new ExtractionFailedError({
+              filepath,
+              stderr: await Bun.readableStreamToText(proc.stderr),
+            })
+        }
+        if (config.extension === "zip") {
+          const zipFileReader = new ZipReader(new BlobReader(new Blob([buffer])))
+          try {
+            const entries = await zipFileReader.getEntries()
+            const rgEntry = entries.find((entry) => entry.filename.endsWith("rg.exe"))
+            if (!rgEntry) {
+              throw new ExtractionFailedError({ filepath: archivePath, stderr: "rg.exe not found in zip archive" })
+            }
+            if (!("getData" in rgEntry)) {
+              throw new ExtractionFailedError({ filepath: archivePath, stderr: "rg.exe entry is a directory" })
+            }
+
+            const rgBlob = await rgEntry.getData(new BlobWriter())
+            if (!rgBlob) {
+              throw new ExtractionFailedError({ filepath: archivePath, stderr: "Failed to extract rg.exe" })
+            }
+            await Bun.write(filepath, await rgBlob.arrayBuffer())
+          } finally {
+            await zipFileReader.close()
           }
         }
-
-        if (!rgEntry) {
+        if (!(await Bun.file(filepath).exists())) {
           throw new ExtractionFailedError({
-            filepath: archivePath,
-            stderr: "rg.exe not found in zip archive",
+            filepath,
+            stderr: "Archive did not contain the expected ripgrep executable",
           })
         }
-
-        const rgBlob = await rgEntry.getData(new BlobWriter())
-        if (!rgBlob) {
-          throw new ExtractionFailedError({
-            filepath: archivePath,
-            stderr: "Failed to extract rg.exe from zip archive",
-          })
-        }
-        await Bun.write(filepath, await rgBlob.arrayBuffer())
-        await zipFileReader.close()
+      } finally {
+        await fs.unlink(archivePath).catch(() => {})
       }
-      await fs.unlink(archivePath)
       if (!platformKey.endsWith("-win32")) await fs.chmod(filepath, 0o755)
     }
 
@@ -203,8 +261,8 @@ export namespace Ripgrep {
     return filepath
   }
 
-  // Default max depth to prevent infinite symlink recursion and runaway scanning.
-  // Agent can drill into any directory by calling the tool again with a specific subdirectory.
+  // Symlink traversal needs a finite default. Plain rg traversal does not follow
+  // symlinks, so imposing the same default there would hide deep project files.
   const DEFAULT_MAX_DEPTH = 5
 
   // Default timeout for file listing operations (ms)
@@ -217,15 +275,16 @@ export namespace Ripgrep {
     follow?: boolean
     maxDepth?: number
     timeout?: number
+    signal?: AbortSignal
   }) {
     const args = [await filepath(), "--files", "--glob=!.git/*"]
-    if (input.follow !== false) args.push("--follow")
+    if (input.follow === true) args.push("--follow")
     if (input.hidden !== false) args.push("--hidden")
 
     // Apply depth limit: prevents infinite symlink loops (e.g., .venv/bin/python → /usr/lib/...)
     // Agent can drill deeper by calling the tool with a specific subdirectory as cwd
-    const depth = input.maxDepth ?? DEFAULT_MAX_DEPTH
-    args.push(`--max-depth=${depth}`)
+    const depth = input.maxDepth ?? (input.follow === true ? DEFAULT_MAX_DEPTH : undefined)
+    if (depth !== undefined) args.push(`--max-depth=${depth}`)
 
     if (input.glob) {
       for (const g of input.glob) {
@@ -252,7 +311,9 @@ export namespace Ripgrep {
 
     // Timeout: kill process if it runs too long (prevents zombie rg processes)
     const timeout = input.timeout ?? FILES_TIMEOUT_MS
+    let timedOut = false
     const timer = setTimeout(() => {
+      timedOut = true
       log.warn("ripgrep files timeout, killing process", { cwd: input.cwd, timeout })
       try {
         proc.kill()
@@ -263,6 +324,12 @@ export namespace Ripgrep {
     // Prevent this timer from holding the event loop open after all work is done.
     // The finally block always calls clearTimeout(timer), so this is safe.
     timer.unref()
+    const abort = () => {
+      try {
+        proc.kill()
+      } catch {}
+    }
+    input.signal?.addEventListener("abort", abort, { once: true })
 
     const reader = proc.stdout.getReader()
     const decoder = new TextDecoder()
@@ -270,6 +337,7 @@ export namespace Ripgrep {
 
     try {
       while (true) {
+        if (input.signal?.aborted) throw input.signal.reason
         const { done, value } = await reader.read()
         if (done) break
 
@@ -283,9 +351,12 @@ export namespace Ripgrep {
         }
       }
 
+      if (input.signal?.aborted) throw input.signal.reason
+      if (timedOut) throw new Error(`File listing timed out after ${timeout} ms`)
       if (buffer) yield buffer
     } finally {
       clearTimeout(timer)
+      input.signal?.removeEventListener("abort", abort)
       reader.releaseLock()
       // Kill the process if it's still running to prevent zombie processes
       // This happens when the iterator is abandoned early (e.g., break in for await)
@@ -300,7 +371,13 @@ export namespace Ripgrep {
 
   export async function tree(input: { cwd: string; limit?: number }) {
     log.info("tree", input)
-    const files = await Array.fromAsync(Ripgrep.files({ cwd: input.cwd }))
+    const limit = input.limit ?? 50
+    const scanLimit = Math.min(Math.max(limit * 20, 1_000), 10_000)
+    const files: string[] = []
+    for await (const file of Ripgrep.files({ cwd: input.cwd })) {
+      files.push(file)
+      if (files.length >= scanLimit) break
+    }
     interface Node {
       path: string[]
       children: Node[]
@@ -358,7 +435,6 @@ export namespace Ripgrep {
     }
 
     let processed = 0
-    const limit = input.limit ?? 50
     while (current.length > 0) {
       const next = []
       for (const node of current) {
@@ -412,19 +488,16 @@ export namespace Ripgrep {
     glob?: string[]
     limit?: number
     follow?: boolean
+    signal?: AbortSignal
   }) {
     const rgPath = await filepath()
-    const args = ["--json", "--hidden", "--glob=!.git/*"]
-    if (input.follow !== false) args.push("--follow")
+    const args = ["--json", "--hidden", "--glob=!.git/*", "--max-filesize=10M"]
+    if (input.follow === true) args.push("--follow")
 
     if (input.glob) {
       for (const g of input.glob) {
         args.push(`--glob=${g}`)
       }
-    }
-
-    if (input.limit) {
-      args.push(`--max-count=${input.limit}`)
     }
 
     args.push("--")
@@ -434,33 +507,63 @@ export namespace Ripgrep {
       cmd: [rgPath, ...args],
       cwd: input.cwd,
       stdout: "pipe",
-      stderr: "pipe",
+      stderr: "ignore",
     })
-
-    const stdout = await Bun.readableStreamToText(proc.stdout)
-    const stderr = await Bun.readableStreamToText(proc.stderr)
-    await proc.exited
-
-    if (proc.exitCode !== 0) {
-      return []
-    }
-
-    // Single-pass: parse, filter, and extract in one loop
-    const text = stdout.trim()
-    if (!text) return []
-
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 1_000)
     const results: any[] = []
-    for (const line of text.split(/\r?\n/)) {
-      if (!line) continue
+    const reader = proc.stdout.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    const stop = () => {
       try {
-        const parsed = JSON.parse(line)
-        if (parsed.type === "match") {
-          results.push(parsed.data)
+        proc.kill()
+      } catch {}
+    }
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      stop()
+    }, 30_000)
+    const abort = () => stop()
+    input.signal?.addEventListener("abort", abort, { once: true })
+
+    try {
+      outer: while (true) {
+        if (input.signal?.aborted) throw input.signal.reason
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        if (buffer.length > 1024 * 1024) {
+          stop()
+          break
         }
-      } catch {
-        // Skip malformed lines — rg output can include binary noise or
-        // partial reads; a bad line must not abort the entire search.
+
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() ?? ""
+        for (const line of lines) {
+          if (!line) continue
+          try {
+            const parsed = JSON.parse(line)
+            if (parsed.type !== "match") continue
+            results.push(parsed.data)
+            if (results.length >= limit) {
+              stop()
+              break outer
+            }
+          } catch {
+            // Ignore a malformed record without retaining the rest of stdout.
+          }
+        }
       }
+      if (input.signal?.aborted) throw input.signal.reason
+      if (timedOut) throw new Error("Search timed out after 30000 ms")
+    } finally {
+      clearTimeout(timer)
+      input.signal?.removeEventListener("abort", abort)
+      await reader.cancel().catch(() => {})
+      reader.releaseLock()
+      stop()
+      await proc.exited
     }
     return results
   }

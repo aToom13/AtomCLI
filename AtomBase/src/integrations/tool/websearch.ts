@@ -1,6 +1,9 @@
 import z from "zod"
 import { Tool } from "./tool"
 import DESCRIPTION from "./websearch.txt"
+import { Http } from "./http"
+
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 const API_CONFIG = {
   BASE_URL: "https://mcp.exa.ai",
@@ -39,8 +42,8 @@ interface McpSearchResponse {
 export const WebSearchTool = Tool.define("websearch", {
   description: DESCRIPTION,
   parameters: z.object({
-    query: z.string().describe("Websearch query"),
-    numResults: z.number().optional().describe("Number of search results to return (default: 8)"),
+    query: z.string().min(1).max(2_000).describe("Websearch query"),
+    numResults: z.number().int().min(1).max(20).optional().describe("Number of search results to return (default: 8)"),
     livecrawl: z
       .enum(["fallback", "preferred"])
       .optional()
@@ -53,6 +56,9 @@ export const WebSearchTool = Tool.define("websearch", {
       .describe("Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search"),
     contextMaxCharacters: z
       .number()
+      .int()
+      .min(1_000)
+      .max(50_000)
       .optional()
       .describe("Maximum characters for context string optimized for LLMs (default: 10000)"),
   }),
@@ -78,7 +84,8 @@ export const WebSearchTool = Tool.define("websearch", {
     try {
       const config = await Config.get()
       const agentConfig: any = ctx.agent ? config.agent?.[ctx.agent] : undefined
-      const providerID = agentConfig?.model ? (typeof agentConfig.model === "string" ? agentConfig.model.split(":")[0] : agentConfig.model.providerID) : config.provider?.default || "atomcli"
+      const model = agentConfig?.model ?? config.model
+      const providerID = typeof model === "string" ? model.split("/", 1)[0] : "atomcli"
       useExa = providerID === "atomcli" || Flag.ATOMCLI_ENABLE_EXA
     } catch {
       useExa = Flag.ATOMCLI_ENABLE_EXA
@@ -117,14 +124,12 @@ export const WebSearchTool = Tool.define("websearch", {
           signal: AbortSignal.any([controller.signal, ctx.abort]),
         })
 
-        clearTimeout(timeoutId)
-
         if (!response.ok) {
-          const errorText = await response.text()
+          const errorText = await Http.readText(response, 64 * 1024)
           throw new Error(`Exa Search error (${response.status}): ${errorText}`)
         }
 
-        const responseText = await response.text()
+        const responseText = await Http.readText(response, MAX_RESPONSE_BYTES)
 
         // Parse SSE response
         const lines = responseText.split("\n")
@@ -157,13 +162,11 @@ export const WebSearchTool = Tool.define("websearch", {
           signal: AbortSignal.any([controller.signal, ctx.abort]),
         })
 
-        clearTimeout(timeoutId)
-
         if (!response.ok) {
           throw new Error(`Fallback search error: HTTP ${response.status}`)
         }
 
-        const html = await response.text()
+        const html = await Http.readText(response, MAX_RESPONSE_BYTES)
         const results = []
         const regex = /<a class="result__url" href="([^"]+)">(.*?)<\/a>.*?<a class="result__snippet[^>]*>(.*?)<\/a>/gsv
         let match
@@ -193,13 +196,14 @@ export const WebSearchTool = Tool.define("websearch", {
         }
       }
     } catch (error) {
-      clearTimeout(timeoutId)
-
       if (error instanceof Error && error.name === "AbortError") {
+        if (ctx.abort.aborted) throw ctx.abort.reason
         throw new Error("Search request timed out")
       }
 
       throw error
+    } finally {
+      clearTimeout(timeoutId)
     }
   },
 })

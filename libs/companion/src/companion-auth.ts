@@ -25,7 +25,7 @@ export namespace CompanionAuth {
     // Persistence
     // ---------------------------------------------------------------------------
 
-    const _atomcliDir = join(homedir(), ".atomcli")
+    const _atomcliDir = join(process.env.ATOMCLI_TEST_HOME || homedir(), ".atomcli")
     const _devicesPath = join(_atomcliDir, "companion-devices.json")
 
     let _loaded = false

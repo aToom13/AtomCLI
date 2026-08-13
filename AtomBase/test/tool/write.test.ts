@@ -17,6 +17,40 @@ const ctx = {
 }
 
 describe("tool.write", () => {
+    test("rejects oversized existing files before reading or asking permission", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const filePath = path.join(tmp.path, "oversized.txt")
+                await Bun.write(filePath, "x".repeat(10 * 1024 * 1024 + 1))
+                let permissionRequests = 0
+                const write = await WriteTool.init()
+                await expect(
+                    write.execute({ filePath, content: "replacement" }, {
+                        ...ctx,
+                        ask: async () => { permissionRequests++ },
+                    }),
+                ).rejects.toThrow(/Existing file exceeds/)
+                expect(permissionRequests).toBe(0)
+            },
+        })
+    })
+
+    test("enforces the byte limit for multibyte input", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const write = await WriteTool.init()
+                const content = "🌍".repeat(3 * 1024 * 1024)
+                await expect(
+                    write.execute({ filePath: path.join(tmp.path, "unicode-large.txt"), content }, ctx),
+                ).rejects.toThrow(/Write content exceeds/)
+            },
+        })
+    })
+
     test("write new file", async () => {
         await using tmp = await tmpdir({ git: true })
         await Instance.provide({
@@ -139,6 +173,29 @@ describe("tool.write", () => {
 })
 
 describe("tool.write permissions", () => {
+    test("bounds a large permission diff", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const filePath = path.join(tmp.path, "large-diff.txt")
+                const original = Array.from({ length: 30_000 }, (_, index) => `old-${index}`).join("\n")
+                const replacement = Array.from({ length: 30_000 }, (_, index) => `new-${index}`).join("\n")
+                await Bun.write(filePath, original)
+                FileTime.read(ctx.sessionID, filePath)
+                let permissionDiff = ""
+                const write = await WriteTool.init()
+                await write.execute({ filePath, content: replacement }, {
+                    ...ctx,
+                    ask: async (request) => { permissionDiff = String(request.metadata?.diff ?? "") },
+                })
+
+                expect(Buffer.byteLength(permissionDiff)).toBeLessThan(210 * 1024)
+                expect(permissionDiff).toContain("diff metadata truncated")
+            },
+        })
+    })
+
     test("asks for edit permission with correct pattern", async () => {
         await using tmp = await tmpdir({ git: true })
         await Instance.provide({

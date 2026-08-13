@@ -1,6 +1,6 @@
 import { InputRenderable, RGBA, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTheme, selectedForeground } from "@tui/context/theme"
-import { entries, filter, flatMap, groupBy, pipe, take } from "remeda"
+import { entries, filter, flatMap, groupBy, pipe } from "remeda"
 import { batch, createEffect, createMemo, For, Index, Show, type JSX, on } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
@@ -11,11 +11,12 @@ import { useKeybind } from "@tui/context/keybind"
 import { Keybind } from "@/util/util/keybind"
 import { Locale } from "@/util/util/locale"
 import { Focusable } from "../context/spatial"
-import { Identifier } from "@/core/id/id"
 
 export interface DialogSelectProps<T> {
   title: string
+  description?: JSX.Element
   placeholder?: string
+  emptyMessage?: string
   options: DialogSelectOption<T>[]
   ref?: (ref: DialogSelectRef<T>) => void
   onMove?: (option: DialogSelectOption<T>) => void
@@ -29,12 +30,14 @@ export interface DialogSelectProps<T> {
     onTrigger: (option: DialogSelectOption<T>) => void
   }[]
   current?: T
+  details?: (option?: DialogSelectOption<T>) => JSX.Element
 }
 
 export interface DialogSelectOption<T = any> {
   title: string
   value: T
   description?: string
+  keywords?: string
   footer?: JSX.Element | string
   category?: string
   disabled?: boolean
@@ -46,6 +49,32 @@ export interface DialogSelectOption<T = any> {
 export type DialogSelectRef<T> = {
   filter: string
   filtered: DialogSelectOption<T>[]
+}
+
+export namespace DialogSelectLayout {
+  export function listHeight(contentRows: number, terminalHeight: number) {
+    return Math.max(1, Math.min(contentRows, Math.floor(terminalHeight / 2) - 6))
+  }
+
+  export function visibleScrollTop(input: {
+    scrollTop: number
+    viewportTop: number
+    viewportHeight: number
+    targetTop: number
+    targetHeight: number
+  }) {
+    const viewportBottom = input.viewportTop + input.viewportHeight
+    // Culled rows can report zero height until their first visible render.
+    // Every select option occupies at least one terminal row.
+    const targetBottom = input.targetTop + Math.max(1, input.targetHeight)
+    if (input.targetTop < input.viewportTop) {
+      return Math.max(0, input.scrollTop - (input.viewportTop - input.targetTop))
+    }
+    if (targetBottom > viewportBottom) {
+      return input.scrollTop + (targetBottom - viewportBottom)
+    }
+    return input.scrollTop
+  }
 }
 
 export function DialogSelect<T>(props: DialogSelectProps<T>) {
@@ -80,7 +109,10 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     const result = pipe(
       props.options,
       filter((x) => x.disabled !== true),
-      (x) => (!needle ? x : fuzzysort.go(needle, x, { keys: ["title", "category"] }).map((x) => x.obj)),
+      (x) =>
+        !needle
+          ? x
+          : fuzzysort.go(needle, x, { keys: ["title", "category", "description", "keywords"] }).map((x) => x.obj),
     )
     return result
   })
@@ -104,10 +136,19 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
   const dimensions = useTerminalDimensions()
   const height = createMemo(() =>
-    Math.min(flat().length + grouped().length * 2 - 1, Math.floor(dimensions().height / 2) - 6),
+    DialogSelectLayout.listHeight(flat().length + grouped().length * 2 - 1, dimensions().height),
   )
 
   const selected = createMemo(() => flat()[store.selected])
+
+  createEffect(() => {
+    const options = flat()
+    if (options.length === 0) {
+      if (store.selected !== 0) setStore("selected", 0)
+      return
+    }
+    if (store.selected >= options.length) setStore("selected", options.length - 1)
+  })
 
   createEffect(
     on([() => store.filter, () => props.current], ([filter, current]) => {
@@ -150,31 +191,56 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     return undefined
   }
 
+  function keepSelectedVisible() {
+    if (!scroll || scroll.isDestroyed) return
+    const target = findByIdDeep(scroll.getChildren(), JSON.stringify(selected()?.value))
+    if (!target || target.isDestroyed) return
+    const nextScrollTop = DialogSelectLayout.visibleScrollTop({
+      scrollTop: scroll.scrollTop,
+      viewportTop: scroll.viewport.y,
+      viewportHeight: scroll.viewport.height,
+      targetTop: target.y,
+      targetHeight: Math.max(1, target.height),
+    })
+    if (nextScrollTop === scroll.scrollTop) return
+    scroll.scrollTo(nextScrollTop)
+    scroll.requestRender()
+  }
+
   function moveTo(next: number) {
     setStore("selected", next)
     props.onMove?.(selected()!)
-    if (!scroll) return
-    // The option box id=JSON.stringify(value) is inside a Focusable wrapper —
-    // shallow getChildren() never finds it. Use recursive deep search instead.
-    const target = findByIdDeep(scroll.getChildren(), JSON.stringify(selected()?.value))
-    if (!target) return
-    // Same proven scroll logic as SpatialProvider.navigate():
-    // target.y and viewport.y are both absolute rendered screen coordinates.
-    const vTop = scroll.viewport.y
-    const vBottom = scroll.viewport.y + scroll.viewport.height
-    if (target.y < vTop) {
-      scroll.scrollTo(scroll.scrollTop - (vTop - target.y))
-    } else if (target.y + target.height > vBottom) {
-      scroll.scrollTo(scroll.scrollTop + (target.y + target.height - vBottom))
-    }
   }
+
+  createEffect(
+    on(
+      () => JSON.stringify(selected()?.value ?? null),
+      () => {
+        // Row coordinates settle on the next layout pass, especially when
+        // crossing a category heading or restoring the current model.
+        setTimeout(keepSelectedVisible, 0)
+      },
+    ),
+  )
 
   const keybind = useKeybind()
   useKeyboard((evt) => {
-    if (evt.name === "up" || (evt.ctrl && evt.name === "p")) move(-1)
-    if (evt.name === "down" || (evt.ctrl && evt.name === "n")) move(1)
-    if (evt.name === "pageup") move(-10)
-    if (evt.name === "pagedown") move(10)
+    if (evt.name === "up" || (evt.ctrl && evt.name === "p")) {
+      evt.preventDefault()
+      move(-1)
+    }
+    if (evt.name === "down" || (evt.ctrl && evt.name === "n")) {
+      evt.preventDefault()
+      move(1)
+    }
+    if (evt.name === "pageup") {
+      evt.preventDefault()
+      move(-10)
+    }
+    if (evt.name === "pagedown") {
+      evt.preventDefault()
+      move(10)
+    }
     if (evt.name === "return") {
       const option = selected()
       if (option) {
@@ -218,6 +284,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
           </text>
           <text fg={theme.textMuted}>esc</text>
         </box>
+        <Show when={props.description}>
+          <box paddingTop={1}>{props.description}</box>
+        </Show>
         <box paddingTop={1} paddingBottom={1}>
           <input
             onInput={(e) => {
@@ -241,7 +310,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         when={grouped().length > 0}
         fallback={
           <box paddingLeft={4} paddingRight={4} paddingTop={1}>
-            <text fg={theme.textMuted}>No results found</text>
+            <text fg={theme.textMuted}>{props.emptyMessage ?? "No results found"}</text>
           </box>
         }
       >
@@ -290,7 +359,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                                 if (index === -1) return
                                 moveTo(index)
                               }}
-                              backgroundColor={active() || focused() ? (option().bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)}
+                              backgroundColor={
+                                active() || focused() ? (option().bg ?? theme.primary) : RGBA.fromInts(0, 0, 0, 0)
+                              }
                               paddingLeft={current() || option().gutter ? 1 : 3}
                               paddingRight={3}
                               gap={1}
@@ -315,8 +386,13 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
           </Index>
         </scrollbox>
       </Show>
+      <Show when={props.details}>
+        <box paddingLeft={4} paddingRight={4} paddingTop={1}>
+          {props.details?.(selected())}
+        </box>
+      </Show>
       <Show when={keybinds().length} fallback={<box flexShrink={0} />}>
-        <box paddingRight={2} paddingLeft={4} flexDirection="row" gap={2} flexShrink={0} paddingTop={1}>
+        <box paddingRight={2} paddingLeft={4} flexDirection="row" flexWrap="wrap" gap={2} flexShrink={0} paddingTop={1}>
           <For each={keybinds()}>
             {(item) => (
               <text>
@@ -362,6 +438,7 @@ function Option(props: {
         fg={props.active ? fg : props.current ? theme.primary : theme.text}
         attributes={props.active ? TextAttributes.BOLD : undefined}
         overflow="hidden"
+        wrapMode="none"
         paddingLeft={3}
       >
         {Locale.truncate(props.title, 61)}

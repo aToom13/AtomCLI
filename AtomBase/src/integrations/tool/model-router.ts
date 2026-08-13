@@ -21,6 +21,7 @@ export interface ModelState {
 }
 
 export const modelStates = new Map<string, ModelState>()
+const MAX_MODEL_STATES = 500
 
 export function recordCallResult(modelID: string, ok: boolean, latencyMs?: number) {
   const s = modelStates.get(modelID) ?? {
@@ -43,7 +44,14 @@ export function recordCallResult(modelID: string, ok: boolean, latencyMs?: numbe
     s.lastError = Date.now()
   }
   s.usageCount++
+  // Refresh insertion order so eviction behaves as a small LRU cache.
+  modelStates.delete(modelID)
   modelStates.set(modelID, s)
+  while (modelStates.size > MAX_MODEL_STATES) {
+    const oldest = modelStates.keys().next().value
+    if (oldest === undefined) break
+    modelStates.delete(oldest)
+  }
 }
 
 /**

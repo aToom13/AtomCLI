@@ -1,0 +1,114 @@
+name: Platform smoke tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            binary: AtomBase/dist/atomcli-linux-x64/bin/atomcli
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            binary: AtomBase/dist/atomcli-linux-arm64/bin/atomcli
+          - name: macOS x64
+            runner: macos-15-intel
+            binary: AtomBase/dist/atomcli-darwin-x64/bin/atomcli
+          - name: macOS ARM64
+            runner: macos-15
+            binary: AtomBase/dist/atomcli-darwin-arm64/bin/atomcli
+          - name: Windows x64
+            runner: windows-latest
+            binary: AtomBase/dist/atomcli-windows-x64/bin/atomcli.exe
+          - name: Windows ARM64
+            runner: windows-11-arm
+            binary: AtomBase/dist/atomcli-windows-arm64/bin/atomcli.exe
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Parse PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw ./install.ps1)) | Out-Null'
+
+      - name: Test PowerShell checksum verification
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/test-install-ps1.ps1
+
+      - name: Parse shell installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash -n install.sh
+
+      - name: Test shell checksum verification
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash .github/scripts/test-install-sh.sh
+
+      - name: Install Chromium on macOS
+        if: runner.os == 'macOS'
+        working-directory: AtomBase
+        run: bunx playwright install chromium
+
+      - name: Build native binary
+        working-directory: AtomBase
+        run: bun run build --single --skip-install
+
+      - name: Run version and help smoke tests
+        shell: bash
+        env:
+          ATOMCLI_SMOKE_BINARY: ${{ matrix.binary }}
+        run: |
+          bun -e 'const binary = process.env.ATOMCLI_SMOKE_BINARY; if (!binary || !(await Bun.file(binary).exists())) throw new Error(`Missing binary: ${binary}`); for (const arg of ["--version", "--help"]) { const process = Bun.spawn([binary, arg], { stdout: "inherit", stderr: "inherit" }); if (await process.exited) throw new Error(`${binary} ${arg} failed`); }'
+
+  musl:
+    name: Linux x64 musl (Alpine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test shell checksum verification
+        run: bash .github/scripts/test-install-sh.sh
+
+      - name: Build Linux binaries
+        working-directory: AtomBase
+        run: bun run build --single --skip-install
+
+      - name: Run musl binary in Alpine
+        run: docker run --rm --volume "$PWD:/work" --workdir /work alpine:3.22 ./AtomBase/dist/atomcli-linux-x64-musl/bin/atomcli --version

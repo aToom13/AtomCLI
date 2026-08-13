@@ -32,7 +32,6 @@ import { AcpCommand } from "@/interfaces/cli/cmd/acp"
 import { EOL } from "os"
 import { PrCommand } from "@/interfaces/cli/cmd/pr"
 import { SessionCommand } from "@/interfaces/cli/cmd/session"
-import { FeaturesCommand } from "@/interfaces/cli/cmd/features"
 import { TestGenCommand } from "@/interfaces/cli/cmd/test-gen"
 import { DocsCommand } from "@/interfaces/cli/cmd/docs"
 import { SecurityCommand } from "@/interfaces/cli/cmd/security"
@@ -45,7 +44,7 @@ import { MemoryCommand } from "@/interfaces/cli/cmd/memory"
 import { FallbackCommand } from "@/interfaces/cli/cmd/fallback"
 import { AutoupdateCommand } from "@/interfaces/cli/cmd/autoupdate"
 import { SmartModelCommand } from "@/interfaces/cli/cmd/smart-model"
-import { DaemonLearnCommand } from "@/interfaces/cli/cmd/daemon-learn"
+import { CompletionCommand, ShellCompletion } from "@/interfaces/cli/cmd/completion"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -115,7 +114,13 @@ const cli = yargs(hideBin(process.argv))
     })
   })
   .usage("\n" + UI.logo())
-  .completion("completion", "generate shell completion script")
+  .completion("__completion", false, (_current, _argv, complete, done) => {
+    complete((error, suggestions) => {
+      if (error) return done([])
+      done(ShellCompletion.clean(suggestions))
+    })
+  })
+  .command(CompletionCommand)
   .command(AcpCommand)
   .command(McpCommand)
   .command(SkillCommand)
@@ -137,7 +142,6 @@ const cli = yargs(hideBin(process.argv))
   .command(GithubCommand)
   .command(PrCommand)
   .command(SessionCommand)
-  .command(FeaturesCommand)
   .command(TestGenCommand)
   .command(DocsCommand)
   .command(SecurityCommand)
@@ -149,7 +153,7 @@ const cli = yargs(hideBin(process.argv))
   .command(MemoryCommand)
   .command(AutoupdateCommand)
   .command(SmartModelCommand)
-  .command(DaemonLearnCommand)
+  .command(FallbackCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
@@ -208,27 +212,5 @@ try {
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
   // Explicitly exit to avoid any hanging subprocesses.
-  try {
-    // Flush any pending memory processing
-    try {
-      // Don't spawn a daemon if we ARE the daemon
-      if (process.argv[2] !== "_daemon-learn") {
-        const { spawn } = await import("child_process")
-        // Start the background learner detached from the current terminal
-        const child = spawn(process.argv[0], [process.argv[1], "_daemon-learn"], {
-          detached: true,
-          windowsHide: true,
-          stdio: "ignore",
-        })
-        // Unref allows the current CLI to exit immediately
-        child.unref()
-        Log.Default.info("memory", { msg: "Detached background learning daemon started" })
-      }
-    } catch (err) {
-      Log.Default.warn("memory", { msg: "Failed to spawn memory daemon on exit", err })
-    }
-  } catch (err) {
-    Log.Default.warn("memory", { msg: "Unexpected error during exit", err })
-  }
   process.exit()
 }

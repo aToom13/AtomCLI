@@ -1177,6 +1177,86 @@ test("project config overrides remote well-known config", async () => {
   }
 })
 
+test("ATOMCLI_CONFIG_CONTENT overrides project and .atomcli directory sources", async () => {
+  await using tmp = await tmpdir({
+    git: true,
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "atomcli.json"),
+        JSON.stringify({ model: "project/model", username: "project-user", plugin: ["shared@project"] }),
+      )
+      const atomcliDir = path.join(dir, ".atomcli")
+      await fs.mkdir(path.join(atomcliDir, "agent"), { recursive: true })
+      await fs.mkdir(path.join(atomcliDir, "command"), { recursive: true })
+      await fs.mkdir(path.join(atomcliDir, "plugin"), { recursive: true })
+      await fs.mkdir(path.join(atomcliDir, "node_modules"), { recursive: true })
+      await Bun.write(path.join(atomcliDir, "atomcli.json"), JSON.stringify({ model: "directory/model" }))
+      await Bun.write(path.join(atomcliDir, "agent", "shared.md"), "---\nmodel: markdown/model\n---\nMarkdown prompt")
+      await Bun.write(path.join(atomcliDir, "command", "deploy.md"), "---\ndescription: Markdown command\n---\nMarkdown command")
+      await Bun.write(path.join(atomcliDir, "plugin", "shared.js"), "export default {}\n")
+    },
+  })
+
+  const childHome = path.join(tmp.path, "child-home")
+  const childConfig = path.join(tmp.path, "child-config")
+  await fs.mkdir(childHome, { recursive: true })
+  await fs.mkdir(childConfig, { recursive: true })
+  const inline = {
+    model: "inline/model",
+    username: "inline-user",
+    agent: { shared: { model: "inline/agent", prompt: "Inline prompt" } },
+    command: { deploy: { template: "Inline command", description: "Inline command" } },
+    plugin: ["shared@inline"],
+  }
+  const script = `
+    const { Config } = await import("./src/core/config/config")
+    const { Instance } = await import("./src/services/project/instance")
+    await Instance.provide({ directory: ${JSON.stringify(tmp.path)}, fn: async () => {
+      const config = await Config.get()
+      console.log("CONFIG_RESULT=" + JSON.stringify({
+        model: config.model,
+        username: config.username,
+        agent: config.agent?.shared,
+        command: config.command?.deploy,
+        plugin: config.plugin?.find((item) => Config.getPluginName(item) === "shared"),
+      }))
+    }})
+  `
+  const proc = Bun.spawn([process.execPath, "--conditions=browser", "-e", script], {
+    cwd: path.resolve(import.meta.dir, "../.."),
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      ATOMCLI_TEST: "true",
+      ATOMCLI_TEST_HOME: childHome,
+      XDG_CONFIG_HOME: childConfig,
+      XDG_DATA_HOME: path.join(tmp.path, "child-data"),
+      XDG_CACHE_HOME: path.join(tmp.path, "child-cache"),
+      XDG_STATE_HOME: path.join(tmp.path, "child-state"),
+      ATOMCLI_CONFIG_CONTENT: JSON.stringify(inline),
+      ATOMCLI_DISABLE_MODELS_FETCH: "true",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    Bun.readableStreamToText(proc.stdout),
+    Bun.readableStreamToText(proc.stderr),
+  ])
+  expect(exitCode, stderr).toBe(0)
+  const line = stdout.split("\n").find((item) => item.startsWith("CONFIG_RESULT="))
+  expect(line).toBeDefined()
+  const result = JSON.parse(line!.slice("CONFIG_RESULT=".length))
+  expect(result).toEqual({
+    model: "inline/model",
+    username: "inline-user",
+    agent: expect.objectContaining({ model: "inline/agent", prompt: "Inline prompt" }),
+    command: { template: "Inline command", description: "Inline command" },
+    plugin: "shared@inline",
+  })
+})
+
 describe("getPluginName", () => {
   test("extracts name from file:// URL", () => {
     expect(Config.getPluginName("file:///path/to/plugin/foo.js")).toBe("foo")

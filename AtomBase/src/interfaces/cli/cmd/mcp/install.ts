@@ -34,12 +34,12 @@ const MCP_REGISTRY: Record<string, { package: string; description: string; defau
 
 export const McpInstallCommand = cmd({
     command: "install <name>",
-    describe: "install an MCP server from registry or npm package",
+    describe: "configure an MCP server from the registry or a package",
     builder: (yargs) =>
         yargs
             .positional("name", {
                 type: "string",
-                describe: "registry name (e.g., 'filesystem') or npm package (e.g., '@mcp/server-custom')",
+                describe: "registry name (e.g., 'filesystem') or package (e.g., '@mcp/server-custom')",
                 demandOption: true,
             })
             .option("args", {
@@ -69,11 +69,11 @@ export const McpInstallCommand = cmd({
 
                 try {
                     // Build command array
-                    const commandArgs = ["npx", "-y", packageName, ...(registryEntry?.defaultArgs ?? []), ...((args.args ?? []) as string[])]
+                    const commandArgs = ["bunx", packageName, ...(registryEntry?.defaultArgs ?? []), ...((args.args ?? []) as string[])]
 
                     spinner.stop("Configuration ready!")
 
-                    prompts.log.info("Add this to your mcp.json (in ~/.config/atomcli/mcp.json):")
+                    prompts.log.info("Add this to your mcp.json (in ~/.atomcli/mcp.json):")
                     prompts.log.info(`
   "mcp": {
     "${serverName}": {

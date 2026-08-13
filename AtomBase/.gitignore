@@ -20,10 +20,15 @@ tmp/
 
 # Environment and Secrets
 .env
-.env.local
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 .sysadmin_pass
 *.pem
 *.key
+*.p12
+*.pfx
 
 # Editor
 .vscode/

@@ -1,36 +1,6 @@
-import { test, expect, mock } from "bun:test"
+import { test, expect } from "bun:test"
 import path from "path"
 
-// === Mocks ===
-// These mocks are required because Provider.list() triggers:
-// 1. BunProc.install("@aws-sdk/credential-providers") - in bedrock custom loader
-// 2. Plugin.list() which calls BunProc.install() for default plugins
-// Without mocks, these would attempt real package installations that timeout in tests.
-
-mock.module("../../src/bun/index", () => ({
-  BunProc: {
-    install: async (pkg: string) => pkg,
-    run: async () => {
-      throw new Error("BunProc.run should not be called in tests")
-    },
-    which: () => process.execPath,
-    InstallFailedError: class extends Error {},
-  },
-}))
-
-mock.module("@aws-sdk/credential-providers", () => ({
-  fromNodeProviderChain: () => async () => ({
-    accessKeyId: "mock-access-key-id",
-    secretAccessKey: "mock-secret-access-key",
-  }),
-}))
-
-const mockPlugin = () => ({})
-mock.module("atomcli-copilot-auth", () => ({ default: mockPlugin }))
-mock.module("atomcli-anthropic-auth", () => ({ default: mockPlugin }))
-mock.module("opencode-antigravity-auth", () => ({ default: mockPlugin }))
-
-// Import after mocks are set up
 const { tmpdir } = await import("../fixture/fixture")
 const { Instance } = await import("@/services/project/instance")
 const { Provider } = await import("@/integrations/provider/provider")

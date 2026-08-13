@@ -1,505 +1,139 @@
-# AtomCLI Developer Documentation
+# Development Guide
 
-This is the central documentation hub for AtomCLI development. Use the navigation below to explore the codebase and understand the architecture.
+## Requirements
 
----
+- Bun 1.3.10
+- Git
 
-## Table of Contents
+Use Bun only; this repository does not use npm or Yarn. The monorepo root delegates workspace tasks, while the primary application package is `AtomBase/`.
 
-- [Project Structure](#project-structure)
-- [Architecture Overview](#architecture-overview)
-- [Core Modules](#core-modules)
-- [CLI Commands](#cli-commands)
-- [Development Workflow](#development-workflow)
-- [Configuration System](#configuration-system)
-- [Provider Integration](#provider-integration)
-- [Tool System](#tool-system)
-- [MCP Integration](#mcp-integration)
-- [Testing](#testing)
-- [Security Guidelines](#security-guidelines)
+## Repository layout
 
----
+| Location                   | Purpose                                                                            |
+| -------------------------- | ---------------------------------------------------------------------------------- |
+| `AtomBase/`                | CLI, TUI, server, providers, tools, sessions, and configuration                    |
+| `libs/sdk/js/`             | Generated JavaScript/TypeScript SDK                                                |
+| `libs/companion/`          | Companion pairing, mobile bridge, and discovery library                            |
+| `companion/`               | Flutter companion application                                                      |
+| `.atomcli/` and `.claude/` | Tracked skills and agents copied into release artifacts; runtime state stays local |
+| `docs/`                    | Maintained user and developer documentation                                        |
 
-## Project Structure
+## Run locally
 
-```
-AtomCLI/
-├── AtomBase/                    # Main application
-│   ├── src/                     # Source code
-│   │   ├── interfaces/          # CLI commands and TUI
-│   │   ├── core/                # Session, config, memory, storage
-│   │   ├── integrations/        # Tools, providers, agents, MCP, skills
-│   │   ├── server/              # HTTP server and API routes
-│   │   └── services/            # File, auth, learning, project services
-│   ├── script/                  # Build and utility scripts
-│   └── dist/                    # Compiled binaries (wiped on every build)
-├── companion/                   # Flutter mobile companion app (Android/iOS)
-├── libs/                        # Shared libraries
-│   ├── companion/               # @atomcli/companion - pairing & bridge logic
-│   ├── sdk/                     # JavaScript/TypeScript SDK
-│   ├── util/                    # Shared utilities
-│   ├── plugin/                  # Plugin interfaces and implementations
-│   └── script/                  # Shared build scripts
-├── .atomcli/                    # Bundled skills/agents (included in releases)
-├── docs/                        # Documentation
-└── install.sh                   # Installation script
-```
-
-### Key Directories
-
-| Directory                             | Description            | Link                                             |
-| ------------------------------------- | ---------------------- | ------------------------------------------------ |
-| `AtomBase/src/interfaces/cli/`        | CLI commands and TUI   | [Browse](../AtomBase/src/interfaces/cli/)        |
-| `AtomBase/src/core/session/`          | Session management     | [Browse](../AtomBase/src/core/session/)          |
-| `AtomBase/src/integrations/provider/` | AI providers           | [Browse](../AtomBase/src/integrations/provider/) |
-| `AtomBase/src/integrations/tool/`     | Agent tools            | [Browse](../AtomBase/src/integrations/tool/)     |
-| `AtomBase/src/core/config/`           | Configuration          | [Browse](../AtomBase/src/core/config/)           |
-| `AtomBase/src/integrations/mcp/`      | MCP servers            | [Browse](../AtomBase/src/integrations/mcp/)      |
-| `libs/companion/`                     | Mobile companion logic | [Browse](../libs/companion/)                     |
-| `libs/sdk/`                           | SDK package            | [Browse](../libs/sdk/)                           |
-
----
-
-## Architecture Overview
-
-AtomCLI is built on these core technologies:
-
-| Component    | Technology                                    | Purpose                        |
-| ------------ | --------------------------------------------- | ------------------------------ |
-| Runtime      | [Bun](https://bun.sh/)                        | JavaScript runtime and bundler |
-| UI Framework | [SolidJS](https://solidjs.com/)               | Reactive TUI rendering         |
-| Terminal UI  | [OpenTUI](https://github.com/example/opentui) | Terminal rendering library     |
-| AI SDK       | [Vercel AI SDK](https://sdk.vercel.ai/)       | Multi-provider AI integration  |
-| HTTP Server  | [Hono](https://hono.dev/)                     | Lightweight API server         |
-| CLI Parser   | [Yargs](https://yargs.js.org/)                | Command-line argument parsing  |
-
-### Data Flow
-
-```
-User Input
-    │
-    ▼
-┌─────────────────┐
-│   CLI / TUI     │  ← src/interfaces/cli/cmd/tui/
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Session      │  ← src/core/session/
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Provider     │  ← src/integrations/provider/
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   AI Response   │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Tool Calls    │  ← src/integrations/tool/
-└─────────────────┘
-```
-
----
-
-## Core Modules
-
-### CLI and TUI
-
-The terminal interface is implemented in `AtomBase/src/interfaces/cli/`:
-
-| File                                                              | Description                                |
-| ----------------------------------------------------------------- | ------------------------------------------ |
-| [index.ts](../AtomBase/src/index.ts)                              | Main entry point, CLI command registration |
-| [tui/app.tsx](../AtomBase/src/interfaces/cli/cmd/tui/app.tsx)     | Main TUI application component             |
-| [tui/thread.ts](../AtomBase/src/interfaces/cli/cmd/tui/thread.ts) | TUI thread and worker management           |
-| [tui/worker.ts](../AtomBase/src/interfaces/cli/cmd/tui/worker.ts) | Background worker for session handling     |
-
-### Session Management
-
-Sessions handle conversations and message processing:
-
-| File                                                                | Description                           |
-| ------------------------------------------------------------------- | ------------------------------------- |
-| [session/index.ts](../AtomBase/src/core/session/index.ts)           | Session API and types                 |
-| [session/message-v2.ts](../AtomBase/src/core/session/message-v2.ts) | Message handling and error processing |
-| [session/retry.ts](../AtomBase/src/core/session/retry.ts)           | Retry logic for API calls             |
-
-### Provider System
-
-AI provider integrations in `AtomBase/src/integrations/provider/`:
-
-| Provider   | File                                                                 | Status    |
-| ---------- | -------------------------------------------------------------------- | --------- |
-| Anthropic  | [anthropic.ts](../AtomBase/src/integrations/provider/anthropic.ts)   | Supported |
-| OpenAI     | [openai.ts](../AtomBase/src/integrations/provider/openai.ts)         | Supported |
-| Google     | [google.ts](../AtomBase/src/integrations/provider/google.ts)         | Supported |
-| Ollama     | [ollama.ts](../AtomBase/src/integrations/provider/ollama.ts)         | Supported |
-| OpenRouter | [openrouter.ts](../AtomBase/src/integrations/provider/openrouter.ts) | Supported |
-| MiniMax    | [minimax.ts](../AtomBase/src/integrations/provider/minimax.ts)       | Free tier |
-| GLM        | [glm.ts](../AtomBase/src/integrations/provider/glm.ts)               | Free tier |
-| Kilocode   | [kilocode.ts](../AtomBase/src/integrations/provider/kilocode.ts)     | Supported |
-| Fallback   | [fallback.ts](../AtomBase/src/integrations/provider/fallback.ts)     | Supported |
-
-### Tool System
-
-Agent tools in `AtomBase/src/integrations/tool/`:
-
-| Tool    | File                                                       | Description           |
-| ------- | ---------------------------------------------------------- | --------------------- |
-| Read    | [read.ts](../AtomBase/src/integrations/tool/read.ts)       | File reading          |
-| Write   | [write.ts](../AtomBase/src/integrations/tool/write.ts)     | File writing          |
-| Edit    | [edit.ts](../AtomBase/src/integrations/tool/edit.ts)       | Code editing          |
-| Glob    | [glob.ts](../AtomBase/src/integrations/tool/glob.ts)       | File pattern matching |
-| Grep    | [grep.ts](../AtomBase/src/integrations/tool/grep.ts)       | Content search        |
-| Bash    | [bash.ts](../AtomBase/src/integrations/tool/bash.ts)       | Command execution     |
-| Browser | [browser.ts](../AtomBase/src/integrations/tool/browser.ts) | Web browsing          |
-
-### Additional Tools
-
-| Tool         | File                                                                 | Description                             |
-| ------------ | -------------------------------------------------------------------- | --------------------------------------- |
-| TestGen      | [test-gen.ts](../AtomBase/src/integrations/tool/test-gen.ts)         | Automatic test generation               |
-| Docs         | [docs.ts](../AtomBase/src/integrations/tool/docs.ts)                 | Documentation generation                |
-| Refactor     | [refactor.ts](../AtomBase/src/integrations/tool/refactor.ts)         | Code smell detection & fixes            |
-| Review       | [review.ts](../AtomBase/src/integrations/tool/review.ts)             | Code review & analysis                  |
-| Finance      | [finance.ts](../AtomBase/src/integrations/tool/finance.ts)           | Financial market analysis               |
-| CodeSearch   | [codesearch.ts](../AtomBase/src/integrations/tool/codesearch.ts)     | AI code search                          |
-| WebSearch    | [websearch.ts](../AtomBase/src/integrations/tool/websearch.ts)       | Web search with Exa AI                  |
-| Orchestrate  | [orchestrate.ts](../AtomBase/src/integrations/tool/orchestrate.ts)   | Multi-agent workflow orchestration      |
-| Model Router | [model-router.ts](../AtomBase/src/integrations/tool/model-router.ts) | Smart model routing by category         |
-| Workflow FS  | [workflow-fs.ts](../AtomBase/src/integrations/tool/workflow-fs.ts)   | File-based sub-agent output persistence |
-| SubAgent     | [subagent.ts](../AtomBase/src/integrations/tool/subagent.ts)         | Shared sub-agent spawn utility          |
-
----
-
-## CLI Commands
-
-### Main Commands
-
-| Command               | Description              | Source                                                                |
-| --------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `atomcli`             | Start interactive TUI    | [tui/thread.ts](../AtomBase/src/interfaces/cli/cmd/tui/thread.ts)     |
-| `atomcli run`         | Run single prompt        | [run.ts](../AtomBase/src/interfaces/cli/cmd/run.ts)                   |
-| `atomcli upgrade`     | Update to latest version | [upgrade.ts](../AtomBase/src/interfaces/cli/cmd/upgrade.ts)           |
-| `atomcli acp`         | Start ACP server         | [acp.ts](../AtomBase/src/interfaces/cli/cmd/acp.ts)                   |
-| `atomcli agent`       | Create & list agents     | [agent.ts](../AtomBase/src/interfaces/cli/cmd/agent.ts)               |
-| `atomcli export`      | Export session as JSON   | [export.ts](../AtomBase/src/interfaces/cli/cmd/export.ts)             |
-| `atomcli github`      | Manage GitHub agent      | [github/index.ts](../AtomBase/src/interfaces/cli/cmd/github/index.ts) |
-| `atomcli import`      | Import JSON session      | [import.ts](../AtomBase/src/interfaces/cli/cmd/import.ts)             |
-| `atomcli models`      | List available models    | [models.ts](../AtomBase/src/interfaces/cli/cmd/models.ts)             |
-| `atomcli session`     | Manage & list sessions   | [session.ts](../AtomBase/src/interfaces/cli/cmd/session.ts)           |
-| `atomcli smart-model` | Manage smart routing     | [smart-model.ts](../AtomBase/src/interfaces/cli/cmd/smart-model.ts)   |
-| `atomcli stats`       | Show token usage & cost  | [stats.ts](../AtomBase/src/interfaces/cli/cmd/stats.ts)               |
-
-### MCP Commands
-
-| Command               | Description          | Source                                                              |
-| --------------------- | -------------------- | ------------------------------------------------------------------- |
-| `atomcli mcp list`    | List MCP servers     | [mcp/list.ts](../AtomBase/src/interfaces/cli/cmd/mcp/list.ts)       |
-| `atomcli mcp add`     | Add MCP server       | [mcp/add.ts](../AtomBase/src/interfaces/cli/cmd/mcp/add.ts)         |
-| `atomcli mcp remove`  | Remove MCP server    | [mcp/remove.ts](../AtomBase/src/interfaces/cli/cmd/mcp/remove.ts)   |
-| `atomcli mcp install` | Install MCP from URL | [mcp/install.ts](../AtomBase/src/interfaces/cli/cmd/mcp/install.ts) |
-
-### Skill Commands
-
-| Command                | Description           | Source                                                  |
-| ---------------------- | --------------------- | ------------------------------------------------------- |
-| `atomcli skill list`   | List installed skills | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
-| `atomcli skill add`    | Add skill from URL    | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
-| `atomcli skill remove` | Remove skill          | [skill.ts](../AtomBase/src/interfaces/cli/cmd/skill.ts) |
-
-### Developer Tools
-
-| Command             | Description                     | Source                                                          |
-| ------------------- | ------------------------------- | --------------------------------------------------------------- |
-| `atomcli test-gen`  | Generate unit tests             | [test-gen.ts](../AtomBase/src/interfaces/cli/cmd/test-gen.ts)   |
-| `atomcli docs`      | Generate documentation          | [docs.ts](../AtomBase/src/interfaces/cli/cmd/docs.ts)           |
-| `atomcli security`  | Security vulnerability scan     | [security.ts](../AtomBase/src/interfaces/cli/cmd/security.ts)   |
-| `atomcli perf`      | Performance analysis            | [perf.ts](../AtomBase/src/interfaces/cli/cmd/perf.ts)           |
-| `atomcli refactor`  | Code refactoring assistant      | [refactor.ts](../AtomBase/src/interfaces/cli/cmd/refactor.ts)   |
-| `atomcli review`    | Code review for PRs             | [review.ts](../AtomBase/src/interfaces/cli/cmd/review.ts)       |
-| `atomcli workspace` | Multi-project workspace manager | [workspace.ts](../AtomBase/src/interfaces/cli/cmd/workspace.ts) |
-
----
-
-## Advanced Features
-
-### Streaming Interrupt System
-
-AtomCLI supports non-blocking user input during AI streaming:
-
-- **Amendment Queue**: Send additional instructions while AI is writing
-- **Shift+Enter**: Add amendment to queue
-- **Enter**: Force interrupt current stream
-- **Implementation**: [session/amendment.ts](../AtomBase/src/core/session/amendment.ts)
-
-```typescript
-// Usage in TUI
-// While AI is streaming, press:
-// - Shift+Enter to add amendment
-// - Enter to interrupt
-```
-
-### Model Fallback System
-
-Automatic failover when primary AI provider fails:
-
-- **Fallback Chain**: Primary → Secondary → Tertiary models
-- **Error Detection**: Automatic detection of rate limits, timeouts, service errors
-- **Seamless Switching**: Continue conversation without interruption
-- **Cost Tracking**: Track costs across different providers
-- **Implementation**: [provider/fallback.ts](../AtomBase/src/integrations/provider/fallback.ts)
-
-```typescript
-// Configuration example
-{
-  "model": "anthropic/claude-sonnet-4",
-  "fallback": {
-    "secondary": "openai/gpt-4o",
-    "tertiary": "google/gemini-pro"
-  }
-}
-```
-
----
-
-## Development Workflow
-
-### Prerequisites
-
-- [Bun](https://bun.sh/) v1.3+
-- [Git](https://git-scm.com/)
-
-### Setup
-
-```bash
-# Clone repository
-git clone https://github.com/aToom13/AtomCLI.git
-cd AtomCLI
-
-# Install dependencies
-bun install
-
-# Navigate to main package
+```sh
 cd AtomBase
-```
-
-### Development Mode
-
-```bash
-# Run in development mode (hot reload)
 bun run dev
-
-# With debug logging
-bun run dev --print-logs
 ```
 
-### Building
+The development command runs with Bun's `browser` condition, which is required for TUI imports. To inspect commands without starting an interactive workflow:
 
-```bash
-# Build all platforms (11 targets)
+```sh
+bun run --conditions=browser ./src/index.ts --help
+```
+
+## Validation
+
+Run package checks from `AtomBase/`:
+
+```sh
+bun run typecheck
+MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
+```
+
+Run workspace checks from the repository root:
+
+```sh
+bun turbo typecheck
+bun turbo test
+```
+
+The models.dev fixture is the required test convention. `test/preload.ts` copies that fixture into the isolated test data directory, so the standard test suite does not require a live models.dev request.
+
+## Build and release
+
+```sh
+cd AtomBase
 bun run build
-
-# Build only current platform
-cd AtomBase && bun run build --single
-
-# Output in dist/ directory:
-# - atomcli-linux-x64/           (glibc)
-# - atomcli-linux-arm64/         (glibc)
-# - atomcli-linux-x64-baseline/  (glibc, no AVX2)
-# - atomcli-linux-x64-musl/      (Alpine)
-# - atomcli-linux-arm64-musl/    (Alpine)
-# - atomcli-linux-x64-baseline-musl/
-# - atomcli-darwin-arm64/        (Apple Silicon)
-# - atomcli-darwin-x64/          (Intel)
-# - atomcli-darwin-x64-baseline/ (Intel, no AVX2)
-# - atomcli-windows-x64/
-# - atomcli-windows-x64-baseline/
 ```
 
-### Installing Local Build
+`AtomBase/script/build.ts` removes `dist/` before each build, bundles the application for supported targets, and includes root `.atomcli/` and `.claude/` assets. Do not store source files in `dist/`.
 
-```bash
-# Copy to local bin
-cp dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/
+Pushing a `v*` Git tag is the only automated release trigger. The supported release entrypoint is the root `release.sh`; do not manually publish generated release directories.
 
-# Or use symlink for development
-ln -sf $(pwd)/dist/atomcli-linux-x64/bin/atomcli ~/.local/bin/atomcli
+Release jobs run from a clean checkout. The build copies root `.atomcli/` and `.claude/` directories, so only tracked, reviewable skills and agents belong there. Local configuration, credentials, package manifests/locks, installed dependencies, plans, runs, and session state must remain ignored.
+
+The build matrix produces Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64 executables. x64 baseline variants cover older processors without AVX2. Bun has no FreeBSD runtime or compile target, so FreeBSD cannot be advertised as a supported AtomCLI runtime; platform-specific helpers should still fail clearly or use a system executable where possible.
+
+### Pre-release repository check
+
+Prepare `AtomBase/package.json` and `RELEASE_NOTES.md`, then run the complete release audit without changing Git or contacting GitHub:
+
+```sh
+./release.sh --dry-run
 ```
 
----
+The dry run installs the locked Bun dependencies, runs workspace typechecks and tests, constructs the candidate commit in a temporary Git index, checks ignored/tracked conflicts, rejects local runtime artifacts, scans for common credential signatures, and validates that the release note contains no emoji.
 
-## Configuration System
+The underlying repository checks are:
 
-Configuration is managed in `AtomBase/src/core/config/config.ts`:
-
-### Config Locations
-
-| File                            | Purpose                | Schema                                             |
-| ------------------------------- | ---------------------- | -------------------------------------------------- |
-| `~/.config/atomcli/config.json` | Global settings        | [config.ts](../AtomBase/src/core/config/config.ts) |
-| `~/.config/atomcli/mcp.json`    | MCP server configs     | Flat MCP format                                    |
-| `.atomcli/atomcli.json`         | Project-level settings | Same as global                                     |
-
-### Key Configuration Options
-
-```typescript
-interface Config {
-  model?: string // Default model (provider/model)
-  autoupdate?: boolean | "notify" // Update behavior
-  disabled_providers?: string[] // Providers to disable
-  enabled_providers?: string[] // Providers to enable (exclusive)
-}
+```sh
+git status --short
+git status --short --ignored
+git ls-files -ci --exclude-standard
+git ls-files --others --exclude-standard
 ```
 
----
+Review every tracked and untracked path. `git ls-files -ci --exclude-standard` must print nothing: a tracked file hidden by an ignore rule can otherwise change without appearing in normal status output. Do not force-add local `.atomcli/` or `.claude/` state. Do not commit `AtomBase/dist/`, `release_assets/`, logs, credentials, or generated test sandboxes.
 
-## Provider Integration
+The release version is sourced from `AtomBase/package.json`. To perform the authorized release:
 
-Adding a new provider:
-
-1. Create file in `AtomBase/src/integrations/provider/`:
-
-```typescript
-// my-provider.ts
-import { Provider } from "./index"
-
-export namespace MyProvider {
-  export const Info: Provider.Info = {
-    id: "my-provider",
-    name: "My Provider",
-    models: [...],
-  }
-
-  export async function* models(info: Provider.Context) {
-    yield* info.provider.defaultModels().values()
-  }
-
-  export function create(ctx: Provider.Context) {
-    return createOpenAI({
-      baseURL: "https://api.myprovider.com/v1",
-      apiKey: ctx.apiKey,
-    })
-  }
-}
+```sh
+./release.sh
 ```
 
-2. Register in `AtomBase/src/integrations/provider/index.ts`
+The script requires authenticated GitHub CLI access. It displays the working tree and requires the exact version tag as confirmation, safely syncs a behind-only `main` branch with autostash, validates the repository, commits all non-ignored changes, pushes `main`, creates and pushes only the exact release tag, and waits for `.github/workflows/release.yml` to publish the GitHub release. It aborts on divergent history, merge conflicts, an existing tag, failed validation, or a failed release workflow.
 
-3. Add to provider list in exports
+## Configuration
 
----
+The configuration schema is `AtomBase/src/core/config/config.ts`. Its precedence, from highest to lowest, is:
 
-## Tool System
+1. `ATOMCLI_CONFIG_CONTENT`
+2. Project `atomcli.jsonc`, `atomcli.json`, or `mcp.json`
+3. The file specified by `ATOMCLI_CONFIG`
+4. Global files in `~/.atomcli/`
+5. Remote well-known configuration
 
-Tools are defined in `AtomBase/src/integrations/tool/` and registered via the agent's tool configuration.
+Global files include `config.json`, `atomcli.json`, `atomcli.jsonc`, and `mcp.json`. New configuration fields must remain backward compatible and optional with defaults.
 
-### Tool Structure
+## Architecture
 
-```typescript
-export const MyTool = Tool.define({
-  name: "my_tool",
-  description: "Tool description",
-  parameters: z.object({
-    param: z.string().describe("Parameter description"),
-  }),
-  async execute(ctx, params) {
-    // Implementation
-    return { result: "..." }
-  },
-})
+| Concern                      | Location                                    |
+| ---------------------------- | ------------------------------------------- |
+| CLI registration             | `AtomBase/src/index.ts`                     |
+| CLI commands and TUI         | `AtomBase/src/interfaces/cli/cmd/`          |
+| Configuration                | `AtomBase/src/core/config/config.ts`        |
+| Project-scoped state         | `AtomBase/src/services/project/instance.ts` |
+| Sessions and prompt assembly | `AtomBase/src/core/session/`                |
+| Providers                    | `AtomBase/src/integrations/provider/`       |
+| Tools                        | `AtomBase/src/integrations/tool/`           |
+| MCP                          | `AtomBase/src/integrations/mcp/`            |
+| Server routes                | `AtomBase/src/server/`                      |
+
+Follow the namespace export pattern and use path aliases (`@/*`, `@tui/*`). Code built with `--conditions=browser` must use type-only imports for `ai` and dynamic imports for its runtime use.
+
+## Server API and SDK
+
+After changing `AtomBase/src/server/` routes, regenerate and build the SDK:
+
+```sh
+cd AtomBase
+bun run dev generate > ../libs/sdk/js/openapi.json
+cd ../libs/sdk/js
+bun run build
 ```
 
-### Tool Context
+Do not manually edit `libs/sdk/js/src/v2/gen/`; it is generated.
 
-Tools receive a context with:
+## Documentation maintenance
 
-- `cwd` - Current working directory
-- `session` - Active session
-- `permissions` - Permission state
-
----
-
-## MCP Integration
-
-MCP (Model Context Protocol) servers extend agent capabilities.
-
-### MCP Architecture
-
-```
-AtomCLI
-    │
-    ▼
-┌─────────────────┐
-│   MCP Manager   │  ← src/integrations/mcp/index.ts
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌───────┐ ┌───────┐
-│Server1│ │Server2│  (stdio/SSE)
-└───────┘ └───────┘
-```
-
-### Key Files
-
-| File                                                        | Description               |
-| ----------------------------------------------------------- | ------------------------- |
-| [mcp/index.ts](../AtomBase/src/integrations/mcp/index.ts)   | MCP server management     |
-| [mcp/client.ts](../AtomBase/src/integrations/mcp/client.ts) | MCP client implementation |
-
----
-
-## Testing
-
-```bash
-# Run all tests
-bun test
-
-# Run specific test file
-bun test test/tool/read.test.ts
-
-# Watch mode
-bun test --watch
-```
-
----
-
-## Security Guidelines
-
-### File System Access
-
-- Agent has read/write/delete access within workspace
-- Always review implementation plans before approving changes
-- Use `--cwd` to limit workspace scope
-
-### Command Execution
-
-- Commands run via subprocess in local shell
-- No isolated sandbox by default
-- Safe command list in permission system
-
-### API Keys
-
-- Stored in user config (`~/.config/atomcli/`)
-- Never committed to repository
-- Use environment variables for CI/CD
-
----
-
-## Related Documentation
-
-- [Main README](../README.md) - Project overview
-- [Providers Guide](./PROVIDERS.md) - AI provider configuration and API keys
-- [MCP Guide](./MCP-GUIDE.md) - MCP server installation and development
-- [Skills Guide](./SKILLS-GUIDE.md) - Skill development and usage
-- [AtomBase README](../AtomBase/README.md) - Core package docs
-- [SDK README](../libs/sdk/README.md) - SDK documentation
-- [Libs README](../libs/README.md) - Shared libraries
-
----
+Keep documentation tied to its source of truth. Validate command examples with `atomcli --help`, configuration examples against `Config.Info`, and SDK claims against `libs/sdk/js/`. Avoid hard-coded provider counts, model lists, and package versions unless a release artifact requires them.

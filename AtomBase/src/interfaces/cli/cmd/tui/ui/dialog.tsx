@@ -7,6 +7,12 @@ import { Clipboard } from "@tui/util/clipboard"
 import { useToast } from "./toast"
 import { SpatialLayer } from "../context/spatial"
 
+export namespace DialogLayout {
+  export function maxHeight(terminalHeight: number) {
+    return Math.max(1, terminalHeight - 2)
+  }
+}
+
 export function Dialog(
   props: ParentProps<{
     size?: "medium" | "large"
@@ -26,8 +32,8 @@ export function Dialog(
       width={dimensions().width}
       height={dimensions().height}
       alignItems="center"
+      justifyContent="center"
       position="absolute"
-      paddingTop={dimensions().height / 4}
       left={0}
       top={0}
       backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
@@ -39,6 +45,7 @@ export function Dialog(
         }}
         width={props.size === "large" ? 80 : 60}
         maxWidth={dimensions().width - 2}
+        maxHeight={DialogLayout.maxHeight(dimensions().height)}
         backgroundColor={theme.backgroundPanel}
         paddingTop={1}
       >

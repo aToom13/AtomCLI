@@ -4,7 +4,11 @@ import os from "os"
 import path from "path"
 import fs from "fs/promises"
 import fsSync from "fs"
-import { afterAll } from "bun:test"
+import { afterAll, setDefaultTimeout } from "bun:test"
+
+// Bun 1.3.10 can fall back to its 5s default when this package is reached
+// through the monorepo. Keep the effective timeout aligned with bunfig.toml.
+setDefaultTimeout(10_000)
 
 const dir = path.join(os.tmpdir(), "atomcli-test-data-" + process.pid)
 await fs.mkdir(dir, { recursive: true })
@@ -22,14 +26,16 @@ process.env["XDG_CACHE_HOME"] = path.join(dir, "cache")
 process.env["XDG_CONFIG_HOME"] = path.join(dir, "config")
 process.env["XDG_STATE_HOME"] = path.join(dir, "state")
 
-// Pre-fetch models.json so tests don't need the macro fallback
-// Also write the cache version file to prevent global/index.ts from clearing the cache
+// Seed models.json from the explicit fixture when provided. The documented test
+// command always sets MODELS_DEV_API_JSON; fetching here made otherwise-hermetic
+// tests fail before collection whenever the network was unavailable.
+// Also write the cache version file to prevent global/index.ts from clearing the cache.
 const cacheDir = path.join(dir, "cache", "atomcli")
 await fs.mkdir(cacheDir, { recursive: true })
 await fs.writeFile(path.join(cacheDir, "version"), "16")
-const response = await fetch("https://models.dev/api.json")
-if (response.ok) {
-  await fs.writeFile(path.join(cacheDir, "models.json"), await response.text())
+const modelsFixture = process.env["MODELS_DEV_API_JSON"]
+if (modelsFixture) {
+  await fs.copyFile(path.resolve(modelsFixture), path.join(cacheDir, "models.json"))
 }
 // Disable models.dev refresh to avoid race conditions during tests
 process.env["ATOMCLI_DISABLE_MODELS_FETCH"] = "true"

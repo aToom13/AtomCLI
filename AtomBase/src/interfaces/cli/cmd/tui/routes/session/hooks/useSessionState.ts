@@ -7,6 +7,8 @@ import { MacOSScrollAccel } from "@opentui/core"
 import { useKV } from "../../../context/kv"
 import { CustomSpeedScroll } from "../context"
 import { useSubAgents } from "@tui/context/subagent"
+import { useFileTree } from "@tui/context/file-tree"
+import { SessionLayout } from "../layout"
 
 export type SessionState = ReturnType<typeof useSessionState>
 
@@ -18,6 +20,7 @@ export function useSessionState() {
   const kv = useKV()
   const dimensions = useTerminalDimensions()
   const subAgentCtx = useSubAgents()
+  const fileTree = useFileTree()
 
   const session = createMemo(() => sync.session.get(route.sessionID))
 
@@ -64,7 +67,9 @@ export function useSessionState() {
   const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", false)
   const [autoFollow, setAutoFollow] = kv.signal("auto_follow", true)
 
-  const wide = createMemo(() => dimensions().width > 120)
+  const layoutMode = createMemo(() => SessionLayout.mode(dimensions().width))
+  const verticalMode = createMemo(() => SessionLayout.verticalMode(dimensions().height))
+  const wide = createMemo(() => layoutMode() === "wide")
 
   const sidebarVisible = createMemo(() => {
     if (session()?.parentID) return false
@@ -75,19 +80,39 @@ export function useSessionState() {
 
   const showTimestamps = createMemo(() => timestamps() === "show")
 
-  // SubAgent panel width — mirrors computePanelWidth() in SubAgentPanel.tsx exactly.
-  // If you change breakpoints there, update here too.
-  const subAgentPanelWidth = createMemo(() => {
-    if (!subAgentCtx.panelVisible() || subAgentCtx.agents().length === 0) return 0
-    const w = dimensions().width
-    if (w < 90) return 25
-    if (w < 120) return 30
-    if (w < 150) return 40
-    if (w < 180) return 50
-    return 58
-  })
-
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - subAgentPanelWidth() - 4)
+  const secondaryPanelRequested = createMemo(
+    () =>
+      (subAgentCtx.panelVisible() && subAgentCtx.agents().length > 0) ||
+      (fileTree.state.codePanelVisible && fileTree.hasOpenFiles()),
+  )
+  const fileTreeExpanded = createMemo(
+    () => fileTree.state.visible && !(dimensions().width < 90 && secondaryPanelRequested()),
+  )
+  const fileTreeWidth = createMemo(() => SessionLayout.fileTreeWidth(dimensions().width, fileTreeExpanded()))
+  const inspectorInline = createMemo(() => sidebarVisible() && wide())
+  const inspectorWidth = createMemo(() =>
+    SessionLayout.inspectorWidth(dimensions().width, sidebarVisible(), inspectorInline()),
+  )
+  const inlineInspectorWidth = createMemo(() => (inspectorInline() ? inspectorWidth() : 0))
+  const occupiedBeforeRightPanel = createMemo(() => fileTreeWidth() + inlineInspectorWidth())
+  const agentPanelWidth = createMemo(() =>
+    SessionLayout.agentPanelWidth(
+      dimensions().width,
+      occupiedBeforeRightPanel(),
+      subAgentCtx.panelVisible() && subAgentCtx.agents().length > 0,
+    ),
+  )
+  const codePanelWidth = createMemo(() =>
+    SessionLayout.codePanelWidth(
+      dimensions().width,
+      occupiedBeforeRightPanel(),
+      agentPanelWidth() === 0 && fileTree.state.codePanelVisible && fileTree.hasOpenFiles(),
+    ),
+  )
+  const rightPanelWidth = createMemo(() => agentPanelWidth() || codePanelWidth())
+  const contentWidth = createMemo(() =>
+    SessionLayout.chatWidth(dimensions().width, fileTreeWidth(), inlineInspectorWidth(), rightPanelWidth()),
+  )
 
   const scrollAcceleration = createMemo(() => {
     const tui = sync.data.config.tui
@@ -138,7 +163,14 @@ export function useSessionState() {
     setAutoFollow,
     // UI
     wide,
+    layoutMode,
+    verticalMode,
     sidebarVisible,
+    fileTreeWidth,
+    fileTreeExpanded,
+    inspectorWidth,
+    agentPanelWidth,
+    codePanelWidth,
     contentWidth,
     scrollAcceleration,
   }

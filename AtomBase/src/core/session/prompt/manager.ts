@@ -14,7 +14,7 @@
 
 import fs from "fs/promises"
 import path from "path"
-import os from "os"
+import { Global } from "@/core/global"
 
 // ─── Core Prompts (always included) ──────────────────────────
 
@@ -105,7 +105,7 @@ async function generateDynamicContext(): Promise<string> {
 
   // User profile
   try {
-    const profilePath = path.join(os.homedir(), ".atomcli", "personality", "user-profile.json")
+    const profilePath = path.join(Global.Path.root, "personality", "user-profile.json")
     const data = await fs.readFile(profilePath, "utf-8")
     const profile = JSON.parse(data)
 

@@ -4,8 +4,8 @@ import { Tool } from "./tool"
 export const InvalidTool = Tool.define("invalid", {
   description: "Do not use",
   parameters: z.object({
-    tool: z.string(),
-    error: z.string(),
+    tool: z.string().max(200),
+    error: z.string().max(20_000),
   }),
   async execute(params) {
     return {

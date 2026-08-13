@@ -17,6 +17,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 import { createUserPreference } from "../types"
 
 const log = Log.create({ service: "memory.preferences" })
@@ -25,7 +26,7 @@ const log = Log.create({ service: "memory.preferences" })
 // CONSTANTS
 // ============================================================================
 
-const PREFERENCES_DIR = ".atomcli/preferences"
+const PREFERENCES_DIR = "preferences"
 const PREFERENCES_FILE = "preferences.json"
 
 interface PreferenceEntry {
@@ -49,7 +50,7 @@ export class PreferencesService {
   private initialized = false
 
   constructor(userId: string = "default") {
-    this.preferencesDir = path.join(os.homedir(), PREFERENCES_DIR, userId)
+    this.preferencesDir = path.join(Global.Path.root, PREFERENCES_DIR, userId)
     this.preferencesPath = path.join(this.preferencesDir, PREFERENCES_FILE)
   }
 

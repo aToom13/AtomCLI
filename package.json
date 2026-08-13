@@ -9,9 +9,8 @@
     "dev": "bun run --cwd AtomBase --conditions=browser src/index.ts",
     "build": "bun turbo build",
     "typecheck": "bun turbo typecheck",
-    "random": "echo 'Random script'",
-    "hello": "echo 'Hello World!'",
-    "test": "bun turbo test"
+    "test": "bun turbo test",
+    "release": "bash ./release.sh"
   },
   "workspaces": {
     "packages": [
@@ -22,7 +21,6 @@
     "catalog": {
       "@types/bun": "1.3.4",
       "@octokit/rest": "22.0.0",
-      "@hono/zod-validator": "0.4.2",
       "ulid": "3.0.1",
       "@kobalte/core": "0.13.11",
       "@types/luxon": "3.7.1",
@@ -30,8 +28,6 @@
       "@tsconfig/node22": "22.0.2",
       "@tsconfig/bun": "1.0.9",
       "@cloudflare/workers-types": "4.20251008.0",
-      "@openauthjs/openauth": "0.0.0-20250322224806",
-      "@pierre/diffs": "1.0.2",
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
@@ -56,25 +52,13 @@
       "@solidjs/start": "https://pkg.pr.new/@solidjs/start@dfb2020",
       "solid-js": "1.9.10",
       "vite-plugin-solid": "2.11.10",
-      "chromadb": "3.4.3",
-      "openai": "^4.0.0"
+      "chromadb": "3.4.3"
     }
   },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",
-    "husky": "9.1.7",
     "prettier": "3.6.2",
-    "sst": "3.17.23",
     "turbo": "2.9.18"
-  },
-  "dependencies": {
-    "@atomcli/plugin": "workspace:*",
-    "@atomcli/script": "workspace:*",
-    "@atomcli/sdk": "workspace:*",
-    "@aws-sdk/client-s3": "3.933.0",
-    "@modelcontextprotocol/sdk": "1.27.1",
-    "hono": "4.13.1",
-    "typescript": "catalog:"
   },
   "repository": {
     "type": "git",

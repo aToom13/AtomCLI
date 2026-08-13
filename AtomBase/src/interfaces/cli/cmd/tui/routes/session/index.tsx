@@ -31,6 +31,8 @@ import { SplitBorder } from "@tui/component/border"
 import { SubAgentPanel } from "./components/SubAgentPanel"
 import { useSubAgents } from "@tui/context/subagent"
 import { VirtualList } from "../../component/virtual-list"
+import { useChain } from "@tui/context/chain"
+import { SessionRecovery } from "@tui/context/session-recovery"
 
 addDefaultParsers(parsers.parsers)
 
@@ -49,6 +51,13 @@ export function Session() {
     showTimestamps,
     diffWrapMode,
     contentWidth,
+    fileTreeWidth,
+    fileTreeExpanded,
+    inspectorWidth,
+    agentPanelWidth,
+    codePanelWidth,
+    layoutMode,
+    verticalMode,
     conceal,
     scrollAcceleration,
     pending,
@@ -60,6 +69,7 @@ export function Session() {
   } = state
 
   const subAgentCtx = useSubAgents()
+  const chainCtx = useChain()
 
   const toast = useToast()
   const sdk = useSDK()
@@ -78,7 +88,21 @@ export function Session() {
   createEffect(async () => {
     await sync.session
       .sync(route.sessionID)
-      .then(() => {
+      .then(async () => {
+        const persistedParts = messages().flatMap((message) => sync.data.part[message.id] ?? [])
+        chainCtx.hydrateChain(route.sessionID, SessionRecovery.chain(persistedParts))
+
+        const children = await sdk.client.session
+          .children({ sessionID: route.sessionID })
+          .then((response) => response.data ?? [])
+          .catch(() => sync.data.session.filter((child) => child.parentID === route.sessionID))
+        const recoverAgents = () =>
+          SessionRecovery.agents(route.sessionID, children, (sessionID) => sync.session.status(sessionID))
+        const recoveredAgents = recoverAgents()
+        subAgentCtx.hydrate(recoveredAgents)
+        await Promise.all(recoveredAgents.map((agent) => sync.session.sync(agent.sessionId).catch(() => {})))
+        subAgentCtx.hydrate(recoverAgents())
+
         if (scroll && autoFollow()) scroll.scrollBy(100_000)
       })
       .catch((e) => {
@@ -211,6 +235,9 @@ export function Session() {
         get width() {
           return contentWidth()
         },
+        get verticalMode() {
+          return verticalMode()
+        },
         sessionID: route.sessionID,
         conceal,
         showThinking,
@@ -222,10 +249,17 @@ export function Session() {
     >
       <box flexDirection="row">
         {/* Left: File Tree Sidebar */}
-        <FileTree />
+        <FileTree width={fileTreeWidth()} expanded={fileTreeExpanded()} />
 
         {/* Center: Chat Area */}
-        <box flexGrow={1} paddingBottom={1} paddingTop={1} paddingLeft={2} paddingRight={2} gap={1}>
+        <box
+          flexGrow={1}
+          paddingBottom={layoutMode() === "compact" || verticalMode() !== "normal" ? 0 : 1}
+          paddingTop={layoutMode() === "compact" || verticalMode() !== "normal" ? 0 : 1}
+          paddingLeft={layoutMode() === "compact" ? 1 : 2}
+          paddingRight={layoutMode() === "compact" ? 1 : 2}
+          gap={layoutMode() === "compact" || verticalMode() !== "normal" ? 0 : 1}
+        >
           <Show when={session()}>
             <Show when={!sidebarVisible() || !wide()}>
               <Header />
@@ -392,6 +426,7 @@ export function Session() {
                   toBottom()
                 }}
                 sessionID={route.sessionID}
+                width={contentWidth()}
               />
             </box>
           </Show>
@@ -399,19 +434,19 @@ export function Session() {
         </box>
 
         {/* Right: Sub-Agent Panel (auto-shows when agents are active, toggle with F9) */}
-        <Show when={subAgentCtx.panelVisible()}>
-          <SubAgentPanel agents={subAgentCtx.agents()} onToggle={() => subAgentCtx.togglePanel()} />
+        <Show when={agentPanelWidth() > 0}>
+          <SubAgentPanel width={agentPanelWidth()} agents={subAgentCtx.agents()} onToggle={() => subAgentCtx.togglePanel()} />
         </Show>
 
         {/* Right: Code Panel (shows when panel is hidden OR no agents) */}
-        <Show when={!subAgentCtx.panelVisible() || subAgentCtx.agents().length === 0}>
-          <CodePanel />
+        <Show when={codePanelWidth() > 0}>
+          <CodePanel width={codePanelWidth()} />
         </Show>
 
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
-              <Sidebar sessionID={route.sessionID} />
+              <Sidebar sessionID={route.sessionID} width={inspectorWidth()} />
             </Match>
             <Match when={!wide()}>
               <box
@@ -423,7 +458,7 @@ export function Session() {
                 alignItems="flex-end"
                 backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
               >
-                <Sidebar sessionID={route.sessionID} />
+                <Sidebar sessionID={route.sessionID} width={inspectorWidth()} overlay />
               </box>
             </Match>
           </Switch>

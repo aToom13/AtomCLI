@@ -54,9 +54,8 @@ export const ESLint: Info = {
         await fs.rm(extractedPath, { recursive: true, force: true }).catch(() => {})
       })
 
-      const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
-      await $`${npmCmd} install`.cwd(finalPath).quiet()
-      await $`${npmCmd} run compile`.cwd(finalPath).quiet()
+      await $`bun install`.cwd(finalPath).quiet()
+      await $`bun run compile`.cwd(finalPath).quiet()
 
       log.info("installed VS Code ESLint server", { serverPath })
     }

@@ -221,7 +221,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const fullSyncedSessions = new Set<string>()
-    const inflightSyncs = new Set<string>()
+    const inflightSyncs = new Map<string, Promise<void>>()
     const result = {
       data: store,
       set: setStore,
@@ -249,10 +249,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
-          if (inflightSyncs.has(sessionID)) return
+          const inflight = inflightSyncs.get(sessionID)
+          if (inflight) return inflight
 
-          inflightSyncs.add(sessionID)
-          try {
+          const request = (async () => {
             const [session, messages, todo, diff] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
               sdk.client.session.messages({ sessionID, limit: 100 }),
@@ -273,6 +273,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               }),
             )
             fullSyncedSessions.add(sessionID)
+          })()
+          inflightSyncs.set(sessionID, request)
+          try {
+            await request
           } finally {
             inflightSyncs.delete(sessionID)
           }

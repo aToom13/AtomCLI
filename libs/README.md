@@ -1,26 +1,14 @@
-# Shared Libraries Documentation
+# Shared libraries
 
-The `libs/` directory acts as a monorepo for shared code components.
+The workspace libraries are:
 
-## 1.0 Parent Navigation
+| Directory    | Package responsibility                               |
+| ------------ | ---------------------------------------------------- |
+| `companion/` | pairing authentication, mobile bridge, and discovery |
+| `function/`  | serverless function support                          |
+| `plugin/`    | plugin API and tooling                               |
+| `script/`    | shared build and automation support                  |
+| `sdk/js/`    | generated JavaScript/TypeScript SDK                  |
+| `util/`      | shared utilities                                     |
 
-- **[Return to Development Guide](../docs/DEVELOPMENT.md)**
-- **[Main README](../README.md)** - Project overview
-- **[Documentation](../docs/README.md)** - All guides
-
----
-
-## 2.0 Libraries Overview
-
-### 2.1 Domain Modules
-
-- **[SDK (sdk)](sdk/README.md)**: Contains Software Development Kits for external service integrations.
-- **[Utilities (util)](util/README.md)**: Contains shared utility functions used across multiple libraries.
-- **[Plugins (plugin)](plugin/README.md)**: Plugin system interfaces and implementations.
-- **[Scripts (script)](script/README.md)**: Shared scripts and automation tools.
-
----
-
-### 2.2 Extension Modules
-
-- **[Functions (function)](function/README.md)**: Serverless function implementations.
+Each package exposes its own scripts through its `package.json`. Run root-wide checks with `bun turbo typecheck` and `bun turbo test`.

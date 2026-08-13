@@ -60,7 +60,7 @@ List 3-5 files most critical for implementing this plan:
 
 ### Verification Strategy
 - [ ] Typecheck: Detect project typecheck command via project config (`package.json`, `tsconfig.json`, `pyproject.toml`, etc.)
-- [ ] Test Suite: Detect project test command (`bun test`, `npm test`, `pytest`, `cargo test`, etc.)
+- [ ] Test Suite: Detect project test command (`bun test`, `pytest`, `cargo test`, etc.)
 - [ ] Reviewer QA verification for functional task completion
 - [ ] Checker audit for security/performance risk analysis
 ```

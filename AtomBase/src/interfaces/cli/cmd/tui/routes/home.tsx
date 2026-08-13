@@ -13,9 +13,10 @@ import { usePromptRef } from "../context/prompt"
 import { Installation } from "@/services/installation"
 import { useKV } from "../context/kv"
 import { useCommandDialog } from "../component/dialog-command"
+import { useKeybind } from "../context/keybind"
+import { useTerminalDimensions } from "@opentui/solid"
 
-// TODO: what is the best way to do this?
-let once = false
+let cliPromptSubmitted = false
 
 export function Home() {
   const sync = useSync()
@@ -24,21 +25,26 @@ export function Home() {
   const route = useRouteData("home")
   const promptRef = usePromptRef()
   const command = useCommandDialog()
+  const keybind = useKeybind()
+  const dimensions = useTerminalDimensions()
   const mcp = createMemo(() => Object.keys(sync.data.mcp).length > 0)
-  const mcpError = createMemo(() => {
-    return Object.values(sync.data.mcp).some((x) => x.status === "failed")
+  const mcpAttentionCount = createMemo(() => {
+    return Object.values(sync.data.mcp).filter((x) =>
+      ["failed", "needs_auth", "needs_client_registration"].includes(x.status),
+    ).length
   })
+  const mcpNeedsAttention = createMemo(() => mcpAttentionCount() > 0)
 
   const connectedMcpCount = createMemo(() => {
     return Object.values(sync.data.mcp).filter((x) => x.status === "connected").length
   })
 
-  const isFirstTimeUser = createMemo(() => sync.data.session.length === 0)
+  const isFirstTimeUser = createMemo(() => sync.status === "complete" && sync.data.session.length === 0)
   const tipsHidden = createMemo(() => kv.get("tips_hidden", false))
   const showTips = createMemo(() => {
-    return false
     // Don't show tips for first-time users
     if (isFirstTimeUser()) return false
+    if (dimensions().width < 90 || dimensions().height < 24) return false
     return !tipsHidden()
   })
 
@@ -56,13 +62,14 @@ export function Home() {
   ])
 
   const Hint = (
-    <Show when={connectedMcpCount() > 0}>
+    <Show when={connectedMcpCount() > 0 || mcpNeedsAttention()}>
       <box flexShrink={0} flexDirection="row" gap={1}>
         <text fg={theme.text}>
           <Switch>
-            <Match when={mcpError()}>
-              <span style={{ fg: theme.error }}>•</span> mcp errors{" "}
-              <span style={{ fg: theme.textMuted }}>ctrl+x s</span>
+            <Match when={mcpNeedsAttention()}>
+              <span style={{ fg: theme.error }}>•</span>{" "}
+              {Locale.pluralize(mcpAttentionCount(), "{} MCP server needs attention", "{} MCP servers need attention")}{" "}
+              <span style={{ fg: theme.textMuted }}>{keybind.print("status_view")}</span>
             </Match>
             <Match when={true}>
               <span style={{ fg: theme.success }}>•</span>{" "}
@@ -78,13 +85,11 @@ export function Home() {
   const args = useArgs()
   onMount(() => {
     randomizeTip()
-    if (once) return
     if (route.initialPrompt) {
       prompt.set(route.initialPrompt)
-      once = true
-    } else if (args.prompt) {
+    } else if (args.prompt && !cliPromptSubmitted) {
       prompt.set({ input: args.prompt, parts: [] })
-      once = true
+      cliPromptSubmitted = true
       prompt.submit()
     }
   })
@@ -103,6 +108,9 @@ export function Home() {
             hint={Hint}
           />
         </box>
+        <Show when={isFirstTimeUser()}>
+          <text fg={theme.textMuted}>Describe what you want to build, fix, or understand. Type / for commands.</text>
+        </Show>
         <Toast />
       </box>
       <Show when={!isFirstTimeUser()}>
@@ -111,27 +119,38 @@ export function Home() {
         </Show>
       </Show>
       <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2} flexDirection="row" flexShrink={0} gap={2}>
-        <text fg={theme.textMuted}>{directory()}</text>
+        <box flexGrow={1} overflow="hidden">
+          <text fg={theme.textMuted}>{directory()}</text>
+        </box>
         <box gap={1} flexDirection="row" flexShrink={0}>
           <Show when={mcp()}>
             <text fg={theme.text}>
               <Switch>
-                <Match when={mcpError()}>
+                <Match when={mcpNeedsAttention()}>
                   <span style={{ fg: theme.error }}>⊙ </span>
                 </Match>
                 <Match when={true}>
                   <span style={{ fg: connectedMcpCount() > 0 ? theme.success : theme.textMuted }}>⊙ </span>
                 </Match>
               </Switch>
-              {connectedMcpCount()} MCP
+              <Show
+                when={mcpNeedsAttention()}
+                fallback={Locale.pluralize(connectedMcpCount(), "{} MCP server", "{} MCP servers")}
+              >
+                {Locale.pluralize(mcpAttentionCount(), "{} MCP issue", "{} MCP issues")}
+              </Show>
             </text>
-            <text fg={theme.textMuted}>/status</text>
+            <Show when={dimensions().width >= 72}>
+              <text fg={theme.textMuted}>/status</text>
+            </Show>
           </Show>
         </box>
         <box flexGrow={1} />
-        <box flexShrink={0}>
-          <text fg={theme.textMuted}>{Installation.VERSION}</text>
-        </box>
+        <Show when={dimensions().width >= 50}>
+          <box flexShrink={0}>
+            <text fg={theme.textMuted}>{Installation.VERSION}</text>
+          </box>
+        </Show>
       </box>
     </>
   )

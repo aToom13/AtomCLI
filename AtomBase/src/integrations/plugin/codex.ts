@@ -1,14 +1,170 @@
 import type { Hooks, PluginInput } from "@atomcli/plugin"
 import { Log } from "@/util/util/log"
 import { OAUTH_DUMMY_KEY } from "@/services/auth"
-import { ProviderTransform } from "../provider/transform"
+import type { Provider } from "@/integrations/provider/provider"
+import { Installation } from "@/services/installation"
 
 const log = Log.create({ service: "plugin.codex" })
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+const CODEX_MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
 const OAUTH_PORT = 1455
+const MAX_MODELS_RESPONSE_BYTES = 5 * 1024 * 1024
+
+interface CodexRemoteModel {
+  slug: string
+  display_name?: string
+  supported_in_api?: boolean
+  visibility?: string
+  context_window?: number
+  supported_reasoning_levels?: Array<{ effort?: string } | string>
+  input_modalities?: string[]
+  supports_reasoning_summary_parameter?: boolean
+  default_reasoning_summary?: string
+}
+
+interface CodexModelsResponse {
+  models?: CodexRemoteModel[]
+}
+
+async function readJsonBounded(response: Response, maxBytes: number) {
+  const declared = Number(response.headers.get("content-length") ?? 0)
+  if (declared > maxBytes) throw new Error("Codex models response is too large")
+  if (!response.body) throw new Error("Codex models response is empty")
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  const parts: string[] = []
+  let bytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new Error("Codex models response is too large")
+      }
+      parts.push(decoder.decode(value, { stream: true }))
+    }
+    parts.push(decoder.decode())
+    return JSON.parse(parts.join(""))
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+export namespace CodexModels {
+  export function apply(models: Provider.Info["models"], response: CodexModelsResponse) {
+    if (!response || !Array.isArray(response.models)) throw new Error("Codex models response is missing models")
+    for (const [index, model] of response.models.entries()) {
+      if (
+        !model ||
+        typeof model !== "object" ||
+        typeof model.slug !== "string" ||
+        (model.visibility !== undefined && typeof model.visibility !== "string") ||
+        (model.supported_in_api !== undefined && typeof model.supported_in_api !== "boolean") ||
+        (model.context_window !== undefined && !Number.isFinite(model.context_window)) ||
+        (model.supported_reasoning_levels !== undefined && !Array.isArray(model.supported_reasoning_levels)) ||
+        (model.input_modalities !== undefined && !Array.isArray(model.input_modalities))
+      ) {
+        throw new Error(`Codex models response contains an invalid model at index ${index}`)
+      }
+    }
+
+    const remote = response.models.filter(
+      (model) =>
+        typeof model.slug === "string" &&
+        model.slug.length > 0 &&
+        model.visibility === "list",
+    )
+    const next: Provider.Info["models"] = {}
+
+    for (const item of remote) {
+      const existing = models[item.slug]
+      const efforts = (item.supported_reasoning_levels ?? [])
+        .map((level) => (typeof level === "string" ? level : level.effort))
+        .filter((effort): effort is string => !!effort)
+      const variants = Object.fromEntries(
+        efforts.map((effort) => [
+          effort,
+          {
+            reasoningEffort: effort,
+            ...(item.supports_reasoning_summary_parameter !== false && item.default_reasoning_summary !== "none"
+              ? {
+                  reasoningSummary: item.default_reasoning_summary ?? "auto",
+                  include: ["reasoning.encrypted_content"],
+                }
+              : {}),
+          },
+        ]),
+      )
+      const input = item.input_modalities ?? ["text", "image"]
+      const inputCapabilities = {
+        text: input.includes("text"),
+        audio: input.includes("audio"),
+        image: input.includes("image"),
+        video: input.includes("video"),
+        pdf: input.includes("pdf"),
+      }
+
+      if (existing) {
+        next[item.slug] = {
+          ...existing,
+          name: item.display_name ?? existing.name,
+          api: { ...existing.api, id: item.slug, url: "https://chatgpt.com/backend-api/codex" },
+          capabilities: {
+            ...existing.capabilities,
+            reasoning: efforts.length > 0,
+            attachment: input.some((modality) => modality !== "text"),
+            input: inputCapabilities,
+          },
+          limit: {
+            ...existing.limit,
+            context: item.context_window ?? existing.limit.context,
+          },
+          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+          variants,
+        }
+        continue
+      }
+
+      const model: Provider.Model = {
+        id: item.slug,
+        providerID: "openai",
+        api: {
+          id: item.slug,
+          url: "https://chatgpt.com/backend-api/codex",
+          npm: "@ai-sdk/openai",
+        },
+        name: item.display_name ?? item.slug,
+        family: item.slug,
+        capabilities: {
+          temperature: false,
+          reasoning: efforts.length > 0,
+          attachment: input.some((modality) => modality !== "text"),
+          toolcall: true,
+          input: inputCapabilities,
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context: item.context_window ?? 272000, output: 128000 },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "",
+        variants,
+      }
+      next[item.slug] = model
+    }
+
+    for (const modelID of Object.keys(models)) delete models[modelID]
+    Object.assign(models, next)
+    return remote.length
+  }
+}
 
 interface PkceCodes {
   verifier: string
@@ -224,14 +380,122 @@ const HTML_ERROR = (error: string) => `<!doctype html>
     <div class="container">
       <h1>Authorization Failed</h1>
       <p>An error occurred during authorization.</p>
-      <div class="error">${error}</div>
+      <div class="error">${CodexOAuth.escapeHTML(error)}</div>
     </div>
   </body>
 </html>`
 
+const HTML_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+}
+
+export namespace CodexOAuth {
+  export function escapeHTML(value: string) {
+    return value.replace(/[&<>"']/g, (character) => {
+      switch (character) {
+        case "&":
+          return "&amp;"
+        case "<":
+          return "&lt;"
+        case ">":
+          return "&gt;"
+        case '"':
+          return "&quot;"
+        default:
+          return "&#39;"
+      }
+    })
+  }
+
+  export function errorPage(message: string) {
+    return HTML_ERROR(message)
+  }
+
+  export function validateCallback(url: URL, expectedState: string) {
+    if (url.searchParams.get("state") !== expectedState) {
+      return { type: "invalid" as const, message: "Invalid state - potential CSRF attack" }
+    }
+
+    const error = url.searchParams.get("error")
+    if (error) {
+      return { type: "error" as const, message: url.searchParams.get("error_description") || error }
+    }
+
+    const code = url.searchParams.get("code")
+    if (!code) return { type: "error" as const, message: "Missing authorization code" }
+    return { type: "code" as const, code }
+  }
+
+  export function resolveRequestUrl(requestInput: RequestInfo | URL) {
+    const parsed =
+      requestInput instanceof URL
+        ? new URL(requestInput)
+        : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
+
+    if (parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")) {
+      return new URL(CODEX_API_ENDPOINT)
+    }
+
+    const trustedOrigin = new URL(CODEX_API_ENDPOINT).origin
+    const trustedPath = parsed.pathname === "/backend-api/codex" || parsed.pathname.startsWith("/backend-api/codex/")
+    if (parsed.protocol !== "https:" || parsed.origin !== trustedOrigin || !trustedPath) {
+      throw new Error(`Refusing to send Codex OAuth credentials to untrusted URL: ${parsed.origin}`)
+    }
+    return parsed
+  }
+
+  export async function startServer(port = OAUTH_PORT) {
+    return startOAuthServer(port)
+  }
+
+  export function stopServer() {
+    stopOAuthServer()
+  }
+
+  export async function beginAuthorization(port = OAUTH_PORT) {
+    const pkce = await generatePKCE()
+    const state = generateState()
+    const { redirectUri } = await startOAuthServer(port)
+    const authUrl = buildAuthorizeUrl(redirectUri, pkce, state)
+
+    let callbackPromise: Promise<TokenResponse>
+    try {
+      callbackPromise = waitForOAuthCallback(pkce, state, redirectUri)
+    } catch (error) {
+      stopOAuthServer()
+      throw error
+    }
+
+    return {
+      url: authUrl,
+      instructions: "Complete authorization in your browser. This window will close automatically.",
+      method: "auto" as const,
+      callback: async () => {
+        try {
+          const tokens = await callbackPromise
+          const accountId = extractAccountId(tokens)
+          return {
+            type: "success" as const,
+            refresh: tokens.refresh_token,
+            access: tokens.access_token,
+            expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+            accountId,
+          }
+        } finally {
+          stopOAuthServer()
+        }
+      },
+    }
+  }
+}
+
 interface PendingOAuth {
   pkce: PkceCodes
   state: string
+  redirectUri: string
   resolve: (tokens: TokenResponse) => void
   reject: (error: Error) => void
 }
@@ -239,75 +503,73 @@ interface PendingOAuth {
 let oauthServer: ReturnType<typeof Bun.serve> | undefined
 let pendingOAuth: PendingOAuth | undefined
 
-async function startOAuthServer(): Promise<{ port: number; redirectUri: string }> {
+async function startOAuthServer(port = OAUTH_PORT): Promise<{ hostname: "127.0.0.1"; port: number; redirectUri: string }> {
   if (oauthServer) {
-    return { port: OAUTH_PORT, redirectUri: `http://localhost:${OAUTH_PORT}/auth/callback` }
+    throw new Error("A Codex OAuth authorization is already in progress")
   }
 
-  oauthServer = Bun.serve({
-    port: OAUTH_PORT,
-    fetch(req) {
+  try {
+    oauthServer = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      async fetch(req) {
       const url = new URL(req.url)
 
       if (url.pathname === "/auth/callback") {
-        const code = url.searchParams.get("code")
-        const state = url.searchParams.get("state")
-        const error = url.searchParams.get("error")
-        const errorDescription = url.searchParams.get("error_description")
-
-        if (error) {
-          const errorMsg = errorDescription || error
-          pendingOAuth?.reject(new Error(errorMsg))
-          pendingOAuth = undefined
-          return new Response(HTML_ERROR(errorMsg), {
-            headers: { "Content-Type": "text/html" },
-          })
-        }
-
-        if (!code) {
-          const errorMsg = "Missing authorization code"
-          pendingOAuth?.reject(new Error(errorMsg))
-          pendingOAuth = undefined
-          return new Response(HTML_ERROR(errorMsg), {
-            status: 400,
-            headers: { "Content-Type": "text/html" },
-          })
-        }
-
-        if (!pendingOAuth || state !== pendingOAuth.state) {
-          const errorMsg = "Invalid state - potential CSRF attack"
-          pendingOAuth?.reject(new Error(errorMsg))
-          pendingOAuth = undefined
-          return new Response(HTML_ERROR(errorMsg), {
-            status: 400,
-            headers: { "Content-Type": "text/html" },
-          })
-        }
-
         const current = pendingOAuth
+        if (!current) {
+          return new Response(HTML_ERROR("No OAuth authorization is pending"), { status: 400, headers: HTML_HEADERS })
+        }
+
+        const callback = CodexOAuth.validateCallback(url, current.state)
+        if (callback.type === "invalid") {
+          // A forged callback must not cancel the genuine login still in flight.
+          return new Response(HTML_ERROR(callback.message), { status: 400, headers: HTML_HEADERS })
+        }
+
         pendingOAuth = undefined
+        if (callback.type === "error") {
+          current.reject(new Error(callback.message))
+          queueMicrotask(stopOAuthServer)
+          return new Response(HTML_ERROR(callback.message), { status: 400, headers: HTML_HEADERS })
+        }
 
-        exchangeCodeForTokens(code, `http://localhost:${OAUTH_PORT}/auth/callback`, current.pkce)
-          .then((tokens) => current.resolve(tokens))
-          .catch((err) => current.reject(err))
-
-        return new Response(HTML_SUCCESS, {
-          headers: { "Content-Type": "text/html" },
-        })
+        try {
+          const tokens = await exchangeCodeForTokens(callback.code, current.redirectUri, current.pkce)
+          current.resolve(tokens)
+          return new Response(HTML_SUCCESS, { headers: HTML_HEADERS })
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error))
+          current.reject(failure)
+          return new Response(HTML_ERROR(failure.message), { status: 502, headers: HTML_HEADERS })
+        } finally {
+          queueMicrotask(stopOAuthServer)
+        }
       }
 
       if (url.pathname === "/cancel") {
-        pendingOAuth?.reject(new Error("Login cancelled"))
+        const current = pendingOAuth
+        if (!current || url.searchParams.get("state") !== current.state) {
+          return new Response("Invalid state", { status: 400 })
+        }
         pendingOAuth = undefined
+        current.reject(new Error("Login cancelled"))
+        queueMicrotask(stopOAuthServer)
         return new Response("Login cancelled", { status: 200 })
       }
 
       return new Response("Not found", { status: 404 })
-    },
-  })
+      },
+    })
+  } catch (error) {
+    oauthServer = undefined
+    throw new Error(`Codex OAuth callback port ${port} is unavailable`, { cause: error })
+  }
 
-  log.info("codex oauth server started", { port: OAUTH_PORT })
-  return { port: OAUTH_PORT, redirectUri: `http://localhost:${OAUTH_PORT}/auth/callback` }
+  const activePort = oauthServer.port
+  const redirectUri = `http://localhost:${activePort}/auth/callback`
+  log.info("codex oauth server started", { port: activePort })
+  return { hostname: "127.0.0.1" as const, port: activePort, redirectUri }
 }
 
 function stopOAuthServer() {
@@ -318,21 +580,25 @@ function stopOAuthServer() {
   }
 }
 
-function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResponse> {
+function waitForOAuthCallback(pkce: PkceCodes, state: string, redirectUri: string): Promise<TokenResponse> {
+  if (pendingOAuth) return Promise.reject(new Error("A Codex OAuth authorization is already in progress"))
   return new Promise((resolve, reject) => {
+    let current: PendingOAuth
     const timeout = setTimeout(
       () => {
-        if (pendingOAuth) {
+        if (pendingOAuth === current) {
           pendingOAuth = undefined
           reject(new Error("OAuth callback timeout - authorization took too long"))
+          stopOAuthServer()
         }
       },
       5 * 60 * 1000,
     ) // 5 minute timeout
 
-    pendingOAuth = {
+    current = {
       pkce,
       state,
+      redirectUri,
       resolve: (tokens) => {
         clearTimeout(timeout)
         resolve(tokens)
@@ -342,6 +608,7 @@ function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResp
         reject(error)
       },
     }
+    pendingOAuth = current
   })
 }
 
@@ -353,166 +620,87 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
 
-        // Filter models to only allowed Codex models for OAuth
-        const allowedModels = new Set(["gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.2", "gpt-5.2-codex"])
-        for (const modelId of Object.keys(provider.models)) {
-          if (!allowedModels.has(modelId)) {
-            delete provider.models[modelId]
+        let refreshingToken: Promise<{ access: string; accountId?: string }> | undefined
+        const authenticatedFetch = async (requestInput: RequestInfo | URL, init?: RequestInit) => {
+          // Resolve and validate the final destination before refreshing or
+          // attaching credentials. Untrusted origins never receive a token.
+          const url = CodexOAuth.resolveRequestUrl(requestInput)
+          // Remove the SDK's dummy key before attaching the current OAuth token.
+          const headers = new Headers(init?.headers)
+          headers.delete("authorization")
+
+          const currentAuth = await getAuth()
+          if (!currentAuth || currentAuth.type !== "oauth") return fetch(requestInput, { ...init, headers })
+          const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
+
+          if (!currentAuth.access || currentAuth.expires < Date.now()) {
+            refreshingToken ??= (async () => {
+              log.info("refreshing codex access token")
+              const tokens = await refreshAccessToken(currentAuth.refresh)
+              const accountId = extractAccountId(tokens) || authWithAccount.accountId
+              await input.client.auth.set({
+                providerID: "openai",
+                auth: {
+                  type: "oauth",
+                  refresh: tokens.refresh_token || currentAuth.refresh,
+                  access: tokens.access_token,
+                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                  ...(accountId && { accountId }),
+                },
+              })
+              return { access: tokens.access_token, accountId }
+            })().finally(() => {
+              refreshingToken = undefined
+            })
+            const refreshed = await refreshingToken
+            currentAuth.access = refreshed.access
+            authWithAccount.accountId = refreshed.accountId
+          }
+
+          headers.set("authorization", `Bearer ${currentAuth.access}`)
+          if (authWithAccount.accountId) headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
+
+          return fetch(url, { ...init, headers })
+        }
+
+        try {
+          const url = new URL(CODEX_MODELS_ENDPOINT)
+          url.searchParams.set("client_version", Installation.VERSION)
+          const response = await authenticatedFetch(url, {
+            headers: { "User-Agent": Installation.USER_AGENT },
+            signal: AbortSignal.timeout(5_000),
+          })
+          if (!response.ok) throw new Error(`Codex models endpoint returned ${response.status}`)
+          const count = CodexModels.apply(
+            provider.models,
+            (await readJsonBounded(response, MAX_MODELS_RESPONSE_BYTES)) as CodexModelsResponse,
+          )
+          log.info("refreshed codex models", { count })
+        } catch (error) {
+          // The account-specific endpoint is authoritative. If it is temporarily
+          // unavailable, retain only plausible Codex/GPT-5 entries from the
+          // general catalog instead of collapsing to a permanently stale list.
+          log.warn("failed to refresh codex models; using models.dev fallback", { error })
+          for (const modelID of Object.keys(provider.models)) {
+            if (!modelID.includes("codex") && !modelID.startsWith("gpt-5")) delete provider.models[modelID]
           }
         }
 
-        if (!provider.models["gpt-5.2-codex"]) {
-          const model = {
-            id: "gpt-5.2-codex",
-            providerID: "openai",
-            api: {
-              id: "gpt-5.2-codex",
-              url: "https://chatgpt.com/backend-api/codex",
-              npm: "@ai-sdk/openai",
-            },
-            name: "GPT-5.2 Codex",
-            capabilities: {
-              temperature: false,
-              reasoning: true,
-              attachment: true,
-              toolcall: true,
-              input: { text: true, audio: false, image: true, video: false, pdf: false },
-              output: { text: true, audio: false, image: false, video: false, pdf: false },
-              interleaved: false,
-            },
-            cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-            limit: { context: 400000, output: 128000 },
-            status: "active" as const,
-            options: {},
-            headers: {},
-            release_date: "2025-12-18",
-            variants: {} as Record<string, Record<string, any>>,
-          }
-          model.variants = ProviderTransform.variants(model)
-          provider.models["gpt-5.2-codex"] = model
-        }
-
-        // Zero out costs for Codex (included with ChatGPT subscription)
         for (const model of Object.values(provider.models)) {
-          model.cost = {
-            input: 0,
-            output: 0,
-            cache: { read: 0, write: 0 },
-          }
+          model.api.url = "https://chatgpt.com/backend-api/codex"
+          model.cost = { input: 0, output: 0, cache: { read: 0, write: 0 } }
         }
 
         return {
           apiKey: OAUTH_DUMMY_KEY,
-          async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
-            // Remove dummy API key authorization header
-            if (init?.headers) {
-              if (init.headers instanceof Headers) {
-                init.headers.delete("authorization")
-                init.headers.delete("Authorization")
-              } else if (Array.isArray(init.headers)) {
-                init.headers = init.headers.filter(([key]) => key.toLowerCase() !== "authorization")
-              } else {
-                delete init.headers["authorization"]
-                delete init.headers["Authorization"]
-              }
-            }
-
-            const currentAuth = await getAuth()
-            if (currentAuth.type !== "oauth") return fetch(requestInput, init)
-
-            // Cast to include accountId field
-            const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
-
-            // Check if token needs refresh
-            if (!currentAuth.access || currentAuth.expires < Date.now()) {
-              log.info("refreshing codex access token")
-              const tokens = await refreshAccessToken(currentAuth.refresh)
-              const newAccountId = extractAccountId(tokens) || authWithAccount.accountId
-              await input.client.auth.set({
-                providerID: "codex",
-                auth: {
-                  type: "oauth",
-                  refresh: tokens.refresh_token,
-                  access: tokens.access_token,
-                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                  ...(newAccountId && { accountId: newAccountId }),
-                },
-              })
-              currentAuth.access = tokens.access_token
-              authWithAccount.accountId = newAccountId
-            }
-
-            // Build headers
-            const headers = new Headers()
-            if (init?.headers) {
-              if (init.headers instanceof Headers) {
-                init.headers.forEach((value, key) => headers.set(key, value))
-              } else if (Array.isArray(init.headers)) {
-                for (const [key, value] of init.headers) {
-                  if (value !== undefined) headers.set(key, String(value))
-                }
-              } else {
-                for (const [key, value] of Object.entries(init.headers)) {
-                  if (value !== undefined) headers.set(key, String(value))
-                }
-              }
-            }
-
-            // Set authorization header with access token
-            headers.set("authorization", `Bearer ${currentAuth.access}`)
-
-            // Set ChatGPT-Account-Id header for organization subscriptions
-            if (authWithAccount.accountId) {
-              headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
-            }
-
-            // Rewrite URL to Codex endpoint
-            const parsed =
-              requestInput instanceof URL
-                ? requestInput
-                : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
-            const url =
-              parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
-                ? new URL(CODEX_API_ENDPOINT)
-                : parsed
-
-            return fetch(url, {
-              ...init,
-              headers,
-            })
-          },
+          fetch: authenticatedFetch,
         }
       },
       methods: [
         {
           label: "ChatGPT Pro/Plus",
           type: "oauth",
-          authorize: async () => {
-            const { redirectUri } = await startOAuthServer()
-            const pkce = await generatePKCE()
-            const state = generateState()
-            const authUrl = buildAuthorizeUrl(redirectUri, pkce, state)
-
-            const callbackPromise = waitForOAuthCallback(pkce, state)
-
-            return {
-              url: authUrl,
-              instructions: "Complete authorization in your browser. This window will close automatically.",
-              method: "auto" as const,
-              callback: async () => {
-                const tokens = await callbackPromise
-                stopOAuthServer()
-                const accountId = extractAccountId(tokens)
-                return {
-                  type: "success" as const,
-                  refresh: tokens.refresh_token,
-                  access: tokens.access_token,
-                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                  accountId,
-                }
-              },
-            }
-          },
+          authorize: () => CodexOAuth.beginAuthorization(),
         },
         {
           label: "Manually enter API Key",

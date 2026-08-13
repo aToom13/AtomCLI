@@ -13,6 +13,7 @@ export class CustomSpeedScroll {
 
 export const SessionContext = createContext<{
     width: number
+    verticalMode: "tight" | "compact" | "normal"
     sessionID: string
     conceal: () => boolean
     showThinking: () => boolean

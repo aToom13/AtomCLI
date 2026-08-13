@@ -110,14 +110,14 @@ export type CommunicationProfile = z.infer<typeof CommunicationProfile>
 // COMMUNICATION SERVICE
 // ============================================================================
 
-import os from "os"
 import path from "path"
 import fs from "fs/promises"
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.communication" })
 
-const COMM_DIR = ".atomcli/personality"
+const COMM_DIR = "personality"
 const COMM_FILE = "communication.json"
 
 export class CommunicationService {
@@ -125,7 +125,7 @@ export class CommunicationService {
   private comm: CommunicationProfile | null = null
 
   constructor() {
-    this.commPath = path.join(os.homedir(), COMM_DIR, COMM_FILE)
+    this.commPath = path.join(Global.Path.root, COMM_DIR, COMM_FILE)
   }
 
   // ============================================================================

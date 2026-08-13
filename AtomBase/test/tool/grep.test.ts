@@ -82,6 +82,22 @@ describe("tool.grep", () => {
       },
     })
   })
+
+  test("stops collecting after the global result limit", async () => {
+    await using tmp = await tmpdir({
+      init: (dir) => Bun.write(path.join(dir, "many.txt"), Array.from({ length: 150 }, () => "match").join("\n")),
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const grep = await GrepTool.init()
+        const result = await grep.execute({ pattern: "match" }, ctx)
+
+        expect(result.metadata.matches).toBe(100)
+        expect(result.metadata.truncated).toBe(true)
+      },
+    })
+  })
 })
 
 describe("CRLF regex handling", () => {

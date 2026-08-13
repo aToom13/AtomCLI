@@ -61,11 +61,11 @@ export const MEMORY_SYSTEM_VERSION = "1.0.0"
 // HELPER FUNCTIONS
 // ============================================================================
 
-import os from "os"
 import { join } from "path"
+import { Global } from "@/core/global"
 
 export function getMemoryDir(): string {
-  return join(os.homedir(), ".atomcli", "memory")
+  return join(Global.Path.root, "memory")
 }
 
 export function getJsonStoragePath(): string {

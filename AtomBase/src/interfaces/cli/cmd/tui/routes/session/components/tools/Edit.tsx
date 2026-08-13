@@ -24,6 +24,9 @@ export function Edit(props: ToolProps<typeof EditTool>) {
 
     // Count added/removed lines from diff
     const diffStats = createMemo(() => {
+        if (props.metadata.additions !== undefined && props.metadata.deletions !== undefined) {
+            return { added: props.metadata.additions, removed: props.metadata.deletions }
+        }
         const diff = diffContent() ?? ""
         const lines = diff.split("\n")
         let added = 0

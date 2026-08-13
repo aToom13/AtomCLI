@@ -200,12 +200,6 @@ export namespace Config {
       }
     }
 
-    // Inline config content has highest precedence
-    if (Flag.ATOMCLI_CONFIG_CONTENT) {
-      result = mergeConfigConcatArrays(result, JSON.parse(Flag.ATOMCLI_CONFIG_CONTENT))
-      log.debug("loaded custom config from ATOMCLI_CONFIG_CONTENT")
-    }
-
     result.agent = result.agent || {}
     result.mode = result.mode || {}
     result.plugin = result.plugin || []
@@ -274,6 +268,15 @@ export namespace Config {
       result.agent = mergeDeep(result.agent, await loadAgent(dir))
       result.agent = mergeDeep(result.agent, await loadMode(dir))
       result.plugin.push(...(await loadPlugin(dir)))
+    }
+
+    // Inline content is the final config layer. Apply it after all project and
+    // directory-based JSON/Markdown/plugin discovery so the documented
+    // ATOMCLI_CONFIG_CONTENT precedence cannot be reversed by a later scan.
+    if (Flag.ATOMCLI_CONFIG_CONTENT) {
+      const inline = Info.parse(JSON.parse(Flag.ATOMCLI_CONFIG_CONTENT))
+      result = mergeConfigConcatArrays(result, inline)
+      log.debug("loaded custom config from ATOMCLI_CONFIG_CONTENT")
     }
 
     // Migrate deprecated mode field to agent field
@@ -961,6 +964,8 @@ export namespace Config {
         .record(
           z.string(),
           ModelsDev.Model.partial().extend({
+            experimental: z.boolean().optional(),
+            provider: z.object({ npm: z.string() }).optional(),
             variants: z
               .record(
                 z.string(),

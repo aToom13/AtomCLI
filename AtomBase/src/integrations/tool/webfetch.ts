@@ -2,24 +2,38 @@ import z from "zod"
 import { Tool } from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
+import { BlockList, isIP } from "net"
+import { lookup } from "dns/promises"
+import { Http } from "./http"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
 const MAX_REDIRECTS = 5
 
-// Private IP ranges for SSRF protection
-const PRIVATE_IP_PATTERNS = [
-  /^127\./, // 127.0.0.0/8
-  /^10\./, // 10.0.0.0/8
-  /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
-  /^192\.168\./, // 192.168.0.0/16
-  /^169\.254\./, // Link-local
-  /^0\./, // 0.0.0.0/8
-  /^::1$/, // IPv6 loopback
-  /^fc00:/, // IPv6 unique local
-  /^fe80:/, // IPv6 link-local
-]
+const BLOCKED_IPS = new BlockList()
+BLOCKED_IPS.addSubnet("0.0.0.0", 8, "ipv4")
+BLOCKED_IPS.addSubnet("10.0.0.0", 8, "ipv4")
+BLOCKED_IPS.addSubnet("100.64.0.0", 10, "ipv4")
+BLOCKED_IPS.addSubnet("127.0.0.0", 8, "ipv4")
+BLOCKED_IPS.addSubnet("169.254.0.0", 16, "ipv4")
+BLOCKED_IPS.addSubnet("172.16.0.0", 12, "ipv4")
+BLOCKED_IPS.addSubnet("192.0.0.0", 24, "ipv4")
+BLOCKED_IPS.addSubnet("192.0.2.0", 24, "ipv4")
+BLOCKED_IPS.addSubnet("192.168.0.0", 16, "ipv4")
+BLOCKED_IPS.addSubnet("198.18.0.0", 15, "ipv4")
+BLOCKED_IPS.addSubnet("198.51.100.0", 24, "ipv4")
+BLOCKED_IPS.addSubnet("203.0.113.0", 24, "ipv4")
+BLOCKED_IPS.addSubnet("224.0.0.0", 4, "ipv4")
+BLOCKED_IPS.addSubnet("240.0.0.0", 4, "ipv4")
+BLOCKED_IPS.addSubnet("::", 128, "ipv6")
+BLOCKED_IPS.addSubnet("::1", 128, "ipv6")
+BLOCKED_IPS.addSubnet("64:ff9b:1::", 48, "ipv6")
+BLOCKED_IPS.addSubnet("100::", 64, "ipv6")
+BLOCKED_IPS.addSubnet("2001:db8::", 32, "ipv6")
+BLOCKED_IPS.addSubnet("fc00::", 7, "ipv6")
+BLOCKED_IPS.addSubnet("fe80::", 10, "ipv6")
+BLOCKED_IPS.addSubnet("ff00::", 8, "ipv6")
 
 // Dangerous URL schemes
 const DANGEROUS_SCHEMES = [
@@ -65,6 +79,7 @@ function validateUrl(url: string): URL {
   } catch {
     throw new Error("Invalid URL format")
   }
+  if (parsed.username || parsed.password) throw new Error("Credentials in webfetch URLs are not allowed")
 
   // Check for private/internal IP addresses (SSRF protection)
   const hostname = parsed.hostname.toLowerCase()
@@ -74,11 +89,13 @@ function validateUrl(url: string): URL {
     throw new Error("Access to localhost is not allowed for security reasons.")
   }
 
-  // Block private IP ranges
-  for (const pattern of PRIVATE_IP_PATTERNS) {
-    if (pattern.test(hostname)) {
-      throw new Error(`Access to private IP address "${hostname}" is not allowed for security reasons.`)
-    }
+  const address = hostname.replace(/^\[|\]$/g, "")
+  const family = isIP(address)
+  if (
+    address.toLowerCase().startsWith("::ffff:") ||
+    (family && BLOCKED_IPS.check(address, family === 4 ? "ipv4" : "ipv6"))
+  ) {
+    throw new Error(`Access to private IP address "${hostname}" is not allowed for security reasons.`)
   }
 
   // Block common internal hostnames
@@ -114,6 +131,79 @@ function validateUrl(url: string): URL {
   return parsed
 }
 
+type ResolvedAddress = { address: string; family: number }
+type HostResolver = (hostname: string) => Promise<ResolvedAddress[]>
+type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
+const defaultResolver: HostResolver = (hostname) => lookup(hostname, { all: true, verbatim: true })
+
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal) {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener("abort", abort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort)
+        reject(error)
+      },
+    )
+  })
+}
+
+export namespace WebFetchSecurity {
+  export function validate(url: string) {
+    return validateUrl(url)
+  }
+
+  export async function resolvePublicAddresses(url: URL, signal: AbortSignal, resolver = defaultResolver) {
+    const hostname = url.hostname.replace(/^\[|\]$/g, "")
+    const directFamily = isIP(hostname)
+    const addresses = directFamily
+      ? [{ address: hostname, family: directFamily }]
+      : await withAbort(resolver(hostname), signal)
+    if (addresses.length === 0) throw new Error(`Hostname did not resolve: ${hostname}`)
+
+    for (const entry of addresses) {
+      const family = entry.family === 4 || entry.family === 6 ? entry.family : isIP(entry.address)
+      const type = family === 4 ? "ipv4" : family === 6 ? "ipv6" : undefined
+      if (!type || entry.address.toLowerCase().startsWith("::ffff:") || BLOCKED_IPS.check(entry.address, type)) {
+        throw new Error(`Hostname "${hostname}" resolves to a private or reserved address`)
+      }
+    }
+    return addresses
+  }
+
+  export async function fetchPinned(
+    url: URL,
+    init: RequestInit,
+    resolver: HostResolver = defaultResolver,
+    fetcher: Fetcher = globalThis.fetch,
+  ) {
+    if (!init.signal) throw new Error("A request signal is required")
+    const addresses = await resolvePublicAddresses(url, init.signal, resolver)
+    const selected = addresses[0].address
+    const originalHostname = url.hostname.replace(/^\[|\]$/g, "")
+    const pinned = new URL(url)
+    pinned.hostname = selected.includes(":") ? `[${selected}]` : selected
+
+    const headers = new Headers(init.headers)
+    headers.set("Host", url.host)
+    const tls = url.protocol === "https:" && !isIP(originalHostname) ? { serverName: originalHostname } : undefined
+
+    return fetcher(pinned, {
+      ...init,
+      headers,
+      keepalive: false,
+      ...(tls ? { tls } : {}),
+    } as RequestInit)
+  }
+}
+
 export const WebFetchTool = Tool.define("webfetch", {
   description: DESCRIPTION,
   parameters: z.object({
@@ -122,7 +212,7 @@ export const WebFetchTool = Tool.define("webfetch", {
       .enum(["text", "markdown", "html"])
       .default("markdown")
       .describe("The format to return the content in (text, markdown, or html). Defaults to markdown."),
-    timeout: z.number().describe("Optional timeout in seconds (max 120)").optional(),
+    timeout: z.number().int().min(1).max(MAX_TIMEOUT / 1_000).describe("Optional timeout in seconds (max 120)").optional(),
   }),
   async execute(params, ctx) {
     // Validate URL with enhanced security checks
@@ -131,18 +221,18 @@ export const WebFetchTool = Tool.define("webfetch", {
     await ctx.ask({
       permission: "webfetch",
       patterns: [params.url],
-      always: ["*"],
+      always: [`${validatedUrl.origin}/*`],
       metadata: {
         url: params.url,
         format: params.format,
         timeout: params.timeout,
       },
     })
-
     const timeout = Math.min((params.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000, MAX_TIMEOUT)
 
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), timeout)
+    const timeoutId = setTimeout(() => controller.abort(new Error(`Web fetch timed out after ${timeout} ms`)), timeout)
+    const signal = AbortSignal.any([controller.signal, ctx.abort])
 
     // Build Accept header based on requested format with q parameters for fallbacks
     let acceptHeader = "*/*"
@@ -164,112 +254,90 @@ export const WebFetchTool = Tool.define("webfetch", {
     // Custom fetch with redirect limit to prevent redirect loops
     let redirectCount = 0
     let currentUrl = validatedUrl.toString()
-    let response: Response
+    let response: Response | undefined
 
-    while (true) {
-      response = await fetch(currentUrl, {
-        signal: AbortSignal.any([controller.signal, ctx.abort]),
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept: acceptHeader,
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-        redirect: "manual", // Handle redirects manually to validate each hop
-      })
+    try {
+      while (true) {
+        const requestUrl = new URL(currentUrl)
+        response = await WebFetchSecurity.fetchPinned(requestUrl, {
+          signal,
+          headers: {
+            "User-Agent": "AtomCLI/1.0",
+            Accept: acceptHeader,
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+          redirect: "manual",
+        })
 
-      // Check if it's a redirect
-      if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
-        redirectCount++
-        if (redirectCount > MAX_REDIRECTS) {
-          throw new Error(`Too many redirects (maximum ${MAX_REDIRECTS} allowed)`)
+        if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
+          redirectCount++
+          if (redirectCount > MAX_REDIRECTS) {
+            await response.body?.cancel().catch(() => {})
+            response = undefined
+            throw new Error(`Too many redirects (maximum ${MAX_REDIRECTS} allowed)`)
+          }
+
+          try {
+            const location = response.headers.get("location")!
+            const redirectUrl = validateUrl(new URL(location, currentUrl).toString())
+            if (redirectUrl.origin !== new URL(currentUrl).origin) {
+              await ctx.ask({
+                permission: "webfetch",
+                patterns: [redirectUrl.toString()],
+                always: [`${redirectUrl.origin}/*`],
+                metadata: { url: redirectUrl.toString(), redirectedFrom: currentUrl },
+              })
+            }
+            currentUrl = redirectUrl.toString()
+          } finally {
+            await response.body?.cancel().catch(() => {})
+            response = undefined
+          }
+          continue
         }
-
-        // Validate the redirect URL
-        const location = response.headers.get("location")!
-        const redirectUrl = new URL(location, currentUrl)
-
-        // Re-validate the redirect URL for security
-        try {
-          validateUrl(redirectUrl.toString())
-        } catch (error) {
-          throw new Error(`Redirect to unsafe URL blocked: ${error instanceof Error ? error.message : "Unknown error"}`)
-        }
-
-        currentUrl = redirectUrl.toString()
-        continue
+        break
       }
 
-      break
-    }
+      if (!response?.ok) throw new Error(`Request failed with status code: ${response?.status ?? "unknown"}`)
 
-    clearTimeout(timeoutId)
+      const contentType = response.headers.get("content-type") || ""
+      if (
+        contentType &&
+        !contentType.startsWith("text/") &&
+        !/application\/(json|xml|xhtml\+xml|javascript)/i.test(contentType)
+      ) {
+        throw new Error(`Unsupported response content type: ${contentType}`)
+      }
 
-    if (!response.ok) {
-      throw new Error(`Request failed with status code: ${response.status}`)
-    }
+      const content = await Http.readText(response, MAX_RESPONSE_SIZE)
+      response = undefined
+      const title = `${params.url} (${contentType})`
 
-    // Check content length
-    const contentLength = response.headers.get("content-length")
-    if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
-      throw new Error("Response too large (exceeds 5MB limit)")
-    }
-
-    const arrayBuffer = await response.arrayBuffer()
-    if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
-      throw new Error("Response too large (exceeds 5MB limit)")
-    }
-
-    const content = new TextDecoder().decode(arrayBuffer)
-    const contentType = response.headers.get("content-type") || ""
-
-    const title = `${params.url} (${contentType})`
-
-    // Handle content based on requested format and actual content type
-    switch (params.format) {
-      case "markdown":
-        if (contentType.includes("text/html")) {
-          const markdown = convertHTMLToMarkdown(content)
+      switch (params.format) {
+        case "markdown":
+          if (contentType.includes("text/html")) {
+            const markdown = convertHTMLToMarkdown(content)
+            return { output: markdown, title, metadata: {} }
+          }
+          return { output: content, title, metadata: {} }
+        case "text":
+          if (contentType.includes("text/html")) {
+            const text = await extractTextFromHTML(content)
+            return { output: text, title, metadata: {} }
+          }
+          return { output: content, title, metadata: {} }
+        case "html":
           return {
-            output: markdown,
+            output: content,
             title,
             metadata: {},
           }
-        }
-        return {
-          output: content,
-          title,
-          metadata: {},
-        }
-
-      case "text":
-        if (contentType.includes("text/html")) {
-          const text = await extractTextFromHTML(content)
-          return {
-            output: text,
-            title,
-            metadata: {},
-          }
-        }
-        return {
-          output: content,
-          title,
-          metadata: {},
-        }
-
-      case "html":
-        return {
-          output: content,
-          title,
-          metadata: {},
-        }
-
-      default:
-        return {
-          output: content,
-          title,
-          metadata: {},
-        }
+      }
+    } catch (error) {
+      await response?.body?.cancel().catch(() => {})
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
     }
   },
 })

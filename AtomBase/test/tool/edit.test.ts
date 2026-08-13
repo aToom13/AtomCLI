@@ -22,6 +22,90 @@ function markFileAsRead(filepath: string) {
 }
 
 describe("tool.edit", () => {
+    test("applies multiple operations with one permission request and one combined result", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const filePath = path.join(tmp.path, "multi.txt")
+                await Bun.write(filePath, "alpha beta gamma")
+                markFileAsRead(filePath)
+                const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
+                const edit = await EditTool.init()
+                const result = await edit.execute(
+                    {
+                        filePath,
+                        operations: [
+                            { oldString: "alpha", newString: "one" },
+                            { oldString: "gamma", newString: "three" },
+                        ],
+                    },
+                    { ...ctx, ask: async (request) => { requests.push(request) } },
+                )
+
+                expect(await Bun.file(filePath).text()).toBe("one beta three")
+                expect(requests).toHaveLength(1)
+                expect(requests[0].metadata?.diff).toContain("-alpha beta gamma")
+                expect(requests[0].metadata?.diff).toContain("+one beta three")
+                expect(result.metadata.operations).toBe(2)
+            },
+        })
+    })
+
+    test("leaves the file unchanged when a later operation fails", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const filePath = path.join(tmp.path, "atomic.txt")
+                const original = "alpha beta gamma"
+                await Bun.write(filePath, original)
+                markFileAsRead(filePath)
+                let permissionRequests = 0
+                const edit = await EditTool.init()
+
+                await expect(
+                    edit.execute(
+                        {
+                            filePath,
+                            operations: [
+                                { oldString: "alpha", newString: "one" },
+                                { oldString: "missing", newString: "never-written" },
+                            ],
+                        },
+                        { ...ctx, ask: async () => { permissionRequests++ } },
+                    ),
+                ).rejects.toThrow(/oldString not found/)
+                expect(await Bun.file(filePath).text()).toBe(original)
+                expect(permissionRequests).toBe(0)
+            },
+        })
+    })
+
+    test("rejects oversized existing files and replacement expansion", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const edit = await EditTool.init()
+                const oversized = path.join(tmp.path, "oversized.txt")
+                await Bun.write(oversized, "x".repeat(10 * 1024 * 1024 + 1))
+                markFileAsRead(oversized)
+                await expect(
+                    edit.execute({ filePath: oversized, oldString: "x", newString: "y" }, ctx),
+                ).rejects.toThrow(/byte edit limit/)
+
+                const expansion = path.join(tmp.path, "expansion.txt")
+                await Bun.write(expansion, "x".repeat(6 * 1024 * 1024))
+                markFileAsRead(expansion)
+                await expect(
+                    edit.execute({ filePath: expansion, oldString: "x", newString: "xx", replaceAll: true }, ctx),
+                ).rejects.toThrow(/Edited content exceeds/)
+                expect((await Bun.file(expansion).stat()).size).toBe(6 * 1024 * 1024)
+            },
+        })
+    })
+
     test("basic edit - replace single occurrence", async () => {
         await using tmp = await tmpdir({ git: true })
         await Instance.provide({

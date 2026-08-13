@@ -3,14 +3,30 @@ import { EOL } from "os"
 import { NamedError } from "@atomcli/util/error"
 
 export namespace UI {
-  const LOGO = [
-    [``, ` ██████╗ ████████╗ █████╗  ███╗   ███╗  ██████╗██╗     ██╗`],
-    [``, ` ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║ ██╔════╝██║     ██║`],
-    [``, ` ███████║   ██║   ██║   ██║██╔████╔██║ ██║     ██║     ██║`],
-    [``, ` ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║ ██║     ██║     ██║`],
-    [``, ` ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║ ╚██████╗███████╗██║`],
-    [``, ` ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝  ╚═════╝╚══════╝╚═╝`],
-  ]
+  export const Logo = {
+    left: [
+      `  █████╗ ████████╗ ██████╗ ███╗   ███╗`,
+      ` ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║`,
+      ` ███████║   ██║   ██║   ██║██╔████╔██║`,
+      ` ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║`,
+      ` ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║`,
+      ` ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝`,
+    ],
+    right: [
+      `  ██████╗██╗     ██╗`,
+      ` ██╔════╝██║     ██║`,
+      ` ██║     ██║     ██║`,
+      ` ██║     ██║     ██║`,
+      ` ╚██████╗███████╗██║`,
+      `  ╚═════╝╚══════╝╚═╝`,
+    ],
+    get lines() {
+      return this.left.map((line, index) => `${line} ${this.right[index]}`)
+    },
+    get width() {
+      return Math.max(...this.lines.map((line) => line.length))
+    },
+  }
 
   export const CancelledError = NamedError.create("UICancelledError", z.void())
 
@@ -50,12 +66,12 @@ export namespace UI {
 
   export function logo(pad?: string) {
     const result = []
-    for (const row of LOGO) {
+    for (const [index, line] of Logo.left.entries()) {
       if (pad) result.push(pad)
       result.push(Bun.color("gray", "ansi"))
-      result.push(row[0])
+      result.push(line)
       result.push("\x1b[0m")
-      result.push(row[1])
+      result.push(" ", Logo.right[index])
       result.push(EOL)
     }
     return result.join("").trimEnd()

@@ -25,7 +25,7 @@ Use `<project_commands>` in the environment block to find the correct test comma
 
 Common commands (use what is appropriate):
 - `bun test` / `bun run typecheck`
-- `npm test` / `npm run build`
+- `bun test` / `bun run build`
 - `cargo test`
 - `go test ./...`
 - `pytest`

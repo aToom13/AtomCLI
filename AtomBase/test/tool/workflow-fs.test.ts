@@ -31,6 +31,12 @@ describe("WorkflowFS", () => {
       expect(dir).toContain(TEST_WF_ID)
       expect(path.isAbsolute(dir)).toBe(true)
     })
+
+    test("rejects traversal in workflow and output path segments", async () => {
+      expect(() => WorkflowFS.getRunDir("../../outside")).toThrow("Invalid workflow ID")
+      expect(WorkflowFS.writeSuccess(TEST_WF_ID, "../outside", "coder", "x")).rejects.toThrow("Invalid task ID")
+      expect(WorkflowFS.writeFailed(TEST_WF_ID, "safe", "../outside", "x")).rejects.toThrow("Invalid agent type")
+    })
   })
 
   describe("ensureRunDir", () => {

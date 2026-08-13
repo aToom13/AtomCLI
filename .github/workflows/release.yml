@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name (e.g. v3.3.4)'
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -27,7 +21,21 @@ jobs:
         with:
           bun-version: 1.3.10
       - name: Install Dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      - name: Validate release metadata
+        run: |
+          VERSION="$(bun -e 'console.log(require("./AtomBase/package.json").version)')"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+          test -s RELEASE_NOTES.md
+          test "$(sed -n '1p' RELEASE_NOTES.md)" = "# AtomCLI ${GITHUB_REF_NAME}"
+          RELEASE_NOTES_FILE=RELEASE_NOTES.md bun -e '
+            const text = await Bun.file(process.env.RELEASE_NOTES_FILE).text()
+            if (/\p{Extended_Pictographic}/u.test(text)) {
+              console.error("Release notes must not contain emoji")
+              process.exit(1)
+            }
+          '
 
       - name: Build
         run: |
@@ -52,12 +60,18 @@ jobs:
           cp AtomBase/dist/atomcli-darwin-x64-baseline/bin/atomcli release_assets/atomcli-darwin-x64-baseline
           # Windows
           cp AtomBase/dist/atomcli-windows-x64/bin/atomcli.exe release_assets/atomcli-windows-x64.exe
+          cp AtomBase/dist/atomcli-windows-arm64/bin/atomcli.exe release_assets/atomcli-windows-arm64.exe
           cp AtomBase/dist/atomcli-windows-x64-baseline/bin/atomcli.exe release_assets/atomcli-windows-x64-baseline.exe
+
+      - name: Generate release checksums
+        working-directory: release_assets
+        run: sha256sum atomcli-* > SHA256SUMS
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           files: |
             release_assets/atomcli-linux-x64
             release_assets/atomcli-linux-arm64
@@ -69,7 +83,9 @@ jobs:
             release_assets/atomcli-darwin-arm64
             release_assets/atomcli-darwin-x64-baseline
             release_assets/atomcli-windows-x64.exe
+            release_assets/atomcli-windows-arm64.exe
             release_assets/atomcli-windows-x64-baseline.exe
+            release_assets/SHA256SUMS
           draft: false
-          prerelease: true
-          generate_release_notes: true
+          prerelease: false
+          generate_release_notes: false

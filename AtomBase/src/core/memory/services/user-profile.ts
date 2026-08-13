@@ -139,14 +139,14 @@ export type UserProfile = z.infer<typeof UserProfile>
 // USER PERSONALITY SERVICE
 // ============================================================================
 
-import os from "os"
 import path from "path"
 import fs from "fs/promises"
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.user-profile" })
 
-const USER_PROFILE_DIR = ".atomcli/personality"
+const USER_PROFILE_DIR = "personality"
 const USER_PROFILE_FILE = "user-profile.json"
 
 export class UserProfileService {
@@ -154,7 +154,7 @@ export class UserProfileService {
   private profile: UserProfile | null = null
 
   constructor() {
-    this.profilePath = path.join(os.homedir(), USER_PROFILE_DIR, USER_PROFILE_FILE)
+    this.profilePath = path.join(Global.Path.root, USER_PROFILE_DIR, USER_PROFILE_FILE)
   }
 
   // ============================================================================

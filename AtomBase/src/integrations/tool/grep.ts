@@ -1,263 +1,220 @@
 import z from "zod"
+import path from "path"
 import { Tool } from "./tool"
 import { Ripgrep } from "@/services/file/ripgrep"
-
 import DESCRIPTION from "./grep.txt"
 import { Instance } from "@/services/project/instance"
-import path from "path"
 import { assertExternalDirectory } from "./external-directory"
 
-const MAX_LINE_LENGTH = 2000
-const MAX_PATTERN_LENGTH = 1000 // Prevent excessively long patterns
-const REGEX_TIMEOUT_MS = 30000 // 30 second timeout for regex operations
+const MAX_RESULTS = 100
+const MAX_LINE_LENGTH = 2_000
+const MAX_PATTERN_LENGTH = 1_000
+const MAX_CAPTURE_BYTES = 256 * 1024
+const SEARCH_TIMEOUT_MS = 30_000
 
-/**
- * Validates regex pattern for potential ReDoS attacks
- * - Limits pattern length
- * - Detects potentially dangerous patterns
- */
 function validatePattern(pattern: string): void {
-  if (!pattern || pattern.trim().length === 0) {
-    throw new Error("Pattern cannot be empty")
-  }
-
+  if (!pattern.trim()) throw new Error("Pattern cannot be empty")
   if (pattern.length > MAX_PATTERN_LENGTH) {
     throw new Error(`Pattern too long (max ${MAX_PATTERN_LENGTH} characters)`)
   }
 
-  // Check for potentially catastrophic patterns (simplified ReDoS detection)
-  // These patterns can cause exponential backtracking
   const dangerousPatterns = [
-    /\(\?\![^)]*\*[^)]*\)/, // Negative lookahead with star
-    /\(\?\=[^)]*\*[^)]*\)/, // Positive lookahead with star
-    /\(\?\<\![^)]*\*[^)]*\)/, // Negative lookbehind with star
-    /\(\?\<\=[^)]*\*[^)]*\)/, // Positive lookbehind with star
-    /\([^)]*\+[^)]*\+[^)]*\)/, // Nested quantifiers
-    /\([^)]*\*[^)]*\*[^)]*\)/, // Nested stars
-    /\([^)]*\{[^}]*\}[^)]*\{[^}]*\}/, // Multiple brace quantifiers
+    /\(\?![^)]*\*[^)]*\)/,
+    /\(\?=[^)]*\*[^)]*\)/,
+    /\(\?\<\![^)]*\*[^)]*\)/,
+    /\(\?\<\=[^)]*\*[^)]*\)/,
+    /\([^)]*\+[^)]*\+[^)]*\)/,
+    /\([^)]*\*[^)]*\*[^)]*\)/,
+    /\([^)]*\{[^}]*\}[^)]*\{[^}]*\}/,
   ]
-
-  for (const dangerous of dangerousPatterns) {
-    if (dangerous.test(pattern)) {
-      throw new Error(
-        `Pattern contains potentially dangerous construct that could cause performance issues. ` +
-          `Avoid nested quantifiers, lookaheads with quantifiers, or excessively complex patterns.`,
-      )
-    }
+  if (dangerousPatterns.some((candidate) => candidate.test(pattern))) {
+    throw new Error("Pattern contains a potentially expensive nested quantifier or lookaround")
   }
 
-  // Check for reasonable nesting depth
   let depth = 0
   let maxDepth = 0
   for (const char of pattern) {
-    if (char === "(") {
-      depth++
-      maxDepth = Math.max(maxDepth, depth)
-    } else if (char === ")") {
-      depth--
-    }
+    if (char === "(") maxDepth = Math.max(maxDepth, ++depth)
+    if (char === ")") depth--
   }
-
-  if (maxDepth > 10) {
-    throw new Error("Pattern nesting too deep (max 10 levels)")
-  }
+  if (maxDepth > 10) throw new Error("Pattern nesting too deep (max 10 levels)")
 }
 
-/**
- * Validates search path to prevent path traversal
- */
-function validateSearchPath(searchPath: string): string {
-  // Check for path traversal attempts
-  if (searchPath.includes("..") || searchPath.includes("..\\")) {
-    throw new Error(
-      `Search path "${searchPath}" contains path traversal sequence "..". ` +
-        `This is not allowed for security reasons.`,
-    )
+function resolveSearchPath(searchPath: string) {
+  return path.normalize(path.isAbsolute(searchPath) ? searchPath : path.resolve(Instance.directory, searchPath))
+}
+
+async function readBounded(stream: ReadableStream<Uint8Array>, maxLines: number, stop: () => void) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  const lines: string[] = []
+  let buffer = ""
+  let bytes = 0
+  let truncated = false
+
+  try {
+    outer: while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const remaining = MAX_CAPTURE_BYTES - bytes
+      if (value.byteLength > remaining) {
+        if (remaining > 0) buffer += decoder.decode(value.subarray(0, remaining), { stream: true })
+        truncated = true
+        stop()
+      } else {
+        buffer += decoder.decode(value, { stream: true })
+      }
+      bytes += Math.min(value.byteLength, Math.max(remaining, 0))
+
+      const chunks = buffer.split(/\r?\n/)
+      buffer = chunks.pop() ?? ""
+      for (const line of chunks) {
+        if (!line) continue
+        if (lines.length >= maxLines) {
+          truncated = true
+          stop()
+          break outer
+        }
+        lines.push(line)
+      }
+      if (truncated) break
+    }
+
+    if (!truncated) {
+      buffer += decoder.decode()
+      if (buffer) {
+        if (lines.length < maxLines) lines.push(buffer)
+        else truncated = true
+      }
+    }
+  } finally {
+    if (truncated) await reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
 
-  // Resolve to absolute path
-  const absolutePath = path.isAbsolute(searchPath) ? searchPath : path.resolve(Instance.directory, searchPath)
+  return { lines, truncated }
+}
 
-  // Normalize the path
-  const normalizedPath = path.normalize(absolutePath)
-
-  // Ensure path is within allowed boundaries
-  const allowedBase = path.resolve(Instance.directory)
-  if (!normalizedPath.startsWith(allowedBase)) {
-    throw new Error(
-      `Search path "${searchPath}" is outside the allowed project boundaries. ` +
-        `For security, searches can only be performed within the project directory.`,
-    )
+async function runRipgrep(command: string[], signal: AbortSignal) {
+  const subprocess = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" })
+  const stop = () => {
+    try {
+      subprocess.kill()
+    } catch {}
   }
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    stop()
+  }, SEARCH_TIMEOUT_MS)
+  const abort = () => stop()
+  signal.addEventListener("abort", abort, { once: true })
 
-  return normalizedPath
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      readBounded(subprocess.stdout, MAX_RESULTS + 1, stop),
+      readBounded(subprocess.stderr, 20, stop),
+      subprocess.exited,
+    ])
+    if (signal.aborted) throw signal.reason
+    if (timedOut) throw new Error(`Search timed out after ${SEARCH_TIMEOUT_MS / 1_000} seconds`)
+    return {
+      lines: stdout.lines.slice(0, MAX_RESULTS),
+      truncated: stdout.truncated || stdout.lines.length > MAX_RESULTS,
+      stderr: stderr.lines.join("\n"),
+      exitCode,
+    }
+  } finally {
+    clearTimeout(timer)
+    signal.removeEventListener("abort", abort)
+  }
 }
 
 export const GrepTool = Tool.define("grep", {
   description: DESCRIPTION,
   parameters: z.object({
-    pattern: z.string().describe("The regex pattern to search for in file contents"),
-    path: z.string().optional().describe("The directory to search in. Defaults to the current working directory."),
-    include: z.string().optional().describe('File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")'),
-    count: z.boolean().optional().describe("Only return the count of matches per file, not the matching lines"),
+    pattern: z.string().min(1).max(MAX_PATTERN_LENGTH).describe("The regex pattern to search for in file contents"),
+    path: z.string().max(4096).optional().describe("The directory to search in. Defaults to the current working directory."),
+    include: z.string().max(1_000).optional().describe('File pattern to include (for example, "*.ts")'),
+    count: z.boolean().optional().describe("Return bounded per-file match counts instead of matching lines"),
   }),
   async execute(params, ctx) {
-    if (!params.pattern) {
-      throw new Error("pattern is required")
-    }
-
-    // Validate pattern for ReDoS protection
     validatePattern(params.pattern)
 
     await ctx.ask({
       permission: "grep",
       patterns: [params.pattern],
       always: ["*"],
-      metadata: {
-        pattern: params.pattern,
-        path: params.path,
-        include: params.include,
-      },
+      metadata: { pattern: params.pattern, path: params.path, include: params.include },
     })
 
-    // Validate search path
-    const searchPath = validateSearchPath(params.path ?? Instance.directory)
+    const searchPath = resolveSearchPath(params.path ?? Instance.directory)
     await assertExternalDirectory(ctx, searchPath, { kind: "directory" })
-
     const rgPath = await Ripgrep.filepath()
+    const args = [rgPath, "--hidden", "--glob=!.git/*", "--max-filesize=10M"]
 
-    // Count mode: use --count for aggregate results
+    if (params.count) args.push("--count")
+    else args.push("-nH", "--field-match-separator=|")
+    if (params.include) args.push("--glob", params.include)
+    args.push("--regexp", params.pattern, searchPath)
+
+    const result = await runRipgrep(args, ctx.abort)
+    if (result.exitCode === 1 && !result.truncated) {
+      return {
+        title: params.pattern,
+        metadata: { matches: 0, truncated: false },
+        output: params.count ? "No matches found" : "No files found",
+      }
+    }
+    if (result.exitCode !== 0 && !result.truncated) throw new Error(`ripgrep failed: ${result.stderr}`)
+
     if (params.count) {
-      const args = ["--count", "--hidden", "--follow", "--regexp", params.pattern]
-      if (params.include) args.push("--glob", params.include)
-      args.push(searchPath)
-
-      const proc = Bun.spawn([rgPath, ...args], { stdout: "pipe", stderr: "pipe" })
-      const output = await new Response(proc.stdout).text()
-      const exitCode = await proc.exited
-
-      if (exitCode === 1) {
-        return { title: params.pattern, metadata: { matches: 0, truncated: false }, output: "No matches found" }
+      let matchCount = 0
+      const counts: string[] = []
+      for (const line of result.lines) {
+        const separator = line.lastIndexOf(":")
+        if (separator === -1) continue
+        const count = Number.parseInt(line.slice(separator + 1), 10)
+        if (!Number.isFinite(count)) continue
+        matchCount += count
+        counts.push(`${line.slice(0, separator)}: ${count}`)
       }
-      if (exitCode !== 0) {
-        const errorOutput = await new Response(proc.stderr).text()
-        throw new Error(`ripgrep failed: ${errorOutput}`)
-      }
-
-      const lines = output.trim().split(/\r?\n/).filter(Boolean)
-      let totalCount = 0
-      const fileCounts: string[] = []
-      for (const line of lines) {
-        const sep = line.lastIndexOf(":")
-        if (sep === -1) continue
-        const file = line.slice(0, sep)
-        const count = parseInt(line.slice(sep + 1), 10)
-        if (isNaN(count)) continue
-        totalCount += count
-        fileCounts.push(`${file}: ${count}`)
-      }
-
+      const prefix = result.truncated ? "At least" : "Total"
+      const suffix = result.truncated ? "\n(Results are truncated; use a narrower path or include pattern.)" : ""
       return {
         title: params.pattern,
-        metadata: { matches: totalCount, truncated: false },
-        output: `Total: ${totalCount} matches across ${fileCounts.length} files\n${fileCounts.join("\n")}`,
+        metadata: { matches: matchCount, truncated: result.truncated },
+        output: `${prefix}: ${matchCount} matches across ${counts.length} files\n${counts.join("\n")}${suffix}`,
       }
     }
 
-    const args = ["-nH", "--hidden", "--follow", "--field-match-separator=|", "--regexp", params.pattern]
-    if (params.include) {
-      args.push("--glob", params.include)
-    }
-    args.push(searchPath)
-
-    const proc = Bun.spawn([rgPath, ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
+    const matches = result.lines.flatMap((line) => {
+      const [filePath, lineNumber, ...text] = line.split("|")
+      if (!filePath || !lineNumber || text.length === 0) return []
+      return [{ path: filePath, lineNumber, text: text.join("|") }]
     })
-
-    const output = await new Response(proc.stdout).text()
-    const errorOutput = await new Response(proc.stderr).text()
-    const exitCode = await proc.exited
-
-    if (exitCode === 1) {
-      return {
-        title: params.pattern,
-        metadata: { matches: 0, truncated: false },
-        output: "No files found",
-      }
+    if (matches.length === 0) {
+      return { title: params.pattern, metadata: { matches: 0, truncated: false }, output: "No files found" }
     }
 
-    if (exitCode !== 0) {
-      throw new Error(`ripgrep failed: ${errorOutput}`)
-    }
-
-    // Handle both Unix (\n) and Windows (\r\n) line endings
-    const lines = output.trim().split(/\r?\n/)
-    const matches = []
-
-    for (const line of lines) {
-      if (!line) continue
-
-      const [filePath, lineNumStr, ...lineTextParts] = line.split("|")
-      if (!filePath || !lineNumStr || lineTextParts.length === 0) continue
-
-      const lineNum = parseInt(lineNumStr, 10)
-      const lineText = lineTextParts.join("|")
-
-      const file = Bun.file(filePath)
-      const stats = await file.stat().catch(() => null)
-      if (!stats) continue
-
-      matches.push({
-        path: filePath,
-        modTime: stats.mtime.getTime(),
-        lineNum,
-        lineText,
-      })
-    }
-
-    matches.sort((a, b) => b.modTime - a.modTime)
-
-    const limit = 100
-    const truncated = matches.length > limit
-    const finalMatches = truncated ? matches.slice(0, limit) : matches
-
-    if (finalMatches.length === 0) {
-      return {
-        title: params.pattern,
-        metadata: { matches: 0, truncated: false },
-        output: "No files found",
-      }
-    }
-
-    const outputLines = [`Found ${finalMatches.length} matches`]
-
+    const output = [`Found ${matches.length} matches`]
     let currentFile = ""
-    for (const match of finalMatches) {
+    for (const match of matches) {
       if (currentFile !== match.path) {
-        if (currentFile !== "") {
-          outputLines.push("")
-        }
+        if (currentFile) output.push("")
         currentFile = match.path
-        outputLines.push(`${match.path}:`)
+        output.push(`${match.path}:`)
       }
-      const truncatedLineText =
-        match.lineText.length > MAX_LINE_LENGTH ? match.lineText.substring(0, MAX_LINE_LENGTH) + "..." : match.lineText
-      outputLines.push(`  Line ${match.lineNum}: ${truncatedLineText}`)
+      const text = match.text.length > MAX_LINE_LENGTH ? `${match.text.slice(0, MAX_LINE_LENGTH)}...` : match.text
+      output.push(`  Line ${match.lineNumber}: ${text}`)
     }
-
-    if (truncated) {
-      outputLines.push("")
-      outputLines.push("(Results are truncated. Consider using a more specific path or pattern.)")
-    }
+    if (result.truncated) output.push("", "(Results are truncated; use a narrower path, pattern, or include.)")
 
     return {
       title: params.pattern,
-      metadata: {
-        matches: finalMatches.length,
-        truncated,
-      },
-      output: outputLines.join("\n"),
+      metadata: { matches: matches.length, truncated: result.truncated },
+      output: output.join("\n"),
     }
   },
 })

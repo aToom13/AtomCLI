@@ -5,7 +5,6 @@
  * Enables semantic queries and connection discovery.
  */
 
-import os from "os"
 import path from "path"
 import fs from "fs/promises"
 
@@ -18,6 +17,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.graph" })
 
@@ -25,7 +25,7 @@ const log = Log.create({ service: "memory.graph" })
 // CONSTANTS
 // ============================================================================
 
-const GRAPH_DIR = ".atomcli/knowledge"
+const GRAPH_DIR = "knowledge"
 const GRAPH_FILE = "graph.json"
 
 // ============================================================================
@@ -39,7 +39,7 @@ export class KnowledgeGraphService {
   private initialized = false
 
   constructor() {
-    this.graphPath = path.join(os.homedir(), GRAPH_DIR, GRAPH_FILE)
+    this.graphPath = path.join(Global.Path.root, GRAPH_DIR, GRAPH_FILE)
   }
 
   // ============================================================================

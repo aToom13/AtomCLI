@@ -2,7 +2,10 @@ import { Instance } from "@/services/project/instance"
 
 export namespace Env {
   const state = Instance.state(() => {
-    return process.env as Record<string, string | undefined>
+    // Each project gets an environment snapshot. Returning process.env itself
+    // allowed one project (and parallel tests) to leak provider credentials into
+    // every other Instance through Env.set()/remove().
+    return { ...process.env } as Record<string, string | undefined>
   })
 
   export function get(key: string) {

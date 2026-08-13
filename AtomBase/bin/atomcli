@@ -18,7 +18,7 @@ const result = spawnSync("bun", ["run", "--conditions=browser", join(projectRoot
     ...process.env,
     ATOMCLI_CWD: process.cwd(),
     ATOMCLI_INSTALL_DIR: projectRoot,
-    // Add path to node_modules/bin to PATH so invoked tools (like npx) can find them if needed
+    // Add local package binaries to PATH for tools launched by AtomCLI.
     PATH: `${join(projectRoot, "node_modules", ".bin")}${pathSep}${process.env.PATH}`
   }
 });

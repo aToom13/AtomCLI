@@ -12,7 +12,7 @@ import { useDirectory } from "../../context/directory"
 import { useKV } from "../../context/kv"
 import { TodoItem } from "../../component/todo-item"
 
-export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
+export function Sidebar(props: { sessionID: string; overlay?: boolean; width: number }) {
   const sync = useSync()
   const { theme } = useTheme()
   const session = createMemo(() => sync.session.get(props.sessionID)!)
@@ -67,22 +67,23 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
     sync.data.provider.some((x) => x.id !== "atomcli" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
   )
   const gettingStartedDismissed = createMemo(() => kv.get("dismissed_getting_started", false))
+  const compact = createMemo(() => props.width < 35)
 
   return (
     <Show when={session()}>
       <box
         backgroundColor={theme.backgroundPanel}
-        width={42}
+        width={props.width}
         paddingTop={1}
         paddingBottom={1}
-        paddingLeft={2}
-        paddingRight={2}
+        paddingLeft={compact() ? 1 : 2}
+        paddingRight={compact() ? 1 : 2}
         position={props.overlay ? "absolute" : "relative"}
       >
         <scrollbox flexGrow={1}>
           <box flexShrink={0} gap={1} paddingRight={1}>
             <box paddingRight={1}>
-              <text fg={theme.text}>
+              <text fg={theme.text} wrapMode="none">
                 <b>{session().title}</b>
               </text>
               <Show when={session().share?.url}>
@@ -242,7 +243,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                         const last = splits.at(-1)!
                         const rest = splits.slice(0, -1).join(path.sep)
                         if (!rest) return last
-                        return Locale.truncateMiddle(rest, 30 - last.length) + "/" + last
+                        return Locale.truncateMiddle(rest, Math.max(4, props.width - 12 - last.length)) + "/" + last
                       })
                       return (
                         <box flexDirection="row" gap={1} justifyContent="space-between">

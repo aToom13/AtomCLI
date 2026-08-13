@@ -220,14 +220,14 @@ export const defaultPersonalities: Record<AIRole, AIPersonality> = {
 // PERSONALITY SERVICE
 // ============================================================================
 
-import os from "os"
 import path from "path"
 import fs from "fs/promises"
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.personality" })
 
-const PERSONALITY_DIR = ".atomcli/personality"
+const PERSONALITY_DIR = "personality"
 const PERSONALITY_FILE = "ai-personality.json"
 
 export class AIPersonalityService {
@@ -235,7 +235,7 @@ export class AIPersonalityService {
   private personality: AIPersonality | null = null
 
   constructor() {
-    this.personalityPath = path.join(os.homedir(), PERSONALITY_DIR, PERSONALITY_FILE)
+    this.personalityPath = path.join(Global.Path.root, PERSONALITY_DIR, PERSONALITY_FILE)
   }
 
   // ============================================================================

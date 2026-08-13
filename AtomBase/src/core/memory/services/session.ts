@@ -17,6 +17,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.session" })
 
@@ -24,7 +25,7 @@ const log = Log.create({ service: "memory.session" })
 // CONSTANTS
 // ============================================================================
 
-const SESSIONS_DIR = ".atomcli/sessions"
+const SESSIONS_DIR = "sessions"
 const SESSIONS_FILE = "sessions.json"
 const CURRENT_SESSION_FILE = "current.json"
 
@@ -40,7 +41,7 @@ export class SessionService {
   private initialized = false
 
   constructor(userId: string = "default") {
-    this.sessionsDir = path.join(os.homedir(), SESSIONS_DIR, userId)
+    this.sessionsDir = path.join(Global.Path.root, SESSIONS_DIR, userId)
     this.sessionsPath = path.join(this.sessionsDir, SESSIONS_FILE)
     this.currentSessionPath = path.join(this.sessionsDir, CURRENT_SESSION_FILE)
   }

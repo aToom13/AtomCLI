@@ -1,11 +1,10 @@
 import { For, Match, Switch } from "solid-js"
-import { useTheme } from "@tui/context/theme"
 import { TodoItem } from "../../../../component/todo-item"
-import type { TodoWriteTool } from "@/integrations/tool/todo"
 import { BlockTool, InlineTool, type ToolProps } from "./Shared"
 import { input } from "./utils"
 
-export function TodoWrite(props: ToolProps<typeof TodoWriteTool>) {
+// Kept for rendering historical sessions that contain the removed todowrite tool.
+export function TodoWrite(props: any) {
     return (
         <Switch>
             <Match when={props.metadata.todos?.length}>

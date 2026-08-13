@@ -8,8 +8,7 @@ import { ulid } from "ulid"
 
 // ─── Storage ────────────────────────────────────────────────────────────────
 
-const MEMORY_FILE = () => path.join(Global.Path.home, ".atomcli", "memory.jsonl")
-const MCP_CONFIG_FILE = () => path.join(Global.Path.home, ".atomcli", "mcp.json")
+const MEMORY_FILE = () => path.join(Global.Path.root, "memory.jsonl")
 
 interface MemoryEntry {
   id: string
@@ -212,7 +211,7 @@ function score(entry: MemoryEntry, queryTokens: string[]): number {
 // ─── Migration ──────────────────────────────────────────────────────────────
 
 async function runMigrationIfNeeded(log: ReturnType<typeof Log.create>): Promise<void> {
-  const migrationFlagFile = path.join(Global.Path.home, ".atomcli", ".memory-migrated")
+  const migrationFlagFile = path.join(Global.Path.root, ".memory-migrated")
 
   // Already migrated
   try {
@@ -225,7 +224,7 @@ async function runMigrationIfNeeded(log: ReturnType<typeof Log.create>): Promise
 
   // 1. Migrate learn/memory.json
   try {
-    const learnMemFile = path.join(Global.Path.home, ".atomcli", "learning", "memory.json")
+    const learnMemFile = path.join(Global.Path.root, "learning", "memory.json")
     const raw = await fs.readFile(learnMemFile, "utf-8")
     const items = JSON.parse(raw) as any[]
 
@@ -262,7 +261,7 @@ async function runMigrationIfNeeded(log: ReturnType<typeof Log.create>): Promise
 
   // 2. Migrate learn/research.json
   try {
-    const researchFile = path.join(Global.Path.home, ".atomcli", "learning", "research.json")
+    const researchFile = path.join(Global.Path.root, "learning", "research.json")
     const raw = await fs.readFile(researchFile, "utf-8")
     const researches = JSON.parse(raw) as any[]
 
@@ -296,41 +295,7 @@ async function runMigrationIfNeeded(log: ReturnType<typeof Log.create>): Promise
     log.info("memory migration complete", { imported: newEntries.length })
   }
 
-  // 4. Clean dead MCP entries from all known config files
-  const mcpConfigCandidates = [
-    MCP_CONFIG_FILE(), // ~/.atomcli/mcp.json (global)
-  ]
-  // Also search for project-level atomcli.json files in common locations
-  try {
-    const projectRoot = process.cwd()
-    const projectAtomcli = path.join(projectRoot, ".atomcli", "atomcli.json")
-    mcpConfigCandidates.push(projectAtomcli)
-    // Walk up one level too
-    const parentAtomcli = path.join(path.dirname(projectRoot), ".atomcli", "atomcli.json")
-    mcpConfigCandidates.push(parentAtomcli)
-  } catch { /* ignore */ }
-
-  const deadKeys = ["memory", "memory-bank"]
-  for (const mcpFile of mcpConfigCandidates) {
-    try {
-      const raw = await fs.readFile(mcpFile, "utf-8")
-      const config = JSON.parse(raw)
-      const mcpObj = config.mcp ?? config
-      let changed = false
-      for (const key of deadKeys) {
-        if (key in mcpObj) {
-          delete mcpObj[key]
-          changed = true
-        }
-      }
-      if (changed) {
-        await fs.writeFile(mcpFile, JSON.stringify(config, null, 2) + "\n", "utf-8")
-        log.info("cleaned dead MCP entries", { file: mcpFile })
-      }
-    } catch { /* file doesn't exist or not parseable — skip */ }
-  }
-
-  // 5. Write migration flag
+  // 4. Write migration flag. Memory migration must not rewrite unrelated MCP/config files.
   await fs.writeFile(migrationFlagFile, new Date().toISOString(), "utf-8")
 }
 
@@ -347,15 +312,17 @@ export const MemoryTool = Tool.define("memory", {
       ),
     content: z
       .string()
+      .max(65_536, "Memory content must be at most 64 KiB")
       .optional()
       .describe("Required for save. The text to remember — free-form, any language."),
     tags: z
-      .array(z.string())
+      .array(z.string().min(1).max(100))
+      .max(50)
       .optional()
       .describe("Optional extra tags for save. System auto-generates tags from content."),
-    query: z.string().optional().describe("Required for search. Natural language query."),
+    query: z.string().max(10_000).optional().describe("Required for search. Natural language query."),
     limit: z.number().int().min(1).max(50).default(5).describe("Max results to return (default 5)."),
-    tag: z.string().optional().describe("Optional tag filter for list action."),
+    tag: z.string().max(100).optional().describe("Optional tag filter for list action."),
   }),
 
   async execute(params, ctx): Promise<{ title: string; output: string; metadata: Record<string, any> }> {
@@ -420,17 +387,6 @@ export const MemoryTool = Tool.define("memory", {
           metadata: { count: 0, query: params.query },
         }
       }
-
-      // Update access counts
-      const idToUpdate = new Set(scored.map((x) => x.entry.id))
-      const now = new Date().toISOString()
-      const allEntries = entries.map((e) => {
-        if (idToUpdate.has(e.id)) {
-          return { ...e, accessCount: e.accessCount + 1, lastAccessAt: now }
-        }
-        return e
-      })
-      await saveAll(allEntries)
 
       const output = scored
         .map(({ entry, score: s }) => {

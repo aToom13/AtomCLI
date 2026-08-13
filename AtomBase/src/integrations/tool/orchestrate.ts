@@ -98,6 +98,11 @@ interface TaskResult {
 // In-memory workflow store (per session)
 const WORKFLOWS: Map<string, WorkflowState> = new Map()
 const MAX_WORKFLOWS = 100
+const MAX_TASKS = 50
+const MAX_PARALLEL_TASKS = 4
+const MAX_TASK_OUTPUT_BYTES = 100 * 1024
+const MAX_DEPENDENCY_CONTEXT_BYTES = 200 * 1024
+const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 
 // Track agent-type to session-id mapping for session reuse across workflow runs
 // Key: "parentSessionId:agentType:taskId" → sessionId
@@ -158,6 +163,20 @@ function cleanupOldWorkflows() {
 // Default retry configuration
 const DEFAULT_MAX_RETRIES = 2
 const RETRY_DELAY_MS = 1000
+
+function limitText(value: string, maxBytes = MAX_TASK_OUTPUT_BYTES): string {
+  const data = Buffer.from(value)
+  if (data.byteLength <= maxBytes) return value
+  return `${data.subarray(0, maxBytes).toString("utf8")}\n\n... output preview truncated; full output is in .atomcli/runs/ ...`
+}
+
+function parseModelSpecifier(value: string) {
+  const separator = value.indexOf("/")
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(`Invalid model format: ${value}. Use "provider/model" (e.g. "atomcli/minimax-m2.5-free")`)
+  }
+  return { providerID: value.slice(0, separator), modelID: value.slice(separator + 1) }
+}
 
 /**
  * Topological sort of tasks. Returns ordered task IDs.
@@ -289,28 +308,28 @@ function formatWorkflowOutput(workflow: WorkflowState): string {
 // ─── Tool Definition ─────────────────────────────────────────
 
 const TaskSchema = z.object({
-  id: z.string().describe("Unique task identifier"),
-  prompt: z.string().describe("The prompt/instruction for the agent"),
-  agent: z.string().optional().describe("Agent type to use (defaults to 'coder')"),
+  id: z.string().min(1).max(100).regex(SAFE_ID, "Use letters, numbers, dots, underscores, or hyphens").describe("Unique task identifier"),
+  prompt: z.string().min(1).max(100_000).describe("The prompt/instruction for the agent"),
+  agent: z.string().max(100).regex(SAFE_ID).optional().describe("Agent type to use (defaults to 'coder')"),
   category: z
     .enum(["coding", "documentation", "analysis", "general"])
     .optional()
     .describe("Task category for smart model routing (auto-inferred from prompt if not specified)"),
-  dependsOn: z.array(z.string()).optional().describe("IDs of tasks that must complete before this one"),
+  dependsOn: z.array(z.string().max(100).regex(SAFE_ID)).max(MAX_TASKS).optional().describe("IDs of tasks that must complete before this one"),
   model: z
-    .string()
+    .string().max(200)
     .optional()
     .describe("Specific model to use (e.g. 'atomcli/minimax-m2.5-free'). If not specified, smart routing is used"),
-  sessionId: z.string().optional().describe("Existing sub-agent session ID to continue (optional)"),
+  sessionId: z.string().max(200).optional().describe("Existing sub-agent session ID to continue (optional)"),
 })
 
 export const OrchestrateTool = Tool.define("orchestrate", {
   description: DESCRIPTION,
   parameters: z.object({
     action: z.enum(["plan", "execute", "status", "abort"]).describe("Action to perform"),
-    tasks: z.array(TaskSchema).optional().describe("Task list for 'plan' action"),
-    workflowId: z.string().optional().describe("Workflow ID for 'execute', 'status', and 'abort' actions"),
-    sessionId: z.string().optional().describe("Session ID to abort when action is 'abort'"),
+    tasks: z.array(TaskSchema).max(MAX_TASKS).optional().describe("Task list for 'plan' action"),
+    workflowId: z.string().max(200).regex(SAFE_ID).optional().describe("Workflow ID for 'execute', 'status', and 'abort' actions"),
+    sessionId: z.string().max(200).optional().describe("Session ID to abort when action is 'abort'"),
   }),
   async execute(params, ctx): Promise<any> {
     const log = Log.create({ service: "tool.orchestrate", sessionID: ctx.sessionID })
@@ -336,6 +355,27 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           model: t.model, // Include specified model
           sessionId: t.sessionId, // Include explicit session continuation
         }))
+
+        const availableAgents = new Set((await Agent.list()).map((agent) => agent.name))
+        const unknownAgent = tasks.find((task) => !availableAgents.has(task.agent))
+        if (unknownAgent) {
+          return {
+            title: "Invalid Workflow",
+            output: `Unknown agent: ${unknownAgent.agent}`,
+            metadata: { error: true },
+          }
+        }
+        try {
+          for (const task of tasks) {
+            if (task.model) parseModelSpecifier(task.model)
+          }
+        } catch (error) {
+          return {
+            title: "Invalid Workflow",
+            output: (error as Error).message,
+            metadata: { error: true },
+          }
+        }
 
         // Validate DAG
         let sortedOrder: string[]
@@ -538,7 +578,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
               // H4: If workflow was aborted while we were processing, stop immediately
               if (workflow.status !== "running") break
 
-              const ready = getReadyTasks(workflow)
+              const ready = getReadyTasks(workflow).slice(0, MAX_PARALLEL_TASKS)
               if (ready.length === 0) break
 
               // Run ready tasks in parallel
@@ -559,38 +599,20 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   /* TUI may not be active */
                 }
 
-                // Select model: task'te belirtilen model veya SMART routing
-                let model: { providerID: string; modelID: string }
-                if (task.model) {
-                  // Parse "provider/model" format
-                  const [providerID, modelID] = task.model.split("/")
-                  if (!providerID || !modelID) {
-                    throw new Error(
-                      `Invalid model format: ${task.model}. Use "provider/model" (e.g. "atomcli/minimax-m2.5-free")`,
-                    )
-                  }
-                  model = { providerID, modelID }
-                  log.info("using specified model", { taskId: task.id, model: task.model })
-                } else {
-                  model = await selectModel(task.category, fallbackModel)
-                }
-                result.model = model
-
-                // Resolve agent
-                const agent = await Agent.get(task.agent)
-                if (!agent) throw new Error(`Unknown agent: ${task.agent}`)
-
                 // Build context from completed dependency outputs
-                const depContext = task.dependsOn
-                  .map((depId) => {
-                    const depResult = workflow.results[depId]
-                    if (depResult?.output) {
-                      return `<dependency_output task="${escapeXmlText(depId)}">\n${escapeXmlText(depResult.output)}\n</dependency_output>`
-                    }
-                    return ""
-                  })
-                  .filter(Boolean)
-                  .join("\n\n")
+                const depContext = limitText(
+                  task.dependsOn
+                    .map((depId) => {
+                      const depResult = workflow.results[depId]
+                      if (depResult?.output) {
+                        return `<dependency_output task="${escapeXmlText(depId)}">\n${escapeXmlText(limitText(depResult.output))}\n</dependency_output>`
+                      }
+                      return ""
+                    })
+                    .filter(Boolean)
+                    .join("\n\n"),
+                  MAX_DEPENDENCY_CONTEXT_BYTES,
+                )
 
                 const fullPrompt = depContext ? `${depContext}\n\n${task.prompt}` : task.prompt
 
@@ -602,6 +624,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 let lastError: string | undefined
                 let lastAttemptOutput: string | undefined
                 let lastAttemptCount = 0
+                let model: { providerID: string; modelID: string } | undefined
+                let agent: Awaited<ReturnType<typeof Agent.get>>
 
                 for (
                   let attempt = 0;
@@ -610,6 +634,14 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 ) {
                   lastAttemptCount = attempt
                   try {
+                    if (!model) {
+                      model = task.model ? parseModelSpecifier(task.model) : await selectModel(task.category, fallbackModel)
+                      result.model = model
+                      if (task.model) log.info("using specified model", { taskId: task.id, model: task.model })
+                    }
+                    agent ??= await Agent.get(task.agent)
+                    if (!agent) throw new Error(`Unknown agent: ${task.agent}`)
+
                     // Try to reuse existing session for this agent type.
                     // Priority: explicit task.sessionId (explicit continuation wins)
                     //        → AGENT_SESSION_MAP (auto-reuse from prior workflow runs)
@@ -673,7 +705,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       `</task>`,
                       ``,
                       `<output attempt="${attempt + 1}">`,
-                      escapeXmlText(spawnResult.output),
+                      escapeXmlText(limitText(spawnResult.output)),
                       `</output>`,
                       ...(harnessLogs ? [``, harnessLogs] : []),
                       ``,
@@ -716,7 +748,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     if (/^VERDICT:\s*PASSED\b/i.test(firstLine) || /^PASS\b/i.test(firstLine)) {
                       // ✅ QA passed
                       result.status = "completed"
-                      result.output = spawnResult.output
+                      result.output = limitText(spawnResult.output)
                       result.completedAt = Date.now()
                       result.retryCount = attempt
                       completedTasks.push(task.id)
@@ -745,7 +777,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       throw new Error(`QA_FAILED: ${reviewText}`)
                     }
                   } catch (e) {
-                    lastError = (e as Error).message
+                    lastError = limitText((e as Error).message, 20_000)
 
                     if (attempt < DEFAULT_MAX_RETRIES) {
                       log.warn("task failed, retrying", {

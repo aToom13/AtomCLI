@@ -7,11 +7,20 @@ import { parseJsonIfString } from "@/util/util/zod"
 export const QuestionTool = Tool.define("question", {
   description: DESCRIPTION,
   parameters: z.object({
-    questions: parseJsonIfString(z.array(Question.Info)).describe(
+    questions: parseJsonIfString(z.array(Question.Info).min(1).max(10)).describe(
       "Questions to ask (support text, password, and select types)",
     ),
   }),
   async execute(params, ctx) {
+    for (const question of params.questions) {
+      if (question.question.length > 2_000 || (question.placeholder?.length ?? 0) > 2_000) {
+        throw new Error("Question and placeholder text must be at most 2000 characters")
+      }
+      if ((question.options?.length ?? 0) > 20) throw new Error("A question can have at most 20 options")
+      if (question.options?.some((option) => option.label.length > 200 || option.description.length > 2_000)) {
+        throw new Error("Question option labels must be at most 200 characters and descriptions at most 2000")
+      }
+    }
     const answers = await Question.ask({
       sessionID: ctx.sessionID,
       questions: params.questions,
@@ -20,7 +29,7 @@ export const QuestionTool = Tool.define("question", {
 
     function format(answer: Question.Answer | undefined) {
       if (!answer?.length) return "Unanswered"
-      return answer.join(", ")
+      return answer.join(", ").slice(0, 20_000)
     }
 
     const formatted = params.questions.map((q, i) => `"${q.question}"="${format(answers[i])}"`).join(", ")
@@ -29,7 +38,7 @@ export const QuestionTool = Tool.define("question", {
       title: `Asked ${params.questions.length} question${params.questions.length > 1 ? "s" : ""}`,
       output: `User has answered your questions: ${formatted}. You can now continue with the user's answers in mind.`,
       metadata: {
-        answers,
+        answers: answers.map((answer) => answer.map((value) => value.slice(0, 20_000))),
       },
     }
   },

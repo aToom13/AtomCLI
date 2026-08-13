@@ -19,7 +19,7 @@ Your goal is to ensure web application reliability by generating robust, resilie
   - Assert strictly using `expect(...)`.
 
 ### 2. Test Execution
-- Run tests using `npx playwright test`.
+- Run tests using `bunx playwright test`.
 - Analyze traces and reports on failure.
 
 ### 3. Self-Healing

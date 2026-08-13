@@ -88,30 +88,15 @@ describe("session.retry.delay", () => {
 })
 
 describe("session.message-v2.fromError", () => {
-  test.concurrent(
+  test(
     "converts ECONNRESET socket errors to retryable APIError",
     async () => {
-      using server = Bun.serve({
-        port: 0,
-        idleTimeout: 8,
-        async fetch(req) {
-          return new Response(
-            new ReadableStream({
-              async pull(controller) {
-                controller.enqueue("Hello,")
-                await Bun.sleep(10000)
-                controller.enqueue(" World!")
-                controller.close()
-              },
-            }),
-            { headers: { "Content-Type": "text/plain" } },
-          )
-        },
+      // Model the cross-platform shape exposed by Bun/Node transports directly.
+      // Opening a local port made this unit test fail in restricted CI and on
+      // hosts where ephemeral listening sockets are unavailable.
+      const error = Object.assign(new Error("The socket connection was closed unexpectedly"), {
+        code: "ECONNRESET",
       })
-
-      const error = await fetch(new URL("/", server.url.origin))
-        .then((res) => res.text())
-        .catch((e) => e)
 
       const result = await MessageV2.fromError(error, { providerID: "test" })
 
@@ -121,7 +106,6 @@ describe("session.message-v2.fromError", () => {
       expect((result as MessageV2.APIError).data.metadata?.code).toBe("ECONNRESET")
       expect((result as MessageV2.APIError).data.metadata?.message).toInclude("socket connection")
     },
-    15_000,
   )
 
   test("ECONNRESET socket error is retryable", () => {

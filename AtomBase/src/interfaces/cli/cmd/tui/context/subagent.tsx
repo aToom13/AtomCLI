@@ -16,7 +16,7 @@ export interface ActiveSubAgent {
   sessionId: string
   agentType: string
   description: string
-  status: "running" | "waiting" | "done"
+  status: "running" | "waiting"
   parentSessionId?: string
   /** Latest output/context returned to orchestrator */
   lastOutput?: string
@@ -26,12 +26,13 @@ export interface SubAgentContextValue {
   agents: Accessor<ActiveSubAgent[]>
   parentSessionId: Accessor<string | undefined>
   addAgent: (agent: Omit<ActiveSubAgent, "status">) => void
-  markDone: (sessionId: string) => void
   markWaiting: (sessionId: string, lastOutput?: string) => void
   reactivate: (sessionId: string, description?: string) => void
   findByType: (agentType: string) => ActiveSubAgent | undefined
   removeAgent: (sessionId: string) => void
   clear: () => void
+  /** Restore agents derived from persisted child sessions after reconnect/restart. */
+  hydrate: (agents: ActiveSubAgent[]) => void
   /** SubAgent panel visibility toggle */
   panelVisible: Accessor<boolean>
   togglePanel: () => void
@@ -60,16 +61,6 @@ export function SubAgentProvider(props: ParentProps) {
     })
     // Auto-open panel when first agent becomes active
     setPanelVisible(true)
-  }
-
-  const markDone = (sessionId: string) => {
-    setAgents((prev) => prev.map((a) => (a.sessionId === sessionId ? { ...a, status: "waiting" as const } : a)))
-    // Auto-close panel when all agents are done/waiting (no more active work)
-    setAgents((current) => {
-      const hasActiveWork = current.some((a) => a.status === "running")
-      if (!hasActiveWork && current.length > 0) setPanelVisible(false)
-      return current
-    })
   }
 
   const markWaiting = (sessionId: string, lastOutput?: string) => {
@@ -103,6 +94,18 @@ export function SubAgentProvider(props: ParentProps) {
 
   const clear = () => {
     setAgents([])
+    setPanelVisible(false)
+  }
+
+  const hydrate = (recovered: ActiveSubAgent[]) => {
+    setAgents((current) => {
+      const live = new Map(current.map((agent) => [agent.sessionId, agent]))
+      return recovered.map((agent) => {
+        const existing = live.get(agent.sessionId)
+        return existing?.status === "running" ? { ...agent, ...existing } : { ...existing, ...agent }
+      })
+    })
+    if (recovered.some((agent) => agent.status === "running")) setPanelVisible(true)
   }
 
   const parentSessionId = () => agents()[0]?.parentSessionId
@@ -113,12 +116,12 @@ export function SubAgentProvider(props: ParentProps) {
         agents,
         parentSessionId,
         addAgent,
-        markDone,
         markWaiting,
         reactivate,
         findByType,
         removeAgent,
         clear,
+        hydrate,
         panelVisible,
         togglePanel,
         setPanelVisible,
@@ -138,12 +141,12 @@ export function useSubAgents(): SubAgentContextValue {
       agents,
       parentSessionId: () => undefined,
       addAgent: () => {},
-      markDone: () => {},
       markWaiting: () => {},
       reactivate: () => {},
       findByType: () => undefined,
       removeAgent: () => {},
       clear: () => {},
+      hydrate: () => {},
       panelVisible: () => false,
       togglePanel: () => {},
       setPanelVisible: () => {},

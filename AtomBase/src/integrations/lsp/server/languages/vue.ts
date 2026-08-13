@@ -51,7 +51,7 @@ export const Vue: Info = {
 
         // fallback to global node_modules
         {
-            // Original code check global installation via Bun x or npm?
+            // Check the local Bun-managed installation before downloading anything.
             // The original code tried spawning `bun x`?
             // Let's check original implementation lines 152-160
         }

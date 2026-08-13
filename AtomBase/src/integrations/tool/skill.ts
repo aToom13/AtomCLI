@@ -1,11 +1,10 @@
 import path from "path"
-import fs from "fs/promises"
 import z from "zod"
 import { Tool } from "./tool"
 import { Skill } from "../skill"
 import { ConfigMarkdown } from "@/core/config/markdown"
 import { PermissionNext } from "@/util/permission/next"
-import { Global } from "@/core/global"
+import { SkillInstaller } from "../skill/installer"
 
 const parameters = z.object({
   action: z
@@ -14,12 +13,15 @@ const parameters = z.object({
     .describe("Action to perform: 'load' an available skill, or 'add' a new skill from a GitHub URL"),
   name: z
     .string()
+    .min(1)
+    .max(200)
     .optional()
     .describe(
       "The skill identifier from available_skills to load (for action='load') OR custom skill name (for action='add')",
     ),
   url: z
     .string()
+    .max(8192)
     .optional()
     .describe("GitHub URL to the skill file or directory (required for action='add')"),
 })
@@ -65,68 +67,29 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
         await ctx.ask({
           permission: "skilladd",
           patterns: [params.url],
-          always: ["*"],
+          always: [params.url],
           metadata: { url: params.url },
         })
 
-        let rawUrl = params.url
-
-        if (rawUrl.includes("github.com") && rawUrl.includes("/blob/")) {
-          rawUrl = rawUrl.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-        }
-
-        if (rawUrl.includes("github.com") && rawUrl.includes("/tree/")) {
-          rawUrl = rawUrl.replace("github.com", "raw.githubusercontent.com").replace("/tree/", "/")
-        }
-
-        if (!rawUrl.startsWith("http")) {
-          rawUrl = `https://raw.githubusercontent.com/${rawUrl}`
-        }
-
-        if (!rawUrl.endsWith(".md")) {
-          rawUrl = rawUrl.endsWith("/") ? rawUrl + "SKILL.md" : rawUrl + "/SKILL.md"
-        }
-
-        const response = await fetch(rawUrl)
-        if (!response.ok) {
-          throw new Error(`Failed to fetch skill: ${response.status} ${response.statusText}. URL: ${rawUrl}`)
-        }
-
-        const content = await response.text()
-        const parsed = await ConfigMarkdown.parseString(content)
-        if (!parsed || !parsed.data.name) {
-          throw new Error("Invalid skill file: missing 'name' in frontmatter")
-        }
-
-        const rawSkillName = params.name || parsed.data.name
-        const sanitizedName = path.basename(rawSkillName)
-        const baseSkillsDir = path.join(Global.Path.home, ".atomcli", "skills")
-        const skillDir = path.resolve(baseSkillsDir, sanitizedName)
-
-        if (!skillDir.startsWith(baseSkillsDir) || sanitizedName.includes("..") || rawSkillName.includes("..")) {
-          throw new Error(`Invalid skill name "${rawSkillName}": path traversal detected`)
-        }
-
-        await fs.mkdir(skillDir, { recursive: true })
-        await fs.writeFile(path.join(skillDir, "SKILL.md"), content)
+        const installed = await SkillInstaller.install({ url: params.url, name: params.name, signal: ctx.abort })
 
         await Skill.reload()
 
         return {
-          title: `Installed skill: ${sanitizedName}`,
+          title: `Installed skill: ${installed.name}`,
           output: [
-            `✓ Skill "${sanitizedName}" installed successfully!`,
+            `✓ Skill "${installed.name}" installed successfully!`,
             ``,
-            `Location: ~/.atomcli/skills/${sanitizedName}/SKILL.md`,
-            `Description: ${parsed.data.description || "No description"}`,
+            `Location: ${installed.target}`,
+            `Description: ${installed.description || "No description"}`,
             ``,
-            `The skill is now available. Use \`skill\` tool with action="load", name="${sanitizedName}" to activate it.`,
+            `The skill is now available. Use \`skill\` tool with action="load", name="${installed.name}" to activate it.`,
           ].join("\n"),
           metadata: {
-            name: sanitizedName,
-            dir: skillDir,
+            name: installed.name,
+            dir: installed.directory,
             url: params.url,
-            description: parsed.data.description ?? "",
+            description: installed.description,
           },
         }
       }

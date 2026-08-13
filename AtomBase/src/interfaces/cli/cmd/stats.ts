@@ -5,9 +5,13 @@ import { bootstrap } from "../bootstrap"
 import { Storage } from "@/core/storage/storage"
 import { Project } from "@/services/project/project"
 import { Instance } from "@/services/project/instance"
+import { Log } from "@/util/util/log"
+
+const log = Log.create({ service: "stats" })
 
 interface SessionStats {
   totalSessions: number
+  skippedSessions: number
   totalMessages: number
   totalCost: number
   totalTokens: {
@@ -82,17 +86,38 @@ async function getCurrentProject(): Promise<Project.Info> {
   return Instance.project
 }
 
-async function getAllSessions(): Promise<Session.Info[]> {
+async function getAllSessions(): Promise<{ sessions: Session.Info[]; skipped: number }> {
   const sessions: Session.Info[] = []
+  let skipped = 0
 
   const projectKeys = await Storage.list(["project"])
-  const projects = await Promise.all(projectKeys.map((key) => Storage.read<Project.Info>(key)))
+  const projects = await Promise.all(
+    projectKeys.map(async (key) => {
+      try {
+        return await Storage.read<Project.Info>(key)
+      } catch (error) {
+        skipped++
+        log.warn("skipping unreadable project record", { key: key.join("/"), error })
+        return undefined
+      }
+    }),
+  )
 
   for (const project of projects) {
     if (!project) continue
 
     const sessionKeys = await Storage.list(["session", project.id])
-    const projectSessions = await Promise.all(sessionKeys.map((key) => Storage.read<Session.Info>(key)))
+    const projectSessions = await Promise.all(
+      sessionKeys.map(async (key) => {
+        try {
+          return await Storage.read<Session.Info>(key)
+        } catch (error) {
+          skipped++
+          log.warn("skipping unreadable session record", { key: key.join("/"), error })
+          return undefined
+        }
+      }),
+    )
 
     for (const session of projectSessions) {
       if (session) {
@@ -101,11 +126,12 @@ async function getAllSessions(): Promise<Session.Info[]> {
     }
   }
 
-  return sessions
+  return { sessions, skipped }
 }
 
 export async function aggregateSessionStats(days?: number, projectFilter?: string): Promise<SessionStats> {
-  const sessions = await getAllSessions()
+  const stored = await getAllSessions()
+  const sessions = stored.sessions
   const MS_IN_DAY = 24 * 60 * 60 * 1000
 
   const cutoffTime = (() => {
@@ -136,7 +162,8 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
   }
 
   const stats: SessionStats = {
-    totalSessions: filteredSessions.length,
+    totalSessions: 0,
+    skippedSessions: stored.skipped,
     totalMessages: 0,
     totalCost: 0,
     totalTokens: {
@@ -179,7 +206,13 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
     const batch = filteredSessions.slice(i, i + BATCH_SIZE)
 
     const batchPromises = batch.map(async (session) => {
-      const messages = await Session.messages({ sessionID: session.id })
+      let messages
+      try {
+        messages = await Session.messages({ sessionID: session.id })
+      } catch (error) {
+        log.warn("skipping session with unreadable messages", { sessionID: session.id, error })
+        return undefined
+      }
 
       let sessionCost = 0
       let sessionTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
@@ -246,6 +279,11 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
     const batchResults = await Promise.all(batchPromises)
 
     for (const result of batchResults) {
+      if (!result) {
+        stats.skippedSessions++
+        continue
+      }
+      stats.totalSessions++
       earliestTime = Math.min(earliestTime, result.earliestTime)
       latestTime = Math.max(latestTime, result.latestTime)
       sessionTotalTokens.push(result.sessionTotalTokens)
@@ -278,6 +316,11 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
     }
   }
 
+  if (stats.totalSessions === 0) {
+    stats.days = windowDays ?? 0
+    return stats
+  }
+
   const rangeDays = Math.max(1, Math.ceil((latestTime - earliestTime) / MS_IN_DAY))
   const effectiveDays = windowDays ?? rangeDays
   stats.dateRange = {
@@ -287,7 +330,7 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
   stats.days = effectiveDays
   stats.costPerDay = stats.totalCost / effectiveDays
   const totalTokens = stats.totalTokens.input + stats.totalTokens.output + stats.totalTokens.reasoning
-  stats.tokensPerSession = filteredSessions.length > 0 ? totalTokens / filteredSessions.length : 0
+  stats.tokensPerSession = totalTokens / stats.totalSessions
   sessionTotalTokens.sort((a, b) => a - b)
   const mid = Math.floor(sessionTotalTokens.length / 2)
   stats.medianTokensPerSession =
@@ -315,6 +358,7 @@ export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit
   console.log("│                       OVERVIEW                         │")
   console.log("├────────────────────────────────────────────────────────┤")
   console.log(renderRow("Sessions", stats.totalSessions.toLocaleString()))
+  if (stats.skippedSessions > 0) console.log(renderRow("Skipped unreadable", stats.skippedSessions.toLocaleString()))
   console.log(renderRow("Messages", stats.totalMessages.toLocaleString()))
   console.log(renderRow("Days", stats.days.toString()))
   console.log("└────────────────────────────────────────────────────────┘")

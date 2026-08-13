@@ -23,7 +23,6 @@ export const IGNORE_PATTERNS = [
   "zig-out",
   ".coverage",
   "coverage/",
-  "vendor/",
   "tmp/",
   "temp/",
   ".cache/",
@@ -43,14 +42,15 @@ export const FindTool = Tool.define("find", {
       .enum(["pattern", "tree"])
       .default("pattern")
       .describe('Search mode: "pattern" for glob file matching, "tree" for directory structure view'),
-    pattern: z.string().optional().describe('Glob pattern to match files against (for pattern mode, e.g. "**/*.ts")'),
+    pattern: z.string().max(1000).optional().describe('Glob pattern to match files against (for pattern mode, e.g. "**/*.ts")'),
     path: z
       .string()
+      .max(4096)
       .optional()
       .describe(
         "The directory to search in. If not specified, the current working directory will be used. Must be absolute path if provided.",
       ),
-    ignore: parseJsonIfString(z.array(z.string()))
+    ignore: parseJsonIfString(z.array(z.string().max(1000)).max(100))
       .describe("List of glob patterns to ignore (for tree mode)")
       .optional(),
   }),
@@ -79,26 +79,25 @@ async function executePattern(search: string, pattern: string, ctx: Tool.Context
 
   await assertExternalDirectory(ctx, search, { kind: "directory" })
 
-  const files = []
+  const paths: string[] = []
   let truncated = false
   for await (const file of Ripgrep.files({
     cwd: search,
     glob: [pattern],
+    signal: ctx.abort,
   })) {
-    if (files.length >= LIMIT) {
+    if (paths.length >= LIMIT) {
       truncated = true
       break
     }
-    const full = path.resolve(search, file)
-    const stats = await Bun.file(full)
-      .stat()
-      .then((x) => x.mtime.getTime())
-      .catch(() => 0)
-    files.push({
-      path: full,
-      mtime: stats,
-    })
+    paths.push(path.resolve(search, file))
   }
+  const files = await Promise.all(
+    paths.map(async (file) => ({
+      path: file,
+      mtime: await Bun.file(file).stat().then((stats) => stats.mtime.getTime()).catch(() => 0),
+    })),
+  )
   files.sort((a, b) => b.mtime - a.mtime)
 
   const output = []
@@ -133,10 +132,12 @@ async function executeTree(searchPath: string, ignore: string[] | undefined, ctx
 
   const ignoreGlobs = IGNORE_PATTERNS.map((p) => `!${p}*`).concat(ignore?.map((p) => `!${p}`) || [])
   const files = []
-  for await (const file of Ripgrep.files({ cwd: searchPath, glob: ignoreGlobs })) {
+  for await (const file of Ripgrep.files({ cwd: searchPath, glob: ignoreGlobs, signal: ctx.abort })) {
     files.push(file)
-    if (files.length >= LIMIT) break
+    if (files.length > LIMIT) break
   }
+  const truncated = files.length > LIMIT
+  if (truncated) files.length = LIMIT
 
   // Build directory structure
   const dirs = new Set<string>()
@@ -190,7 +191,7 @@ async function executeTree(searchPath: string, ignore: string[] | undefined, ctx
     title: path.relative(Instance.worktree, searchPath),
     metadata: {
       count: files.length,
-      truncated: files.length >= LIMIT,
+      truncated,
     },
     output,
   }

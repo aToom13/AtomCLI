@@ -237,23 +237,35 @@ export namespace Provider {
       const awsBearerToken = iife(() => {
         const envToken = Env.get("AWS_BEARER_TOKEN_BEDROCK")
         if (envToken) return envToken
-        if (auth?.type === "api") {
-          Env.set("AWS_BEARER_TOKEN_BEDROCK", auth.key)
-          return auth.key
-        }
+        if (auth?.type === "api") return auth.key
         return undefined
       })
 
       if (!profile && !awsAccessKeyId && !awsBearerToken) return { autoload: false }
 
-      const { fromNodeProviderChain } = await import(await BunProc.install("@aws-sdk/credential-providers"))
-
-      // Build credential provider options (only pass profile if specified)
-      const credentialProviderOptions = profile ? { profile } : {}
-
+      let profileCredentials: Promise<any> | undefined
       const providerOptions: AmazonBedrockProviderSettings = {
         region: defaultRegion,
-        credentialProvider: fromNodeProviderChain(credentialProviderOptions),
+        ...(awsBearerToken ? { apiKey: awsBearerToken } : {}),
+        // Shared AWS profiles need the optional credential package. Resolve it
+        // only when the first Bedrock request asks for credentials; provider
+        // discovery must never install packages or block cold start on network.
+        ...(profile
+          ? {
+              credentialProvider: async () => {
+                profileCredentials ??= (async () => {
+                  const modulePath = await BunProc.install("@aws-sdk/credential-providers")
+                  const { fromNodeProviderChain } = await import(modulePath)
+                  return fromNodeProviderChain({ profile })()
+                })()
+                  .catch((error) => {
+                    profileCredentials = undefined
+                    throw error
+                  })
+                return profileCredentials
+              },
+            }
+          : {}),
       }
 
       // Add custom endpoint if specified (endpoint takes precedence over baseURL)
@@ -714,10 +726,12 @@ export namespace Provider {
     }
   }
 
-  const state = Instance.state(async () => {
+  async function initialize() {
     using _ = log.time("state")
     const config = await Config.get()
-    const modelsDev = await ModelsDev.get()
+    const catalog = await ModelsDev.getWithRevision()
+    const modelsDev = catalog.database
+    const catalogRevision = catalog.revision
     const database = mapValues(modelsDev, fromModelsDevProvider)
 
     // Clear antigravity models from the models.dev database if antigravity is enabled
@@ -1130,8 +1144,43 @@ export namespace Provider {
       providers,
       sdk,
       modelLoaders,
+      catalogRevision,
+    }
+  }
+
+  const stateCache = Instance.state(() => {
+    const ttl = 60 * 60 * 1000
+    let expires = 0
+    let catalogRevision = -1
+    let current: ReturnType<typeof initialize> | undefined
+
+    return async () => {
+      const revision = ModelsDev.revision()
+      if (!current || revision !== catalogRevision || Date.now() >= expires) {
+        expires = Date.now() + ttl
+        catalogRevision = revision
+        current = initialize()
+          .then((result) => {
+            // Retain the revision that produced this exact state. If another
+            // process refreshes during initialization, the next access reloads.
+            catalogRevision = result.catalogRevision
+            return result
+          })
+          .catch((error) => {
+            // Allow the next access to retry instead of retaining a rejected
+            // promise for the remainder of the project instance lifetime.
+            current = undefined
+            expires = 0
+            throw error
+          })
+      }
+      return current
     }
   })
+
+  async function state() {
+    return stateCache()()
+  }
 
   export async function list() {
     return state().then((state) => state.providers)

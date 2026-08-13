@@ -13,8 +13,7 @@ import { Locale } from "@/util/util/locale"
 import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
 import { Skill } from "@/integrations/skill"
-import { useToast } from "@tui/ui/toast"
-import { useLocal } from "@tui/context/local"
+import { SlashCommand } from "./slash-command"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -76,6 +75,7 @@ export function Autocomplete(props: {
   fileStyleId: number
   agentStyleId: number
   promptPartTypeId: () => number
+  onSlashCommand: (command: SlashCommand.Info) => void
 }) {
   const sdk = useSDK()
   const sync = useSync()
@@ -83,8 +83,6 @@ export function Autocomplete(props: {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   const frecency = useFrecency()
-  const toast = useToast()
-  const local = useLocal()
 
   const [store, setStore] = createStore({
     index: 0,
@@ -357,7 +355,13 @@ export function Autocomplete(props: {
   const commands = createMemo((): AutocompleteOption[] => {
     const results: AutocompleteOption[] = []
     const s = session()
+    const builtins = SlashCommand.list({
+      session: !!s,
+      sharing: sync.data.config.share !== "disabled",
+    })
+    const reserved = new Set(builtins.flatMap((command) => [command.name, ...(command.aliases ?? [])]))
     for (const command of sync.data.command) {
+      if (reserved.has(command.name)) continue
       results.push({
         display: "/" + command.name + (command.mcp ? " (MCP)" : ""),
         description: command.description,
@@ -370,242 +374,18 @@ export function Autocomplete(props: {
         },
       })
     }
-    if (s) {
-      results.push(
-        {
-          display: "/undo",
-          description: "undo the last message",
-          onSelect: () => {
-            command.trigger("session.undo")
-          },
-        },
-        {
-          display: "/redo",
-          description: "redo the last message",
-          onSelect: () => command.trigger("session.redo"),
-        },
-        {
-          display: "/compact",
-          aliases: ["/summarize"],
-          description: "compact the session",
-          onSelect: () => command.trigger("session.compact"),
-        },
-        {
-          display: "/unshare",
-          disabled: !s.share,
-          description: "unshare a session",
-          onSelect: () => command.trigger("session.unshare"),
-        },
-        {
-          display: "/rename",
-          description: "rename session",
-          onSelect: () => command.trigger("session.rename"),
-        },
-        {
-          display: "/copy",
-          description: "copy session transcript to clipboard",
-          onSelect: () => command.trigger("session.copy"),
-        },
-        {
-          display: "/export",
-          description: "export session transcript to file",
-          onSelect: () => command.trigger("session.export"),
-        },
-        {
-          display: "/timeline",
-          description: "jump to message",
-          onSelect: () => command.trigger("session.timeline"),
-        },
-        {
-          display: "/fork",
-          description: "fork from message",
-          onSelect: () => command.trigger("session.fork"),
-        },
-        {
-          display: "/thinking",
-          description: "toggle thinking visibility",
-          onSelect: () => command.trigger("session.toggle.thinking"),
-        },
-      )
-      if (sync.data.config.share !== "disabled") {
-        results.push({
-          display: "/share",
-          disabled: !!s.share?.url,
-          description: "share a session",
-          onSelect: () => command.trigger("session.share"),
-        })
-      }
-    }
-
     results.push(
-      {
-        display: "/new",
-        aliases: ["/clear"],
-        description: "create a new session",
-        onSelect: () => command.trigger("session.new"),
-      },
-      {
-        display: "/models",
-        description: "list models",
-        onSelect: () => command.trigger("model.list"),
-      },
-      {
-        display: "/agents",
-        description: "list agents",
-        onSelect: () => command.trigger("agent.list"),
-      },
-      {
-        display: "/session",
-        aliases: ["/resume", "/continue"],
-        description: "list sessions",
-        onSelect: () => command.trigger("session.list"),
-      },
-      {
-        display: "/status",
-        description: "show status",
-        onSelect: () => command.trigger("atomcli.status"),
-      },
-      {
-        display: "/mcp",
-        description: "toggle MCPs",
-        onSelect: () => command.trigger("mcp.list"),
-      },
-      {
-        display: "/theme",
-        description: "toggle theme",
-        onSelect: () => command.trigger("theme.switch"),
-      },
-      {
-        display: "/editor",
-        description: "open editor",
-        onSelect: () => command.trigger("prompt.editor", "prompt"),
-      },
-      {
-        display: "/connect",
-        description: "connect to a provider",
-        onSelect: () => command.trigger("provider.connect"),
-      },
-      {
-        display: "/help",
-        description: "show help",
-        onSelect: () => command.trigger("help.show"),
-      },
-      {
-        display: "/skill",
-        aliases: ["/skills"],
-        description: "list available skills",
-        onSelect: () => command.trigger("skill.list"),
-      },
-      {
-        display: "/commands",
-        description: "show all commands",
-        onSelect: () => command.show(),
-      },
-      {
-        display: "/yolo",
-        aliases: ["/autonomous", "/safe"],
-        description: "toggle autonomous mode (auto-approve tools)",
-        onSelect: async () => {
-          // Toggle autonomous mode
-          const isCurrentlyAutonomous =
-            process.env.ATOMCLI_AUTONOMOUS === "1" || (sync.data.config as any).agent_mode === "autonomous"
-          const newMode = isCurrentlyAutonomous ? "safe" : "autonomous"
-          try {
-            await sdk.client.config.update({ body: { agent_mode: newMode } } as any)
-            sync.set("config", "agent_mode" as any, newMode)
-            if (newMode === "autonomous") {
-              process.env.ATOMCLI_AUTONOMOUS = "1"
-            } else {
-              delete process.env.ATOMCLI_AUTONOMOUS
-            }
-          } catch (e) {
-            // Silently fail
-          }
-        },
-      },
-
-      {
-        display: "/exit",
-        aliases: ["/quit", "/q"],
-        description: "exit the app",
-        onSelect: () => command.trigger("app.exit"),
-      },
-      {
-        display: "/autoconf",
-        description: "auto model configuration (exclude, rate, override models)",
-        onSelect: () => command.trigger("autoconf.open"),
-      },
-      {
-        display: "/smart_model",
-        description: "toggle smart model routing (auto-select best model for task)",
-        onSelect: async () => {
-          const isCurrentlySmart = (sync.data.config as any)?.experimental?.smart_model_routing === true
-          const newMode = !isCurrentlySmart
-          try {
-            await sdk.client.config.update({ body: { experimental: { smart_model_routing: newMode } } } as any)
-            sync.set("config", "experimental" as any, {
-              ...((sync.data.config as any).experimental || {}),
-              smart_model_routing: newMode,
-            })
-            toast.show({
-              title: "Smart Model Routing",
-              message: newMode ? "Enabled 🧠" : "Disabled 🛡️",
-              variant: "info",
-            })
-          } catch (e) {
-            // Silently fail
-          }
-        },
-      },
-      {
-        display: "/think",
-        description: "set model thinking level (none/minimal/low/medium/high/max/xhigh/off)",
-        onSelect: () => {
-          const currentFilter = filter() ?? ""
-          const parts = currentFilter.trim().split(/\s+/)
-          const arg = parts.length > 1 ? parts[1].toLowerCase() : undefined
-          const validLevels = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"]
-
-          if (!arg) {
-            const current = local.model.variant.current()
-            toast.show({
-              title: "Thinking Level",
-              message: current ? `Current level: ${current.toUpperCase()} 🧠` : "Current level: DEFAULT (medium) 🧠",
-              variant: "info",
-              duration: 3000,
-            })
-            return
-          }
-
-          if (!validLevels.includes(arg)) {
-            toast.show({
-              title: "Thinking Level",
-              message: `Invalid level '${arg}'. Allowed: ${validLevels.join(", ")}`,
-              variant: "warning",
-              duration: 4000,
-            })
-            return
-          }
-
-          if (arg === "off") {
-            local.model.variant.set(undefined)
-            toast.show({
-              title: "Thinking Level",
-              message: "Reset to default level 🛡️",
-              variant: "info",
-              duration: 3000,
-            })
-          } else {
-            local.model.variant.set(arg)
-            toast.show({
-              title: "Thinking Level",
-              message: `Set to ${arg.toUpperCase()} 🧠`,
-              variant: "info",
-              duration: 3000,
-            })
-          }
-        },
-      },
+      ...builtins.map(
+        (builtin): AutocompleteOption => ({
+          display: "/" + builtin.name,
+          aliases: builtin.aliases?.map((alias) => "/" + alias),
+          description: builtin.description,
+          disabled:
+            (builtin.action === "session.share" && !!s?.share?.url) ||
+            (builtin.action === "session.unshare" && !s?.share?.url),
+          onSelect: () => props.onSlashCommand(builtin),
+        }),
+      ),
     )
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length
     if (!max) return results

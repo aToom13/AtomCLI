@@ -1,6 +1,6 @@
 import { SyntaxStyle, RGBA, type TerminalColors } from "@opentui/core"
 import path from "path"
-import { createEffect, createMemo, onMount } from "solid-js"
+import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { createSimpleContext } from "./helper"
 import { Log } from "@/util/util/log"
@@ -139,6 +139,7 @@ type ThemeJson = {
 }
 
 export const DEFAULT_THEMES: Record<string, ThemeJson> = {
+  system: atomcli,
   aura,
   ayu,
   catppuccin,
@@ -284,27 +285,33 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     const [store, setStore] = createStore({
       themes: DEFAULT_THEMES,
       mode: kv.get("theme_mode", props.mode),
-      active: (sync.data.config.theme ?? kv.get("theme", "atomcli")) as string,
+      active: (sync.data.config.theme ?? kv.get("theme", "system")) as string,
       ready: false,
     })
 
+    const renderer = useRenderer()
+    let paletteFingerprint = ""
+    let refreshPromise: Promise<void> | undefined
+
     createEffect(() => {
       const theme = sync.data.config.theme
-      if (theme) setStore("active", theme)
+      if (!theme) return
+      setStore("active", theme)
+      if (theme === "system") void refreshSystemTheme(true)
     })
 
     function init() {
-      resolveSystemTheme()
+      void refreshSystemTheme()
       getCustomThemes()
         .then((custom) => {
           setStore(
             produce((draft) => {
-              Object.assign(draft.themes, custom)
+              Object.assign(draft.themes, SystemTheme.withoutReserved(custom))
             }),
           )
         })
         .catch(() => {
-          setStore("active", "atomcli")
+          setStore("ready", true)
         })
         .finally(() => {
           if (store.active !== "system") {
@@ -315,40 +322,57 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
 
     onMount(init)
 
-    function resolveSystemTheme() {
-      Log.Default.debug("resolveSystemTheme")
-      renderer
-        .getPalette({
-          size: 16,
-        })
-        .then((colors) => {
-          Log.Default.debug("theme palette", { palette: colors.palette })
-          if (!colors.palette[0]) {
-            if (store.active === "system") {
-              setStore(
-                produce((draft) => {
-                  draft.active = "atomcli"
-                  draft.ready = true
-                }),
-              )
-            }
+    function refreshSystemTheme(clearCache = false) {
+      if (refreshPromise) return refreshPromise
+      refreshPromise = (async () => {
+        Log.Default.debug("refreshSystemTheme")
+        if (clearCache) renderer.clearPaletteCache()
+
+        try {
+          const colors = await renderer.getPalette({ size: 16 })
+          const mode = colors.defaultBackground ? SystemTheme.mode(colors.defaultBackground) : store.mode
+          const fingerprint = JSON.stringify({
+            palette: colors.palette,
+            defaultBackground: colors.defaultBackground,
+            defaultForeground: colors.defaultForeground,
+          })
+
+          if (fingerprint === paletteFingerprint && store.mode === mode) {
+            if (store.active === "system") setStore("ready", true)
             return
           }
+
+          const system = generateSystem(colors, mode)
+          Log.Default.debug("system theme palette", { palette: colors.palette, mode })
           setStore(
             produce((draft) => {
-              draft.themes.system = generateSystem(colors, store.mode)
-              if (store.active === "system") {
-                draft.ready = true
-              }
+              draft.mode = mode
+              draft.themes.system = system
+              if (draft.active === "system") draft.ready = true
             }),
           )
-        })
+          paletteFingerprint = fingerprint
+        } catch (error) {
+          Log.Default.debug("system theme palette unavailable", {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          if (store.active === "system") setStore("ready", true)
+        }
+      })().finally(() => {
+        refreshPromise = undefined
+      })
+      return refreshPromise
     }
 
-    const renderer = useRenderer()
-    process.on("SIGUSR2", async () => {
-      renderer.clearPaletteCache()
-      init()
+    const onPaletteChange = () => void refreshSystemTheme(true)
+    const paletteInterval = setInterval(() => {
+      if (store.active === "system") void refreshSystemTheme(true)
+    }, 5_000)
+    paletteInterval.unref?.()
+    process.on("SIGUSR2", onPaletteChange)
+    onCleanup(() => {
+      clearInterval(paletteInterval)
+      process.off("SIGUSR2", onPaletteChange)
     })
 
     const values = createMemo(() => {
@@ -382,6 +406,7 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       set(theme: string) {
         setStore("active", theme)
         kv.set("theme", theme)
+        if (theme === "system") void refreshSystemTheme(true)
       },
       get ready() {
         return store.ready
@@ -389,6 +414,30 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     }
   },
 })
+
+export namespace SystemTheme {
+  export const id = "system"
+  export const title = "Default System"
+
+  export function mode(background: string): "dark" | "light" {
+    const color = RGBA.fromHex(background)
+    const luminance = 0.299 * color.r + 0.587 * color.g + 0.114 * color.b
+    return luminance > 0.5 ? "light" : "dark"
+  }
+
+  export function options(themeIDs: string[]) {
+    return [
+      id,
+      ...themeIDs
+        .filter((item) => item !== id)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+    ]
+  }
+
+  export function withoutReserved<T>(themes: Record<string, T>) {
+    return Object.fromEntries(Object.entries(themes).filter(([name]) => name !== id))
+  }
+}
 
 const CUSTOM_THEME_GLOB = new Bun.Glob("themes/*.json")
 async function getCustomThemes() {
@@ -418,9 +467,9 @@ async function getCustomThemes() {
 }
 
 function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJson {
-  const bg = RGBA.fromHex(colors.defaultBackground ?? colors.palette[0]!)
-  const fg = RGBA.fromHex(colors.defaultForeground ?? colors.palette[7]!)
   const isDark = mode == "dark"
+  const bg = RGBA.fromHex(colors.defaultBackground ?? (isDark ? "#000000" : "#ffffff"))
+  const fg = RGBA.fromHex(colors.defaultForeground ?? (isDark ? "#ffffff" : "#000000"))
 
   const col = (i: number) => {
     const value = colors.palette[i]

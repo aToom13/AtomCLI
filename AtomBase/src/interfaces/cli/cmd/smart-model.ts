@@ -7,14 +7,13 @@ import { UI } from "../ui"
 export const SmartModelCommand = cmd({
   command: "smart-model [action]",
   describe: "manage smart model routing (auto-select best model per task)",
-  builder: {
-    action: {
+  builder: (yargs) =>
+    yargs.positional("action", {
       type: "string",
       choices: ["on", "off", "toggle", "status"],
       describe: "Action to perform: on, off, toggle, or status (default: status)",
       default: "status",
-    },
-  },
+    }),
   async handler(args) {
     await Instance.provide({
       directory: process.cwd(),

@@ -42,7 +42,7 @@ export namespace Flag {
   // YOLO mode — full autonomous permissions (except window_control which always requires permission)
   // Activated by: ATOMCLI_YOLO env, ATOMCLI_AUTONOMOUS env (--yolo/--autonomous CLI flag), or enableYolo()
   export let ATOMCLI_YOLO = truthy("ATOMCLI_YOLO") || truthy("ATOMCLI_AUTONOMOUS")
-  /** Enable YOLO mode at runtime (called by /yolo command) */
+  /** Enable autonomous mode at runtime. */
   export function enableYolo() {
     ATOMCLI_YOLO = true
   }

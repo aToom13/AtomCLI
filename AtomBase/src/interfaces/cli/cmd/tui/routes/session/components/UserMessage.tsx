@@ -48,19 +48,19 @@ export function UserMessage(props: {
                             border={["left"]}
                             borderColor={color()}
                             customBorderChars={SplitBorder.customBorderChars}
-                            marginTop={props.index === 0 ? 0 : 1}
+                            marginTop={props.index === 0 || ctx.verticalMode !== "normal" ? 0 : 1}
                         >
                             <box
                                 onMouseOver={() => setHover(true)}
                                 onMouseOut={() => setHover(false)}
                                 onMouseUp={props.onMouseUp}
-                                paddingTop={1}
-                                paddingBottom={1}
-                                paddingLeft={2}
+                                paddingTop={ctx.verticalMode === "normal" ? 1 : 0}
+                                paddingBottom={ctx.verticalMode === "normal" ? 1 : 0}
+                                paddingLeft={ctx.width < 52 ? 1 : 2}
                                 backgroundColor={hover() || focused() ? theme.backgroundElement : theme.backgroundPanel}
                                 flexShrink={0}
                             >
-                                <text fg={theme.text}>{text()?.text}</text>
+                                <text fg={theme.text} wrapMode="word">{text()?.text}</text>
                                 <Show when={files().length}>
                                     <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
                                         <For each={files()}>

@@ -1,7 +1,5 @@
 import z from "zod"
 import { Tool } from "./tool"
-import { TaskTool } from "./task"
-import { OrchestrateTool } from "./orchestrate"
 import { Agent } from "../agent/agent"
 import { PermissionNext } from "@/util/permission/next"
 
@@ -15,33 +13,34 @@ const parameters = z.object({
 
   // Parameters for action='spawn' (single sub-agent task, blocking)
   subagent_type: z
-    .string()
+    .string().min(1).max(100)
     .optional()
     .describe("The specialized agent type to use (e.g., 'explore', 'coder', 'checker') for action='spawn'"),
-  prompt: z.string().optional().describe("The task prompt for the agent to perform (for action='spawn')"),
-  description: z.string().optional().describe("A short (3-5 words) description of the task (for action='spawn')"),
+  prompt: z.string().min(1).max(100_000).optional().describe("The task prompt for the agent to perform (for action='spawn')"),
+  description: z.string().min(1).max(500).optional().describe("A short (3-5 words) description of the task (for action='spawn')"),
 
   // Parameters for action='workflow' (multi-step DAG)
   workflow_action: z
     .enum(["plan", "execute", "status", "abort"])
     .optional()
     .describe("Sub-action for workflow: 'plan', 'execute', 'status', or 'abort'"),
-  workflowId: z.string().optional().describe("Workflow ID returned from action='workflow' with workflow_action='plan'"),
+  workflowId: z.string().max(200).optional().describe("Workflow ID returned from action='workflow' with workflow_action='plan'"),
   tasks: z
     .array(
       z.object({
-        id: z.string(),
-        prompt: z.string(),
+        id: z.string().min(1).max(100),
+        prompt: z.string().min(1).max(100_000),
         category: z.enum(["coding", "documentation", "analysis", "general"]).optional(),
-        dependsOn: z.array(z.string()).optional(),
-        agent: z.string().optional(),
-        model: z.string().optional(),
+        dependsOn: z.array(z.string().max(100)).max(50).optional(),
+        agent: z.string().max(100).optional(),
+        model: z.string().max(200).optional(),
       }),
     )
+    .max(50)
     .optional()
     .describe("Task list for action='workflow' plan"),
 
-  session_id: z.string().optional().describe("Session ID to continue (spawn) or abort"),
+  session_id: z.string().max(200).optional().describe("Session ID to continue (spawn) or abort"),
 })
 
 /**
@@ -57,8 +56,12 @@ const safeTaskId = (s: string) =>
     .slice(0, 40) || "task"
 
 export const AgentTool = Tool.define("agent", async (ctx) => {
-  const taskToolInstance = await TaskTool.init(ctx)
-  const orchestrateToolInstance = await OrchestrateTool.init(ctx)
+  let taskToolPromise: ReturnType<(typeof import("./task"))["TaskTool"]["init"]> | undefined
+  let orchestrateToolPromise: ReturnType<(typeof import("./orchestrate"))["OrchestrateTool"]["init"]> | undefined
+  const taskTool = () =>
+    (taskToolPromise ??= import("./task").then((mod) => mod.TaskTool.init(ctx)))
+  const orchestrateTool = () =>
+    (orchestrateToolPromise ??= import("./orchestrate").then((mod) => mod.OrchestrateTool.init(ctx)))
 
   // List accessible sub-agent types so the LLM knows valid subagent_type values
   const agents = await Agent.list().then((x) => x.filter((a) => a.mode !== "primary"))
@@ -94,6 +97,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     parameters,
     async execute(params: z.infer<typeof parameters>, ctx) {
       if (params.action === "workflow") {
+        const orchestrateToolInstance = await orchestrateTool()
         const wfAction = params.workflow_action || (params.tasks ? "plan" : "execute")
 
         // Permission gate — the same "task" permission that guards spawn must also
@@ -128,13 +132,16 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
 
       if (params.action === "abort") {
         if (params.workflowId) {
+          const orchestrateToolInstance = await orchestrateTool()
           return orchestrateToolInstance.execute({ action: "abort", workflowId: params.workflowId }, ctx)
         }
+        const taskToolInstance = await taskTool()
         return taskToolInstance.execute({ action: "abort", session_id: params.session_id }, ctx)
       }
 
       if (params.action === "status") {
         if (params.workflowId) {
+          const orchestrateToolInstance = await orchestrateTool()
           return orchestrateToolInstance.execute({ action: "status", workflowId: params.workflowId }, ctx)
         }
         if (params.session_id) {
@@ -169,6 +176,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
       // This gives spawn the orchestrator behavior: reviewer QA gate, retries, Chain UI
       // progress, and results written to .atomcli/runs/<workflowId>/.
       const taskId = safeTaskId(params.description)
+      const orchestrateToolInstance = await orchestrateTool()
       const planResult = await orchestrateToolInstance.execute(
         {
           action: "plan",

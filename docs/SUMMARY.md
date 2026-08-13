@@ -1,62 +1,21 @@
-# AtomCLI - Documentation Summary
+# AtomCLI Documentation Summary
 
-## Overview
+AtomCLI is a Bun-based terminal AI coding assistant. Its interactive interface, headless server, ACP endpoint, provider registry, MCP integration, skills, and session storage live in `AtomBase/`.
 
-**AtomCLI** is an autonomous AI coding agent framework built with TypeScript and Bun runtime. Version: 3.3.4
+The repository version is defined by `AtomBase/package.json`; do not duplicate it in prose because the package and release version can change independently.
 
-## Architecture
+## Source of truth
 
-### Core Modules
+| Topic                               | Authoritative location                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------- |
+| CLI commands and options            | `AtomBase/src/index.ts` and `AtomBase/src/interfaces/cli/cmd/`            |
+| Configuration schema and precedence | `AtomBase/src/core/config/config.ts`                                      |
+| Global paths                        | `AtomBase/src/core/global/index.ts`                                       |
+| Provider registry and catalog       | `AtomBase/src/integrations/provider/`                                     |
+| MCP configuration                   | `AtomBase/src/core/config/config.ts` and `AtomBase/src/integrations/mcp/` |
+| Prompt assembly                     | `AtomBase/src/core/session/prompt/manager.ts`                             |
+| HTTP routes and SDK generation      | `AtomBase/src/server/` and `libs/sdk/js/`                                 |
+| Ignore and local-state policy       | `.gitignore`, `AtomBase/.gitignore`, and `AGENTS.md`                      |
+| Release trigger and artifacts       | `.github/workflows/release.yml` and `AtomBase/script/build.ts`            |
 
-| Module        | Purpose                                                                  |
-| ------------- | ------------------------------------------------------------------------ |
-| `agent`       | Core agent logic - chain execution, prompt management                    |
-| `orchestrate` | Multi-agent task delegation and sub-agent session management             |
-| `session`     | LLM calls, message handling, retry logic, summarization                  |
-| `provider`    | 20+ LLM provider integrations (OpenAI, Anthropic, Google, Ollama, Azure) |
-| `command`     | CLI command handling                                                     |
-| `config`      | Configuration management with markdown support                           |
-| `browser`     | Playwright-based browser automation                                      |
-| `file`        | File operations - ripgrep, watching, ignore patterns                     |
-| `skill`       | Extensible skill system                                                  |
-| `storage`     | Persistent storage layer                                                 |
-| `companion`   | Mobile pairing, QR discovery, WebSocket bridge, push notifications       |
-
-### Entry Point
-
-`src/index.ts` - Main entry point
-
-## Key Features
-
-- **Multi-Provider LLM Support** - Integrates with 20+ providers via `@ai-sdk/*`
-- **Multi-Agent Collaboration** - Event-driven team workflows
-- **Mobile Companion App** - Remote session monitoring, permission approval, and chat via Flutter app
-- **Session-Based Context** - Conversation management with summarization
-- **Browser Automation** - Built-in Playwright support
-- **File Watching** - Parcel watcher for cross-platform monitoring
-- **i18n Support** - English and Turkish locales
-
-## Tech Stack
-
-- **Runtime**: Bun 1.3
-- **UI**: @opentui/core, SolidJS
-- **API Server**: Hono
-- **MCP**: @modelcontextprotocol/sdk
-- **Mobile**: Flutter (companion app)
-- **Web Dashboard**: SolidJS (server dashboard)
-
-## Usage
-
-```bash
-# Install
-bun install
-
-# Run
-bun run --conditions=browser ./src/index.ts
-
-# Typecheck
-bun run typecheck
-
-# Test
-bun test
-```
+Use the guides in this directory for operational guidance. When behavior changes, update the relevant guide in the same change and verify its commands with `atomcli --help` or the corresponding source.

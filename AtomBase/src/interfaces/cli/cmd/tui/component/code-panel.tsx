@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, createEffect, on, onCleanup } from "solid-js"
+import { For, Show, createMemo, createEffect, on, onCleanup } from "solid-js"
 import { useTheme } from "@tui/context/theme"
 import { useFileTree, type OpenFile } from "@tui/context/file-tree"
 import { useKeyboard } from "@opentui/solid"
@@ -82,14 +82,13 @@ function FileTab(props: { file: OpenFile; active: boolean }) {
     )
 }
 
-export function CodePanel() {
+export function CodePanel(props: { width: number }) {
     const { theme } = useTheme()
     const fileTree = useFileTree()
 
     let textarea: TextareaRenderable | undefined
     let intervalId: ReturnType<typeof setInterval> | undefined
-    const [cursorLine, setCursorLine] = createSignal(1)
-    const [cursorCol, setCursorCol] = createSignal(1)
+    const compact = createMemo(() => props.width < 32)
 
     const activeFile = createMemo(() => fileTree.getActiveFile())
     const lines = createMemo(() => {
@@ -178,8 +177,8 @@ export function CodePanel() {
     return (
         <Show when={shouldShow()}>
             <box
-                flexGrow={2}
-                minWidth={40}
+                width={props.width}
+                flexShrink={0}
                 backgroundColor={theme.backgroundPanel}
                 borderColor={theme.border}
                 border={["left"]}
@@ -226,8 +225,8 @@ export function CodePanel() {
                         flexDirection="row"
                         justifyContent="space-between"
                     >
-                        <text fg={theme.textMuted}>
-                            {activeFile()!.path}
+                        <text fg={theme.textMuted} wrapMode="none">
+                            {compact() ? path.basename(activeFile()!.path) : activeFile()!.path}
                         </text>
                         <text
                             fg={activeFile()!.modified ? theme.warning : theme.success}
@@ -281,17 +280,16 @@ export function CodePanel() {
                         flexShrink={0}
                     >
                         <text fg={theme.textMuted}>
-                            Ln {cursorLine()}, Col {cursorCol()}
-                        </text>
-                        <text fg={theme.textMuted}>
                             {activeFile()!.language}
                         </text>
                         <text fg={activeFile()!.modified ? theme.warning : theme.success}>
                             {activeFile()!.modified ? "● Modified" : "✓ Saved"}
                         </text>
-                        <text fg={theme.textMuted}>
-                            {lines().length} lines
-                        </text>
+                        <Show when={!compact()}>
+                            <text fg={theme.textMuted}>
+                                {lines().length} lines
+                            </text>
+                        </Show>
                     </box>
                 </Show>
             </box>

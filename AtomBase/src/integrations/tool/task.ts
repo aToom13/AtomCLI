@@ -16,14 +16,16 @@ import { PermissionNext } from "@/util/permission/next"
 
 const parameters = z.object({
   action: z.enum(["run", "abort"]).optional().describe("Defaults to run. Set to abort to kill a session_id"),
-  description: z.string().optional().describe("A short (3-5 words) description of the task. Required for run."),
-  prompt: z.string().optional().describe("The task for the agent to perform. Required for run."),
+  description: z.string().min(1).max(500).optional().describe("A short (3-5 words) description of the task. Required for run."),
+  prompt: z.string().min(1).max(100_000).optional().describe("The task for the agent to perform. Required for run."),
   subagent_type: z
     .string()
+    .min(1)
+    .max(100)
     .optional()
     .describe("The type of specialized agent to use for this task. Required for run."),
-  session_id: z.string().describe("Existing Task session to continue, or to abort").optional(),
-  command: z.string().describe("The command that triggered this task").optional(),
+  session_id: z.string().max(200).describe("Existing Task session to continue, or to abort").optional(),
+  command: z.string().max(10_000).describe("The command that triggered this task").optional(),
 })
 
 export const TaskTool = Tool.define("task", async (ctx) => {

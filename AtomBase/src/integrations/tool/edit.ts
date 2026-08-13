@@ -15,60 +15,98 @@ import { Bus } from "@/core/bus"
 import { FileTime } from "@/services/file/time"
 import { Filesystem } from "@/util/util/filesystem"
 import { Instance } from "@/services/project/instance"
-import { Snapshot } from "@/core/snapshot"
 import { assertExternalDirectory } from "./external-directory"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
+const MAX_EDIT_OPERATIONS = 100
+const MAX_EDIT_CONTENT_BYTES = 10 * 1024 * 1024
+const MAX_EDIT_TOTAL_BYTES = 20 * 1024 * 1024
+const MAX_EDIT_FILE_BYTES = 10 * 1024 * 1024
+const MAX_DIFF_BYTES = 200 * 1024
+const MAX_EXACT_DIFF_INPUT_BYTES = 512 * 1024
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
 }
 
-/**
- * Validates file path to prevent path traversal attacks
- * Returns path info for external directory check
- */
-function validateFilePath(filePath: string): { normalizedPath: string; isExternal: boolean } {
-  const isTestMode = process.env.NODE_ENV === "test" || process.env.ATOMCLI_TEST === "true"
+function limitDiff(diff: string): string {
+  if (Buffer.byteLength(diff) <= MAX_DIFF_BYTES) return diff
+  const head = Buffer.from(diff).subarray(0, MAX_DIFF_BYTES).toString("utf8")
+  return `${head}\n\n... diff metadata truncated at ${MAX_DIFF_BYTES} bytes ...`
+}
 
-  // Resolve to absolute path
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(Instance.directory, filePath)
-
-  // Normalize to resolve any .. or . segments
-  const normalizedPath = path.normalize(absolutePath)
-
-  // Get the allowed base directory
-  const allowedBase = path.resolve(Instance.directory)
-
-  // Check if the normalized path is within allowed boundaries
-  const isExternal = !normalizedPath.startsWith(allowedBase)
-
-  // Additional check for path traversal attempts using ..
-  // In test mode, skip this check to allow external_directory permission tests
-  if (!isTestMode && (filePath.includes("..") || filePath.includes("..\\"))) {
-    throw new Error(
-      `File path "${filePath}" contains path traversal sequence "..". ` + `This is not allowed for security reasons.`,
-    )
+function lineCount(text: string) {
+  if (!text) return 0
+  let count = 1
+  for (let index = 0; index < text.length; index++) {
+    if (text.charCodeAt(index) === 10) count++
   }
+  return count
+}
 
-  return { normalizedPath, isExternal }
+export namespace EditDiff {
+  export function create(filePath: string, contentOld: string, contentNew: string) {
+    const oldBytes = Buffer.byteLength(contentOld)
+    const newBytes = Buffer.byteLength(contentNew)
+    if (oldBytes + newBytes <= MAX_EXACT_DIFF_INPUT_BYTES) {
+      const raw = trimDiff(
+        createTwoFilesPatch(
+          filePath,
+          filePath,
+          normalizeLineEndings(contentOld),
+          normalizeLineEndings(contentNew),
+        ),
+      )
+      let additions = 0
+      let deletions = 0
+      for (const change of diffLines(contentOld, contentNew)) {
+        if (change.added) additions += change.count || 0
+        if (change.removed) deletions += change.count || 0
+      }
+      return { diff: limitDiff(raw), additions, deletions, preview: false }
+    }
+
+    const previewBudget = Math.floor((MAX_DIFF_BYTES - 1024) / 2)
+    const oldPreview = Buffer.from(contentOld).subarray(0, previewBudget).toString("utf8").replace(/^/gm, "-")
+    const newPreview = Buffer.from(contentNew).subarray(0, previewBudget).toString("utf8").replace(/^/gm, "+")
+    const diff = limitDiff(
+      [
+        `--- ${filePath}`,
+        `+++ ${filePath}`,
+        `@@ bounded preview; full diff skipped (${oldBytes} -> ${newBytes} bytes) @@`,
+        oldPreview,
+        oldBytes > previewBudget ? "-... old content preview truncated ..." : "",
+        newPreview,
+        newBytes > previewBudget ? "+... new content preview truncated ..." : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    )
+    return {
+      diff,
+      additions: lineCount(contentNew),
+      deletions: lineCount(contentOld),
+      preview: true,
+    }
+  }
 }
 
 export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
   parameters: z.object({
-    filePath: z.string().describe("The absolute path to the file to modify"),
-    oldString: z.string().optional().describe("The text to replace (required unless using operations)"),
-    newString: z.string().optional().describe("The text to replace it with (required unless using operations)"),
+    filePath: z.string().min(1).max(4096).describe("The absolute path to the file to modify"),
+    oldString: z.string().max(MAX_EDIT_CONTENT_BYTES).optional().describe("The text to replace (required unless using operations)"),
+    newString: z.string().max(MAX_EDIT_CONTENT_BYTES).optional().describe("The text to replace it with (required unless using operations)"),
     replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
     operations: z
       .array(
         z.object({
-          oldString: z.string().describe("The text to replace"),
-          newString: z.string().describe("The text to replace it with"),
+          oldString: z.string().max(MAX_EDIT_CONTENT_BYTES).describe("The text to replace"),
+          newString: z.string().max(MAX_EDIT_CONTENT_BYTES).describe("The text to replace it with"),
           replaceAll: z.boolean().optional().describe("Replace all occurrences (default false)"),
         }),
       )
+      .max(MAX_EDIT_OPERATIONS)
       .optional()
       .describe(
         "Array of edit operations to apply sequentially on the same file. Use instead of oldString/newString for multiple edits.",
@@ -90,6 +128,14 @@ export const EditTool = Tool.define("edit", {
       throw new Error("Either (oldString + newString) or operations array is required")
     }
 
+    const totalBytes = ops.reduce(
+      (total, op) => total + Buffer.byteLength(op.oldString) + Buffer.byteLength(op.newString),
+      0,
+    )
+    if (totalBytes > MAX_EDIT_TOTAL_BYTES) {
+      throw new Error(`Combined edit content exceeds ${MAX_EDIT_TOTAL_BYTES} bytes`)
+    }
+
     // Validate all operations
     for (const op of ops) {
       if (op.oldString === op.newString) {
@@ -97,81 +143,54 @@ export const EditTool = Tool.define("edit", {
       }
     }
 
-    // Validate file path to prevent path traversal
-    const { normalizedPath: filePath, isExternal } = validateFilePath(params.filePath)
+    const filePath = path.resolve(Instance.directory, params.filePath)
+    await assertExternalDirectory(ctx, filePath)
 
-    // If external, ask for permission first
-    if (isExternal) {
-      await assertExternalDirectory(ctx, filePath)
-    }
-
-    // Single operation — use original fast path
-    if (ops.length === 1) {
-      const op = ops[0]
-      return executeSingleEdit(filePath, op.oldString, op.newString, op.replaceAll, ctx)
-    }
-
-    // Multiple operations — apply sequentially
-    const results = []
-    for (const op of ops) {
-      const result = await executeSingleEdit(filePath, op.oldString, op.newString, op.replaceAll, ctx)
-      results.push(result)
-    }
-
-    const lastResult = results.at(-1)!
-    return {
-      title: path.relative(Instance.worktree, filePath),
-      metadata: {
-        ...lastResult.metadata,
-        results: results.map((r) => r.metadata),
-      },
-      output: lastResult.output,
-    }
+    return executeEdits(filePath, ops, ctx)
   },
 })
 
-async function executeSingleEdit(
+type EditOperation = {
+  oldString: string
+  newString: string
+  replaceAll?: boolean
+}
+
+async function executeEdits(
   filePath: string,
-  oldString: string,
-  newString: string,
-  replaceAll: boolean | undefined,
+  operations: EditOperation[],
   ctx: Tool.Context,
 ) {
   let diff = ""
   let contentOld = ""
   let contentNew = ""
+  let summary = { diff: "", additions: 0, deletions: 0, preview: false }
   await FileTime.withLock(filePath, async () => {
-    if (oldString === "") {
-      contentNew = newString
-      diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-      await ctx.ask({
-        permission: "edit",
-        patterns: [path.relative(Instance.worktree, filePath)],
-        always: ["*"],
-        metadata: {
-          filepath: filePath,
-          diff,
-        },
-      })
-      await Bun.write(filePath, newString)
-      await Bus.publish(FileEvent.Edited, {
-        file: filePath,
-      })
-      FileTime.read(ctx.sessionID, filePath)
-      return
+    const file = Bun.file(filePath)
+    const stats = await file.stat().catch((): undefined => undefined)
+    if (stats?.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
+    if (stats && stats.size > MAX_EDIT_FILE_BYTES) {
+      throw new Error(`File ${filePath} exceeds the ${MAX_EDIT_FILE_BYTES} byte edit limit`)
+    }
+    if (!stats && operations[0].oldString !== "") throw new Error(`File ${filePath} not found`)
+    if (stats && operations[0].oldString !== "") await FileTime.assert(ctx.sessionID, filePath)
+
+    contentOld = stats ? await file.text() : ""
+    contentNew = contentOld
+    // Apply every operation in memory before requesting permission or writing.
+    // A failed match therefore leaves the original file untouched.
+    for (const operation of operations) {
+      contentNew =
+        operation.oldString === ""
+          ? operation.newString
+          : replace(contentNew, operation.oldString, operation.newString, operation.replaceAll)
+      if (Buffer.byteLength(contentNew) > MAX_EDIT_FILE_BYTES) {
+        throw new Error(`Edited content exceeds the ${MAX_EDIT_FILE_BYTES} byte limit`)
+      }
     }
 
-    const file = Bun.file(filePath)
-    const stats = await file.stat().catch(() => {})
-    if (!stats) throw new Error(`File ${filePath} not found`)
-    if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
-    await FileTime.assert(ctx.sessionID, filePath)
-    contentOld = await file.text()
-    contentNew = replace(contentOld, oldString, newString, replaceAll)
-
-    diff = trimDiff(
-      createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
-    )
+    summary = EditDiff.create(filePath, contentOld, contentNew)
+    diff = summary.diff
     await ctx.ask({
       permission: "edit",
       patterns: [path.relative(Instance.worktree, filePath)],
@@ -182,37 +201,25 @@ async function executeSingleEdit(
       },
     })
 
-    await file.write(contentNew)
+    await Bun.write(filePath, contentNew)
     await Bus.publish(FileEvent.Edited, {
       file: filePath,
     })
-    const writtenContent = await file.text()
-    if (writtenContent.length !== contentNew.length) {
-      contentNew = writtenContent
-      diff = trimDiff(
-        createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
-      )
-    }
     FileTime.read(ctx.sessionID, filePath)
   })
 
-  const filediff: Snapshot.FileDiff = {
-    file: filePath,
-    before: contentOld,
-    after: contentNew,
-    additions: 0,
-    deletions: 0,
-  }
-  for (const change of diffLines(contentOld, contentNew)) {
-    if (change.added) filediff.additions += change.count || 0
-    if (change.removed) filediff.deletions += change.count || 0
-  }
+  const additions = summary.additions
+  const deletions = summary.deletions
+  const metadataDiff = summary.diff
 
   ctx.metadata({
     metadata: {
-      diff,
-      filediff,
+      diff: metadataDiff,
+      additions,
+      deletions,
       diagnostics: {},
+      diffPreview: summary.preview,
+      ...(operations.length > 1 ? { operations: operations.length } : {}),
     },
   })
 
@@ -231,9 +238,12 @@ async function executeSingleEdit(
 
   return {
     metadata: {
-      diagnostics,
-      diff,
-      filediff,
+      diagnostics: { [normalizedFilePath]: issues.slice(0, MAX_DIAGNOSTICS_PER_FILE) },
+      diff: metadataDiff,
+      additions,
+      deletions,
+      diffPreview: summary.preview,
+      ...(operations.length > 1 ? { operations: operations.length } : {}),
     },
     title: `${path.relative(Instance.worktree, filePath)}`,
     output,

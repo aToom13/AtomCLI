@@ -7,11 +7,11 @@
 
 import fs from "fs/promises"
 import path from "path"
-import os from "os"
 
 import type { MemoryItem, MemoryType } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.migration" })
 
@@ -365,7 +365,7 @@ export function getDefaultStoragePaths(): {
   jsonPath: string
   chromaPath: string
 } {
-  const memoryDir = path.join(os.homedir(), ".atomcli", "memory")
+  const memoryDir = path.join(Global.Path.root, "memory")
 
   return {
     legacyPath: path.join(memoryDir, "learning.json"),

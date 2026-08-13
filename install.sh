@@ -27,17 +27,18 @@ SPINNER="◐◓◑◒"
 # Installation directory - all under ~/.atomcli/
 INSTALL_DIR="${ATOMCLI_INSTALL_DIR:-$HOME/.atomcli/bin}"
 CONFIG_DIR="${ATOMCLI_CONFIG_DIR:-$HOME/.atomcli}"
+PLAYWRIGHT_VERSION="1.62.0"
 
 # Banner
 print_banner() {
     echo ""
     echo -e "${CYAN}"
-    echo "     █████╗ ████████╗ ██████╗ ███╗   ███╗   ██████╗██╗     ██╗"
-    echo "    ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║  ██╔════╝██║     ██║"
-    echo "    ███████║   ██║   ██║   ██║██╔████╔██║  ██║     ██║     ██║"
-    echo "    ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║  ██║     ██║     ██║"
-    echo "    ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║  ╚██████╗███████╗██║"
-    echo "    ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝   ╚═════╝╚══════╝╚═╝"
+    echo "  █████╗ ████████╗ ██████╗ ███╗   ███╗   ██████╗██╗     ██╗"
+    echo " ██╔══██╗╚══██╔══╝██╔═══██╗████╗ ████║  ██╔════╝██║     ██║"
+    echo " ███████║   ██║   ██║   ██║██╔████╔██║  ██║     ██║     ██║"
+    echo " ██╔══██║   ██║   ██║   ██║██║╚██╔╝██║  ██║     ██║     ██║"
+    echo " ██║  ██║   ██║   ╚██████╔╝██║ ╚═╝ ██║  ╚██████╗███████╗██║"
+    echo " ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝   ╚═════╝╚══════╝╚═╝"
     echo -e "${NC}"
     echo -e "${DIM}    Terminal AI Coding Assistant - by Atom13${NC}"
     echo ""
@@ -165,19 +166,6 @@ check_dependencies() {
         fi
     fi
     
-    # Check Node.js (optional but recommended for MCP)
-    if has node; then
-        local node_version=$(node --version | cut -c2-)
-        local node_major=$(echo $node_version | cut -d. -f1)
-        if [ "$node_major" -ge 18 ]; then
-            success "node v${node_version}"
-        else
-            warn "node v${node_version} (v18+ recommended for MCP)"
-        fi
-    else
-        warn "node not found (optional, needed for MCP servers)"
-    fi
-    
     # Check Bun (will install if missing, except on NixOS)
     if has bun; then
         success "bun $(bun --version)"
@@ -229,6 +217,43 @@ get_latest_release() {
     else
         wget -qO- "https://api.github.com/repos/aToom13/AtomCLI/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4
     fi
+}
+
+download_file() {
+    local url="$1"
+    local destination="$2"
+    if has curl; then
+        curl -fsSL "$url" -o "$destination"
+    else
+        wget -q "$url" -O "$destination"
+    fi
+}
+
+calculate_sha256() {
+    local file="$1"
+    if has sha256sum; then
+        sha256sum "$file" | awk '{print $1}'
+    elif has shasum; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+verify_release_checksum() {
+    local binary="$1"
+    local manifest="$2"
+    local asset_name="$3"
+    local expected actual
+
+    expected=$(awk -v name="$asset_name" '$2 == name || $2 == "*" name { print $1; exit }' "$manifest")
+    case "$expected" in
+        ""|*[!0-9a-fA-F]*) return 1 ;;
+    esac
+    [ "${#expected}" -eq 64 ] || return 1
+
+    actual=$(calculate_sha256 "$binary") || return 1
+    [ "$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]
 }
 
 # Download and install binary
@@ -323,6 +348,9 @@ EOF
         version=$(get_latest_release)
     fi
     local binary_name="atomcli-${OS_TYPE}-${ARCH_TYPE}"
+    if [ "$OS_TYPE" = "windows" ]; then
+        binary_name="${binary_name}.exe"
+    fi
     
     # Create install directory
     mkdir -p "$INSTALL_DIR"
@@ -330,33 +358,25 @@ EOF
     
     if [ -n "$version" ]; then
         local url="https://github.com/aToom13/AtomCLI/releases/download/${version}/${binary_name}"
-        local tmp_binary="$(mktemp)"
-        
-        # progress bar if possible
-        if has curl; then
-            # Check if we can download successfully
-            if curl -fsSL "$url" -o "$tmp_binary"; then
-                if [ -s "$tmp_binary" ]; then
-                    chmod +x "$tmp_binary"
-                    mv "$tmp_binary" "$INSTALL_DIR/atomcli"
-                    success "Downloaded AtomCLI ${version}"
-                    return 0
-                fi
-            fi
-        elif has wget; then
-            if wget -q "$url" -O "$tmp_binary"; then
-                if [ -s "$tmp_binary" ]; then
-                    chmod +x "$tmp_binary"
-                    mv "$tmp_binary" "$INSTALL_DIR/atomcli"
-                    success "Downloaded AtomCLI ${version}"
-                    return 0
-                fi
-            fi
+        local checksum_url="https://github.com/aToom13/AtomCLI/releases/download/${version}/SHA256SUMS"
+        local download_dir tmp_binary tmp_manifest
+        download_dir=$(mktemp -d)
+        tmp_binary="$download_dir/$binary_name"
+        tmp_manifest="$download_dir/SHA256SUMS"
+
+        if download_file "$url" "$tmp_binary" \
+            && download_file "$checksum_url" "$tmp_manifest" \
+            && [ -s "$tmp_binary" ] \
+            && verify_release_checksum "$tmp_binary" "$tmp_manifest" "$binary_name"; then
+            chmod +x "$tmp_binary"
+            mv "$tmp_binary" "$INSTALL_DIR/atomcli"
+            rm -rf "$download_dir"
+            success "Downloaded and verified AtomCLI ${version}"
+            return 0
         fi
-        
-        # Clean up temp file if failed
-        rm -f "$tmp_binary"
-        warn "Download failed or file empty, attempting build from source..."
+
+        rm -rf "$download_dir"
+        warn "Download or checksum verification failed, attempting build from source..."
     fi
     
     # Fallback: build from source
@@ -372,7 +392,11 @@ EOF
     cd "$tmp_dir"
     
     step "Cloning repository..."
-    git clone --depth 1 https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1
+    if [ -n "$version" ]; then
+        git clone --depth 1 --branch "$version" https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1
+    else
+        git clone --depth 1 https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1
+    fi
     if [ $? -ne 0 ]; then
         error "Failed to clone repository"
         exit 1
@@ -431,15 +455,6 @@ EOF
         exit 1
     fi
     success "Installed dependencies"
-    
-    # Install Playwright package explicitly in AtomBase
-    step "Installing Playwright package..."
-    if [ -n "$PLAYWRIGHT_VERSION" ]; then
-        (cd AtomBase && bun add "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) || warn "Could not install playwright package"
-    else
-        (cd AtomBase && bun add playwright > /dev/null 2>&1) || warn "Could not install playwright package"
-    fi
-    success "Playwright package installed"
     
     # Install Playwright browsers
     step "Installing Playwright browsers..."
@@ -588,11 +603,7 @@ EOF
         if has bun; then
             step "Installing Playwright package via bun..."
             bun init -y > /dev/null 2>&1 || true
-            if [ -n "$PLAYWRIGHT_VERSION" ]; then
-                (bun add "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) &
-            else
-                (bun add playwright > /dev/null 2>&1) &
-            fi
+            (bun add --exact "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) &
             spin $! "Installing Playwright package..."
             
             if [ -d "node_modules/playwright" ]; then
@@ -615,40 +626,10 @@ EOF
             else
                 warn "Could not install Playwright package"
             fi
-        elif has npm; then
-            step "Installing Playwright package via npm..."
-            npm init -y > /dev/null 2>&1 || true
-            if [ -n "$PLAYWRIGHT_VERSION" ]; then
-                (npm install "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) &
-            else
-                (npm install playwright > /dev/null 2>&1) &
-            fi
-            spin $! "Installing Playwright package..."
-            
-            if [ -d "node_modules/playwright" ]; then
-                success "Playwright package installed"
-                
-                step "Installing Chromium browser..."
-                (npx playwright install chromium > /dev/null 2>&1) &
-                spin $! "Installing Chromium..."
-                success "Chromium installed"
-                
-                # Try to install system deps (Debian/Ubuntu only — apt-based)
-                if [ "$(detect_distro)" = "debian" ] && command -v sudo >/dev/null 2>&1; then
-                    info "Installing system dependencies (may require password)..."
-                    sudo npx playwright install-deps chromium 2>/dev/null || warn "Could not auto-install system deps"
-                elif [ "$(detect_distro)" = "arch" ]; then
-                    info "Arch-based system detected — Playwright install-deps is apt-only, skipping."
-                    info "If the browser fails to launch, install system libraries via pacman:"
-                    info "  sudo pacman -S --needed nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3 gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence"
-                fi
-            else
-                warn "Could not install Playwright package"
-            fi
         else
-            warn "Neither bun nor npm found. Browser tool may not work."
+            warn "Bun not found. Browser tool may not work."
             info "To install Playwright manually, run:"
-            info "  npm install playwright && npx playwright install chromium"
+            info "  bun add --exact playwright@$PLAYWRIGHT_VERSION && bunx playwright install chromium"
         fi
         
         cd - > /dev/null
@@ -734,6 +715,43 @@ setup_path() {
         export PATH="$INSTALL_DIR:$PATH"
         success "Shell configuration reloaded"
     fi
+}
+
+# Install tab completion for the active shell.
+setup_completion() {
+    local shell_name completion_dir completion_file shell_rc source_line
+    case "$SHELL" in
+        */zsh)  shell_name="zsh"; shell_rc="$HOME/.zshrc" ;;
+        */fish) shell_name="fish" ;;
+        *)
+            shell_name="bash"
+            if [ -f "$HOME/.bashrc" ]; then shell_rc="$HOME/.bashrc"; else shell_rc="$HOME/.bash_profile"; fi
+            ;;
+    esac
+
+    completion_dir="$CONFIG_DIR/completions"
+    mkdir -p "$completion_dir"
+
+    if [ "$shell_name" = "fish" ]; then
+        completion_file="$HOME/.config/fish/completions/atomcli.fish"
+        mkdir -p "$(dirname "$completion_file")"
+    else
+        completion_file="$completion_dir/atomcli.$shell_name"
+    fi
+
+    if ! "$INSTALL_DIR/atomcli" completion "$shell_name" > "$completion_file"; then
+        rm -f "$completion_file"
+        warn "Could not generate $shell_name tab completion"
+        return
+    fi
+
+    if [ "$shell_name" != "fish" ]; then
+        source_line=". \"$completion_file\""
+        if ! grep -qF "$source_line" "$shell_rc" 2>/dev/null; then
+            printf '\n# AtomCLI tab completion\n%s\n' "$source_line" >> "$shell_rc"
+        fi
+    fi
+    success "Installed $shell_name tab completion"
 }
 
 # Pre-fetch models.dev catalog for instant model availability
@@ -868,28 +886,17 @@ setup_optional_features() {
     echo -e "${YELLOW}│${NC}  ${DIM}Extend AtomCLI with external tools:${NC}          ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}  ${DIM}• Sequential Thinking - complex reasoning${NC}    ${YELLOW}│${NC}"
     echo -e "${YELLOW}│${NC}                                                 ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│${NC}  ${DIM}(Requires Node.js 18+)${NC}                       ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│${NC}  ${DIM}(Runs through Bun)${NC}                           ${YELLOW}│${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────┘${NC}"
     echo ""
     
     INSTALL_MCPS=false
-    if has node; then
-        local node_major=$(node --version | cut -c2- | cut -d. -f1)
-        if [ "$node_major" -ge 18 ]; then
-            read -p "Install default MCP servers? [Y/n] " -n 1 -r REPLY < /dev/tty
-            echo ""
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                INSTALL_MCPS=true
-                success "MCP servers will be installed"
-            else
-                info "Skipping MCP servers"
-            fi
-        else
-            warn "Node.js 18+ required for MCP servers (you have v$(node --version | cut -c2-))"
-            info "Skipping MCP servers"
-        fi
+    read -p "Install default MCP servers? [Y/n] " -n 1 -r REPLY < /dev/tty
+    echo ""
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        INSTALL_MCPS=true
+        success "MCP servers will be installed"
     else
-        warn "Node.js not found - MCP servers require Node.js 18+"
         info "Skipping MCP servers"
     fi
     echo ""
@@ -971,8 +978,8 @@ EOF
         local config_file="$CONFIG_DIR/mcp.json"
         
         # Read existing config and add MCPs with correct format
-        # Use node to create/update JSON
-        node -e "
+        # Use Bun to create/update JSON
+        bun -e "
             const fs = require('fs');
             const configFile = '$config_file';
             let config = {};
@@ -986,7 +993,7 @@ EOF
             
             config.mcp['sequential-thinking'] = {
                 type: 'local',
-                command: ['npx', '-y', '@modelcontextprotocol/server-sequential-thinking'],
+                command: ['bunx', '@modelcontextprotocol/server-sequential-thinking'],
                 enabled: true
             };
             fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
@@ -1072,10 +1079,12 @@ main_install() {
             step "Cloning repository..."
             git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$tmp_dir/AtomCLI" 2>/dev/null
             step "Building..."
-            cd "$tmp_dir/AtomCLI/AtomBase" && bun install && bun run build
-            if [ -f "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" ]; then
+            cd "$tmp_dir/AtomCLI/AtomBase" && bun install && bun run build --single
+            local built_binary
+            built_binary=$(find "$tmp_dir/AtomCLI/AtomBase/dist" -path '*/bin/atomcli' -type f | head -1)
+            if [ -n "$built_binary" ] && [ -f "$built_binary" ]; then
                 mkdir -p "$INSTALL_DIR"
-                cp "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" "$INSTALL_DIR/atomcli"
+                cp "$built_binary" "$INSTALL_DIR/atomcli"
                 chmod +x "$INSTALL_DIR/atomcli"
                 success "Built and installed from source"
             else
@@ -1083,6 +1092,7 @@ main_install() {
             fi
             rm -rf "$tmp_dir"
             setup_path
+            setup_completion
             setup_config
             prefetch_models_cache
             setup_optional_features
@@ -1094,6 +1104,7 @@ main_install() {
     
     install_binary
     setup_path
+    setup_completion
     setup_config
     prefetch_models_cache
     setup_optional_features
@@ -1119,6 +1130,9 @@ uninstall() {
     else
         info "Binary not found at $INSTALL_DIR/atomcli"
     fi
+
+    # Fish completion lives outside CONFIG_DIR and must always be cleaned up.
+    rm -f "$HOME/.config/fish/completions/atomcli.fish"
     
     # Ask about config
     echo ""
@@ -1159,8 +1173,7 @@ uninstall() {
     
     # Remove from PATH (inform user)
     echo ""
-    info "Note: PATH entry in shell config was not removed."
-    info "You can manually remove the AtomCLI line from your shell config."
+    info "Note: remove the AtomCLI PATH/completion block from your shell config if it remains."
     
     # Print completion
     echo ""
@@ -1289,9 +1302,11 @@ update() {
             step "Cloning repository..."
             git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$tmp_dir/AtomCLI" 2>/dev/null
             step "Building..."
-            cd "$tmp_dir/AtomCLI/AtomBase" && bun install && bun run build
-            if [ -f "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" ]; then
-                cp "$tmp_dir/AtomCLI/AtomBase/dist/atomcli" "$INSTALL_DIR/atomcli"
+            cd "$tmp_dir/AtomCLI/AtomBase" && bun install && bun run build --single
+            local built_binary
+            built_binary=$(find "$tmp_dir/AtomCLI/AtomBase/dist" -path '*/bin/atomcli' -type f | head -1)
+            if [ -n "$built_binary" ] && [ -f "$built_binary" ]; then
+                cp "$built_binary" "$INSTALL_DIR/atomcli"
                 chmod +x "$INSTALL_DIR/atomcli"
                 success "Built and installed from source"
             else
@@ -1317,6 +1332,7 @@ update() {
     
     # Setup path/config again to ensure they are correct (idempotent)
     setup_path
+    setup_completion
     setup_config
     setup_optional_features
     
@@ -1351,6 +1367,10 @@ show_help() {
 }
 
 # Parse arguments and run
+if [ "${ATOMCLI_INSTALLER_LIBRARY_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 if [ -n "$VERSION" ]; then
     NONINTERACTIVE="1"
 fi

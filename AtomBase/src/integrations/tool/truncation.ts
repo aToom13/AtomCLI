@@ -30,12 +30,49 @@ export namespace Truncate {
     }
   }
 
-  const init = lazy(cleanup)
+  const init = lazy(async () => {
+    await fs.mkdir(DIR, { recursive: true })
+    await cleanup()
+  })
+
+  export async function createOutputPath() {
+    await init()
+    return path.join(DIR, Identifier.ascending("tool"))
+  }
 
   function hasTaskTool(agent?: Agent.Info): boolean {
     if (!agent?.permission) return false
     const rule = PermissionNext.evaluate("task", "*", agent.permission)
     return rule.action !== "deny"
+  }
+
+  function truncatedResult(
+    preview: string,
+    removed: number,
+    unit: "bytes" | "lines",
+    filepath: string,
+    direction: "head" | "tail",
+    agent?: Agent.Info,
+  ): Result {
+    const hint = hasTaskTool(agent)
+      ? `The tool call succeeded but the output was truncated. Full output saved to: ${filepath}\nUse the agent tool (action='spawn') to have a subagent process this file with Grep and Read (with offset/limit). Do NOT read the full file yourself - delegate to save context.`
+      : `The tool call succeeded but the output was truncated. Full output saved to: ${filepath}\nUse Grep to search the full content or Read with offset/limit to view specific sections.`
+    const message =
+      direction === "head"
+        ? `${preview}\n\n...${removed} ${unit} truncated...\n\n${hint}`
+        : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`
+    return { content: message, truncated: true, outputPath: filepath }
+  }
+
+  export function streamed(
+    preview: string,
+    totals: { bytes: number; lines: number; previewBytes: number; previewLines: number },
+    outputPath: string,
+    agent?: Agent.Info,
+  ): Result {
+    const hitBytes = totals.bytes > MAX_BYTES
+    const removed = hitBytes ? totals.bytes - totals.previewBytes : totals.lines - totals.previewLines
+    return truncatedResult(preview, Math.max(0, removed), hitBytes ? "bytes" : "lines", outputPath, "head", agent)
   }
 
   export async function output(text: string, options: Options = {}, agent?: Agent.Info): Promise<Result> {
@@ -86,19 +123,8 @@ export namespace Truncate {
     const unit = hitBytes ? "bytes" : "lines"
     const preview = out.join("\n")
 
-    await init()
-    const id = Identifier.ascending("tool")
-    const filepath = path.join(DIR, id)
+    const filepath = await createOutputPath()
     await Bun.write(Bun.file(filepath), text)
-
-    const hint = hasTaskTool(agent)
-      ? `The tool call succeeded but the output was truncated. Full output saved to: ${filepath}\nUse the agent tool (action='spawn') to have a subagent process this file with Grep and Read (with offset/limit). Do NOT read the full file yourself - delegate to save context.`
-      : `The tool call succeeded but the output was truncated. Full output saved to: ${filepath}\nUse Grep to search the full content or Read with offset/limit to view specific sections.`
-    const message =
-      direction === "head"
-        ? `${preview}\n\n...${removed} ${unit} truncated...\n\n${hint}`
-        : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`
-
-    return { content: message, truncated: true, outputPath: filepath }
+    return truncatedResult(preview, removed, unit, filepath, direction, agent)
   }
 }

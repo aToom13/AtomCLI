@@ -17,6 +17,7 @@ import type {
   CryptoExtras,
 } from "../types"
 import { evaluateWalls, analyzeFunding } from "../logic"
+import { Http } from "../../http"
 
 const log = Log.create({ service: "finance-crypto" })
 
@@ -29,6 +30,10 @@ const BINANCE_FUTURES = "https://fapi.binance.com/fapi/v1"
 const BINANCE_FUTURES_DATA = "https://fapi.binance.com/futures/data" // For Long/Short ratio
 const COINGECKO_API = "https://api.coingecko.com/api/v3"
 const FEAR_GREED_API = "https://api.alternative.me/fng/"
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+const REQUEST_TIMEOUT_MS = 15_000
+
+const json = async (response: Response) => JSON.parse(await Http.readText(response, MAX_RESPONSE_BYTES))
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SYMBOL NORMALIZATION (LLMcripto Compatible)
@@ -98,6 +103,7 @@ async function safeFetch(url: string, limiterKey: string = "default"): Promise<R
       headers: {
         "User-Agent": "AtomCLI/1.0",
       },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
 
     if (!response.ok) {
@@ -128,7 +134,7 @@ export async function fetchCryptoPrice(symbol: string): Promise<PriceData> {
     throw new Error(`Failed to fetch price for ${symbol}`)
   }
 
-  const data = await response.json()
+  const data = await json(response)
 
   return {
     symbol: normalizedSymbol,
@@ -158,7 +164,7 @@ export async function fetchCryptoKlines(symbol: string, interval: string = "1h",
     return []
   }
 
-  const data = await response.json()
+  const data = await json(response)
 
   return data.map((k: any[]) => ({
     timestamp: new Date(k[0]),
@@ -180,18 +186,18 @@ export async function fetchDerivatives(symbol: string): Promise<DerivativesData 
     // Open Interest
     const oiResponse = await safeFetch(`${BINANCE_FUTURES}/openInterest?symbol=${normalizedSymbol}`, "binance")
     if (!oiResponse) return null
-    const oiData = await oiResponse.json()
+    const oiData = await json(oiResponse)
 
     // Premium Index (Funding Rate + Mark Price)
     const frResponse = await safeFetch(`${BINANCE_FUTURES}/premiumIndex?symbol=${normalizedSymbol}`, "binance")
-    const frData = frResponse ? await frResponse.json() : { lastFundingRate: 0, markPrice: 0 }
+    const frData = frResponse ? await json(frResponse) : { lastFundingRate: 0, markPrice: 0 }
 
     // Long/Short Ratio - use /futures/data/ path (not /fapi/v1/)
     const lsResponse = await safeFetch(
       `${BINANCE_FUTURES_DATA}/globalLongShortAccountRatio?symbol=${normalizedSymbol}&period=4h&limit=1`,
       "binance",
     )
-    const lsData = lsResponse ? await lsResponse.json() : []
+    const lsData = lsResponse ? await json(lsResponse) : []
 
     const fundingRate = parseFloat(frData.lastFundingRate || "0")
     const markPrice = parseFloat(frData.markPrice || "0")
@@ -228,7 +234,7 @@ export async function fetchOrderBook(symbol: string, limit: number = 500): Promi
   const response = await safeFetch(url, "binance")
   if (!response) return null
 
-  const data = await response.json()
+  const data = await json(response)
   const bids: [number, number][] = data.bids.map((b: string[]) => [parseFloat(b[0]), parseFloat(b[1])])
   const asks: [number, number][] = data.asks.map((a: string[]) => [parseFloat(a[0]), parseFloat(a[1])])
 
@@ -320,7 +326,7 @@ export async function fetchFearGreed(): Promise<FearGreedData> {
   const response = await safeFetch(FEAR_GREED_API, "default")
 
   if (response) {
-    const data = await response.json()
+    const data = await json(response)
     if (data.data && data.data[0]) {
       return {
         value: parseInt(data.data[0].value),
@@ -340,7 +346,7 @@ export async function fetchTrending(): Promise<string[]> {
   const response = await safeFetch(url, "coingecko")
 
   if (response) {
-    const data = await response.json()
+    const data = await json(response)
     return (data.coins || []).slice(0, 5).map((c: any) => c.item?.symbol?.toUpperCase() || "")
   }
 
@@ -355,7 +361,7 @@ export async function fetchGlobalMarket(): Promise<GlobalMarket | null> {
   const response = await safeFetch(url, "coingecko")
 
   if (response) {
-    const data = await response.json()
+    const data = await json(response)
     const d = data.data || {}
     return {
       totalMarketCapUsd: d.total_market_cap?.usd || 0,

@@ -1,6 +1,9 @@
 import { For, Show, createMemo, createSignal, Switch, Match } from "solid-js"
 import { useTheme } from "@tui/context/theme"
 import { StatusIcons, type AgentChain, type ChainStep, type StepTodo, type SubStep } from "@/integrations/agent/chain"
+import { useSession } from "@tui/routes/session/context"
+import { useTerminalDimensions } from "@opentui/solid"
+import { SessionLayout } from "@tui/routes/session/layout"
 
 /**
  * Task Chain Progress Bar - Redesigned
@@ -12,6 +15,8 @@ import { StatusIcons, type AgentChain, type ChainStep, type StepTodo, type SubSt
  */
 export function ChainProgressBar(props: { chain: AgentChain | null }) {
     const { theme } = useTheme()
+    const session = useSession()
+    const dimensions = useTerminalDimensions()
     const [expanded, setExpanded] = createSignal(false)
     const [selectedStep, setSelectedStep] = createSignal<number | null>(null)
     const [selectedSubStep, setSelectedSubStep] = createSignal<number | null>(null)
@@ -23,6 +28,15 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
     const hasError = createMemo(() =>
         props.chain?.steps.some((s) => s.status === "failed") ?? false
     )
+    const compact = createMemo(() => session.width < 58)
+    const narrow = createMemo(() => session.width < 82)
+    const dense = createMemo(() => session.verticalMode !== "normal")
+    const contentRows = createMemo(() =>
+        props.chain?.steps.reduce((rows, step) =>
+            rows + 1 + (step.dependsOn?.length ? 1 : 0) + (step.subPlanReason ? 1 : 0) + (step.subSteps?.length ?? 0), 0
+        ) ?? 0
+    )
+    const expandedHeight = createMemo(() => SessionLayout.chainExpandedHeight(dimensions().height, contentRows()))
 
     const selectedStepData = createMemo(() => {
         const idx = selectedStep()
@@ -72,10 +86,11 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                     onMouseUp={() => setExpanded((prev) => !prev)}
                 >
                     <text fg={theme.accent}>
-                        <span style={{ bold: true }}>{expanded() ? "▼" : "▶"} GÖREV PLANI</span>
+                        <span style={{ bold: true }}>{expanded() ? "▼" : "▶"} {compact() ? "Tasks" : "Task plan"}</span>
                     </text>
 
                     {/* Dots */}
+                    <Show when={!compact()}>
                     <box flexDirection="row" gap={0} paddingLeft={1}>
                         <For each={props.chain!.steps}>
                             {(step, i) => {
@@ -96,6 +111,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             }}
                         </For>
                     </box>
+                    </Show>
 
                     {/* Status summary */}
                     <text fg={theme.textMuted} paddingLeft={1}>
@@ -103,28 +119,28 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                     </text>
 
                     <Show when={hasError()}>
-                        <text fg={theme.error} paddingLeft={1}>⚠️ Hata</text>
+                        <text fg={theme.error} paddingLeft={1}>{compact() ? "!" : "⚠ Error"}</text>
                     </Show>
                 </box>
 
                 {/* Expanded Task List View */}
                 <Show when={expanded()}>
                     <box
-                        flexDirection="row"
+                        flexDirection={narrow() || dense() ? "column" : "row"}
                         backgroundColor={theme.background}
                         border={["bottom"]}
                         borderColor={theme.border}
-                        minHeight={10}
-                        maxHeight={20}
+                        height={expandedHeight()}
                     >
                         {/* Left: Step List */}
-                        <box
+                        <scrollbox
                             flexDirection="column"
                             paddingLeft={1}
-                            paddingRight={2}
-                            paddingTop={1}
-                            paddingBottom={1}
-                            flexShrink={0}
+                            paddingRight={dense() ? 1 : 2}
+                            paddingTop={dense() ? 0 : 1}
+                            paddingBottom={dense() ? 0 : 1}
+                            flexGrow={narrow() || dense() ? 1 : 0}
+                            width={narrow() || dense() ? "100%" : Math.max(24, Math.floor(session.width * 0.45))}
                         >
                             <For each={props.chain!.steps}>
                                 {(step, i) => (
@@ -168,9 +184,10 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                                     </box>
                                 )}
                             </For>
-                        </box>
+                        </scrollbox>
 
                         {/* Right: Detail Panel */}
+                        <Show when={!narrow() && !dense()}>
                         <box
                             flexDirection="column"
                             paddingLeft={2}
@@ -252,6 +269,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                                 </Match>
                             </Switch>
                         </box>
+                        </Show>
                     </box>
                 </Show>
             </box>
@@ -286,7 +304,7 @@ function ChainStepRow(props: {
     return (
         <box flexDirection="column" onMouseUp={props.onClick}>
             {/* Main row */}
-            <text fg={color()}>
+            <text fg={color()} wrapMode="word">
                 {props.isSelected ? "▶ " : "  "}
                 {props.index + 1}. {icon()} {props.step.name}
                 <Show when={props.step.agentType}>

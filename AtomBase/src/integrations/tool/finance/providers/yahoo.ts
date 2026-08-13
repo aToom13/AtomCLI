@@ -7,6 +7,7 @@
 
 import { Log } from "@/util/util/log"
 import type { PriceData, OHLC, StockExtras, AssetType } from "../types"
+import { Http } from "../../http"
 
 const log = Log.create({ service: "finance-yahoo" })
 
@@ -23,6 +24,8 @@ export const YAHOO_QUOTE_API = "https://query1.finance.yahoo.com/v7/finance/quot
 
 let lastYahooCall = 0
 const YAHOO_MIN_INTERVAL = 500 // Min 500ms between calls
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+const REQUEST_TIMEOUT_MS = 15_000
 
 async function waitForYahooRateLimit(): Promise<void> {
   const now = Date.now()
@@ -46,6 +49,7 @@ async function yahooFetch(url: string): Promise<any | null> {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         Accept: "application/json",
       },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
 
     if (!response.ok) {
@@ -53,7 +57,7 @@ async function yahooFetch(url: string): Promise<any | null> {
       return null
     }
 
-    return await response.json()
+    return JSON.parse(await Http.readText(response, MAX_RESPONSE_BYTES))
   } catch (error) {
     log.error(`Yahoo Finance fetch error`, { error: String(error) })
     return null

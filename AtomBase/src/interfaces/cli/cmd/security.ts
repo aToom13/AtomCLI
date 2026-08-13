@@ -1,9 +1,9 @@
 /**
  * Security Scanner Command
- * 
+ *
  * Scans code for security vulnerabilities, OWASP patterns, and hardcoded secrets.
  * Checks dependencies for known vulnerabilities.
- * 
+ *
  * Usage: atomcli security --scan
  */
 
@@ -18,7 +18,6 @@ export namespace SecurityScanner {
   const log = Log.create({ service: "security" })
 
   export interface ScanOptions {
-    scan?: boolean
     fix?: boolean
     severity?: "low" | "medium" | "high" | "critical"
     files?: string[]
@@ -248,13 +247,13 @@ export namespace SecurityScanner {
   function isBinaryOrMinified(content: string): boolean {
     // Check for minified files (very long lines)
     const lines = content.split("\n")
-    const longLines = lines.filter(l => l.length > 500)
+    const longLines = lines.filter((l) => l.length > 500)
     if (longLines.length > lines.length * 0.5) {
       return true
     }
 
     // Check for binary content
-    const nullBytes = content.split("").filter(c => c === "\0").length
+    const nullBytes = content.split("").filter((c) => c === "\0").length
     if (nullBytes > 0) {
       return true
     }
@@ -269,8 +268,8 @@ export namespace SecurityScanner {
     const issues: SecurityIssue[] = []
 
     try {
-      // Run npm audit
-      const proc = Bun.spawn(["npm", "audit", "--json"], {
+      // Use the repository's pinned package manager for dependency auditing.
+      const proc = Bun.spawn(["bun", "audit", "--json"], {
         stdout: "pipe",
         stderr: "pipe",
         cwd: process.cwd(),
@@ -302,7 +301,7 @@ export namespace SecurityScanner {
         }
       }
     } catch (e) {
-      log.warn("npm audit failed", { error: e })
+      log.warn("bun audit failed", { error: e })
     }
 
     return issues
@@ -310,11 +309,15 @@ export namespace SecurityScanner {
 
   function mapSeverity(severity: string): "low" | "medium" | "high" | "critical" {
     switch (severity.toLowerCase()) {
-      case "critical": return "critical"
-      case "high": return "high"
+      case "critical":
+        return "critical"
+      case "high":
+        return "high"
       case "moderate":
-      case "medium": return "medium"
-      default: return "low"
+      case "medium":
+        return "medium"
+      default:
+        return "low"
     }
   }
 
@@ -328,18 +331,11 @@ export namespace SecurityScanner {
 
     // Scan source files
     const glob = new Bun.Glob("**/*.{ts,js,tsx,jsx,mjs,cjs}")
-    const excludePatterns = [
-      "node_modules",
-      "dist",
-      "build",
-      ".git",
-      "*.test.",
-      "*.spec.",
-    ]
+    const excludePatterns = ["node_modules", "dist", "build", ".git", ".test.", ".spec."]
 
     for await (const file of glob.scan(".")) {
       // Skip excluded files
-      if (excludePatterns.some(p => file.includes(p))) {
+      if (excludePatterns.some((p) => file.includes(p))) {
         continue
       }
 
@@ -359,13 +355,13 @@ export namespace SecurityScanner {
     // Calculate summary
     const summary = {
       total: issues.length,
-      critical: issues.filter(i => i.severity === "critical").length,
-      high: issues.filter(i => i.severity === "high").length,
-      medium: issues.filter(i => i.severity === "medium").length,
-      low: issues.filter(i => i.severity === "low").length,
-      secrets: issues.filter(i => i.type === "secret").length,
-      vulnerabilities: issues.filter(i => i.type === "vulnerability" || i.type === "owasp").length,
-      dependencies: issues.filter(i => i.type === "dependency").length,
+      critical: issues.filter((i) => i.severity === "critical").length,
+      high: issues.filter((i) => i.severity === "high").length,
+      medium: issues.filter((i) => i.severity === "medium").length,
+      low: issues.filter((i) => i.severity === "low").length,
+      secrets: issues.filter((i) => i.type === "secret").length,
+      vulnerabilities: issues.filter((i) => i.type === "vulnerability" || i.type === "owasp").length,
+      dependencies: issues.filter((i) => i.type === "dependency").length,
     }
 
     const duration = Date.now() - startTime
@@ -404,10 +400,10 @@ export namespace SecurityScanner {
 
     // Group issues by severity
     const bySeverity = {
-      critical: result.issues.filter(i => i.severity === "critical"),
-      high: result.issues.filter(i => i.severity === "high"),
-      medium: result.issues.filter(i => i.severity === "medium"),
-      low: result.issues.filter(i => i.severity === "low"),
+      critical: result.issues.filter((i) => i.severity === "critical"),
+      high: result.issues.filter((i) => i.severity === "high"),
+      medium: result.issues.filter((i) => i.severity === "medium"),
+      low: result.issues.filter((i) => i.severity === "low"),
     }
 
     for (const [severity, issues] of Object.entries(bySeverity)) {
@@ -457,12 +453,6 @@ export const SecurityCommand = cmd({
   describe: "Scan code for security vulnerabilities and secrets",
   builder: (yargs) =>
     yargs
-      .option("scan", {
-        type: "boolean",
-        alias: "s",
-        describe: "Run security scan",
-        default: true,
-      })
       .option("fix", {
         type: "boolean",
         alias: "f",
@@ -494,7 +484,6 @@ export const SecurityCommand = cmd({
       console.log("🔒 Running security scan...\n")
 
       const result = await SecurityScanner.scan({
-        scan: args.scan,
         fix: args.fix,
         severity: args.severity as "low" | "medium" | "high" | "critical" | undefined,
       })
@@ -504,17 +493,23 @@ export const SecurityCommand = cmd({
       if (args.severity) {
         const severityOrder = ["low", "medium", "high", "critical"]
         const minIndex = severityOrder.indexOf(args.severity)
-        filteredIssues = result.issues.filter(i => {
+        filteredIssues = result.issues.filter((i) => {
           return severityOrder.indexOf(i.severity) >= minIndex
         })
       }
 
       // Output results
       if (args.json) {
-        console.log(JSON.stringify({
-          ...result,
-          issues: filteredIssues,
-        }, null, 2))
+        console.log(
+          JSON.stringify(
+            {
+              ...result,
+              issues: filteredIssues,
+            },
+            null,
+            2,
+          ),
+        )
       } else {
         const report = SecurityScanner.generateReport({
           ...result,
@@ -528,14 +523,14 @@ export const SecurityCommand = cmd({
       }
 
       // Exit with error code if critical issues found
-      const criticalCount = filteredIssues.filter(i => i.severity === "critical").length
+      const criticalCount = filteredIssues.filter((i) => i.severity === "critical").length
       if (criticalCount > 0) {
         console.log(`\n❌ ${criticalCount} critical issues found!`)
         process.exit(1)
       }
 
       // Exit with error code if high issues found and not in fix mode
-      const highCount = filteredIssues.filter(i => i.severity === "high").length
+      const highCount = filteredIssues.filter((i) => i.severity === "high").length
       if (highCount > 0 && !args.fix) {
         console.log(`\n⚠️  ${highCount} high severity issues found. Run with --fix to attempt auto-fix.`)
         process.exit(1)
@@ -550,7 +545,6 @@ export const SecurityCommand = cmd({
       }
 
       console.log("\n✅ Security scan complete!")
-
     } catch (error) {
       log.error("security scan failed", { error })
       console.error("Error:", error instanceof Error ? error.message : error)

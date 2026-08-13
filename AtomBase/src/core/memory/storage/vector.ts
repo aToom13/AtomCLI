@@ -7,7 +7,6 @@
 
 import fs from "fs/promises"
 import path from "path"
-import os from "os"
 
 import type {
   MemoryItem,
@@ -15,6 +14,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.storage.chroma" })
 
@@ -47,7 +47,7 @@ export class ChromaStorage {
 
   constructor(persistPath?: string) {
     this.persistPath = persistPath
-      || path.join(os.homedir(), ".atomcli", "memory", "chroma")
+      || path.join(Global.Path.root, "memory", "chroma")
   }
 
   // ============================================================================

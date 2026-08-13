@@ -1,18 +1,40 @@
 import { describe, expect, test, beforeEach } from "bun:test"
-import path from "path"
 import { LSPClient } from "@/integrations/lsp/client"
 import { LSPServer } from "@/integrations/lsp/server"
 import { Instance } from "@/services/project/instance"
 import { Log } from "@/util/util/log"
+import { PassThrough } from "stream"
+import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node"
 
-// Minimal fake LSP server that speaks JSON-RPC over stdio
+// Minimal in-memory LSP server. Keeping both ends as Node streams exercises the
+// same vscode-jsonrpc transport without depending on Bun child-process pipe
+// behavior, which differs across Bun versions and operating systems.
 function spawnFakeServer() {
-  const { spawn } = require("child_process")
-  const serverPath = path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")
+  const clientToServer = new PassThrough()
+  const serverToClient = new PassThrough()
+  const connection = createMessageConnection(
+    new StreamMessageReader(clientToServer),
+    new StreamMessageWriter(serverToClient),
+  )
+  connection.onRequest("initialize", async () => ({ capabilities: {} }))
+  connection.listen()
+
   return {
-    process: spawn(process.execPath, [serverPath], {
-      stdio: "pipe",
-    }),
+    process: {
+      stdin: clientToServer,
+      stdout: serverToClient,
+      pid: process.pid,
+      kill() {
+        connection.end()
+        connection.dispose()
+        clientToServer.destroy()
+        serverToClient.destroy()
+        return true
+      },
+    },
+    request(method: string) {
+      return connection.sendRequest(method, {})
+    },
   }
 }
 
@@ -34,13 +56,8 @@ describe("LSPClient interop", () => {
         }),
     })
 
-    await client.connection.sendNotification("test/trigger", {
-      method: "workspace/workspaceFolders",
-    })
-
-    await new Promise((r) => setTimeout(r, 100))
-
-    expect(client.connection).toBeDefined()
+    const result = await handle.request("workspace/workspaceFolders")
+    expect(result).toEqual([{ name: "workspace", uri: new URL(`file://${process.cwd()}`).href }])
 
     await client.shutdown()
   })
@@ -58,13 +75,7 @@ describe("LSPClient interop", () => {
         }),
     })
 
-    await client.connection.sendNotification("test/trigger", {
-      method: "client/registerCapability",
-    })
-
-    await new Promise((r) => setTimeout(r, 100))
-
-    expect(client.connection).toBeDefined()
+    expect(await handle.request("client/registerCapability")).toBeNull()
 
     await client.shutdown()
   })
@@ -82,13 +93,7 @@ describe("LSPClient interop", () => {
         }),
     })
 
-    await client.connection.sendNotification("test/trigger", {
-      method: "client/unregisterCapability",
-    })
-
-    await new Promise((r) => setTimeout(r, 100))
-
-    expect(client.connection).toBeDefined()
+    expect(await handle.request("client/unregisterCapability")).toBeNull()
 
     await client.shutdown()
   })

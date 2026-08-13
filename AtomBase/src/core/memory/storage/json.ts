@@ -7,7 +7,6 @@
 
 import fs from "fs/promises"
 import path from "path"
-import os from "os"
 
 import type {
   MemoryItem,
@@ -17,6 +16,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 import { bm25Score } from "../core/bm25"
 
 const log = Log.create({ service: "memory.storage.json" })
@@ -33,7 +33,7 @@ export class JSONStorage {
   constructor(filePath?: string) {
     this.dirPath = filePath
       ? path.dirname(filePath)
-      : path.join(os.homedir(), ".atomcli", "memory")
+      : path.join(Global.Path.root, "memory")
     this.filePath = filePath
       || path.join(this.dirPath, "memories.json")
   }

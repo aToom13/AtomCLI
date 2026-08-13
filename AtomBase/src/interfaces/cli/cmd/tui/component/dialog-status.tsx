@@ -63,7 +63,7 @@ export function DialogStatus() {
         <text fg={isAutonomous() ? theme.warning : theme.success} attributes={TextAttributes.BOLD}>
           {isAutonomous() ? "🚀 AUTONOMOUS" : "🛡️ SAFE"}
         </text>
-        <text fg={theme.textMuted}>(type /yolo to toggle)</text>
+        <text fg={theme.textMuted}>(use /autonomous or /safe)</text>
       </box>
       <text fg={theme.textMuted} wrapMode="word">
         {isAutonomous()
@@ -79,7 +79,7 @@ export function DialogStatus() {
         <text fg={isSmartRouting() ? theme.primary : theme.textMuted} attributes={TextAttributes.BOLD}>
           {isSmartRouting() ? "🧠 SMART" : "📌 DEFAULT"}
         </text>
-        <text fg={theme.textMuted}>(type /smart_model to toggle)</text>
+        <text fg={theme.textMuted}>(type /smart-model to toggle)</text>
       </box>
       <text fg={theme.textMuted} wrapMode="word">
         {isSmartRouting()

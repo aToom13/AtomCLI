@@ -1,45 +1,26 @@
 # AtomCLI SDK
 
-JavaScript/TypeScript SDK for integrating with AtomCLI.
+The JavaScript/TypeScript SDK lives in `js/`. Its public package is `@atomcli/sdk`, with exports under `@atomcli/sdk/v2`, `@atomcli/sdk/v2/client`, and `@atomcli/sdk/v2/server`.
 
-## Overview
+Create a client with the generated SDK wrapper:
 
-The SDK provides programmatic access to AtomCLI's functionality, allowing you to:
-- Create and manage sessions
-- Send messages to AI agents
-- Access tool capabilities
-- Subscribe to events
+```ts
+import { createAtomcliClient } from "@atomcli/sdk/v2"
 
-## Structure
-
-- `js/` - JavaScript/TypeScript SDK implementation
-- `openapi.json` - OpenAPI specification for the AtomCLI API
-
-## Usage
-
-```typescript
-import { AtomCLI } from '@atomcli/sdk'
-
-const client = new AtomCLI({
-  baseURL: 'http://localhost:3000'
-})
-
-// Create a session
-const session = await client.sessions.create()
-
-// Send a message
-await client.messages.send(session.id, {
-  content: 'Hello, AtomCLI!'
+const client = createAtomcliClient({
+  baseUrl: "http://127.0.0.1:4096",
 })
 ```
 
-## Documentation
+The server port is configurable and may fall back to an available port, so use the URL printed by `atomcli serve` when connecting to a running instance.
 
-- [SDK API Reference](js/README.md) - Detailed API documentation
-- [Development Guide](../../docs/DEVELOPMENT.md) - Technical documentation
-- [Main README](../../README.md) - Project overview
+`js/openapi.json` is a temporary code-generation input and `js/src/v2/gen/` is generated source. After changing AtomBase server routes, regenerate them:
 
-## Navigation
+```sh
+cd AtomBase
+bun run dev generate > ../libs/sdk/js/openapi.json
+cd ../libs/sdk/js
+bun run build
+```
 
-- **Parent**: [libs/](../README.md)
-- **Root**: [AtomCLI](../../README.md)
+Do not edit generated files manually.

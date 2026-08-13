@@ -584,6 +584,7 @@ export type ProviderConfig = {
           [key: string]: unknown
         }
       }
+      [key: string]: unknown
     }
   }
   whitelist?: Array<string>
@@ -1981,10 +1982,10 @@ export type Event =
   | EventFileChanged
   | EventFileCreated
   | EventFileDeleted
-  | EventSessionStatus
-  | EventSessionCompacted
   | EventFileWatcherUpdated
   | EventVcsBranchUpdated
+  | EventSessionStatus
+  | EventSessionCompacted
   | EventTodoUpdated
 
 export type GlobalEvent = {
@@ -2219,6 +2220,21 @@ export type EventFileDeleted = {
   }
 }
 
+export type EventFileWatcherUpdated = {
+  type: "file.watcher.updated"
+  properties: {
+    file: string
+    event: "add" | "change" | "unlink"
+  }
+}
+
+export type EventVcsBranchUpdated = {
+  type: "vcs.branch.updated"
+  properties: {
+    branch?: string
+  }
+}
+
 export type SessionStatus =
   | {
       type: "idle"
@@ -2245,21 +2261,6 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
-  }
-}
-
-export type EventFileWatcherUpdated = {
-  type: "file.watcher.updated"
-  properties: {
-    file: string
-    event: "add" | "change" | "unlink"
-  }
-}
-
-export type EventVcsBranchUpdated = {
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
   }
 }
 
@@ -5241,7 +5242,7 @@ export type ProviderListResponses = {
           release_date: string
           attachment: boolean
           reasoning: boolean
-          temperature: boolean
+          temperature?: boolean
           tool_call: boolean
           interleaved?:
             | true
@@ -5268,24 +5269,31 @@ export type ProviderListResponses = {
             input: Array<"text" | "audio" | "image" | "video" | "pdf">
             output: Array<"text" | "audio" | "image" | "video" | "pdf">
           }
-          experimental?: boolean
+          experimental?:
+            | boolean
+            | {
+                [key: string]: unknown
+              }
           status?: "alpha" | "beta" | "deprecated"
-          options: {
+          options?: {
             [key: string]: unknown
           }
           headers?: {
             [key: string]: string
           }
           provider?: {
-            npm: string
+            npm?: string
+            [key: string]: unknown
           }
           variants?: {
             [key: string]: {
               [key: string]: unknown
             }
           }
+          [key: string]: unknown
         }
       }
+      [key: string]: unknown
     }>
     default: {
       [key: string]: string

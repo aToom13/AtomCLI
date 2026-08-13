@@ -1,41 +1,9 @@
-# IMPORTANT ARCHITECTURAL NOTE FOR FUTURE AGENTS AND DEVELOPERS
+# Tool registry notes
 
-## Primary Tool for Planning and Progress Tracking: `taskflow`
+`taskflow` is the primary planning and progress tool exposed to agents. It publishes the TUI chain events used to render progress and coordinates the review gate when a task is cleared.
 
-As of Phase 3 consolidation:
-- **`TaskFlowTool` (`taskflow`) is the PRIMARY and ONLY user-facing planning & progress tracking tool** in AtomCLI.
-- It unifies step planning (previously `chainupdate`) and todo item management (previously `todowrite` / `todoread`) into a single interface:
-  ```ts
-  taskflow({
-    action: "start" | "update" | "complete" | "fail" | "clear",
-    plan: [{ name: "Step 1", todos: ["Task A", "Task B"] }],
-    step_id: "0",
-    status: "running",
-    todo_id: "0",
-    todo_status: "completed"
-  })
-  ```
+The legacy `chainupdate`, `todowrite`, and `todoread` tool implementations were removed. Their permission keys and historical-session renderers remain backward-compatible, while `taskflow` is the only registered planning interface.
 
----
+Skill installation is the `skill` tool's `add` action; do not add a second installer tool. MCP configuration remains a CLI/config-file workflow, and process lifecycle operations remain outside the agent tool registry. The old heuristic `test_gen`, `docs`, `refactor`, and `review` tool wrappers were removed; their dedicated CLI commands are independent implementations.
 
-## Deprecated Legacy Tools & Dependencies
-
-1. **`chainupdate.ts` (`ChainUpdateTool`):**
-   - **Status:** DEPRECATED & UNREGISTERED from `ToolRegistry.all()`.
-   - **Dependency Note:** Maintained internally because `taskflow` and TUI event handling (`TuiEvent.ChainStart`, `ChainAddStep`, `ChainUpdateStep`, `ChainCompleteStep`) publish TUI events that render progress bars in the client. Do NOT remove source files (`chainupdate.ts`) or TUI event listeners.
-
-2. **`todo.ts` (`TodoWriteTool`, `TodoReadTool`):**
-   - **Status:** DEPRECATED & UNREGISTERED from `ToolRegistry.all()`.
-   - **Dependency Note:** Maintained for backward compatibility and internal session state tracking (`Session.todo`).
-
-3. **`skilladd.ts` (`SkillAddTool`):**
-   - **Status:** DEPRECATED & UNREGISTERED. Unified into `SkillTool` (`skill`) with `action: "load" | "add"`.
-
-4. **Legacy Heuristic Tools (`test-gen.ts`, `docs.ts`, `refactor.ts`, `review.ts`):**
-   - **Status:** DEPRECATED & UNREGISTERED from `ToolRegistry.all()`. Preserved only for potential CLI subcommand references.
-
----
-
-## Developer / AI Rule
-- **NEVER re-register `chainupdate`, `todowrite`, or `todoread` in `ToolRegistry.all()`.**
-- **Always instruct models to use `taskflow` for any task planning, progress updating, or todo tracking.**
+When changing tool registration, verify `AtomBase/src/integrations/tool/registry.ts`, agent allow lists, permission rules, and the corresponding tests. The tool wrapper owns schema validation and output truncation; tool implementations must preserve the `Tool.Info` result shape.

@@ -139,7 +139,7 @@ describe("SkillTool", () => {
   })
 })
 
-describe("SkillAddTool", () => {
+describe("SkillTool add validation", () => {
   const dummyCtx = {
     sessionID: "test-session-id",
     messageID: "test-message-id",
@@ -150,12 +150,11 @@ describe("SkillAddTool", () => {
   }
 
   test("prevents path traversal attacks when name contains ..", async () => {
-    const { SkillAddTool } = await import("@/integrations/tool/skilladd")
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        const instance = await SkillAddTool.init({})
+        const instance = await SkillTool.init({})
 
         const originalFetch = globalThis.fetch
         globalThis.fetch = (async () => ({
@@ -168,6 +167,7 @@ describe("SkillAddTool", () => {
           expect(
             instance.execute(
               {
+                action: "add",
                 name: "../../evil-hacker",
                 url: "https://raw.githubusercontent.com/user/repo/main/SKILL.md",
               },
@@ -181,4 +181,3 @@ describe("SkillAddTool", () => {
     })
   })
 })
-

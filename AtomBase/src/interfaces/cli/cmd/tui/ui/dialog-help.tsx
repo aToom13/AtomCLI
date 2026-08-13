@@ -10,7 +10,7 @@ const HELP_SECTIONS = [
   {
     title: "🚀 Quick Start",
     items: [
-      { key: "Tab", desc: "Switch agent (build/plan/explore)" },
+      { key: "Tab", desc: "Switch primary agent" },
       { key: "Ctrl+A", desc: "Connect provider or select model" },
       { key: "Ctrl+P", desc: "Open command palette" },
       { key: "Escape", desc: "Cancel or close dialog" },
@@ -31,9 +31,9 @@ const HELP_SECTIONS = [
     items: [
       { key: "/skill", desc: "List available skills" },
       { key: "/mcp", desc: "Toggle MCP servers" },
-      { key: "/smart_model", desc: "Toggle smart model routing" },
+      { key: "/smart-model", desc: "Toggle smart model routing" },
       { key: "@skillname", desc: "Load a skill inline" },
-      { key: "atomcli features", desc: "View all hidden features" },
+      { key: "/commands", desc: "View every available TUI action" },
     ],
   },
   {
@@ -42,7 +42,7 @@ const HELP_SECTIONS = [
       { key: "build", desc: "Default coding agent" },
       { key: "plan", desc: "Planning mode (read-only)" },
       { key: "explore", desc: "Codebase exploration" },
-      { key: "agent", desc: "Autonomous mode (yolo)" },
+      { key: "agent", desc: "Autonomous task-chain mode" },
     ],
   },
   {
@@ -51,7 +51,7 @@ const HELP_SECTIONS = [
       { key: "/review", desc: "Review uncommitted changes" },
       { key: "/export", desc: "Export session to file" },
       { key: "/copy", desc: "Copy transcript to clipboard" },
-      { key: "Ctrl+R", desc: "Quick review" },
+      { key: "/timeline", desc: "Jump to an earlier message" },
     ],
   },
 ]
@@ -89,7 +89,9 @@ export function DialogHelp() {
         <For each={current().items}>
           {(item) => (
             <box flexDirection="row" gap={1}>
-              <text fg={theme.primary} minWidth={20}>{item.key}</text>
+              <text fg={theme.primary} minWidth={20}>
+                {item.key}
+              </text>
               <text fg={theme.textMuted}>{item.desc}</text>
             </box>
           )}
@@ -99,17 +101,13 @@ export function DialogHelp() {
       <box flexDirection="row" gap={1} paddingTop={1}>
         <For each={HELP_SECTIONS}>
           {(_, i) => (
-            <text fg={i() === section() ? theme.primary : theme.textMuted}>
-              {i() === section() ? "●" : "○"}
-            </text>
+            <text fg={i() === section() ? theme.primary : theme.textMuted}>{i() === section() ? "●" : "○"}</text>
           )}
         </For>
       </box>
 
       <box paddingTop={1}>
-        <text fg={theme.textMuted}>
-          Tip: Run 'atomcli features' in terminal for detailed feature documentation.
-        </text>
+        <text fg={theme.textMuted}>Type / in the prompt or run 'atomcli --help' in a shell to discover commands.</text>
       </box>
 
       <box flexDirection="row" justifyContent="flex-end" paddingTop={1}>
@@ -118,4 +116,3 @@ export function DialogHelp() {
     </box>
   )
 }
-

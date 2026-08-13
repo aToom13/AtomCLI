@@ -1,55 +1,47 @@
 import { describe, expect, test } from "bun:test"
-import { computePanelWidth } from "@tui/routes/session/components/SubAgentPanel"
+import { SessionLayout } from "@tui/routes/session/layout"
 
 describe("SubAgentPanel", () => {
-  describe("computePanelWidth", () => {
-    test("returns 25 for terminal width < 90 (e.g. 0, 50, 79, 89)", () => {
-      expect(computePanelWidth(0)).toBe(25)
-      expect(computePanelWidth(50)).toBe(25)
-      expect(computePanelWidth(79)).toBe(25)
-      expect(computePanelWidth(89)).toBe(25)
+  describe("vertical density", () => {
+    test("compacts session chrome before short terminals run out of room", () => {
+      expect(SessionLayout.verticalMode(17)).toBe("tight")
+      expect(SessionLayout.verticalMode(18)).toBe("compact")
+      expect(SessionLayout.verticalMode(29)).toBe("compact")
+      expect(SessionLayout.verticalMode(30)).toBe("normal")
     })
 
-    test("returns 30 for terminal width in [90, 120) (e.g. 90, 100, 119)", () => {
-      expect(computePanelWidth(90)).toBe(30)
-      expect(computePanelWidth(100)).toBe(30)
-      expect(computePanelWidth(119)).toBe(30)
+    test("fits an expanded task plan to its content on short terminals", () => {
+      expect(SessionLayout.chainExpandedHeight(22, 1)).toBe(2)
+      expect(SessionLayout.chainExpandedHeight(22, 20)).toBe(6)
+      expect(SessionLayout.chainExpandedHeight(35, 1)).toBe(7)
+    })
+  })
+
+  describe("responsive panel width", () => {
+    test("does not render a side panel if it would crush the chat", () => {
+      expect(SessionLayout.agentPanelWidth(50, 3, true)).toBe(0)
+      expect(SessionLayout.agentPanelWidth(60, 18, true)).toBe(0)
     })
 
-    test("returns 40 for terminal width in [120, 150) (e.g. 120, 135, 149)", () => {
-      expect(computePanelWidth(120)).toBe(40)
-      expect(computePanelWidth(135)).toBe(40)
-      expect(computePanelWidth(149)).toBe(40)
+    test("uses the available space instead of an independent fixed width", () => {
+      expect(SessionLayout.agentPanelWidth(89, 3, true)).toBe(22)
+      expect(SessionLayout.agentPanelWidth(90, 36, true)).toBe(18)
+      expect(SessionLayout.agentPanelWidth(120, 3, true)).toBe(36)
     })
 
-    test("returns 50 for terminal width in [150, 180) (e.g. 150, 165, 179)", () => {
-      expect(computePanelWidth(150)).toBe(50)
-      expect(computePanelWidth(165)).toBe(50)
-      expect(computePanelWidth(179)).toBe(50)
+    test("keeps the computed chat width above the readable minimum", () => {
+      for (const width of [40, 60, 80, 100, 140, 200]) {
+        const files = SessionLayout.fileTreeWidth(width, width >= 60)
+        const agents = SessionLayout.agentPanelWidth(width, files, true)
+        const chat = SessionLayout.chatWidth(width, files, agents)
+        expect(chat).toBeGreaterThanOrEqual(SessionLayout.MIN_CHAT_WIDTH)
+        expect(files + agents + chat + 4).toBeLessThanOrEqual(width)
+      }
     })
 
-    test("returns 58 for terminal width >= 180 (e.g. 180, 200, 300)", () => {
-      expect(computePanelWidth(180)).toBe(58)
-      expect(computePanelWidth(200)).toBe(58)
-      expect(computePanelWidth(300)).toBe(58)
-    })
-
-    test("verifies exact boundary transitions between adjacent ranges", () => {
-      // 89 vs 90
-      expect(computePanelWidth(89)).toBe(25)
-      expect(computePanelWidth(90)).toBe(30)
-
-      // 119 vs 120
-      expect(computePanelWidth(119)).toBe(30)
-      expect(computePanelWidth(120)).toBe(40)
-
-      // 149 vs 150
-      expect(computePanelWidth(149)).toBe(40)
-      expect(computePanelWidth(150)).toBe(50)
-
-      // 179 vs 180
-      expect(computePanelWidth(179)).toBe(50)
-      expect(computePanelWidth(180)).toBe(58)
+    test("keeps an overlay inspector inside extremely small terminals", () => {
+      expect(SessionLayout.inspectorWidth(20, true, false)).toBe(18)
+      expect(SessionLayout.inspectorWidth(40, true, false)).toBe(30)
     })
   })
 })

@@ -1,15 +1,15 @@
 import z from "zod"
+import { createWriteStream } from "fs"
+import fs from "fs/promises"
 import { spawn } from "child_process"
 import { Tool } from "./tool"
 import path from "path"
-import * as os from "os"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "@/util/util/log"
 import { Instance } from "@/services/project/instance"
 import { lazy } from "@/util/util/lazy"
 import { Language } from "web-tree-sitter"
 
-import { $ } from "bun"
 import { Filesystem } from "@/util/util/filesystem"
 import { fileURLToPath } from "url"
 import { Flag } from "@/interfaces/flag/flag.ts"
@@ -21,6 +21,7 @@ import { HarnessState } from "@/core/session/harness-state"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
+const MAX_TIMEOUT = 30 * 60 * 1000
 
 // Validation for fundamental security bounds
 // Specifically, path traversal is still blocked downstream, but complex shell commands are allowed
@@ -81,7 +82,7 @@ const parser = lazy(async () => {
 })
 
 // Tool name "bash" is kept for backward compatibility with stored permission rulesets
-export const BashTool = Tool.define("bash", async () => {
+export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {}) => {
   const shell = Shell.acceptable()
   log.info("bash tool using shell", { shell })
 
@@ -90,46 +91,28 @@ export const BashTool = Tool.define("bash", async () => {
       .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
       .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
     parameters: z.object({
-      command: z.string().describe("The command to execute"),
-      timeout: z.number().describe("Optional timeout in milliseconds").optional(),
+      command: z.string().min(1).max(100_000).describe("The command to execute"),
+      timeout: z.number().int().min(1).max(MAX_TIMEOUT).describe("Optional timeout in milliseconds").optional(),
       workdir: z
         .string()
+        .max(4096)
         .describe(
           `The working directory to run the command in. Defaults to ${Instance.directory}. Use this instead of 'cd' commands.`,
         )
         .optional(),
       description: z
         .string()
+        .min(1)
+        .max(1000)
         .describe(
-          "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
+          "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: bun install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
         ),
     }),
     async execute(params, ctx) {
       let cwd = params.workdir || Instance.directory
-      const isTestMode = process.env.NODE_ENV === "test" || process.env.ATOMCLI_TEST === "true"
 
-      // Validate and sanitize working directory to prevent path traversal
       if (params.workdir) {
-        if (!path.isAbsolute(params.workdir)) {
-          cwd = path.resolve(Instance.directory, params.workdir)
-        }
-        // Ensure the resolved path is within allowed boundaries
-        const resolvedCwd = path.resolve(cwd)
-        const allowedBase = path.resolve(Instance.directory)
-
-        // In test mode, allow /tmp directory for test files
-        const isAllowed = isTestMode && resolvedCwd.startsWith(os.tmpdir())
-
-        if (!resolvedCwd.startsWith(allowedBase) && !isAllowed) {
-          throw new Error(
-            `Working directory "${params.workdir}" is outside the allowed project boundaries. ` +
-              `For security, commands can only run within the project directory.`,
-          )
-        }
-      }
-
-      if (params.timeout !== undefined && params.timeout < 0) {
-        throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
+        cwd = path.resolve(Instance.directory, params.workdir)
       }
 
       // Validate command for shell injection attempts
@@ -205,6 +188,13 @@ export const BashTool = Tool.define("bash", async () => {
         })
       }
 
+      const outputPath = await Truncate.createOutputPath()
+      const outputSink = createWriteStream(outputPath, { flags: "wx" })
+      const sinkDone = new Promise<void>((resolve, reject) => {
+        outputSink.once("finish", resolve)
+        outputSink.once("error", reject)
+      })
+
       const proc = spawn(params.command, {
         shell,
         cwd,
@@ -215,7 +205,32 @@ export const BashTool = Tool.define("bash", async () => {
         detached: process.platform !== "win32",
       })
 
-      let output = ""
+      const preview: Buffer[] = []
+      let previewBytes = 0
+      let previewLines = 1
+      let totalBytes = 0
+      let totalLines = 1
+      let lastMetadataUpdate = 0
+
+      const previewText = () => Buffer.concat(preview, previewBytes).toString("utf8")
+
+      const capturePreview = (chunk: Buffer) => {
+        if (previewBytes >= Truncate.MAX_BYTES || previewLines > Truncate.MAX_LINES) return
+        let end = Math.min(chunk.length, Truncate.MAX_BYTES - previewBytes)
+        let newlines = 0
+        for (let index = 0; index < end; index++) {
+          if (chunk[index] !== 10) continue
+          if (previewLines + newlines >= Truncate.MAX_LINES) {
+            end = index
+            break
+          }
+          newlines++
+        }
+        if (end === 0) return
+        preview.push(chunk.subarray(0, end))
+        previewBytes += end
+        previewLines += newlines
+      }
 
       // Initialize metadata with empty output
       ctx.metadata({
@@ -226,15 +241,32 @@ export const BashTool = Tool.define("bash", async () => {
       })
 
       const append = (chunk: Buffer) => {
-        output += chunk.toString()
+        totalBytes += chunk.length
+        for (const byte of chunk) {
+          if (byte === 10) totalLines++
+        }
+        capturePreview(chunk)
+        const writable = outputSink.write(chunk)
+        if (!writable) {
+          proc.stdout?.pause()
+          proc.stderr?.pause()
+        }
+        const now = Date.now()
+        if (now - lastMetadataUpdate < 100) return
+        lastMetadataUpdate = now
+        const current = previewText()
         ctx.metadata({
           metadata: {
-            // truncate the metadata to avoid GIANT blobs of data (has nothing to do w/ what agent can access)
-            output: output.length > MAX_METADATA_LENGTH ? output.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : output,
+            output: current.length > MAX_METADATA_LENGTH ? current.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : current,
             description: params.description,
           },
         })
       }
+
+      outputSink.on("drain", () => {
+        proc.stdout?.resume()
+        proc.stderr?.resume()
+      })
 
       proc.stdout?.on("data", append)
       proc.stderr?.on("data", append)
@@ -245,41 +277,48 @@ export const BashTool = Tool.define("bash", async () => {
 
       const kill = () => Shell.killTree(proc, { exited: () => exited })
 
-      if (ctx.abort.aborted) {
-        aborted = true
-        await kill()
-      }
+      try {
+        const completion = new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            clearTimeout(timeoutTimer)
+            ctx.abort.removeEventListener("abort", abortHandler)
+          }
 
-      const abortHandler = () => {
-        aborted = true
-        void kill()
-      }
+          // `close` fires only after the process has exited and its stdio streams
+          // have closed, so trailing output cannot race outputSink.end().
+          proc.once("close", () => {
+            exited = true
+            cleanup()
+            resolve()
+          })
 
-      ctx.abort.addEventListener("abort", abortHandler, { once: true })
+          proc.once("error", (error) => {
+            exited = true
+            cleanup()
+            reject(error)
+          })
+        })
 
-      const timeoutTimer = setTimeout(() => {
-        timedOut = true
-        void kill()
-      }, timeout + 100)
-
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          clearTimeout(timeoutTimer)
-          ctx.abort.removeEventListener("abort", abortHandler)
+        const abortHandler = () => {
+          aborted = true
+          void kill()
         }
 
-        proc.once("exit", () => {
-          exited = true
-          cleanup()
-          resolve()
-        })
+        const timeoutTimer = setTimeout(() => {
+          timedOut = true
+          void kill()
+        }, timeout + 100)
 
-        proc.once("error", (error) => {
-          exited = true
-          cleanup()
-          reject(error)
-        })
-      })
+        ctx.abort.addEventListener("abort", abortHandler, { once: true })
+        if (ctx.abort.aborted) abortHandler()
+
+        await completion
+      } catch (error) {
+        outputSink.destroy()
+        await sinkDone.catch(() => {})
+        await fs.unlink(outputPath).catch(() => {})
+        throw error
+      }
 
       const resultMetadata: string[] = []
 
@@ -292,8 +331,24 @@ export const BashTool = Tool.define("bash", async () => {
       }
 
       if (resultMetadata.length > 0) {
-        output += "\n\n<bash_metadata>\n" + resultMetadata.join("\n") + "\n</bash_metadata>"
+        append(Buffer.from("\n\n<bash_metadata>\n" + resultMetadata.join("\n") + "\n</bash_metadata>"))
       }
+
+      outputSink.end()
+      await sinkDone
+
+      const rawPreview = previewText()
+      const wasTruncated = totalBytes > previewBytes || totalLines > previewLines
+      const truncated = wasTruncated
+        ? Truncate.streamed(
+            rawPreview,
+            { bytes: totalBytes, lines: totalLines, previewBytes, previewLines },
+            outputPath,
+            initCtx?.agent,
+          )
+        : ({ content: rawPreview, truncated: false } as const)
+      if (!wasTruncated) await fs.unlink(outputPath).catch(() => {})
+      const output = truncated.content
 
       // Push to harness ring buffer so reviewer agent can access raw output
       HarnessState.pushExecutionLog(ctx.sessionID, {
@@ -308,6 +363,8 @@ export const BashTool = Tool.define("bash", async () => {
           output: output.length > MAX_METADATA_LENGTH ? output.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : output,
           exit: proc.exitCode,
           description: params.description,
+          truncated: truncated.truncated,
+          ...(truncated.truncated && { outputPath: truncated.outputPath }),
         },
         output,
       }

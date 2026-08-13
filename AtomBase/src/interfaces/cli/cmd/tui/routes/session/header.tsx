@@ -10,12 +10,15 @@ import { ChainProgressBar } from "@tui/component/chain-widget"
 import { useChain } from "@tui/context/chain"
 import { useSubAgents } from "@tui/context/subagent"
 import { Focusable } from "@tui/context/spatial"
+import { useSession } from "./context"
+import { Locale } from "@/util/util/locale"
 
-const Title = (props: { session: Accessor<Session> }) => {
+const Title = (props: { session: Accessor<Session>; width: number }) => {
   const { theme } = useTheme()
+  const title = createMemo(() => Locale.truncateMiddle(props.session().title, Math.max(8, props.width - 3)))
   return (
-    <text fg={theme.text}>
-      <span style={{ bold: true }}>#</span> <span style={{ bold: true }}>{props.session().title}</span>
+    <text fg={theme.text} wrapMode="none" flexShrink={1}>
+      <span style={{ bold: true }}>#</span> <span style={{ bold: true }}>{title()}</span>
     </text>
   )
 }
@@ -31,7 +34,7 @@ const ContextInfo = (props: { context: Accessor<string | undefined>; cost: Acces
   )
 }
 
-function AgentToggleButton() {
+function AgentToggleButton(props: { compact: boolean }) {
   const { theme } = useTheme()
   const subAgentCtx = useSubAgents()
   const agentCount = () => subAgentCtx.agents().length
@@ -48,9 +51,11 @@ function AgentToggleButton() {
         >
           <Show
             when={agentCount() > 0}
-            fallback={<text fg={isVisible() ? theme.accent : theme.textMuted}>⊞ Agents</text>}
+            fallback={<text fg={isVisible() ? theme.accent : theme.textMuted}>{props.compact ? "⊞" : "⊞ Agents"}</text>}
           >
-            <text fg={isVisible() ? theme.accent : theme.textMuted}>⊞ {agentCount()} Agents</text>
+            <text fg={isVisible() ? theme.accent : theme.textMuted}>
+              {props.compact ? `⊞ ${agentCount()}` : `⊞ ${agentCount()} Agents`}
+            </text>
           </Show>
         </box>
       )}
@@ -62,6 +67,7 @@ export function Header() {
   const route = useRouteData("session")
   const sync = useSync()
   const chainCtx = useChain()
+  const sessionContext = useSession()
   const session = createMemo(() => sync.session.get(route.sessionID)!)
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
 
@@ -91,14 +97,17 @@ export function Header() {
 
   const { theme } = useTheme()
   const keybind = useKeybind()
+  const compact = createMemo(() => sessionContext.width < 56)
+  const narrow = createMemo(() => sessionContext.width < 78)
+  const titleWidth = createMemo(() => Math.max(10, sessionContext.width - (compact() ? 8 : narrow() ? 18 : 32)))
 
   return (
     <box flexShrink={0} flexDirection="column">
       {/* Title Bar */}
       <box
-        paddingTop={1}
-        paddingBottom={1}
-        paddingLeft={2}
+        paddingTop={sessionContext.verticalMode === "normal" ? 1 : 0}
+        paddingBottom={sessionContext.verticalMode === "normal" ? 1 : 0}
+        paddingLeft={compact() ? 1 : 2}
         paddingRight={1}
         {...SplitBorder}
         border={["left"]}
@@ -108,30 +117,36 @@ export function Header() {
       >
         <Switch>
           <Match when={session()?.parentID}>
-            <box flexDirection="row" gap={2}>
+            <box flexDirection="row" gap={compact() ? 1 : 2}>
               <text fg={theme.text}>
-                <b>Subagent session</b>
+                <b>{compact() ? "Subagent" : "Subagent session"}</b>
               </text>
               <text fg={theme.text}>
                 Parent <span style={{ fg: theme.textMuted }}>{keybind.print("session_parent")}</span>
               </text>
-              <text fg={theme.text}>
-                Prev <span style={{ fg: theme.textMuted }}>{keybind.print("session_child_cycle_reverse")}</span>
-              </text>
-              <text fg={theme.text}>
-                Next <span style={{ fg: theme.textMuted }}>{keybind.print("session_child_cycle")}</span>
-              </text>
+              <Show when={!narrow()}>
+                <text fg={theme.text}>
+                  Prev <span style={{ fg: theme.textMuted }}>{keybind.print("session_child_cycle_reverse")}</span>
+                </text>
+                <text fg={theme.text}>
+                  Next <span style={{ fg: theme.textMuted }}>{keybind.print("session_child_cycle")}</span>
+                </text>
+              </Show>
               <box flexGrow={1} flexShrink={1} />
-              <ContextInfo context={context} cost={cost} />
-              <AgentToggleButton />
+              <Show when={!narrow()}>
+                <ContextInfo context={context} cost={cost} />
+              </Show>
+              <AgentToggleButton compact={compact()} />
             </box>
           </Match>
           <Match when={true}>
             <box flexDirection="row" justifyContent="space-between" gap={1}>
-              <Title session={session} />
+              <Title session={session} width={titleWidth()} />
               <box flexDirection="row" gap={1}>
-                <ContextInfo context={context} cost={cost} />
-                <AgentToggleButton />
+                <Show when={!narrow()}>
+                  <ContextInfo context={context} cost={cost} />
+                </Show>
+                <AgentToggleButton compact={compact()} />
               </box>
             </box>
           </Match>

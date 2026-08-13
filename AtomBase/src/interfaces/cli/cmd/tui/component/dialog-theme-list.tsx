@@ -1,14 +1,13 @@
 import { DialogSelect, type DialogSelectRef } from "../ui/dialog-select"
-import { useTheme } from "../context/theme"
+import { SystemTheme, useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
 import { onCleanup, onMount } from "solid-js"
 
 export function DialogThemeList() {
   const theme = useTheme()
-  const options = Object.keys(theme.all())
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+  const options = SystemTheme.options(Object.keys(theme.all()))
     .map((value) => ({
-      title: value,
+      title: value === SystemTheme.id ? SystemTheme.title : value,
       value: value,
     }))
   const dialog = useDialog()

@@ -14,6 +14,7 @@ import type {
 } from "../types"
 
 import { Log } from "@/util/util/log"
+import { Global } from "@/core/global"
 
 const log = Log.create({ service: "memory.storage" })
 
@@ -301,15 +302,14 @@ export class HybridStorage implements MemoryStorage {
 // HELPER FUNCTIONS
 // ============================================================================
 
-import os from "os"
 import { join } from "path"
 
 function getDefaultJsonPath(): string {
-  return join(os.homedir(), ".atomcli", "memory", "memories.json")
+  return join(Global.Path.root, "memory", "memories.json")
 }
 
 function getDefaultChromaPath(): string {
-  return join(os.homedir(), ".atomcli", "memory", "chroma")
+  return join(Global.Path.root, "memory", "chroma")
 }
 
 // ============================================================================

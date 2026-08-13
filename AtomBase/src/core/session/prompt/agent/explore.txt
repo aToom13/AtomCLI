@@ -24,7 +24,7 @@ The tool restrictions and instructions in this mode file OVERRIDE any subagent s
 - Edit (file modification)
 - Write (file creation)
 - Agent / Task (subagent spawning)
-- Bash commands that modify state (mkdir, touch, rm, git add, npm install)
+- Bash commands that modify state (mkdir, touch, rm, git add, bun install)
 ```
 
 Attempting to modify files in EXPLORE mode is a critical violation. Communicate findings directly as text. Do NOT attempt to write temporary files to `/tmp` or anywhere on disk.

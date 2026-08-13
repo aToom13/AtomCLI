@@ -1,5 +1,6 @@
 {
   "$schema": "https://turborepo.com/schema.json",
+  "globalPassThroughEnv": ["ATOMCLI_TEST_HOME"],
   "tasks": {
     "typecheck": {},
     "build": {

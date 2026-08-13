@@ -2,7 +2,6 @@ import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
-import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { Bus } from "@/core/bus"
 import { File } from "@/services/file"
@@ -10,48 +9,60 @@ import { FileEvent } from "@/services/file/event"
 import { FileTime } from "@/services/file/time"
 import { Filesystem } from "@/util/util/filesystem"
 import { Instance } from "@/services/project/instance"
-import { trimDiff } from "./edit"
+import { EditDiff } from "./edit"
 import { assertExternalDirectory } from "./external-directory"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
+const MAX_WRITE_BYTES = 10 * 1024 * 1024
 
 export const WriteTool = Tool.define("write", {
   description: DESCRIPTION,
   parameters: z.object({
-    content: z.string().describe("The content to write to the file"),
-    filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
+    content: z.string().max(MAX_WRITE_BYTES).describe("The content to write to the file"),
+    filePath: z.string().min(1).max(4096).describe("The absolute path to the file to write (must be absolute, not relative)"),
   }),
   async execute(params, ctx) {
+    if (Buffer.byteLength(params.content) > MAX_WRITE_BYTES) {
+      throw new Error(`Write content exceeds the ${MAX_WRITE_BYTES} byte limit`)
+    }
     const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
     await assertExternalDirectory(ctx, filepath)
 
-    const file = Bun.file(filepath)
-    const exists = await file.exists()
+    let exists = false
+    await FileTime.withLock(filepath, async () => {
+      const file = Bun.file(filepath)
+      const stats = await file.stat().catch(() => undefined)
+      exists = !!stats
+      if (stats?.isDirectory()) throw new Error(`Path is a directory, not a file: ${filepath}`)
+      if (stats && stats.size > MAX_WRITE_BYTES) {
+        throw new Error(`Existing file exceeds the ${MAX_WRITE_BYTES} byte write limit`)
+      }
 
-    // Fail fast if file exists but hasn't been read
-    if (exists) await FileTime.assert(ctx.sessionID, filepath)
+      // Fail fast if file exists but hasn't been read
+      if (exists) await FileTime.assert(ctx.sessionID, filepath)
 
-    const contentOld = exists ? await file.text() : ""
+      const contentOld = exists ? await file.text() : ""
 
-    const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, params.content))
-    await ctx.ask({
-      permission: "edit",
-      patterns: [path.relative(Instance.worktree, filepath)],
-      always: ["*"],
-      metadata: {
-        filepath,
-        diff,
-      },
+      const diff = EditDiff.create(filepath, contentOld, params.content).diff
+      await ctx.ask({
+        permission: "edit",
+        patterns: [path.relative(Instance.worktree, filepath)],
+        always: ["*"],
+        metadata: {
+          filepath,
+          diff,
+        },
+      })
+
+      await Bun.write(filepath, params.content)
+      if (exists) {
+        await Bus.publish(FileEvent.Edited, { file: filepath })
+      } else {
+        await Bus.publish(FileEvent.Created, { paths: [filepath] })
+      }
+      FileTime.read(ctx.sessionID, filepath)
     })
-
-    await Bun.write(filepath, params.content)
-    if (exists) {
-      await Bus.publish(FileEvent.Edited, { file: filepath })
-    } else {
-      await Bus.publish(FileEvent.Created, { paths: [filepath] })
-    }
-    FileTime.read(ctx.sessionID, filepath)
 
     let output = ""
     await LSP.touchFile(filepath, true)
@@ -76,7 +87,9 @@ export const WriteTool = Tool.define("write", {
     return {
       title: path.relative(Instance.worktree, filepath),
       metadata: {
-        diagnostics,
+        diagnostics: {
+          [normalizedFilepath]: (diagnostics[normalizedFilepath] ?? []).slice(0, MAX_DIAGNOSTICS_PER_FILE),
+        },
         filepath,
         exists: exists,
       },

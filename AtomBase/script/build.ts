@@ -73,6 +73,10 @@ const allTargets: {
   },
   {
     os: "win32",
+    arch: "arm64",
+  },
+  {
+    os: "win32",
     arch: "x64",
     avx2: false,
   },
@@ -104,7 +108,7 @@ if (!skipInstall) {
 for (const item of targets) {
   const name = [
     pkg.name,
-    // changing to win32 flags npm for some reason
+    // Changing to win32 causes the package registry metadata to flag this artifact.
     item.os === "win32" ? "windows" : item.os,
     item.arch,
     item.avx2 === false ? "baseline" : undefined,

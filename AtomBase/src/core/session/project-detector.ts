@@ -10,6 +10,7 @@
 
 import path from "path"
 import { Log } from "@/util/util/log"
+import { Instance } from "@/services/project/instance"
 
 const log = Log.create({ service: "project-detector" })
 
@@ -49,7 +50,7 @@ async function readText(p: string): Promise<string | null> {
 }
 
 export namespace ProjectDetector {
-  const cache = new Map<string, ProjectCommands>()
+  const state = Instance.state(() => ({ cache: new Map<string, ProjectCommands>() }))
 
   /**
    * Detect project commands from common manifest files in the given directory.
@@ -57,6 +58,7 @@ export namespace ProjectDetector {
    * Never throws — returns empty notes on any failure.
    */
   export async function detect(cwd: string): Promise<ProjectCommands> {
+    const { cache } = await state()
     const cached = cache.get(cwd)
     if (cached) return cached
 

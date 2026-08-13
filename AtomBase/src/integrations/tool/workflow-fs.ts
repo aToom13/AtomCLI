@@ -13,6 +13,7 @@ import { Instance } from "@/services/project/instance"
  */
 export namespace WorkflowFS {
   const RUNS_DIR = ".atomcli/runs"
+  const SAFE_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/
 
   let _rootDirOverride: string | undefined
 
@@ -33,12 +34,17 @@ export namespace WorkflowFS {
     return _rootDirOverride ?? Instance.worktree
   }
 
+  function segment(value: string, label: string): string {
+    if (!SAFE_SEGMENT.test(value)) throw new Error(`Invalid ${label}: ${value}`)
+    return value
+  }
+
   /**
    * Absolute path to the workflow run directory.
    * Example: `/project/root/.atomcli/runs/wf_1719000000000_abc123/`
    */
   export function getRunDir(workflowId: string): string {
-    return path.join(rootDir(), RUNS_DIR, workflowId)
+    return path.join(rootDir(), RUNS_DIR, segment(workflowId, "workflow ID"))
   }
 
   /**
@@ -62,7 +68,7 @@ export namespace WorkflowFS {
     output: string,
   ): Promise<string> {
     const dir = await ensureRunDir(workflowId)
-    const filePath = path.join(dir, `${taskId}_${agentType}_success.md`)
+    const filePath = path.join(dir, `${segment(taskId, "task ID")}_${segment(agentType, "agent type")}_success.md`)
     const content = [
       `# Task: ${taskId} (@${agentType})`,
       `**Status:** ✅ Success`,
@@ -91,7 +97,7 @@ export namespace WorkflowFS {
     originalOutput?: string,
   ): Promise<string> {
     const dir = await ensureRunDir(workflowId)
-    const filePath = path.join(dir, `${taskId}_${agentType}_failed.md`)
+    const filePath = path.join(dir, `${segment(taskId, "task ID")}_${segment(agentType, "agent type")}_failed.md`)
     const parts: string[] = [
       `# Task: ${taskId} (@${agentType})`,
       `**Status:** ❌ Failed`,

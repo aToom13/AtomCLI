@@ -5,39 +5,38 @@ import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { parseJsonIfString } from "@/util/util/zod"
 import { Session } from "@/core/session"
 import { HarnessState } from "@/core/session/harness-state"
-import { runBlockingReview } from "./review-gate"
 import { Log } from "@/util/util/log"
 
 const log = Log.create({ service: "taskflow" })
 
 const TaskFlowTodoSchema = z.object({
-  id: z.string().optional(),
-  content: z.string(),
+  id: z.string().max(100).optional(),
+  content: z.string().min(1).max(1000),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
 })
 
 const TaskFlowStepSchema = z.object({
-  id: z.string().optional(),
-  name: z.string(),
+  id: z.string().max(100).optional(),
+  name: z.string().min(1).max(200),
   status: z.enum(["pending", "running", "completed", "failed"]).optional(),
-  todos: z.array(z.union([z.string(), TaskFlowTodoSchema])).optional(),
+  todos: z.array(z.union([z.string().max(1000), TaskFlowTodoSchema])).max(100).optional(),
 })
 
 const parameters = z.object({
   action: z
     .enum(["start", "update", "complete", "fail", "clear"])
     .describe("Taskflow action: 'start' plan, 'update' step/todo status, 'complete', 'fail', or 'clear'"),
-  plan: parseJsonIfString(z.array(TaskFlowStepSchema))
+  plan: parseJsonIfString(z.array(TaskFlowStepSchema).max(100))
     .optional()
     .describe("List of steps with optional todos for action='start'"),
-  step_id: z.string().optional().describe("Step ID or index (0-based) for update/complete/fail"),
-  todo_id: z.string().optional().describe("Optional Todo ID or index (0-based) for update"),
+  step_id: z.string().max(100).optional().describe("Step ID or index (0-based) for update/complete/fail"),
+  todo_id: z.string().max(100).optional().describe("Optional Todo ID or index (0-based) for update"),
   status: z.enum(["pending", "running", "completed", "failed"]).optional().describe("Step status for update"),
   todo_status: z
     .enum(["pending", "in_progress", "completed", "cancelled"])
     .optional()
     .describe("Todo status for update"),
-  output: z.string().optional().describe("Output or completion message"),
+  output: z.string().max(50_000).optional().describe("Output or completion message"),
   force: z
     .boolean()
     .optional()
@@ -263,6 +262,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
         let reviewBypassed = false
 
         if (!isSubAgent) {
+          const { runBlockingReview } = await import("./review-gate")
           const review = await runBlockingReview(ctx.sessionID)
 
           if (!review.passed && !params.force) {

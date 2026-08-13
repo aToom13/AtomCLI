@@ -1,9 +1,9 @@
 /**
  * Documentation Generator Command
- * 
+ *
  * Automatically generates documentation from source code.
  * Creates JSDoc/TSDoc comments, updates README, and generates API documentation.
- * 
+ *
  * Usage: atomcli docs --generate
  */
 
@@ -165,25 +165,33 @@ export namespace DocsGen {
   function parseParameters(params: string): CodeElement["parameters"] {
     if (!params.trim()) return []
 
-    return params.split(",").map(p => {
-      const trimmed = p.trim()
-      const optional = trimmed.includes("?")
-      const parts = trimmed.replace(/\?/, "").split(/:\s*/)
+    return params
+      .split(",")
+      .map((p) => {
+        const trimmed = p.trim()
+        const optional = trimmed.includes("?")
+        const parts = trimmed.replace(/\?/, "").split(/:\s*/)
 
-      return {
-        name: parts[0].trim(),
-        type: parts[1]?.trim() || "any",
-        optional,
-      }
-    }).filter(p => p.name)
+        return {
+          name: parts[0].trim(),
+          type: parts[1]?.trim() || "any",
+          optional,
+        }
+      })
+      .filter((p) => p.name)
   }
 
   function extractDescription(comment: string[]): string | undefined {
     if (comment.length === 0) return undefined
 
     const lines = comment
-      .map(line => line.replace(/^\s*\/\*\*?\s*/, "").replace(/\s*\*\/$/, "").replace(/^\s*\*\s?/, ""))
-      .filter(line => !line.startsWith("@"))
+      .map((line) =>
+        line
+          .replace(/^\s*\/\*\*?\s*/, "")
+          .replace(/\s*\*\/$/, "")
+          .replace(/^\s*\*\s?/, ""),
+      )
+      .filter((line) => !line.startsWith("@"))
       .join(" ")
       .trim()
 
@@ -246,10 +254,7 @@ Return ONLY the JSDoc comment, no other text.`
   /**
    * Update source file with generated JSDoc
    */
-  export async function updateFileWithJSDoc(
-    filePath: string,
-    elements: CodeElement[]
-  ): Promise<void> {
+  export async function updateFileWithJSDoc(filePath: string, elements: CodeElement[]): Promise<void> {
     let content = await fs.readFile(filePath, "utf-8")
     const lines = content.split("\n")
     const updates: Array<{ line: number; jsdoc: string }> = []
@@ -276,10 +281,7 @@ Return ONLY the JSDoc comment, no other text.`
   /**
    * Generate API documentation
    */
-  export async function generateAPIDocs(
-    elements: CodeElement[],
-    outputPath: string
-  ): Promise<void> {
+  export async function generateAPIDocs(elements: CodeElement[], outputPath: string): Promise<void> {
     const grouped = groupByFile(elements)
 
     let markdown = `# API Documentation\n\nGenerated automatically by AtomCLI.\n\n`
@@ -297,18 +299,19 @@ Return ONLY the JSDoc comment, no other text.`
   }
 
   function groupByFile(elements: CodeElement[]): Record<string, CodeElement[]> {
-    return elements.reduce((acc, el) => {
-      const file = el.location.file
-      if (!acc[file]) acc[file] = []
-      acc[file].push(el)
-      return acc
-    }, {} as Record<string, CodeElement[]>)
+    return elements.reduce(
+      (acc, el) => {
+        const file = el.location.file
+        if (!acc[file]) acc[file] = []
+        acc[file].push(el)
+        return acc
+      },
+      {} as Record<string, CodeElement[]>,
+    )
   }
 
   function renderElementMarkdown(element: CodeElement): string {
-    const params = element.parameters
-      ?.map(p => `${p.name}${p.optional ? "?" : ""}: ${p.type}`)
-      .join(", ") || ""
+    const params = element.parameters?.map((p) => `${p.name}${p.optional ? "?" : ""}: ${p.type}`).join(", ") || ""
 
     let md = `### ${element.name}\n\n`
     md += `**Type:** ${element.type}  \n`
@@ -339,13 +342,11 @@ Return ONLY the JSDoc comment, no other text.`
   /**
    * Update README with project documentation
    */
-  export async function updateReadme(
-    projectInfo: {
-      name: string
-      description: string
-      elements: CodeElement[]
-    }
-  ): Promise<void> {
+  export async function updateReadme(projectInfo: {
+    name: string
+    description: string
+    elements: CodeElement[]
+  }): Promise<void> {
     const readmePath = "README.md"
     let content: string
 
@@ -363,8 +364,8 @@ Return ONLY the JSDoc comment, no other text.`
     const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
 
     const exportedFunctions = projectInfo.elements
-      .filter(e => e.exported)
-      .map(e => `- ${e.name} (${e.type})`)
+      .filter((e) => e.exported)
+      .map((e) => `- ${e.name} (${e.type})`)
       .join("\n")
 
     const prompt = `Update this README for a project:
@@ -440,7 +441,7 @@ export const DocsCommand = cmd({
       .option("api", {
         type: "boolean",
         alias: "a",
-        describe: "Generate API documentation",
+        describe: "Generate API documentation (default when no other action is selected)",
         default: false,
       })
       .option("files", {
@@ -465,7 +466,7 @@ export const DocsCommand = cmd({
           let files: string[] = []
 
           if (args.files) {
-            files = args.files.split(",").map(f => f.trim())
+            files = args.files.split(",").map((f) => f.trim())
           } else {
             // Find all TypeScript/JavaScript files
             const glob = new Bun.Glob("src/**/*.{ts,js}")
@@ -491,13 +492,14 @@ export const DocsCommand = cmd({
           }
 
           log.info("parsed elements", { count: allElements.length })
+          const generateApi = args.api || (!args.generate && !args.readme)
 
           // Generate JSDoc
           if (args.generate) {
             console.log(`Generating JSDoc for ${allElements.length} elements...`)
 
             for (const file of files) {
-              const fileElements = allElements.filter(e => e.location.file === file)
+              const fileElements = allElements.filter((e) => e.location.file === file)
               if (fileElements.length > 0) {
                 await DocsGen.updateFileWithJSDoc(file, fileElements)
                 console.log(`✅ Updated: ${file}`)
@@ -506,7 +508,7 @@ export const DocsCommand = cmd({
           }
 
           // Generate API docs
-          if (args.api) {
+          if (generateApi) {
             const outputPath = path.join(args.output, "API.md")
             await fs.mkdir(args.output, { recursive: true })
             await DocsGen.generateAPIDocs(allElements, outputPath)
@@ -525,13 +527,12 @@ export const DocsCommand = cmd({
           }
 
           console.log("\n✨ Documentation generation complete!")
-
         } catch (error) {
           log.error("documentation generation failed", { error })
           console.error("Error:", error instanceof Error ? error.message : error)
           process.exit(1)
         }
-      }
+      },
     })
   },
 })

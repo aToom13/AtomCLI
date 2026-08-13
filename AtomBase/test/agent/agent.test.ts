@@ -563,7 +563,6 @@ const EXPLORE_DENIED_TOOLS = [
   "batch",
   "agent",
   "browser",
-  "self_maintenance",
   "system_health",
 ]
 

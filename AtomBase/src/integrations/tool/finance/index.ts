@@ -23,6 +23,14 @@ import { Provider } from "../../provider/provider"
 import { Log } from "@/util/util/log"
 import DESCRIPTION from "./finance.txt"
 
+const FINANCE_ORIGINS = [
+    "https://query1.finance.yahoo.com",
+    "https://api.binance.com",
+    "https://fapi.binance.com",
+    "https://api.coingecko.com",
+    "https://api.alternative.me",
+]
+
 // Prompts
 // @ts-ignore
 import RISK_PROMPT from "./prompts/risk_analyst.txt"
@@ -40,7 +48,7 @@ const log = Log.create({ service: "finance" })
 export const FinanceAnalyzeTool = Tool.define("finance_analyze", {
     description: DESCRIPTION,
     parameters: z.object({
-        symbol: z.string().describe("Varlık sembolü (örn: BTC, AAPL, OIL, EURUSD, SPX, ALTIN)"),
+        symbol: z.string().min(1).max(32).describe("Varlık sembolü (örn: BTC, AAPL, OIL, EURUSD, SPX, ALTIN)"),
         type: z
             .enum(["crypto", "stock", "etf", "commodity", "forex", "index"] as const)
             .optional()
@@ -50,6 +58,12 @@ export const FinanceAnalyzeTool = Tool.define("finance_analyze", {
 
     async execute(params, ctx) {
         log.info("Starting hybrid analysis", { symbol: params.symbol })
+        await ctx.ask({
+            permission: "webfetch",
+            patterns: FINANCE_ORIGINS,
+            always: FINANCE_ORIGINS,
+            metadata: {},
+        })
 
         // 1. Detect Asset Type
         const detected = detectAssetType(params.symbol, params.type as AssetType | undefined)
@@ -65,7 +79,7 @@ export const FinanceAnalyzeTool = Tool.define("finance_analyze", {
         try {
             if (assetType === "crypto") {
                 // Fetch Crypto Data
-                const cryptoData = await fetchAllCryptoData(ticker)
+                const cryptoData = await fetchAllCryptoData(ticker, params.detailed, params.detailed)
                 if (!cryptoData) throw new Error(`Data not found for ${ticker}`)
 
                 priceData = cryptoData.price
@@ -86,7 +100,7 @@ export const FinanceAnalyzeTool = Tool.define("finance_analyze", {
                 klinesData = await fetchYahooKlines(ticker)
                 technicalData = analyzeKlines(klinesData)
 
-                if (assetType === "stock" || assetType === "etf") {
+                if (params.detailed && (assetType === "stock" || assetType === "etf")) {
                     stockExtras = await fetchStockDetails(ticker)
                 }
             }
@@ -252,6 +266,8 @@ async function runAnalysis(role: string, preferredModels: string[], systemPrompt
         const { text } = await generateText({
             model: languageModel,
             system: systemPrompt,
+            abortSignal: AbortSignal.timeout(120_000),
+            maxOutputTokens: 4_096,
             messages: [
                 { role: "user", content: userContent }
             ]
