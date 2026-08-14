@@ -14,6 +14,7 @@ import {
     initAntigravityVersion,
     GEMINI_CLI_HEADERS,
     ANTIGRAVITY_DEFAULT_PROJECT_ID,
+    ANTIGRAVITY_LOAD_ENDPOINTS,
     getModelInfo,
     type HeaderStyle,
     MODEL_MAPPING,
@@ -85,12 +86,8 @@ async function ensureManagedProject(accessToken: string): Promise<string> {
         return managedProjectId
     }
 
-    const endpoints = [
-        ANTIGRAVITY_ENDPOINT,
-        "https://cloudcode-pa.googleapis.com",
-        "https://daily-cloudcode-pa.sandbox.googleapis.com",
-        "https://autopush-cloudcode-pa.sandbox.googleapis.com",
-    ]
+    // Use prod-first order for project discovery — mirrors opencode-antigravity-auth
+    const endpoints = [...ANTIGRAVITY_LOAD_ENDPOINTS]
 
     const metadata = {
         ideType: "IDE_UNSPECIFIED",
@@ -179,7 +176,7 @@ function getHeaders(headerStyle: HeaderStyle, accessToken: string, projectId?: s
 /**
  * Create a custom fetch that injects Antigravity auth headers.
  */
-function createAntigravityFetch(headerStyle: HeaderStyle, projectId?: string) {
+export function createAntigravityFetch(headerStyle: HeaderStyle, projectId?: string) {
     return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const accessToken = await getAccessToken()
         if (!accessToken) {
@@ -210,6 +207,99 @@ function createAntigravityFetch(headerStyle: HeaderStyle, projectId?: string) {
                     try {
                         const parsedBody = JSON.parse(init.body)
                         if (!parsedBody.project && !parsedBody.request) {
+                            const isClaude = modelName.toLowerCase().includes("claude")
+
+                            if (isClaude && Array.isArray(parsedBody.contents)) {
+                                let toolCallCounter = 0
+                                const pendingCallIdsByName = new Map<string, string[]>()
+
+                                parsedBody.contents = parsedBody.contents.map((content: any) => {
+                                    if (!content || !Array.isArray(content.parts)) return content
+                                    const newParts = content.parts.map((part: any) => {
+                                        if (part && typeof part === "object" && part.functionCall) {
+                                            const call = { ...part.functionCall }
+                                            if (!call.id) {
+                                                call.id = `tool-call-${++toolCallCounter}`
+                                            }
+                                            const nameKey = typeof call.name === "string" ? call.name : `tool-${toolCallCounter}`
+                                            const queue = pendingCallIdsByName.get(nameKey) || []
+                                            queue.push(call.id)
+                                            pendingCallIdsByName.set(nameKey, queue)
+                                            return { ...part, functionCall: call }
+                                        }
+                                        return part
+                                    })
+                                    return { ...content, parts: newParts }
+                                })
+
+                                parsedBody.contents = parsedBody.contents.map((content: any) => {
+                                    if (!content || !Array.isArray(content.parts)) return content
+                                    const newParts = content.parts.map((part: any) => {
+                                        if (part && typeof part === "object" && part.functionResponse) {
+                                            const resp = { ...part.functionResponse }
+                                            if (!resp.id && typeof resp.name === "string") {
+                                                const queue = pendingCallIdsByName.get(resp.name)
+                                                if (queue && queue.length > 0) {
+                                                    resp.id = queue.shift()
+                                                    pendingCallIdsByName.set(resp.name, queue)
+                                                }
+                                            }
+                                            return { ...part, functionResponse: resp }
+                                        }
+                                        return part
+                                    })
+                                    return { ...content, parts: newParts }
+                                })
+                            }
+
+                            if (isClaude && parsedBody.tools && parsedBody.tools.length > 0) {
+                                if (!parsedBody.toolConfig) {
+                                    parsedBody.toolConfig = {}
+                                }
+                                if (typeof parsedBody.toolConfig === "object" && parsedBody.toolConfig !== null) {
+                                    const toolConfig = parsedBody.toolConfig as Record<string, unknown>
+                                    if (!toolConfig.functionCallingConfig) {
+                                        toolConfig.functionCallingConfig = {}
+                                    }
+                                    if (typeof toolConfig.functionCallingConfig === "object" && toolConfig.functionCallingConfig !== null) {
+                                        (toolConfig.functionCallingConfig as Record<string, unknown>).mode = "VALIDATED"
+                                    }
+                                }
+                                
+                                // Normalize empty tool schemas for Claude (Anthropic rejects empty parameter objects)
+                                parsedBody.tools.forEach((t: any) => {
+                                    if (!t.functionDeclarations) return
+                                    t.functionDeclarations.forEach((f: any) => {
+                                        if (f.parameters && f.parameters.type === "object") {
+                                            if (!f.parameters.properties || Object.keys(f.parameters.properties).length === 0) {
+                                                f.parameters.properties = {
+                                                    "_placeholder_": {
+                                                        type: "boolean",
+                                                        description: "Placeholder to satisfy Claude schema requirements"
+                                                    }
+                                                }
+                                                f.parameters.required = ["_placeholder_"]
+                                            }
+                                        }
+                                    })
+                                })
+                                
+                                // Add thinking config for thinking models
+                                if (modelName.toLowerCase().includes("thinking")) {
+                                    if (!parsedBody.generationConfig) {
+                                        parsedBody.generationConfig = {}
+                                    }
+                                    const genConfig = parsedBody.generationConfig as Record<string, unknown>
+                                    const budget = 4096
+                                    genConfig.thinkingConfig = {
+                                        include_thoughts: true,
+                                        thinking_budget: budget
+                                    }
+                                    // Claude requires maxOutputTokens to be larger than thinking_budget
+                                    genConfig.maxOutputTokens = 64000
+                                }
+                            }
+
                             const wrappedBody: Record<string, unknown> = {
                                 project: effectiveProjectId,
                                 model: modelName,
@@ -291,7 +381,7 @@ function createAntigravityFetch(headerStyle: HeaderStyle, projectId?: string) {
 
                     for (const line of lines) {
                         if (line.startsWith('data:')) {
-                            const jsonStr = line.slice(5).trim()
+                            const jsonStr = line.slice(5).trim(); require("fs").appendFileSync("/tmp/claude-stream.log", line + "\n");
                             if (!jsonStr) {
                                 controller.enqueue(encoder.encode(line + '\n'))
                                 continue

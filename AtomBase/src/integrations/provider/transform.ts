@@ -637,6 +637,10 @@ export namespace ProviderTransform {
 
         const result: any = {}
         for (const [key, value] of Object.entries(obj)) {
+          if (["minLength", "maxLength", "minItems", "maxItems", "pattern", "format"].includes(key)) {
+            continue
+          }
+
           if (key === "enum" && Array.isArray(value)) {
             // Convert all enum values to strings
             result[key] = value.map((v) => String(v))

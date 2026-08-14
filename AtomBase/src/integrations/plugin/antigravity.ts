@@ -27,26 +27,29 @@ export async function AntigravityAuthPlugin(input: PluginInput): Promise<Hooks> 
       async loader(getAuth, provider) {
         if (provider) {
           if (!provider.models) provider.models = {} as any
-          provider.models = Object.assign(
+           provider.models = Object.assign(
             provider.models,
             Object.fromEntries(
               Object.entries(MODEL_MAPPING).map(([id, m]) => {
-                // Determine variants based on model family and name
+                // Only Claude Opus has variants (thinking budget).
+                // All Gemini/OSS models have tier baked into the model ID.
                 const getVariants = () => {
-                  if (m.family === "claude" && m.name.includes("Opus")) {
+                  if (m.family === "claude" && id.includes("opus")) {
                     return { low: { thinkingBudget: 8192 }, max: { thinkingBudget: 32768 } }
-                  }
-                  if (m.family === "gemini" && id.includes("3")) {
-                    return { low: { thinkingLevel: "low" }, high: { thinkingLevel: "high" } }
-                  }
-                  if (m.family === "gemini" && id.includes("2.5")) {
-                    return {
-                      high: { thinkingConfig: { includeThoughts: true, thinkingBudget: 16000 } },
-                      max: { thinkingConfig: { includeThoughts: true, thinkingBudget: 24576 } },
-                    }
                   }
                   return {}
                 }
+
+                const contextLimit = m.family === "claude" ? 200000
+                  : m.family === "openweight" ? 131072
+                  : 1048576
+
+                const releaseDate = id.includes("3.7") ? "2026-08-13"
+                  : id.includes("3.6") ? "2026-07-21"
+                  : id.includes("3.5") ? "2026-06-01"
+                  : id.includes("3.1") ? "2026-03-01"
+                  : "2025-12-01"
+
                 return [
                   id,
                   {
@@ -61,18 +64,18 @@ export async function AntigravityAuthPlugin(input: PluginInput): Promise<Hooks> 
                     status: "active" as const,
                     capabilities: {
                       temperature: true,
-                      reasoning: m.family === "gemini" || m.name.includes("Thinking"),
-                      attachment: true,
+                      reasoning: m.family === "gemini" || id.includes("thinking") || id.includes("opus"),
+                      attachment: m.family !== "openweight",
                       toolcall: true,
-                      input: { text: true, audio: false, image: true, video: false, pdf: true },
+                      input: { text: true, audio: false, image: m.family !== "openweight", video: false, pdf: m.family !== "openweight" },
                       output: { text: true, audio: false, image: false, video: false, pdf: false },
                       interleaved: false,
                     },
                     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-                    limit: { context: m.family === "claude" ? 200000 : 1048576, output: 65535 },
+                    limit: { context: contextLimit, output: 65535 },
                     options: {},
                     headers: {},
-                    release_date: id.includes("2.5") ? "2025-06-01" : "2025-12-01",
+                    release_date: releaseDate,
                     variants: getVariants(),
                   },
                 ]

@@ -35,6 +35,12 @@ export const ANTIGRAVITY_ENDPOINT_FALLBACKS = [
   ANTIGRAVITY_ENDPOINT_PROD,
 ] as const
 
+export const ANTIGRAVITY_LOAD_ENDPOINTS = [
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+] as const
+
 // Primary endpoint (daily sandbox - newer models available here first)
 export const ANTIGRAVITY_ENDPOINT = ANTIGRAVITY_ENDPOINT_DAILY
 
@@ -139,81 +145,32 @@ export type HeaderStyle = "antigravity" | "gemini-cli"
 export const ANTIGRAVITY_PROVIDER_ID = "antigravity"
 
 // Model family types
-export type ModelFamily = "claude" | "gemini"
+export type ModelFamily = "claude" | "gemini" | "openweight"
 
 // Model name → backend model mapping
 export const MODEL_MAPPING: Record<
   string,
   { name: string; backend: string; family: ModelFamily; headerStyle: HeaderStyle }
 > = {
-  // === Antigravity models (wrapped body, daily sandbox endpoint) ===
+  // Gemini 3.6 Flash
+  "gemini-3.6-flash-high": { name: "Gemini 3.6 Flash (High)", backend: "gemini-3.6-flash-high", family: "gemini", headerStyle: "antigravity" },
+  "gemini-3.6-flash-medium": { name: "Gemini 3.6 Flash (Medium)", backend: "gemini-3.6-flash-medium", family: "gemini", headerStyle: "antigravity" },
+  "gemini-3.6-flash-low": { name: "Gemini 3.6 Flash (Low)", backend: "gemini-3.6-flash-low", family: "gemini", headerStyle: "antigravity" },
 
-  // Claude models
-  "claude-sonnet-4.6-thinking": {
-    name: "Claude Sonnet 4.6 (Thinking)",
-    backend: "claude-sonnet-4-6",
-    family: "claude",
-    headerStyle: "antigravity",
-  },
-  "claude-opus-4.6-thinking": {
-    name: "Claude Opus 4.6 (Thinking)",
-    backend: "claude-opus-4-6-thinking",
-    family: "claude",
-    headerStyle: "antigravity",
-  },
+  // Gemini 3.5 Flash
+  "gemini-3.5-flash-low": { name: "Gemini 3.5 Flash (Low)", backend: "gemini-3.5-flash-low", family: "gemini", headerStyle: "antigravity" },
 
-  // Gemini 3.1 Pro models - Cloud Code API requires tier suffix for Pro
-  "gemini-3.1-pro-high": {
-    name: "Gemini 3.1 Pro (High)",
-    backend: "gemini-3.1-pro-high",
-    family: "gemini",
-    headerStyle: "antigravity",
-  },
-  "gemini-3.1-pro-low": {
-    name: "Gemini 3.1 Pro (Low)",
-    backend: "gemini-3.1-pro-low",
-    family: "gemini",
-    headerStyle: "antigravity",
-  },
+  // Gemini 3.1 Pro
+  "gemini-3.1-pro-low": { name: "Gemini 3.1 Pro (Low)", backend: "gemini-3.1-pro-low", family: "gemini", headerStyle: "antigravity" },
 
   // Gemini 3 Flash
   "gemini-3-flash": { name: "Gemini 3 Flash", backend: "gemini-3-flash", family: "gemini", headerStyle: "antigravity" },
 
+  // OSS
+  "gpt-oss-120b-medium": { name: "GPT-OSS 120B (Medium)", backend: "gpt-oss-120b-medium", family: "openweight", headerStyle: "antigravity" },
+
   // === Gemini CLI models (production endpoint, no wrapped body) ===
-
-  // Gemini 2.5 models
-  "gemini-2.5-flash": {
-    name: "Gemini 2.5 Flash (CLI)",
-    backend: "gemini-2.5-flash",
-    family: "gemini",
-    headerStyle: "gemini-cli",
-  },
-  "gemini-2.5-pro": {
-    name: "Gemini 2.5 Pro (CLI)",
-    backend: "gemini-2.5-pro",
-    family: "gemini",
-    headerStyle: "gemini-cli",
-  },
-
-  // Gemini 3 Preview models (CLI)
-  "gemini-3-flash-preview": {
-    name: "Gemini 3 Flash Preview (CLI)",
-    backend: "gemini-3-flash-preview",
-    family: "gemini",
-    headerStyle: "gemini-cli",
-  },
-  "gemini-3-pro-preview": {
-    name: "Gemini 3 Pro Preview (CLI)",
-    backend: "gemini-3-pro-preview",
-    family: "gemini",
-    headerStyle: "gemini-cli",
-  },
-  "gemini-3.1-pro-preview": {
-    name: "Gemini 3.1 Pro Preview (CLI)",
-    backend: "gemini-3.1-pro-preview",
-    family: "gemini",
-    headerStyle: "gemini-cli",
-  },
+  "gemini-2.5-pro": { name: "Gemini 2.5 Pro (CLI)", backend: "gemini-2.5-pro", family: "gemini", headerStyle: "gemini-cli" },
 }
 
 // Get model info from model ID

@@ -118,17 +118,6 @@ From the repository root, validate all workspace packages with `bun turbo typech
 
 Repository-local configuration, credentials, dependencies, plans, runs, logs, and session data are intentionally ignored. Only tracked skills and agents under `.atomcli/` and `.claude/` are release assets. See the [development guide](docs/DEVELOPMENT.md) for the pre-release hygiene checklist.
 
-## Release
-
-The root release command validates the repository, creates the release commit, pushes `main`, pushes the exact version tag, and waits for GitHub Actions to publish the binaries:
-
-```sh
-./release.sh --dry-run
-./release.sh
-```
-
-The version comes from `AtomBase/package.json`; the GitHub release body comes from `RELEASE_NOTES.md`. Release notes must use plain text without emoji. The command requires authenticated `gh` access and asks for the exact tag before changing remote state.
-
 ## License
 
 AtomCLI is released under the [MIT License](LICENSE).
