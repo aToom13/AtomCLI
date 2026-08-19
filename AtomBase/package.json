@@ -64,7 +64,7 @@
     "@atomcli/script": "workspace:*",
     "@atomcli/sdk": "workspace:*",
     "@atomcli/util": "workspace:*",
-    "@clack/prompts": "1.0.0-alpha.1",
+    "@clack/prompts": "1.7.0",
     "@modelcontextprotocol/sdk": "1.27.1",
     "@octokit/graphql": "9.0.2",
     "@octokit/rest": "catalog:",
