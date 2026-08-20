@@ -116,7 +116,7 @@ export namespace CompanionDiscovery {
             : null
 
         return {
-            v: 1,
+            v: 2,
             endpoints: endpoints.map((e) => e.url),
             pairing_token: pairingToken,
             // If no IP endpoint found, http_pair will be empty — caller must warn user.

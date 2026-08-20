@@ -1,5 +1,6 @@
 import { cmd } from "../cmd"
 import { tui } from "./app"
+import { authenticatedFetch } from "../../network"
 
 export const AttachCommand = cmd({
   command: "attach <url>",
@@ -19,6 +20,11 @@ export const AttachCommand = cmd({
         alias: ["s"],
         type: "string",
         describe: "session id to continue",
+      })
+      .option("auth", {
+        type: "string",
+        describe: "bearer token for the control-plane API",
+        default: process.env.ATOMCLI_SERVER_TOKEN,
       }),
   handler: async (args) => {
     if (args.dir) process.chdir(args.dir)
@@ -26,6 +32,7 @@ export const AttachCommand = cmd({
       url: args.url,
       args: { sessionID: args.session },
       directory: args.dir ? process.cwd() : undefined,
+      fetch: authenticatedFetch(args.auth),
     })
   },
 })

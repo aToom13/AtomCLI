@@ -49,7 +49,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
     async execute(params: z.infer<typeof parameters>, ctx) {
       if (params.action === "abort") {
         if (!params.session_id) throw new Error("session_id is required to abort a task")
-        SessionPrompt.cancel(params.session_id)
+        await SubAgent.cancel(params.session_id)
         try {
           await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: params.session_id })
         } catch {

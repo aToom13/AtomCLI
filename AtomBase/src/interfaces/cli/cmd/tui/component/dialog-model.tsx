@@ -8,6 +8,7 @@ import { useDialog } from "@tui/ui/dialog"
 import { createDialogProviderOptions, DialogProvider } from "./dialog-provider"
 import { Keybind } from "@/util/util/keybind"
 import type { Provider } from "@/integrations/provider/provider"
+import { ModelAvailability } from "@/integrations/provider/availability"
 import * as fuzzysort from "fuzzysort"
 import { useTerminalDimensions } from "@opentui/solid"
 
@@ -39,8 +40,9 @@ export namespace ModelDialog {
 
   export function statusLabel(
     provider: Pick<Provider.Info, "id">,
-    model: Pick<Provider.Model, "api" | "cost" | "status">,
+    model: Pick<Provider.Model, "api" | "cost" | "status" | "availability">,
   ) {
+    if (ModelAvailability.active(model.availability)) return "RATE LIMITED"
     const kind = billing(provider, model)
     if (kind === "free") return "FREE"
     if (kind === "subscription") return "SUBSCRIPTION"
@@ -88,6 +90,7 @@ export namespace ModelDialog {
       model.name,
       model.family,
       model.status,
+      ModelAvailability.active(model.availability) ? "rate limited kota limit sınırlı" : undefined,
       ...capabilities(model),
       kind === "free"
         ? "free ücretsiz"
@@ -144,7 +147,9 @@ function ModelDetails(props: { value?: ModelDialog.Value }) {
             </text>
             <text
               fg={
-                ModelDialog.billing(selected().provider, selected().model) === "free"
+                ModelAvailability.active(selected().model.availability)
+                  ? theme.warning
+                  : ModelDialog.billing(selected().provider, selected().model) === "free"
                   ? theme.success
                   : ModelDialog.billing(selected().provider, selected().model) === "subscription"
                     ? theme.secondary
@@ -158,6 +163,11 @@ function ModelDetails(props: { value?: ModelDialog.Value }) {
             {selected().provider.id}/{selected().model.id}
             <Show when={selected().model.family}> · {selected().model.family}</Show>
           </text>
+          <Show when={ModelAvailability.active(selected().model.availability)}>
+            <text fg={theme.warning}>
+              Temporarily rate limited by the upstream gateway · {ModelAvailability.retryLabel(selected().model.availability)}
+            </text>
+          </Show>
           <box flexDirection="row" flexWrap="wrap" gap={2}>
             <text fg={theme.text}>
               Context{" "}
@@ -242,7 +252,13 @@ export function DialogModel(props: { providerID?: string }) {
       .join(" · ")
     const billing = ModelDialog.billing(item.provider, item.model)
     const badges = [
-      billing === "free" ? "FREE" : billing === "subscription" ? "PLAN" : undefined,
+      ModelAvailability.active(item.model.availability)
+        ? "RATE LIMITED"
+        : billing === "free"
+          ? "FREE"
+          : billing === "subscription"
+            ? "PLAN"
+            : undefined,
       item.model.capabilities.reasoning ? "THINK" : undefined,
       ModelDialog.formatTokens(item.model.limit.context),
     ].filter(Boolean)

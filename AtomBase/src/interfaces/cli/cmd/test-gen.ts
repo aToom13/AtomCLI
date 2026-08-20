@@ -24,6 +24,7 @@ import { Shell } from "@/interfaces/shell/shell"
 import { Instance } from "@/services/project/instance"
 import path from "path"
 import fs from "fs/promises"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace TestGen {
   const log = Log.create({ service: "test-gen" })
@@ -340,6 +341,7 @@ describe("myFunction", () => {
       const shell = Shell.acceptable()
       const isWin = process.platform === "win32"
       const result = await Bun.spawn(isWin ? [shell, "/c", command] : [shell, "-c", command], {
+        env: EnvPolicy.build({ cwd: process.cwd(), scope: "cli:test-gen" }),
         stdout: "pipe",
         stderr: "pipe",
       })

@@ -20,6 +20,7 @@ import { SystemPrompt } from "./system"
 import { Flag } from "@/interfaces/flag/flag"
 import { PermissionNext } from "@/util/permission/next"
 import { Auth } from "@/services/auth"
+import { SessionReplay } from "./replay"
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
@@ -147,6 +148,33 @@ export namespace LLM {
     const streamText = await getStreamText()
     const wrapLanguageModel = await getWrapLanguageModel()
 
+    const finalMessages = [
+      ...(isCodex
+        ? [{ role: "user", content: system.join("\n\n") } as ModelMessage]
+        : system.map((x): ModelMessage => ({ role: "system", content: x }))),
+      ...input.messages,
+    ]
+    const toolDefinitions = Object.entries(tools).map(([id, definition]) => ({
+      id,
+      description: definition.description,
+      schema: "inputSchema" in definition ? definition.inputSchema : undefined,
+    }))
+    const envelope = await SessionReplay.record({
+      sessionID: input.sessionID,
+      system,
+      messages: finalMessages,
+      tools: toolDefinitions,
+      route: { providerID: input.model.providerID, modelID: input.model.id, agent: input.agent.name },
+      pluginTransforms: ["experimental.chat.system.transform", "chat.params"],
+      injectedContext: input.user.system ? [input.user.system] : [],
+    })
+    if (process.env.ATOMCLI_TEST === "true") {
+      const replayed = await SessionReplay.renderModelInput(input.sessionID, envelope.requestID)
+      if (JSON.stringify(replayed.messages) !== JSON.stringify(finalMessages)) {
+        throw new Error(`Request replay invariant failed for ${envelope.requestID}`)
+      }
+    }
+
     const startTime = Date.now()
     const result = streamText({
       onError(error) {
@@ -202,22 +230,7 @@ export namespace LLM {
         ...input.model.headers,
       },
       maxRetries: input.retries ?? 0,
-      messages: [
-        ...(isCodex
-          ? [
-            {
-              role: "user",
-              content: system.join("\n\n"),
-            } as ModelMessage,
-          ]
-          : system.map(
-            (x): ModelMessage => ({
-              role: "system",
-              content: x,
-            }),
-          )),
-        ...input.messages,
-      ],
+      messages: finalMessages,
       model: wrapLanguageModel({
         model: language,
         middleware: [

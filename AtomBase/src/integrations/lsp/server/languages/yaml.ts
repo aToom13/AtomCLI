@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import path from "path"
 import { Global } from "@/core/global"
 import { BunProc } from "@/util/bun"
@@ -26,7 +27,7 @@ export const YamlLS: Info = {
             const exists = await Bun.file(js).exists()
             if (!exists) {
                 if (Flag.ATOMCLI_DISABLE_LSP_DOWNLOAD) return
-                await Bun.spawn([BunProc.which(), "install", "yaml-language-server"], {
+                await LSPProcess.bunSpawn([BunProc.which(), "install", "yaml-language-server"], {
                     cwd: Global.Path.bin,
                     env: {
                         ...process.env,

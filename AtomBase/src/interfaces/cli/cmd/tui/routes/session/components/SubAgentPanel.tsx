@@ -6,6 +6,8 @@ import { useSubAgents, type ActiveSubAgent } from "@tui/context/subagent"
 import { useSDK } from "@tui/context/sdk"
 import { Focusable } from "@tui/context/spatial"
 import { Identifier } from "@/core/id/id"
+import { useToast } from "@tui/ui/toast"
+import { SubAgentLifecycle } from "@tui/context/subagent-lifecycle"
 
 /**
  * SubAgentPanel — Dynamic right-side panel
@@ -157,6 +159,7 @@ function AgentCard(props: CardProps) {
   const { theme } = useTheme()
   const sdk = useSDK()
   const subAgentCtx = useSubAgents()
+  const toast = useToast()
 
   const isWaiting = () => props.agent.status === "waiting"
   const isRunning = () => props.agent.status === "running"
@@ -178,8 +181,16 @@ function AgentCard(props: CardProps) {
   const textChars = () => Math.max(4, inner() - 1)
 
   const killAgent = async () => {
-    await sdk.client.session.abort({ sessionID: props.agent.sessionId }).catch(() => {})
-    subAgentCtx.removeAgent(props.agent.sessionId)
+    try {
+      await SubAgentLifecycle.dismiss(sdk.client.session, props.agent.sessionId)
+      subAgentCtx.removeAgent(props.agent.sessionId)
+    } catch (error) {
+      toast.show({
+        variant: "error",
+        message: error instanceof Error ? error.message : "Failed to delete sub-agent session",
+        duration: 5000,
+      })
+    }
   }
   const openSession = () => navigate({ type: "session", sessionID: props.agent.sessionId })
 

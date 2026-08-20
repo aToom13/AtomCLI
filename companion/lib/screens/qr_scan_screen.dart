@@ -45,7 +45,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
       final json = jsonDecode(raw) as Map<String, dynamic>;
       final payload = PairingPayload.fromJson(json);
 
-      if (payload.v != 1) {
+      if (payload.v != 2) {
         _setError('Unsupported pairing version: ${payload.v}');
         return;
       }

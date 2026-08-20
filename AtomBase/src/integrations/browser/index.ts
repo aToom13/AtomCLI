@@ -47,6 +47,7 @@ export class BrowserManager {
   private browser: PlaywrightBrowser | null = null
   private context: BrowserContext | null = null
   private page: Page | null = null
+  private observedPages = new WeakSet<Page>()
   private log = Log.create({ service: "browser" })
   private consoleLogs: string[] = []
   private playwrightAvailable: boolean | null = null
@@ -139,6 +140,23 @@ export class BrowserManager {
 
   public clearLogs() {
     this.consoleLogs = []
+  }
+
+  private observePage(page: Page) {
+    if (this.observedPages.has(page)) return
+    this.observedPages.add(page)
+    page.on("console", (msg) => {
+      const text = `[${msg.type()}] ${msg.text()}`.slice(0, 10_000)
+      this.consoleLogs.push(text)
+      if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
+      this.log.debug(`console: ${text}`)
+    })
+    page.on("pageerror", (err) => {
+      const text = `[error] ${err.message}`.slice(0, 10_000)
+      this.consoleLogs.push(text)
+      if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
+      this.log.error(`pageerror: ${text}`)
+    })
   }
 
   /**
@@ -240,6 +258,7 @@ export class BrowserManager {
         viewport: { width: 1280, height: 720 },
         hasTouch: true,
       })
+      this.context.on("page", (page) => this.observePage(page))
 
       // Inject click visualization script
       await this.context.addInitScript(() => {
@@ -282,20 +301,7 @@ export class BrowserManager {
 
     if (!this.page || this.page.isClosed()) {
       this.page = await this.context!.newPage()
-
-      // Improved logging for debug
-      this.page.on("console", (msg) => {
-        const text = `[${msg.type()}] ${msg.text()}`.slice(0, 10_000)
-        this.consoleLogs.push(text)
-        if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
-        this.log.debug(`console: ${text}`)
-      })
-      this.page.on("pageerror", (err) => {
-        const text = `[error] ${err.message}`.slice(0, 10_000)
-        this.consoleLogs.push(text)
-        if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
-        this.log.error(`pageerror: ${text}`)
-      })
+      this.observePage(this.page)
     }
   }
 
@@ -305,6 +311,30 @@ export class BrowserManager {
     }
     await this.page!.bringToFront()
     return this.page!
+  }
+
+  public async getTabs() {
+    await this.init()
+    const pages = this.context!.pages()
+    return Promise.all(
+      pages.map(async (page, index) => ({
+        index,
+        title: (await page.title().catch(() => "")).slice(0, 2_000),
+        url: page.url().slice(0, 8_192),
+        active: page === this.page,
+      })),
+    )
+  }
+
+  public async selectTab(index: number): Promise<Page> {
+    await this.init()
+    const pages = this.context!.pages()
+    const page = pages[index]
+    if (!page) throw new Error(`Browser tab ${index} does not exist; available range is 0-${Math.max(0, pages.length - 1)}`)
+    this.page = page
+    this.observePage(page)
+    await page.bringToFront()
+    return page
   }
 
   public async close() {

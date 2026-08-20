@@ -7,7 +7,8 @@ import { pathToFileURL } from "url"
 import { LSPServer } from "./server"
 import z from "zod"
 import { Config } from "@/core/config/config"
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import { Instance } from "@/services/project/instance"
 import { Flag } from "@/interfaces/flag/flag"
 

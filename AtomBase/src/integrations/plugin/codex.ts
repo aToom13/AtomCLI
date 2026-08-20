@@ -12,6 +12,15 @@ const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 const CODEX_MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
 const OAUTH_PORT = 1455
 const MAX_MODELS_RESPONSE_BYTES = 5 * 1024 * 1024
+const MODELS_REQUEST_TIMEOUT_MS = 15_000
+const FALLBACK_MODEL_IDS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+])
 
 interface CodexRemoteModel {
   slug: string
@@ -56,6 +65,13 @@ async function readJsonBounded(response: Response, maxBytes: number) {
 }
 
 export namespace CodexModels {
+  export function applyFallback(models: Provider.Info["models"]) {
+    for (const modelID of Object.keys(models)) {
+      if (!FALLBACK_MODEL_IDS.has(modelID)) delete models[modelID]
+    }
+    return Object.keys(models).length
+  }
+
   export function apply(models: Provider.Info["models"], response: CodexModelsResponse) {
     if (!response || !Array.isArray(response.models)) throw new Error("Codex models response is missing models")
     for (const [index, model] of response.models.entries()) {
@@ -668,7 +684,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
           url.searchParams.set("client_version", Installation.VERSION)
           const response = await authenticatedFetch(url, {
             headers: { "User-Agent": Installation.USER_AGENT },
-            signal: AbortSignal.timeout(5_000),
+            signal: AbortSignal.timeout(MODELS_REQUEST_TIMEOUT_MS),
           })
           if (!response.ok) throw new Error(`Codex models endpoint returned ${response.status}`)
           const count = CodexModels.apply(
@@ -678,12 +694,11 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
           log.info("refreshed codex models", { count })
         } catch (error) {
           // The account-specific endpoint is authoritative. If it is temporarily
-          // unavailable, retain only plausible Codex/GPT-5 entries from the
-          // general catalog instead of collapsing to a permanently stale list.
+          // unavailable, retain only models verified against the ChatGPT Codex
+          // backend. The general OpenAI catalog contains IDs (for example the
+          // plain gpt-5.6 model) that reject ChatGPT-account authentication.
           log.warn("failed to refresh codex models; using models.dev fallback", { error })
-          for (const modelID of Object.keys(provider.models)) {
-            if (!modelID.includes("codex") && !modelID.startsWith("gpt-5")) delete provider.models[modelID]
-          }
+          CodexModels.applyFallback(provider.models)
         }
 
         for (const model of Object.values(provider.models)) {

@@ -1,6 +1,6 @@
 /**
  * Model Fallback System
- * 
+ *
  * Automatic model switching when API errors occur (rate limits, downtime).
  * Fallback chain: Primary → Secondary → Tertiary models.
  * Seamless continuation without user intervention.
@@ -63,21 +63,166 @@ export namespace ModelFallback {
   ]
 
   /**
-   * Default fallback models (atomcli provider - no API key needed)
-   * These are used when no custom fallback is configured
+   * Default fallback models for backward-compatibility or when provider list is not loaded.
    */
-  export const DEFAULT_FALLBACK_MODELS = [
-    "atomcli/minimax-m2.5-free",
-    "atomcli/gpt-5-nano",
-    "atomcli/big-pickle",
-  ]
+  export const DEFAULT_FALLBACK_MODELS = ["atomcli/minimax-m2.5-free", "atomcli/gpt-5-nano", "atomcli/big-pickle"]
+
+  /**
+   * Dynamically discovers available free fallback models from available providers.
+   * Prioritizes atomcli provider free models, with capability/score filtering.
+   */
+  export async function getDynamicFallbackModels(options?: {
+    excludeModelID?: string
+    excludeProviderID?: string
+    limit?: number
+  }): Promise<string[]> {
+    const limit = options?.limit ?? 5
+    try {
+      const providers = await Provider.list()
+      const atomcli = providers["atomcli"]
+      const candidateModels: Array<{ id: string; providerID: string; score: number }> = []
+
+      if (atomcli && atomcli.models) {
+        for (const [mID, m] of Object.entries(atomcli.models)) {
+          if (mID === "atomcli-auto" || mID === "atomcli-free") continue
+          if (m.status === "deprecated") continue
+          // Must be free
+          const isFree = (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0
+          if (!isFree) continue
+
+          // Skip excluded
+          if (options?.excludeProviderID === "atomcli" && options?.excludeModelID === mID) {
+            continue
+          }
+
+          let score = 0
+          if (m.capabilities?.toolcall) score += 40
+          if (m.capabilities?.reasoning) score += 20
+          score += Math.min((m.limit?.context ?? 0) / 10000, 20)
+          score += Math.min((m.limit?.output ?? 0) / 1000, 10)
+
+          candidateModels.push({
+            id: mID,
+            providerID: "atomcli",
+            score,
+          })
+        }
+      }
+
+      // If atomcli provider didn't have enough, check other providers for free models
+      if (candidateModels.length < limit) {
+        for (const [pID, p] of Object.entries(providers)) {
+          if (pID === "atomcli") continue
+          for (const [mID, m] of Object.entries(p.models || {})) {
+            if (m.status === "deprecated") continue
+            const isFree = (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0
+            if (isFree) {
+              if (options?.excludeProviderID === pID && options?.excludeModelID === mID) continue
+              candidateModels.push({
+                id: mID,
+                providerID: pID,
+                score: (m.capabilities?.toolcall ? 30 : 0) + Math.min((m.limit?.context ?? 0) / 10000, 10),
+              })
+            }
+          }
+        }
+      }
+
+      if (candidateModels.length > 0) {
+        candidateModels.sort((a, b) => b.score - a.score)
+        return candidateModels.slice(0, limit).map((c) => `${c.providerID}/${c.id}`)
+      }
+    } catch (e) {
+      log.warn("failed to discover dynamic fallback models", { error: (e as Error).message })
+    }
+
+    return DEFAULT_FALLBACK_MODELS
+  }
+
+  export interface ModelProbeResult {
+    model: string
+    providerID: string
+    modelID: string
+    available: boolean
+    latencyMs?: number
+    error?: string
+  }
+
+  /**
+   * Probe models by sending a minimal stream/completion test to check if they respond.
+   */
+  export async function probeModels(
+    models: string[],
+    options?: { timeoutMs?: number; concurrency?: number },
+  ): Promise<ModelProbeResult[]> {
+    const timeoutMs = options?.timeoutMs ?? 7000
+    const concurrency = options?.concurrency ?? 3
+    const results: ModelProbeResult[] = []
+
+    const { getGenerateText } = await import("@/util/util/ai-compat")
+    const generateText = await getGenerateText()
+
+    const probeSingle = async (modelSpec: string): Promise<ModelProbeResult> => {
+      const parsed = Provider.parseModel(modelSpec)
+      const start = Date.now()
+      try {
+        const model = await Provider.getModel(parsed.providerID, parsed.modelID)
+        const language = await Provider.getLanguage(model)
+        const abortController = new AbortController()
+        const timeout = setTimeout(() => abortController.abort(), timeoutMs)
+
+        try {
+          const result = await Promise.race([
+            generateText({
+              model: language,
+              messages: [{ role: "user", content: "ping" }],
+              abortSignal: abortController.signal,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`Probe timed out after ${timeoutMs}ms`)), timeoutMs),
+            ),
+          ])
+
+          const latencyMs = Date.now() - start
+          const hasText = result && typeof (result as any).text === "string"
+          return {
+            model: modelSpec,
+            providerID: parsed.providerID,
+            modelID: parsed.modelID,
+            available: hasText,
+            latencyMs,
+          }
+        } finally {
+          clearTimeout(timeout)
+        }
+      } catch (err: any) {
+        return {
+          model: modelSpec,
+          providerID: parsed.providerID,
+          modelID: parsed.modelID,
+          available: false,
+          latencyMs: Date.now() - start,
+          error: err?.message || String(err),
+        }
+      }
+    }
+
+    // Run probes in bounded batches
+    for (let i = 0; i < models.length; i += concurrency) {
+      const batch = models.slice(i, i + concurrency)
+      const batchResults = await Promise.all(batch.map((m) => probeSingle(m)))
+      results.push(...batchResults)
+    }
+
+    return results
+  }
 
   /**
    * Check if error should trigger fallback
    */
   export function shouldFallback(error: Error): boolean {
     const errorMessage = error.message.toLowerCase()
-    return FALLBACK_ERROR_PATTERNS.some(pattern => pattern.test(errorMessage))
+    return FALLBACK_ERROR_PATTERNS.some((pattern) => pattern.test(errorMessage))
   }
 
   /**
@@ -88,7 +233,7 @@ export namespace ModelFallback {
     config?: {
       secondary?: string
       tertiary?: string
-    }
+    },
   ): Promise<FallbackChain> {
     const parsed = Provider.parseModel(primaryModelID)
     const primary = await Provider.getModel(parsed.providerID, parsed.modelID)
@@ -122,7 +267,7 @@ export namespace ModelFallback {
   export async function streamWithFallback(
     chain: FallbackChain,
     input: LLM.StreamInput,
-    options: FallbackOptions = {}
+    options: FallbackOptions = {},
   ): Promise<FallbackResult> {
     const { maxRetriesPerModel = 1, streamTimeoutMs = 20_000 } = options
     const models = [chain.primary, chain.secondary, chain.tertiary].filter(Boolean) as Provider.Model[]
@@ -177,7 +322,6 @@ export namespace ModelFallback {
             attempts,
             totalCost,
           }
-
         } catch (error) {
           lastError = error as Error
 
@@ -202,7 +346,7 @@ export namespace ModelFallback {
           if (retry < maxRetriesPerModel - 1) {
             const delay = Math.min(1000 * Math.pow(2, retry), 10000)
             log.info("retrying after delay", { delay })
-            await new Promise(resolve => setTimeout(resolve, delay))
+            await new Promise((resolve) => setTimeout(resolve, delay))
           }
         }
       }
@@ -236,11 +380,7 @@ export namespace ModelFallback {
   /**
    * Create fallback chain from model IDs
    */
-  export async function createChain(
-    primary: string,
-    secondary?: string,
-    tertiary?: string
-  ): Promise<FallbackChain> {
+  export async function createChain(primary: string, secondary?: string, tertiary?: string): Promise<FallbackChain> {
     const primaryParsed = Provider.parseModel(primary)
     const chain: FallbackChain = {
       primary: await Provider.getModel(primaryParsed.providerID, primaryParsed.modelID),
@@ -272,9 +412,9 @@ export namespace ModelFallback {
    */
   export function getRecommendedFallbacks(primary: Provider.Model): string[] {
     const recommendations: Record<string, string[]> = {
-      "claude": ["openai/gpt-4", "google/gemini-pro"],
+      claude: ["openai/gpt-4", "google/gemini-pro"],
       "gpt-4": ["anthropic/claude-sonnet", "google/gemini-pro"],
-      "gemini": ["anthropic/claude-sonnet", "openai/gpt-4"],
+      gemini: ["anthropic/claude-sonnet", "openai/gpt-4"],
     }
 
     for (const [pattern, fallbacks] of Object.entries(recommendations)) {

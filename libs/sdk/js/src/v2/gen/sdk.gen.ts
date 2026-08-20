@@ -20,8 +20,6 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   CommandListResponses,
-  CompanionPairErrors,
-  CompanionPairResponses,
   ConfigGetResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -108,6 +106,10 @@ import type {
   ProjectUpdateResponses,
   ProviderAuthResponses,
   ProviderConfig,
+  ProviderCustomDiscoverErrors,
+  ProviderCustomDiscoverResponses,
+  ProviderCustomSaveErrors,
+  ProviderCustomSaveResponses,
   ProviderKeyErrors,
   ProviderKeyResponses,
   ProviderListResponses,
@@ -625,6 +627,14 @@ export class Config extends HeyApiClient {
         diff_style?: "auto" | "stacked"
       }
       server?: ServerConfig
+      execution?: {
+        sandbox?: "off" | "prefer" | "require"
+        filesystem?: "read-only" | "workspace-write" | "full"
+        network?: "deny" | "allow"
+        environment?: "minimal" | "filtered" | "inherit"
+        processVisibility?: "restricted" | "inherit"
+        envAllow?: Array<string>
+      }
       command?: {
         [key: string]: {
           template: string
@@ -854,6 +864,7 @@ export class Config extends HeyApiClient {
             { in: "body", key: "logLevel" },
             { in: "body", key: "tui" },
             { in: "body", key: "server" },
+            { in: "body", key: "execution" },
             { in: "body", key: "command" },
             { in: "body", key: "watcher" },
             { in: "body", key: "plugin" },
@@ -3252,6 +3263,94 @@ export class Oauth extends HeyApiClient {
   }
 }
 
+export class Custom extends HeyApiClient {
+  /**
+   * Discover custom provider models
+   *
+   * Probe an OpenAI-compatible base URL and return the discovered model list.
+   */
+  public discover<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      baseURL: string
+      apiKey?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ProviderCustomDiscoverResponses, ProviderCustomDiscoverErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "baseURL" },
+            { in: "body", key: "apiKey" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ProviderCustomDiscoverResponses,
+      ProviderCustomDiscoverErrors,
+      ThrowOnError
+    >({
+      url: "/provider/custom/discover",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Save a custom provider configuration
+   *
+   * Persist a custom OpenAI-compatible provider to the global atomcli.json config.
+   */
+  public save<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      providerID: string
+      name: string
+      baseURL: string
+      apiKey?: string
+      models: {
+        [key: string]: unknown
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ProviderCustomSaveResponses, ProviderCustomSaveErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "providerID" },
+            { in: "body", key: "name" },
+            { in: "body", key: "baseURL" },
+            { in: "body", key: "apiKey" },
+            { in: "body", key: "models" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ProviderCustomSaveResponses, ProviderCustomSaveErrors, ThrowOnError>({
+      url: "/provider/custom/save",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Provider extends HeyApiClient {
   /**
    * List providers
@@ -3332,6 +3431,11 @@ export class Provider extends HeyApiClient {
   get oauth(): Oauth {
     return (this._oauth ??= new Oauth({ client: this.client }))
   }
+
+  private _custom?: Custom
+  get custom(): Custom {
+    return (this._custom ??= new Custom({ client: this.client }))
+  }
 }
 
 export class Lsp extends HeyApiClient {
@@ -3372,45 +3476,6 @@ export class Formatter extends HeyApiClient {
       url: "/formatter",
       ...options,
       ...params,
-    })
-  }
-}
-
-export class Companion extends HeyApiClient {
-  /**
-   * Pair a mobile device
-   */
-  public pair<ThrowOnError extends boolean = false>(
-    parameters: {
-      directory?: string
-      pairing_token: string
-      public_key: string
-      device_name: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<CompanionPairResponses, CompanionPairErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "body", key: "pairing_token" },
-            { in: "body", key: "public_key" },
-            { in: "body", key: "device_name" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<CompanionPairResponses, CompanionPairErrors, ThrowOnError>({
-      url: "/companion/pair",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
     })
   }
 }
@@ -3546,10 +3611,5 @@ export class AtomcliClient extends HeyApiClient {
   private _formatter?: Formatter
   get formatter(): Formatter {
     return (this._formatter ??= new Formatter({ client: this.client }))
-  }
-
-  private _companion?: Companion
-  get companion(): Companion {
-    return (this._companion ??= new Companion({ client: this.client }))
   }
 }

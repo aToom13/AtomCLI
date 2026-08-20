@@ -17,6 +17,9 @@ Use this tool to:
 - Scroll the page or elements in any direction
 - Drag and drop elements
 - Take screenshots regarding visual analysis
+- Summarize visible headings and interactive controls without dumping raw HTML
+- Wait for dynamic content, URLs, or load states
+- List and switch between browser tabs
 - Read console logs and execute JavaScript
 The browser stays open between calls, allowing sequential interactions.
 
@@ -30,6 +33,8 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
             "press",
             "clear",
             "read",
+            "snapshot",
+            "wait",
             "screenshot",
             "scroll",
             "drag",
@@ -39,6 +44,8 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
             "back",
             "forward",
             "reload",
+            "tabs",
+            "switch_tab",
             "close"
         ]).describe("Action to perform"),
 
@@ -51,6 +58,11 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
         text: z.string().max(100_000).optional().describe("Text to type (required for 'type')"),
         key: z.string().max(100).optional().describe("Key to press e.g. 'Enter', 'Control+C', 'ArrowDown' (required for 'press')"),
         delay: z.number().min(0).max(5_000).optional().describe("Delay between keystrokes in ms for 'type' (default: 50ms)"),
+        timeout: z.number().int().min(100).max(120_000).optional().describe("Maximum wait/navigation time in ms (default: 30000)"),
+        state: z.enum(["attached", "detached", "visible", "hidden"]).optional().describe("Element state for 'wait' (default: visible)"),
+        loadState: z.enum(["load", "domcontentloaded", "networkidle"]).optional().describe("Page load state for 'wait' (default: networkidle)"),
+        maxElements: z.number().int().min(1).max(500).optional().describe("Maximum interactive elements returned by 'snapshot' (default: 100)"),
+        tabIndex: z.number().int().min(0).max(100).optional().describe("Zero-based tab index for 'switch_tab'"),
 
         // Click options
         button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button (default: left)"),
@@ -96,6 +108,7 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
         if (params.action === "scroll" && !params.direction) throw new Error("Direction is required for scroll")
         if (params.action === "drag" && !params.targetSelector) throw new Error("TargetSelector is required for drag")
         if (params.action === "evaluate" && !params.script) throw new Error("Script is required for evaluate")
+        if (params.action === "switch_tab" && params.tabIndex === undefined) throw new Error("TabIndex is required for switch_tab")
 
         // Check if Playwright is available before trying to use it
         const isAvailable = await Browser.isPlaywrightAvailable()
@@ -140,7 +153,20 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
             metadata: { action: params.action, target: permissionTarget },
         })
 
-        const page = await Browser.getPage()
+        if (params.action === "tabs") {
+            const tabs = await Browser.getTabs()
+            return {
+                output: tabs.length > 0
+                    ? tabs.map((tab) => `${tab.active ? "→" : " "} [${tab.index}] ${tab.title || "Untitled"} — ${tab.url}`).join("\n")
+                    : "No browser tabs are open.",
+                title: "Browser: tabs",
+                metadata: { count: tabs.length, tabs },
+            }
+        }
+
+        const page = params.action === "switch_tab"
+            ? await Browser.selectTab(params.tabIndex!)
+            : await Browser.getPage()
 
         try {
             let result = ""
@@ -149,8 +175,12 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
             switch (params.action) {
                 case "navigate":
                     if (!params.url) throw new Error("URL is required for navigate")
-                    await page.goto(params.url, { waitUntil: "domcontentloaded", timeout: 30000 })
+                    await page.goto(params.url, { waitUntil: "domcontentloaded", timeout: params.timeout ?? 30_000 })
                     result = `Navigated to ${params.url}`
+                    break
+
+                case "switch_tab":
+                    result = `Switched to tab ${params.tabIndex}`
                     break
 
                 case "click":
@@ -198,6 +228,112 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                         : await page.evaluate((max) => document.documentElement.outerHTML.slice(0, max), MAX_BROWSER_OUTPUT)
                     result = content || "No content found"
                     break
+
+                case "snapshot": {
+                    const snapshot = await page.evaluate((maximum) => {
+                        const clean = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim()
+                        const visible = (element: Element) => {
+                            const node = element as HTMLElement
+                            const style = window.getComputedStyle(node)
+                            const box = node.getBoundingClientRect()
+                            return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0
+                        }
+                        const selector = (element: Element) => {
+                            const node = element as HTMLElement
+                            if (node.id) return `#${CSS.escape(node.id)}`
+                            const testID = node.getAttribute("data-testid")
+                            if (testID) return `[data-testid="${CSS.escape(testID)}"]`
+                            const name = node.getAttribute("name")
+                            if (name) return `${node.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`
+                            const path: string[] = []
+                            let current: Element | null = element
+                            while (current && current !== document.body && path.length < 5) {
+                                const tag = current.tagName.toLowerCase()
+                                const siblings = current.parentElement
+                                    ? [...current.parentElement.children].filter((item) => item.tagName === current!.tagName)
+                                    : []
+                                const suffix = siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(current) + 1})` : ""
+                                path.unshift(`${tag}${suffix}`)
+                                current = current.parentElement
+                            }
+                            return path.join(" > ")
+                        }
+                        const headings = [...document.querySelectorAll("h1, h2, h3")]
+                            .filter(visible)
+                            .slice(0, 50)
+                            .map((element) => ({ level: element.tagName.toLowerCase(), text: clean(element.textContent) }))
+                            .filter((item) => item.text)
+                        const candidates = [...document.querySelectorAll(
+                            'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="tab"]',
+                        )]
+                        const interactive = candidates
+                            .filter(visible)
+                            .slice(0, maximum)
+                            .map((element) => {
+                                const node = element as HTMLInputElement
+                                const labelledBy = node.getAttribute("aria-labelledby")
+                                const labelledText = labelledBy
+                                    ? labelledBy.split(/\s+/).map((id) => clean(document.getElementById(id)?.textContent)).filter(Boolean).join(" ")
+                                    : ""
+                                const label = clean(
+                                    node.getAttribute("aria-label") ||
+                                    labelledText ||
+                                    node.labels?.[0]?.textContent ||
+                                    node.textContent ||
+                                    node.getAttribute("placeholder") ||
+                                    node.getAttribute("alt") ||
+                                    node.getAttribute("name"),
+                                )
+                                return {
+                                    type: node.getAttribute("role") || node.getAttribute("type") || node.tagName.toLowerCase(),
+                                    label,
+                                    selector: selector(node),
+                                    href: node instanceof HTMLAnchorElement ? node.href : undefined,
+                                }
+                            })
+                        return {
+                            headings,
+                            interactive,
+                            text: clean((document.body as HTMLElement | null)?.innerText).slice(0, 20_000),
+                        }
+                    }, params.maxElements ?? 100)
+                    const lines = ["# Visible page snapshot"]
+                    if (snapshot.headings.length > 0) {
+                        lines.push("", "## Headings", ...snapshot.headings.map((item) => `- ${item.level}: ${item.text}`))
+                    }
+                    if (snapshot.interactive.length > 0) {
+                        lines.push(
+                            "",
+                            "## Interactive elements",
+                            ...snapshot.interactive.map((item, index) =>
+                                `- [${index + 1}] ${item.type}${item.label ? ` \"${item.label}\"` : ""} — selector: ${item.selector}${item.href ? ` — ${item.href}` : ""}`,
+                            ),
+                        )
+                    }
+                    if (snapshot.text) lines.push("", "## Visible text", snapshot.text)
+                    result = lines.join("\n").slice(0, MAX_BROWSER_OUTPUT)
+                    metadata.elementCount = snapshot.interactive.length
+                    metadata.headingCount = snapshot.headings.length
+                    break
+                }
+
+                case "wait": {
+                    const timeout = params.timeout ?? 30_000
+                    if (params.selector) {
+                        await page.locator(params.selector).waitFor({ state: params.state ?? "visible", timeout })
+                        result = `Wait condition met: ${params.selector} is ${params.state ?? "visible"}`
+                    } else if (params.text) {
+                        await page.getByText(params.text, { exact: false }).first().waitFor({ state: params.state ?? "visible", timeout })
+                        result = `Wait condition met: text \"${params.text}\" is ${params.state ?? "visible"}`
+                    } else if (params.url) {
+                        await page.waitForURL(params.url, { timeout })
+                        result = `Wait condition met: URL matches ${params.url}`
+                    } else {
+                        await page.waitForLoadState(params.loadState ?? "networkidle", { timeout })
+                        result = `Wait condition met: page reached ${params.loadState ?? "networkidle"}`
+                    }
+                    break
+                }
 
                 case "scroll":
                     if (!params.direction) throw new Error("Direction is required for scroll")

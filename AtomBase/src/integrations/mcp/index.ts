@@ -25,6 +25,7 @@ import { BusEvent } from "@/core/bus/bus-event"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import open from "open"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace MCP {
   const log = Log.create({ service: "mcp" })
@@ -419,11 +420,14 @@ export namespace MCP {
         command: cmd,
         args,
         cwd,
-        env: {
-          ...process.env,
-          ...(cmd === "atomcli" ? { BUN_BE_BUN: "1" } : {}),
-          ...mcp.environment,
-        },
+        env: EnvPolicy.build({
+          cwd,
+          scope: `mcp:${key}`,
+          overrides: {
+            ...(cmd === "atomcli" ? { BUN_BE_BUN: "1" } : {}),
+            ...mcp.environment,
+          },
+        }),
       })
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT

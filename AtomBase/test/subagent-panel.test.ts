@@ -14,6 +14,28 @@ describe("SubAgentPanel", () => {
       expect(SessionLayout.chainExpandedHeight(22, 1)).toBe(2)
       expect(SessionLayout.chainExpandedHeight(22, 20)).toBe(6)
       expect(SessionLayout.chainExpandedHeight(35, 1)).toBe(7)
+      expect(SessionLayout.chainExpandedHeight(35, 5)).toBe(8)
+    })
+
+    test("uses the scrollbox viewport instead of placing its scrollbar below the task list", () => {
+      const compactHeight = SessionLayout.chainExpandedHeight(26, 5)
+      expect(compactHeight).toBe(6)
+      expect(SessionLayout.chainListViewportRows(26, compactHeight)).toBe(5)
+      expect(SessionLayout.chainNeedsScrollbar(26, compactHeight, 5)).toBe(false)
+      expect(SessionLayout.chainNeedsScrollbar(22, SessionLayout.chainExpandedHeight(22, 20), 20)).toBe(true)
+      expect(SessionLayout.chainScrollContentOptions).toEqual({ flexDirection: "column" })
+    })
+
+    test("reserves task-row badges before truncating long names", () => {
+      expect(SessionLayout.chainStepNameWidth(59, 0)).toBe(48)
+      expect(SessionLayout.chainStepNameWidth(59, 1, 7)).toBe(41)
+      expect(SessionLayout.chainStepNameWidth(24, 99, 20)).toBe(8)
+    })
+
+    test("does not duplicate generated task numbering", () => {
+      expect(SessionLayout.chainStepLabel("1. Ortam ve bağımlılık kontrolü")).toBe("Ortam ve bağımlılık kontrolü")
+      expect(SessionLayout.chainStepLabel("2) Test dosyalarının taranması")).toBe("Test dosyalarının taranması")
+      expect(SessionLayout.chainStepLabel("v1.2 release hazırlığı")).toBe("v1.2 release hazırlığı")
     })
   })
 

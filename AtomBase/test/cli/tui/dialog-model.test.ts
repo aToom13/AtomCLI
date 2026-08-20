@@ -77,6 +77,18 @@ describe("model dialog presentation", () => {
     expect(ModelDialog.statusLabel(provider, model())).toBe("FREE")
   })
 
+  test("shows upstream rate-limited AtomCLI models without hiding them", () => {
+    const atomcli = { id: "atomcli", name: "AtomCLI" } as Provider.Info
+    const limited = model({
+      id: "big-pickle",
+      providerID: "atomcli",
+      availability: { status: "rate_limited", retryAt: Date.now() + 60_000, source: "retry-after" },
+    })
+
+    expect(ModelDialog.statusLabel(atomcli, limited)).toBe("RATE LIMITED")
+    expect(ModelDialog.keywords(atomcli, limited)).toContain("rate limited")
+  })
+
   test("indexes IDs, providers and capabilities for search", () => {
     const provider = {
       id: "example",

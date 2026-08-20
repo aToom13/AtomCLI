@@ -1,6 +1,7 @@
 import { Provider } from "../provider/provider"
 import { Config } from "@/core/config/config"
 import { Log } from "@/util/util/log"
+import { ModelAvailability } from "../provider/availability"
 
 const log = Log.create({ service: "model-router" })
 
@@ -267,13 +268,15 @@ export function pickClassifierModel(
   freeModels: Array<[string, Provider.Model]>,
 ): [string, Provider.Model] | null {
   const candidates = freeModels
-    .filter(([, m]) => !m.capabilities.reasoning) // non-reasoning = faster
+    .filter(([, m]) => modelIsRoutable(m) && !m.capabilities.reasoning) // non-reasoning = faster
     .sort(([, a], [, b]) => (a.limit?.context ?? 0) - (b.limit?.context ?? 0))
 
   if (candidates.length > 0) return candidates[0]
 
   // Fallback: any free model, sorted by context size
-  const all = [...freeModels].sort(([, a], [, b]) => (a.limit?.context ?? 0) - (b.limit?.context ?? 0))
+  const all = freeModels
+    .filter(([, m]) => modelIsRoutable(m))
+    .sort(([, a], [, b]) => (a.limit?.context ?? 0) - (b.limit?.context ?? 0))
   return all.length > 0 ? all[0] : null
 }
 
@@ -334,12 +337,26 @@ export function categoryHardOk(m: Provider.Model, category: TaskCategory): boole
   return true
 }
 
+export function modelIsRoutable(model: Provider.Model): boolean {
+  return (
+    model.status !== "deprecated" &&
+    !ModelAvailability.active(model.availability) &&
+    model.capabilities.input.text &&
+    model.capabilities.output.text &&
+    Number.isFinite(model.limit?.context) &&
+    model.limit.context > 0 &&
+    Number.isFinite(model.limit?.output) &&
+    model.limit.output > 0
+  )
+}
+
 export function selectCandidates(
   freeModels: Array<[string, Provider.Model]>,
   category: TaskCategory,
   autoRouterConfig?: { excluded_models?: string[] },
 ): Array<[string, Provider.Model]> {
-  if (freeModels.length === 0) {
+  const routableModels = freeModels.filter(([, model]) => modelIsRoutable(model))
+  if (routableModels.length === 0) {
     throw new Error("NoFreeModelsError: Kullanılabilir hiçbir ücretsiz model bulunamadı!")
   }
 
@@ -360,7 +377,7 @@ export function selectCandidates(
   ]
 
   for (const check of tiers) {
-    let candidates = freeModels.filter(([id, m]) => check(id, m))
+    let candidates = routableModels.filter(([id, m]) => check(id, m))
     // Kullanıcı exclude ettiyse, adaylardan çıkar
     if (candidates.length > 0 && autoRouterConfig?.excluded_models?.length) {
       const filtered = candidates.filter(([id]) => !autoRouterConfig.excluded_models!.includes(id))
@@ -370,7 +387,7 @@ export function selectCandidates(
     if (candidates.length > 0) return candidates
   }
 
-  return freeModels // Fallback
+  return routableModels // Fallback
 }
 
 export const MODE_WEIGHTS = {
@@ -467,7 +484,7 @@ export function selectModelInternal(
   // Category override: kullanıcı belirli bir model sabitlemişse direkt onu seç
   const override = autoRouterConfig?.category_overrides?.[category]
   if (override) {
-    const model = allFreeModels.find(([id]) => id === override)
+    const model = allFreeModels.find(([id, candidate]) => id === override && modelIsRoutable(candidate))
     if (model) {
       return {
         selected: { id: model[0], m: model[1], score: 999 },
@@ -476,13 +493,13 @@ export function selectModelInternal(
     }
   }
 
-  let filtered = allFreeModels
+  let filtered = allFreeModels.filter(([, model]) => modelIsRoutable(model))
   if (session && prompt) {
     const requiredContext = estimateRequiredContext(session, prompt)
-    filtered = allFreeModels.filter(([, m]) => (m.limit?.context ?? 0) >= requiredContext)
+    filtered = filtered.filter(([, m]) => (m.limit?.context ?? 0) >= requiredContext)
   }
 
-  const pool = filtered.length > 0 ? filtered : allFreeModels
+  const pool = filtered.length > 0 ? filtered : allFreeModels.filter(([, model]) => modelIsRoutable(model))
   const candidates = selectCandidates(pool, category, autoRouterConfig)
 
   const ranked = candidates
@@ -513,13 +530,23 @@ export function buildFallbackChain(
     autoRouterConfig,
   )
 
+  return buildFallbackChainFromSelection(category, mode, selected, ranked)
+}
+
+export function buildFallbackChainFromSelection(
+  category: TaskCategory,
+  mode: AutoMode,
+  selected: { id: string; m: Provider.Model; score: number },
+  ranked: Array<{ id: string; m: Provider.Model; score: number }>,
+) {
+
   const fallbacks = ranked
     .filter((x) => x.id !== selected.id)
     .slice(0, 2)
-    .map((x) => ({ providerID: "atomcli", modelID: x.id }))
+    .map((x) => ({ providerID: x.m.providerID, modelID: x.id }))
 
   return {
-    primary: { providerID: "atomcli", modelID: selected.id },
+    primary: { providerID: selected.m.providerID, modelID: selected.id },
     fallbacks,
     reason: `category=${category}, mode=${mode}, finalScore=${selected.score.toFixed(1)}`,
   }
@@ -604,12 +631,12 @@ export async function selectModel(
 
       log.info("model selected", {
         category,
-        selected: `atomcli/${result.selected.id}`,
+        selected: `${result.selected.m.providerID}/${result.selected.id}`,
         score: result.selected.score,
         candidates: result.ranked.length,
       })
 
-      return { providerID: "atomcli", modelID: result.selected.id }
+      return { providerID: result.selected.m.providerID, modelID: result.selected.id }
     } catch (e) {
       log.warn("model routing failed, using fallback", { error: (e as Error).message })
       return fallback
@@ -709,9 +736,10 @@ export const _internals = {
  */
 export function selectMetaRouter(freeModels: Array<[string, Provider.Model]>): { providerID: string; modelID: string } {
   const activeMr = freeModels
-    .filter(([, m]) => m.capabilities.reasoning && m.capabilities.toolcall && m.status === "active")
+    .filter(([, m]) => modelIsRoutable(m) && m.capabilities.reasoning && m.capabilities.toolcall && m.status === "active")
     .map(([id, m]) => ({
       id,
+      providerID: m.providerID,
       score: 100 
            + Math.min((m.limit?.context ?? 0) / 10000, 30) 
            + Math.min((m.limit?.output ?? 0) / 1000, 20)
@@ -720,18 +748,20 @@ export function selectMetaRouter(freeModels: Array<[string, Provider.Model]>): {
     
   if (activeMr.length === 0) {
     const fallbackMr = freeModels
-      .filter(([, m]) => (m.capabilities.reasoning || m.capabilities.toolcall) && m.status === "active")
+      .filter(([, m]) => modelIsRoutable(m) && (m.capabilities.reasoning || m.capabilities.toolcall) && m.status === "active")
       .map(([id, m]) => ({
         id,
+        providerID: m.providerID,
         score: (m.capabilities.reasoning ? 50 : 0) + (m.capabilities.toolcall ? 50 : 0)
       }))
       .sort((a, b) => b.score - a.score)
       
     if (fallbackMr.length > 0) {
-      return { providerID: "atomcli", modelID: fallbackMr[0].id }
+      return { providerID: fallbackMr[0].providerID, modelID: fallbackMr[0].id }
     }
-    return { providerID: "atomcli", modelID: selectCandidates(freeModels, "general")[0][0] }
+    const selected = selectCandidates(freeModels, "general")[0]
+    return { providerID: selected[1].providerID, modelID: selected[0] }
   }
-  
-  return { providerID: "atomcli", modelID: activeMr[0].id }
+
+  return { providerID: activeMr[0].providerID, modelID: activeMr[0].id }
 }

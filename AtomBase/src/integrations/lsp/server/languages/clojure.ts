@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import { Log } from "@/util/util/log"
 import { NearestRoot } from "../common"
 import type { Info } from "../types"

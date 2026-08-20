@@ -945,6 +945,8 @@ export namespace Config {
       hostname: z.string().optional().describe("Hostname to listen on"),
       mdns: z.boolean().optional().describe("Enable mDNS service discovery"),
       cors: z.array(z.string()).optional().describe("Additional domains to allow for CORS"),
+      auth: z.string().min(1).optional().describe("Bearer token required by the control-plane API"),
+      companionPort: z.number().int().positive().optional().describe("Port for the scoped companion listener"),
     })
     .strict()
     .meta({
@@ -1019,6 +1021,18 @@ export namespace Config {
       logLevel: Log.Level.optional().describe("Log level"),
       tui: TUI.optional().describe("TUI specific settings"),
       server: Server.optional().describe("Server configuration for atomcli serve and web commands"),
+      execution: z
+        .object({
+          sandbox: z.enum(["off", "prefer", "require"]).optional().default("off"),
+          filesystem: z.enum(["read-only", "workspace-write", "full"]).optional().default("workspace-write"),
+          network: z.enum(["deny", "allow"]).optional().default("allow"),
+          environment: z.enum(["minimal", "filtered", "inherit"]).optional().default("minimal"),
+          processVisibility: z.enum(["restricted", "inherit"]).optional().default("restricted"),
+          envAllow: z.array(z.string()).optional().default([]),
+        })
+        .strict()
+        .optional()
+        .describe("OS process isolation policy for model-executed commands"),
       command: z
         .record(z.string(), Command)
         .optional()

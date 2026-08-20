@@ -13,6 +13,7 @@ import {
   buildFallbackChain,
   categoryHardOk,
   estimateRequiredContext,
+  modelIsRoutable,
   type TaskCategory,
 } from "@/integrations/tool/model-router"
 import { Provider } from "@/integrations/provider/provider"
@@ -137,6 +138,35 @@ describe("model-router - selectCandidates (Degradation Ladder)", () => {
     // No model satisfies coding, so fallback returns all models
     expect(candidates).toHaveLength(1)
     expect(candidates[0][0]).toBe("reasoning-model")
+  })
+
+  test("never assigns models with missing limits", () => {
+    const missingLimits: Provider.Model = {
+      ...baseModel,
+      id: "missing-limits",
+      limit: { context: 0, output: 0 },
+    }
+
+    expect(modelIsRoutable(missingLimits)).toBe(false)
+    expect(selectCandidates([
+      ["missing-limits", missingLimits],
+      ["valid", baseModel],
+    ], "general").map(([id]) => id)).toEqual(["valid"])
+    expect(() => selectCandidates([["missing-limits", missingLimits]], "general")).toThrow("NoFreeModelsError")
+  })
+
+  test("temporarily excludes rate-limited models and restores them after retryAt", () => {
+    const limited = {
+      ...baseModel,
+      availability: { status: "rate_limited" as const, retryAt: Date.now() + 60_000 },
+    }
+    const recovered = {
+      ...baseModel,
+      availability: { status: "rate_limited" as const, retryAt: Date.now() - 1 },
+    }
+
+    expect(modelIsRoutable(limited)).toBe(false)
+    expect(modelIsRoutable(recovered)).toBe(true)
   })
 })
 
@@ -314,6 +344,18 @@ describe("model-router - selectModelInternal", () => {
 })
 
 describe("model-router - buildFallbackChain", () => {
+  test("preserves the selected model's real provider", () => {
+    const customProviderModel: Provider.Model = {
+      ...baseModel,
+      id: "custom-model",
+      providerID: "custom-provider",
+    }
+
+    const result = buildFallbackChain("general", [["custom-model", customProviderModel]])
+
+    expect(result.primary).toEqual({ providerID: "custom-provider", modelID: "custom-model" })
+  })
+
   test("returns primary + fallbacks structure", () => {
     const models: Array<[string, Provider.Model]> = [
       ["bfc-struct-a", { ...baseModel }],

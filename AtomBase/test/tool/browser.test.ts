@@ -117,4 +117,80 @@ describe("tool.browser integration", () => {
             },
         })
     })
+
+    test("returns a concise semantic page snapshot", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const tool = await BrowserTool.init()
+                const mockPage = {
+                    evaluate: mock(async () => ({
+                        headings: [{ level: "h1", text: "Dashboard" }],
+                        interactive: [{ type: "button", label: "Save", selector: "#save" }],
+                        text: "Welcome to the dashboard",
+                    })),
+                    title: mock(async () => "Dashboard"),
+                    url: mock(() => "http://example.com/dashboard"),
+                }
+                const originalGetPage = Browser.getPage
+                const originalAvailable = Browser.isPlaywrightAvailable
+                Browser.getPage = mock(async () => mockPage as any)
+                Browser.isPlaywrightAvailable = mock(async () => true)
+                try {
+                    const result = await tool.execute({ action: "snapshot" }, ctx)
+                    expect(result.output).toContain("h1: Dashboard")
+                    expect(result.output).toContain('button "Save" — selector: #save')
+                    expect(result.metadata?.elementCount).toBe(1)
+                } finally {
+                    Browser.getPage = originalGetPage
+                    Browser.isPlaywrightAvailable = originalAvailable
+                }
+            },
+        })
+    })
+
+    test("waits for selectors and can list or switch tabs", async () => {
+        await using tmp = await tmpdir({ git: true })
+        await Instance.provide({
+            directory: tmp.path,
+            fn: async () => {
+                const tool = await BrowserTool.init()
+                const waitFor = mock(async () => {})
+                const selectedPage = {
+                    locator: mock(() => ({ waitFor })),
+                    title: mock(async () => "Second tab"),
+                    url: mock(() => "http://example.com/two"),
+                }
+                const originalGetPage = Browser.getPage
+                const originalSelectTab = Browser.selectTab
+                const originalGetTabs = Browser.getTabs
+                const originalAvailable = Browser.isPlaywrightAvailable
+                Browser.getPage = mock(async () => selectedPage as any)
+                Browser.selectTab = mock(async () => selectedPage as any)
+                Browser.getTabs = mock(async () => [
+                    { index: 0, title: "First", url: "http://example.com/one", active: true },
+                    { index: 1, title: "Second", url: "http://example.com/two", active: false },
+                ])
+                Browser.isPlaywrightAvailable = mock(async () => true)
+                try {
+                    await tool.execute({ action: "wait", selector: "#ready", timeout: 1_000 }, ctx)
+                    expect(waitFor).toHaveBeenCalledWith({ state: "visible", timeout: 1_000 })
+
+                    const tabs = await tool.execute({ action: "tabs" }, ctx)
+                    expect(tabs.output).toContain("→ [0] First")
+                    expect(tabs.metadata?.count).toBe(2)
+
+                    const switched = await tool.execute({ action: "switch_tab", tabIndex: 1 }, ctx)
+                    expect(Browser.selectTab).toHaveBeenCalledWith(1)
+                    expect(switched.output).toContain("Switched to tab 1")
+                } finally {
+                    Browser.getPage = originalGetPage
+                    Browser.selectTab = originalSelectTab
+                    Browser.getTabs = originalGetTabs
+                    Browser.isPlaywrightAvailable = originalAvailable
+                }
+            },
+        })
+    })
 })

@@ -14,6 +14,8 @@ import { fn } from "@/util/util/fn"
 import { Agent } from "@/integrations/agent/agent"
 import { Plugin } from "@/integrations/plugin"
 import { Config } from "@/core/config/config"
+import { Storage } from "@/core/storage/storage"
+import { CompactionTransaction } from "./compaction-transaction"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
@@ -95,7 +97,11 @@ export namespace SessionCompaction {
     sessionID: string
     abort: AbortSignal
     auto: boolean
+    retry?: number
   }) {
+    await CompactionTransaction.recover(input.sessionID)
+    const sourceTokens = Token.estimate(JSON.stringify(await MessageV2.toModelMessage(input.messages)))
+    const transaction = await CompactionTransaction.start(input.sessionID, sourceTokens, input.retry ?? 0)
     const userMessageMatch = input.messages.findLast((m) => m.info.id === input.parentID)
     if (!userMessageMatch) {
       throw new Error(`Parent user message with id "${input.parentID}" not found for compaction`)
@@ -166,6 +172,37 @@ export namespace SessionCompaction {
       model,
     })
 
+    if (processor.message.error) {
+      await CompactionTransaction.fail(transaction, processor.message.error)
+      return "stop"
+    }
+
+    const summaryParts = await MessageV2.parts(msg.id)
+    const summaryText = summaryParts
+      .map((part) => {
+        if (part.type === "text" || part.type === "reasoning") return part.text
+        if (part.type === "tool" && part.state.status === "completed") return part.state.output
+        return ""
+      })
+      .join("\n")
+    const summaryTokens = Token.estimate(summaryText)
+    const accepted = sourceTokens === 0 || summaryTokens < sourceTokens
+    await CompactionTransaction.finish(transaction, summaryTokens, accepted)
+    log.info("compaction metrics", {
+      sessionID: input.sessionID,
+      sourceTokens,
+      summaryTokens,
+      ratio: sourceTokens === 0 ? 0 : summaryTokens / sourceTokens,
+      accepted,
+      retry: input.retry ?? 0,
+    })
+    if (!accepted) {
+      for (const key of await Storage.list(["part", msg.id])) await Storage.remove(key)
+      await Storage.remove(["message", input.sessionID, msg.id])
+      if ((input.retry ?? 0) < 1) return process({ ...input, retry: (input.retry ?? 0) + 1 })
+      throw new Error("Compaction summary was not smaller than the context after retry")
+    }
+
     if (result.status === "continue" && input.auto) {
       const continueMsg = await Session.updateMessage({
         id: Identifier.ascending("message"),
@@ -190,7 +227,6 @@ export namespace SessionCompaction {
         },
       })
     }
-    if (processor.message.error) return "stop"
     Bus.publish(Event.Compacted, { sessionID: input.sessionID })
     return "continue"
   }

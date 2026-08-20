@@ -2,7 +2,6 @@ import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../providers/app_providers.dart';
-import '../services/auth_service.dart';
 
 /// Dedicated action-center screen for pending permission requests.
 /// Displayed as a bottom sheet or full route from the home screen.
@@ -78,21 +77,9 @@ class PermissionsScreen extends ConsumerWidget {
   }) {
     final ws = ref.read(wsServiceProvider);
     if (ws == null) return;
-    final auth = AuthService.instance;
-    final payload = <String, dynamic>{
-      'type': 'permission_resolve',
-      'id': perm.reqId,
-      'resolution': resolution,
-    };
-    if (interventionParams != null) {
-      payload['intervention_params'] = interventionParams;
-    }
-    final sig = auth.sign(AuthService.canonicalPayload(payload));
     ws.resolvePermission(
       reqId: perm.reqId,
       resolution: resolution,
-      deviceName: auth.deviceName ?? '',
-      signature: sig,
       interventionParams: interventionParams,
     );
     ref.read(permissionsProvider.notifier).remove(perm.reqId);
@@ -124,16 +111,8 @@ class PermissionsScreen extends ConsumerWidget {
   void _rejectQuestion(WidgetRef ref, PendingQuestion q) {
     final ws = ref.read(wsServiceProvider);
     if (ws == null) return;
-    final auth = AuthService.instance;
-    final payload = <String, dynamic>{
-      'type': 'question_reject',
-      'id': q.reqId,
-    };
-    final sig = auth.sign(AuthService.canonicalPayload(payload));
     ws.rejectQuestion(
       id: q.reqId,
-      deviceName: auth.deviceName ?? '',
-      signature: sig,
     );
     ref.read(questionsProvider.notifier).remove(q.reqId);
   }
@@ -635,21 +614,9 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
 
     final ws = ref.read(wsServiceProvider);
     if (ws == null) return;
-    final auth = AuthService.instance;
-    // CRITICAL: The server's canonicalPayload strips only 'signature'/'device_name'
-    // and signs everything else. So we must include 'answers' in the signed payload
-    // to match what the server will verify.
-    final payload = <String, dynamic>{
-      'type': 'question_reply',
-      'id': widget.question.reqId,
-      'answers': finalAnswers,
-    };
-    final sig = auth.sign(AuthService.canonicalPayload(payload));
     ws.replyQuestion(
       id: widget.question.reqId,
       answers: finalAnswers,
-      deviceName: auth.deviceName ?? '',
-      signature: sig,
     );
     ref.read(questionsProvider.notifier).remove(widget.question.reqId);
   }

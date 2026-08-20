@@ -3,6 +3,7 @@ import os from "os"
 import path from "path"
 import { statfs } from "fs/promises"
 import { Tool } from "./tool"
+import { EnvPolicy } from "@/core/env/policy"
 
 const COMMAND_TIMEOUT_MS = 5_000
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
@@ -26,6 +27,7 @@ async function runCommand(command: string[], signal: AbortSignal): Promise<Comma
   if (signal.aborted) throw signal.reason
 
   const subprocess = Bun.spawn(command, {
+    env: EnvPolicy.build({ scope: "tool:system-health" }),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

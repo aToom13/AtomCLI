@@ -6,6 +6,30 @@ import { Provider } from "@/integrations/provider/provider"
 import { Env } from "@/core/env"
 import { Config } from "@/core/config/config"
 
+test("provider requests have a finite default timeout", () => {
+  expect(Provider.requestTimeout({})).toBe(300_000)
+  expect(Provider.requestTimeout({ timeout: 12_000 })).toBe(12_000)
+  expect(Provider.requestTimeout({ timeout: false })).toBe(false)
+})
+
+test("atomcli-auto persists the selected provider catalog key", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const model = await Provider.getModel("atomcli", "atomcli-auto", {
+        session: { id: "ses_alias_resolution" },
+        prompt: "",
+      })
+      const primary = (model.options as any)?._fallbackChain?.primary
+
+      expect(primary).toBeDefined()
+      expect({ providerID: model.providerID, modelID: model.id }).toEqual(primary)
+      expect(model.id).not.toContain("atomcli-auto /")
+    },
+  })
+})
+
 test("provider loaded from env variable", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

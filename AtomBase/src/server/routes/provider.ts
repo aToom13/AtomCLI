@@ -7,6 +7,11 @@ import { ModelsDev } from "@/integrations/provider/models"
 import { Provider } from "@/integrations/provider/provider"
 import { ProviderAuth } from "@/integrations/provider/auth"
 import { errors } from "../error"
+import { fetchOpenAICompatibleModels } from "@/integrations/provider/custom"
+import { Global } from "@/core/global"
+import { Auth } from "@/services/auth"
+import fs from "fs/promises"
+import { mergeDeep } from "remeda"
 
 export const ProviderRoute = new Hono()
   .get(
@@ -208,6 +213,128 @@ export const ProviderRoute = new Hono()
       const providerID = c.req.valid("param").providerID
       const { key } = c.req.valid("json")
       await ProviderAuth.api({ providerID, key })
+      return c.json(true)
+    },
+  )
+  .post(
+    "/custom/discover",
+    describeRoute({
+      summary: "Discover custom provider models",
+      description: "Probe an OpenAI-compatible base URL and return the discovered model list.",
+      operationId: "provider.custom.discover",
+      responses: {
+        200: {
+          description: "Discovery result",
+          content: {
+            "application/json": {
+              schema: resolver(
+                z.object({
+                  ok: z.boolean(),
+                  models: z
+                    .object({
+                      id: z.string(),
+                      name: z.string(),
+                      tool_call: z.boolean(),
+                      reasoning: z.boolean(),
+                      attachment: z.boolean(),
+                      temperature: z.boolean(),
+                      limit: z.object({ context: z.number(), output: z.number() }),
+                    })
+                    .array(),
+                  error: z.string().optional(),
+                }),
+              ),
+            },
+          },
+        },
+        ...errors(400),
+      },
+    }),
+    validator(
+      "json",
+      z.object({
+        baseURL: z
+          .string()
+          .url()
+          .refine((url) => /^https?:\/\//i.test(url), "Only HTTP/HTTPS URLs are allowed")
+          .meta({ description: "OpenAI-compatible base URL" }),
+        apiKey: z.string().optional().meta({ description: "Optional API key" }),
+      }),
+    ),
+    async (c) => {
+      const { baseURL, apiKey } = c.req.valid("json")
+      const result = await fetchOpenAICompatibleModels({
+        baseURL,
+        apiKey: apiKey || undefined,
+        timeout: 10_000,
+      })
+      return c.json(result)
+    },
+  )
+  .post(
+    "/custom/save",
+    describeRoute({
+      summary: "Save a custom provider configuration",
+      description: "Persist a custom OpenAI-compatible provider to the global atomcli.json config.",
+      operationId: "provider.custom.save",
+      responses: {
+        200: {
+          description: "Saved successfully",
+          content: {
+            "application/json": {
+              schema: resolver(z.boolean()),
+            },
+          },
+        },
+        ...errors(400),
+      },
+    }),
+    validator(
+      "json",
+      z.object({
+        providerID: z
+          .string()
+          .regex(/^[0-9a-z-]+$/, "Provider ID must contain only a-z, 0-9 and hyphens")
+          .refine((id) => !["__proto__", "constructor", "prototype"].includes(id), "Invalid provider ID")
+          .meta({ description: "Provider identifier (a-z, 0-9, hyphens)" }),
+        name: z.string().min(1).meta({ description: "Display name" }),
+        baseURL: z
+          .string()
+          .url()
+          .refine((url) => /^https?:\/\//i.test(url), "Only HTTP/HTTPS URLs are allowed")
+          .meta({ description: "API base URL" }),
+        apiKey: z.string().optional().meta({ description: "Optional API key" }),
+        models: z.record(z.string(), z.any()).meta({ description: "Model config map" }),
+      }),
+    ),
+    async (c) => {
+      const { providerID, name, baseURL, apiKey, models } = c.req.valid("json")
+
+      // Persist API key in secure auth store (auth.json)
+      if (apiKey) {
+        await Auth.set(providerID, { type: "api", key: apiKey })
+      }
+
+      // Merge into global config without storing plaintext API key
+      const configPath = `${Global.Path.config}/atomcli.json`
+      await fs.mkdir(Global.Path.config, { recursive: true })
+      const existing = await Bun.file(configPath)
+        .json()
+        .catch(() => ({}))
+
+      const providerEntry = {
+        name,
+        npm: "@ai-sdk/openai-compatible",
+        api: baseURL,
+        options: {
+          baseURL,
+        },
+        models,
+      }
+
+      const updated = mergeDeep(existing, { provider: { [providerID]: providerEntry } })
+      await Bun.write(configPath, JSON.stringify(updated, null, 2))
+
       return c.json(true)
     },
   )

@@ -47,7 +47,7 @@ describe("ModelFallback", () => {
       } as any
 
       const fallbacks = ModelFallback.getRecommendedFallbacks(mockModel)
-      
+
       expect(fallbacks.length).toBeGreaterThan(0)
       expect(fallbacks).toContain("openai/gpt-4")
     })
@@ -59,7 +59,7 @@ describe("ModelFallback", () => {
       } as any
 
       const fallbacks = ModelFallback.getRecommendedFallbacks(mockModel)
-      
+
       expect(fallbacks.length).toBeGreaterThan(0)
       expect(fallbacks).toContain("anthropic/claude-sonnet")
     })
@@ -71,7 +71,7 @@ describe("ModelFallback", () => {
       } as any
 
       const fallbacks = ModelFallback.getRecommendedFallbacks(mockModel)
-      
+
       expect(fallbacks.length).toBeGreaterThan(0)
     })
 
@@ -82,7 +82,7 @@ describe("ModelFallback", () => {
       } as any
 
       const fallbacks = ModelFallback.getRecommendedFallbacks(mockModel)
-      
+
       expect(fallbacks.length).toBeGreaterThan(0)
     })
   })
@@ -123,6 +123,23 @@ describe("ModelFallback", () => {
 
       expect(chain.onError).toBeDefined()
       expect(chain.onSwitch).toBeDefined()
+    })
+  })
+
+  describe("getDynamicFallbackModels & probeModels", () => {
+    it("should return fallback models array", async () => {
+      const models = await ModelFallback.getDynamicFallbackModels()
+      expect(Array.isArray(models)).toBe(true)
+      expect(models.length).toBeGreaterThan(0)
+    })
+
+    it("should handle probing candidate models", async () => {
+      const probeResults = await ModelFallback.probeModels(["unknown-provider/dummy-model"], {
+        timeoutMs: 100,
+      })
+      expect(probeResults.length).toBe(1)
+      expect(probeResults[0].available).toBe(false)
+      expect(probeResults[0].model).toBe("unknown-provider/dummy-model")
     })
   })
 })

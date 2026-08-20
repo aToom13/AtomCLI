@@ -401,6 +401,7 @@ export namespace Session {
       })
     } catch (e) {
       log.error(e)
+      throw e
     }
   })
 

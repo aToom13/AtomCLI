@@ -25,9 +25,41 @@ export namespace SessionLayout {
       density === "normal"
         ? Math.max(7, Math.min(20, Math.floor(terminalHeight * 0.45)))
         : Math.max(2, Math.min(8, Math.floor(terminalHeight * 0.28)))
-    const padding = density === "normal" ? 2 : 1
+    // Normal mode has one row of padding on both sides; every mode also
+    // consumes one row for the expanded panel's bottom border.
+    const chromeRows = density === "normal" ? 3 : 1
     const minimum = density === "normal" ? Math.min(7, cap) : Math.min(2, cap)
-    return clamp(contentRows + padding, minimum, cap)
+    return clamp(contentRows + chromeRows, minimum, cap)
+  }
+
+  export function chainListViewportRows(terminalHeight: number, expandedHeight: number) {
+    const chromeRows = verticalMode(terminalHeight) === "normal" ? 3 : 1
+    return Math.max(1, expandedHeight - chromeRows)
+  }
+
+  export function chainNeedsScrollbar(terminalHeight: number, expandedHeight: number, contentRows: number) {
+    return contentRows > chainListViewportRows(terminalHeight, expandedHeight)
+  }
+
+  /** ScrollBox applies flexDirection to its root, where the scrollbar lives. */
+  export const chainScrollContentOptions = { flexDirection: "column" as const }
+
+  /** Avoid rendering task numbers twice when a generated name is already enumerated. */
+  export function chainStepLabel(name: string) {
+    return name.replace(/^\s*\d+[.)]\s+/, "").trim()
+  }
+
+  /**
+   * Keep each task-plan entry on one terminal row. The row also contains its
+   * numeric prefix, status icon, and optional badges; those must be reserved
+   * before truncating the task name or a long label silently consumes another
+   * viewport row and hides later tasks behind the scrollbar.
+   */
+  export function chainStepNameWidth(listWidth: number, index: number, badgeWidth = 0) {
+    const horizontalPadding = 3
+    const selectionPrefix = 2
+    const numberedStatusPrefix = String(index + 1).length + 5
+    return Math.max(8, listWidth - horizontalPadding - selectionPrefix - numberedStatusPrefix - badgeWidth)
   }
 
   export function fileTreeWidth(terminalWidth: number, expanded: boolean) {

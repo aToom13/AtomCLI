@@ -83,6 +83,11 @@ export const RunCommand = cmd({
         type: "string",
         describe: "attach to a running atomcli server (e.g., http://localhost:4096)",
       })
+      .option("auth", {
+        type: "string",
+        describe: "bearer token for an attached control-plane API",
+        default: process.env.ATOMCLI_SERVER_TOKEN,
+      })
       .option("port", {
         type: "number",
         describe: "port for the local server (defaults to random port if no value provided)",
@@ -308,7 +313,10 @@ export const RunCommand = cmd({
     }
 
     if (args.attach) {
-      const sdk = createAtomcliClient({ baseUrl: args.attach })
+      const sdk = createAtomcliClient({
+        baseUrl: args.attach,
+        headers: args.auth ? { authorization: `Bearer ${args.auth}` } : undefined,
+      })
 
       const sessionID = await (async () => {
         if (args.continue) {

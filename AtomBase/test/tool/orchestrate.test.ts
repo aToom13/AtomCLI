@@ -4,7 +4,17 @@ import { _internals as routerInternals } from "@/integrations/tool/model-router"
 import { inferCategory } from "@/integrations/tool/model-router"
 import type { TaskCategory } from "@/integrations/tool/model-router"
 
-const { topologicalSort, getReadyTasks, hasFailedDependency, WORKFLOWS } = orchestrateInternals
+const {
+    topologicalSort,
+    getReadyTasks,
+    hasFailedDependency,
+    preferredModel,
+    canonicalReference,
+    dependencyIds,
+    buildDependencyContext,
+    requiresTaskQA,
+    WORKFLOWS,
+} = orchestrateInternals
 const { scoreModel } = routerInternals
 
 // ─── DAG Tests ───────────────────────────────────────────────
@@ -203,6 +213,90 @@ describe("orchestrate - hasFailedDependency", () => {
         }
 
         expect(hasFailedDependency(task, workflow)).toBe(false)
+    })
+})
+
+describe("orchestrate - sub-agent model precedence", () => {
+    const routed = { providerID: "router", modelID: "auto-model" }
+    const configured = { providerID: "configured", modelID: "agent-model" }
+    const explicit = { providerID: "explicit", modelID: "task-model" }
+
+    test("an explicit task model wins", () => {
+        expect(preferredModel(explicit, configured, routed)).toEqual(explicit)
+    })
+
+    test("an agent's configured model wins over routing", () => {
+        expect(preferredModel(undefined, configured, routed)).toEqual(configured)
+    })
+
+    test("routing is used only when neither override exists", () => {
+        expect(preferredModel(undefined, undefined, routed)).toEqual(routed)
+    })
+
+    test("pins a virtual AtomCLI alias to the real fallback-chain primary", () => {
+        const requested = { providerID: "atomcli", modelID: "atomcli-auto" }
+        const resolved = {
+            options: {
+                _fallbackChain: {
+                    primary: { providerID: "openai", modelID: "gpt-5-nano" },
+                },
+            },
+        }
+
+        expect(canonicalReference(requested, resolved)).toEqual({
+            providerID: "openai",
+            modelID: "gpt-5-nano",
+        })
+    })
+
+    test("keeps a normal provider catalog key instead of its API/display id", () => {
+        const requested = { providerID: "custom", modelID: "my-alias" }
+        const resolved = { options: {}, id: "upstream-model-id" }
+
+        expect(canonicalReference(requested, resolved)).toEqual(requested)
+    })
+
+    test("rejects a virtual alias without a real primary model", () => {
+        expect(() => canonicalReference(
+            { providerID: "atomcli", modelID: "atomcli-free" },
+            { options: {} },
+        )).toThrow("did not resolve to a usable model")
+    })
+})
+
+describe("orchestrate - agent collaboration context", () => {
+    const tasks = [
+        { id: "research", prompt: "", agent: "explore", category: "analysis" as TaskCategory, dependsOn: [] },
+        { id: "design", prompt: "", agent: "plan", category: "analysis" as TaskCategory, dependsOn: ["research"] },
+        { id: "build", prompt: "", agent: "coder", category: "coding" as TaskCategory, dependsOn: ["design"] },
+    ]
+
+    test("passes transitive upstream results to downstream agents", () => {
+        expect(dependencyIds(tasks[2], tasks)).toEqual(["research", "design"])
+        const context = buildDependencyContext(tasks[2], {
+            id: "wf-context",
+            tasks,
+            results: {
+                research: { status: "completed", output: "Found <unsafe> facts" },
+                design: { status: "completed", output: "Use the selected design" },
+                build: { status: "pending" },
+            },
+            status: "running",
+            createdAt: Date.now(),
+            sessionMapKeys: [],
+        })
+
+        expect(context).toContain('task="research" relation="upstream"')
+        expect(context).toContain("Found &lt;unsafe&gt; facts")
+        expect(context).toContain('task="design" relation="direct"')
+    })
+
+    test("uses reviewer QA only for changed or coding work", () => {
+        expect(requiresTaskQA(tasks[0], 0)).toBe(false)
+        expect(requiresTaskQA(tasks[0], 1)).toBe(true)
+        expect(requiresTaskQA(tasks[2], 0)).toBe(true)
+        expect(requiresTaskQA({ ...tasks[2], agent: "checker" }, 3)).toBe(false)
+        expect(requiresTaskQA({ ...tasks[2], agent: "reviewer" }, 3)).toBe(false)
     })
 })
 

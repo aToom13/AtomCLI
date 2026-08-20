@@ -6,9 +6,12 @@ import { Global } from "../global"
 import z from "zod"
 import { Config } from "../config/config"
 import { Instance } from "@/services/project/instance"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace Snapshot {
   const log = Log.create({ service: "snapshot" })
+  const environment = (overrides?: Record<string, string>) =>
+    EnvPolicy.build({ cwd: Instance.directory, scope: "snapshot", overrides })
 
   export async function track() {
     if (Instance.project.vcs !== "git") return
@@ -17,19 +20,16 @@ export namespace Snapshot {
     const git = gitdir()
     if (await fs.mkdir(git, { recursive: true })) {
       await $`git init`
-        .env({
-          ...process.env,
-          GIT_DIR: git,
-          GIT_WORK_TREE: Instance.worktree,
-        })
+        .env(environment({ GIT_DIR: git, GIT_WORK_TREE: Instance.worktree }))
         .quiet()
         .nothrow()
       // Configure git to not convert line endings on Windows
-      await $`git --git-dir ${git} config core.autocrlf false`.quiet().nothrow()
+      await $`git --git-dir ${git} config core.autocrlf false`.env(environment()).quiet().nothrow()
       log.info("initialized")
     }
-    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.quiet().cwd(Instance.directory).nothrow()
+    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.env(environment()).quiet().cwd(Instance.directory).nothrow()
     const hash = await $`git --git-dir ${git} --work-tree ${Instance.worktree} write-tree`
+      .env(environment())
       .quiet()
       .cwd(Instance.directory)
       .nothrow()
@@ -46,9 +46,10 @@ export namespace Snapshot {
 
   export async function patch(hash: string): Promise<Patch> {
     const git = gitdir()
-    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.quiet().cwd(Instance.directory).nothrow()
+    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.env(environment()).quiet().cwd(Instance.directory).nothrow()
     const result =
       await $`git -c core.autocrlf=false --git-dir ${git} --work-tree ${Instance.worktree} diff --no-ext-diff --name-only ${hash} -- .`
+        .env(environment())
         .quiet()
         .cwd(Instance.directory)
         .nothrow()
@@ -76,6 +77,7 @@ export namespace Snapshot {
     const git = gitdir()
     const result =
       await $`git --git-dir ${git} --work-tree ${Instance.worktree} read-tree ${snapshot} && git --git-dir ${git} --work-tree ${Instance.worktree} checkout-index -a -f`
+        .env(environment())
         .quiet()
         .cwd(Instance.worktree)
         .nothrow()
@@ -98,6 +100,7 @@ export namespace Snapshot {
         if (files.has(file)) continue
         log.info("reverting", { file, hash: item.hash })
         const result = await $`git --git-dir ${git} --work-tree ${Instance.worktree} checkout ${item.hash} -- ${file}`
+          .env(environment())
           .quiet()
           .cwd(Instance.worktree)
           .nothrow()
@@ -105,6 +108,7 @@ export namespace Snapshot {
           const relativePath = path.relative(Instance.worktree, file)
           const checkTree =
             await $`git --git-dir ${git} --work-tree ${Instance.worktree} ls-tree ${item.hash} -- ${relativePath}`
+              .env(environment())
               .quiet()
               .cwd(Instance.worktree)
               .nothrow()
@@ -124,9 +128,10 @@ export namespace Snapshot {
 
   export async function diff(hash: string) {
     const git = gitdir()
-    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.quiet().cwd(Instance.directory).nothrow()
+    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.env(environment()).quiet().cwd(Instance.directory).nothrow()
     const result =
       await $`git -c core.autocrlf=false --git-dir ${git} --work-tree ${Instance.worktree} diff --no-ext-diff ${hash} -- .`
+        .env(environment())
         .quiet()
         .cwd(Instance.worktree)
         .nothrow()
@@ -160,6 +165,7 @@ export namespace Snapshot {
     const git = gitdir()
     const result: FileDiff[] = []
     for await (const line of $`git -c core.autocrlf=false --git-dir ${git} --work-tree ${Instance.worktree} diff --no-ext-diff --no-renames --numstat ${from} ${to} -- .`
+      .env(environment())
       .quiet()
       .cwd(Instance.directory)
       .nothrow()
@@ -170,12 +176,14 @@ export namespace Snapshot {
       const before = isBinaryFile
         ? ""
         : await $`git -c core.autocrlf=false --git-dir ${git} --work-tree ${Instance.worktree} show ${from}:${file}`
+            .env(environment())
             .quiet()
             .nothrow()
             .text()
       const after = isBinaryFile
         ? ""
         : await $`git -c core.autocrlf=false --git-dir ${git} --work-tree ${Instance.worktree} show ${to}:${file}`
+            .env(environment())
             .quiet()
             .nothrow()
             .text()

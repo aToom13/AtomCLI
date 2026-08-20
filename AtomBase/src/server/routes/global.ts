@@ -7,6 +7,7 @@ import { GlobalBus } from "@/core/bus/global"
 import { Instance } from "@/services/project/instance"
 import { Installation } from "@/services/installation"
 import { Log } from "@/util/util/log"
+import { EventReplay } from "../event-replay"
 
 const log = Log.create({ service: "server.global" })
 
@@ -45,6 +46,7 @@ export const GlobalRoute = new Hono()
                         "text/event-stream": {
                             schema: resolver(
                                 z.object({
+                                    sequence: z.number().int().nonnegative(),
                                     directory: z.string(),
                                     payload: BusEvent.payloads(),
                                 }).meta({ ref: "GlobalEvent" }),
@@ -55,26 +57,53 @@ export const GlobalRoute = new Hono()
             },
         }),
         async (c) => {
+            EventReplay.initialize()
+            const requestedSequence = Number.parseInt(c.req.header("last-event-id") ?? "0", 10)
+            const lastSequence = Number.isSafeInteger(requestedSequence) && requestedSequence >= 0 ? requestedSequence : 0
             log.info("global event connected")
             return streamSSE(c, async (stream) => {
-                stream.writeSSE({
-                    data: JSON.stringify({
-                        payload: { type: "server.connected", properties: {} },
-                    }),
-                })
-                async function handler(event: any) {
-                    await stream.writeSSE({ data: JSON.stringify(event) })
+                let writes = Promise.resolve()
+                let replaying = true
+                let replayedThrough = lastSequence
+                const pending: Array<{ sequence: number; event: any }> = []
+                const write = (entry: { sequence: number; event: any }) => {
+                    writes = writes.then(() => stream.writeSSE({
+                        id: String(entry.sequence),
+                        data: JSON.stringify({ ...entry.event, sequence: entry.sequence }),
+                    }))
                 }
-                GlobalBus.on("event", handler)
+                async function handler(entry: { sequence: number; event: any }) {
+                    if (replaying) {
+                        pending.push(entry)
+                        return
+                    }
+                    write(entry)
+                }
+                const unsubscribe = EventReplay.subscribe(handler)
+                for (const entry of EventReplay.after(lastSequence)) {
+                    replayedThrough = Math.max(replayedThrough, entry.sequence)
+                    write(entry)
+                }
+                replaying = false
+                for (const entry of pending) {
+                    if (entry.sequence <= replayedThrough) continue
+                    replayedThrough = entry.sequence
+                    write(entry)
+                }
+                const connectedSequence = EventReplay.current()
+                write({
+                    sequence: connectedSequence,
+                    event: { directory: "global", payload: { type: "server.connected", properties: {} } },
+                })
+                await writes
                 const heartbeat = setInterval(() => {
-                    stream.writeSSE({
-                        data: JSON.stringify({ payload: { type: "server.heartbeat", properties: {} } }),
-                    })
+                    const sequence = EventReplay.current()
+                    write({ sequence, event: { directory: "global", payload: { type: "server.heartbeat", properties: {} } } })
                 }, 30000)
                 await new Promise<void>((resolve) => {
                     stream.onAbort(() => {
                         clearInterval(heartbeat)
-                        GlobalBus.off("event", handler)
+                        unsubscribe()
                         resolve()
                         log.info("global event disconnected")
                     })

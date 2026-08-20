@@ -146,6 +146,8 @@ export type AuthOuathResult = { url: string; instructions: string } & (
 )
 
 export interface Hooks {
+  /** Release listeners, registrations and background resources owned by this plugin. */
+  dispose?: () => Promise<void> | void
   event?: (input: { event: Event }) => Promise<void>
   config?: (input: Config) => Promise<void>
   tool?: {
@@ -177,6 +179,10 @@ export interface Hooks {
     input: { tool: string; sessionID: string; callID: string },
     output: { args: any },
   ) => Promise<void>
+  "tool.execute.around"?: (
+    input: { tool: string; sessionID: string; callID: string; args: any },
+    next: (args: any) => Promise<{ title: string; output: string; metadata: any; attachments?: Part[] }>,
+  ) => Promise<{ title: string; output: string; metadata: any; attachments?: Part[] }>
   "tool.execute.after"?: (
     input: { tool: string; sessionID: string; callID: string },
     output: {

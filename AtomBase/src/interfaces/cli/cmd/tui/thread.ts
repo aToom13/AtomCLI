@@ -4,11 +4,9 @@ import { Rpc } from "@/util/util/rpc"
 import { type rpc } from "./worker"
 import path from "path"
 import { UI } from "@/interfaces/cli/ui"
-import { MobileBridge } from "@atomcli/companion"
-import { GlobalBus } from "@/core/bus/global"
 import { iife } from "@/util/util/iife"
 import { Log } from "@/util/util/log"
-import { withNetworkOptions, resolveNetworkOptions } from "@/interfaces/cli/network"
+import { withNetworkOptions, resolveNetworkOptions, authenticatedFetch } from "@/interfaces/cli/network"
 import type { Event } from "@atomcli/sdk/v2"
 import type { EventSource } from "./context/sdk"
 
@@ -170,13 +168,19 @@ export const TuiThreadCommand = cmd({
 
     // Check if server should be started (port or hostname explicitly set in CLI or config)
     const networkOpts = await resolveNetworkOptions(args)
+    const companion = networkOpts.companion
+      ? await client.call("companion", {
+          port: networkOpts.companionPort,
+          directory: cwd,
+          pairing: networkOpts.pairing,
+        })
+      : undefined
+    const optionSet = (name: string) => process.argv.some((arg) => arg === `--${name}` || arg.startsWith(`--${name}=`))
     const shouldStartServer =
-      process.argv.includes("--port") ||
-      process.argv.includes("--hostname") ||
-      process.argv.includes("--mdns") ||
-      process.argv.includes("--companion") ||
+      optionSet("port") ||
+      optionSet("hostname") ||
+      optionSet("mdns") ||
       networkOpts.mdns ||
-      networkOpts.companion ||
       networkOpts.port !== 0 ||
       networkOpts.hostname !== "127.0.0.1"
 
@@ -192,20 +196,17 @@ export const TuiThreadCommand = cmd({
       const server = await client.call("server", networkOpts)
       url = server.url
 
-      // If companion mode is enabled, show pairing QR code
-      if (networkOpts.companion) {
-        const { CompanionAuth, CompanionDiscovery } = await import("@atomcli/companion")
-        const { MobileBridge } = await import("@atomcli/companion")
-        MobileBridge.initialize(GlobalBus)
-        const serverUrl = new URL(server.url)
-        const pairingToken = CompanionAuth.issueToken()
-        await CompanionDiscovery.printCompanionInfo(parseInt(serverUrl.port), pairingToken)
-      }
+      customFetch = authenticatedFetch(networkOpts.auth)
     } else {
       // Use direct RPC communication (no HTTP)
       url = "http://atomcli.internal"
       customFetch = createWorkerFetch(client)
       events = createEventSource(client, cwd)
+    }
+
+    if (companion?.pairingToken) {
+      const { CompanionDiscovery } = await import("@atomcli/companion")
+      await CompanionDiscovery.printCompanionInfo(companion.port, companion.pairingToken)
     }
 
     const tuiPromise = tui({

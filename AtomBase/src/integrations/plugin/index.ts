@@ -81,10 +81,19 @@ export namespace Plugin {
       hooks,
       input,
     }
+  }, async (value) => {
+    for (const hook of [...value.hooks].reverse()) {
+      try {
+        await hook.dispose?.()
+      } catch (error) {
+        log.error("plugin dispose failed", { error })
+      }
+    }
+    value.hooks.length = 0
   })
 
   export async function trigger<
-    Name extends Exclude<keyof Required<Hooks>, "auth" | "event" | "tool">,
+    Name extends Exclude<keyof Required<Hooks>, "auth" | "event" | "tool" | "dispose" | "tool.execute.around">,
     Input = Parameters<Required<Hooks>[Name]>[0],
     Output = Parameters<Required<Hooks>[Name]>[1],
   >(name: Name, input: Input, output: Output): Promise<Output> {

@@ -40,9 +40,16 @@ import { ProviderTransform } from "./transform"
 import { createOllama, detectOllama, toProviderModels } from "./ollama"
 import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
 import { createAntigravity } from "./antigravity"
+import { ModelAvailability } from "./availability"
+import { Bus } from "@/core/bus"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
+  export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000
+
+  export function requestTimeout(options: Record<string, any>): number | false {
+    return options.timeout === false ? false : (options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS)
+  }
 
   // TODO: Ideally, each provider would have typed options, but AI SDK providers have
   // incompatible option types (some require baseURL, some require name, etc.)
@@ -117,7 +124,8 @@ export namespace Provider {
 
       if (!hasKey && input.models) {
         for (const [key, value] of Object.entries(input.models)) {
-          if (value.cost.input === 0) continue
+          if (key === "atomcli-auto" || key === "atomcli-free") continue
+          if (value.cost.input === 0 && value.cost.output === 0) continue
           delete input.models[key]
         }
       }
@@ -257,11 +265,10 @@ export namespace Provider {
                   const modulePath = await BunProc.install("@aws-sdk/credential-providers")
                   const { fromNodeProviderChain } = await import(modulePath)
                   return fromNodeProviderChain({ profile })()
-                })()
-                  .catch((error) => {
-                    profileCredentials = undefined
-                    throw error
-                  })
+                })().catch((error) => {
+                  profileCredentials = undefined
+                  throw error
+                })
                 return profileCredentials
               },
             }
@@ -508,45 +515,55 @@ export namespace Provider {
 
       // Fetch models dynamically from Kilocode API
       const kilocodeModels = await getKilocodeModels(token)
-      const models: Record<string, any> = {}
+      const models: Record<string, Model> = {}
 
       for (const [id, info] of Object.entries(kilocodeModels)) {
+        const supportsImages = Boolean(info.supportsImages)
         models[id] = {
           id,
           providerID: "kilocode",
           api: {
-            id: id, // Use actual model ID (e.g. moonshotai/kimi-k2.5:free)
+            id,
             npm: "@atomcli/kilocode",
             url: "https://api.kilo.ai/api/openrouter/",
           },
-          name: (info as any).name || id,
+          name: info.name || id,
           family: id.split("/")[0],
+          status: "active",
           capabilities: {
             temperature: true,
-            reasoning: (info as any).supportsReasoning || false,
-            attachment: (info as any).supportsImages || false,
+            reasoning: Boolean(info.supportsReasoning),
+            attachment: supportsImages,
             toolcall: true,
             input: {
               text: true,
-              image: (info as any).supportsImages || false,
-              file: false,
+              audio: false,
+              image: supportsImages,
+              video: false,
+              pdf: false,
             },
             output: {
               text: true,
-              image: false,
-              file: false,
               audio: false,
+              image: false,
               video: false,
+              pdf: false,
             },
+            interleaved: false,
           },
           limit: {
-            context: (info as any).contextWindow || 128000,
-            output: (info as any).maxTokens || 8192,
+            context: info.contextWindow || 128000,
+            output: info.maxTokens || 8192,
           },
           cost: {
-            input: (info as any).inputPrice || 0,
-            output: (info as any).outputPrice || 0,
+            input: info.inputPrice || 0,
+            output: info.outputPrice || 0,
+            cache: { read: 0, write: 0 },
           },
+          options: {},
+          headers: {},
+          release_date: "",
+          variants: {},
         }
       }
 
@@ -570,7 +587,9 @@ export namespace Provider {
       providerID: z.string(),
       api: z.object({
         id: z.string(),
-        url: z.string(),
+        // Native AI SDK providers own their default endpoint, so models.dev
+        // legitimately omits api for those providers.
+        url: z.string().optional(),
         npm: z.string(),
       }),
       name: z.string(),
@@ -624,6 +643,7 @@ export namespace Provider {
         output: z.number(),
       }),
       status: z.enum(["alpha", "beta", "deprecated", "active"]),
+      availability: ModelAvailability.Info.optional(),
       options: z.record(z.string(), z.any()),
       headers: z.record(z.string(), z.string()),
       release_date: z.string(),
@@ -773,26 +793,33 @@ export namespace Provider {
         }),
         options: { apiKey: "public" }, // Hint that no API key is needed
       }
+    }
 
-      // Add AtomCLI Auto auto-routing virtual models
+    // Current catalogs may expose AtomCLI directly instead of under the legacy
+    // opencode provider. Install the virtual aliases in either representation.
+    if (database["atomcli"]) {
       const templateModel = Object.values(database["atomcli"].models)[0]
       if (templateModel) {
         const allModels = Object.values(database["atomcli"].models)
-        const virtualModel = {
-          ...templateModel,
-          id: "atomcli-auto",
-          api: { ...templateModel.api, id: "atomcli-auto" },
-          name: "AtomCLI Auto",
-          family: "auto",
-          status: "active" as const,
-          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-          limit: {
-            context: Math.max(...allModels.map((m) => m.limit?.context ?? 128000)),
-            output: Math.max(...allModels.map((m) => m.limit?.output ?? 8192)),
-          },
-          variants: {},
+        for (const [id, name] of [
+          ["atomcli-auto", "AtomCLI Auto"],
+          ["atomcli-free", "AtomCLI Free"],
+        ] as const) {
+          database["atomcli"].models[id] = {
+            ...templateModel,
+            id,
+            api: { ...templateModel.api, id },
+            name,
+            family: "auto",
+            status: "active" as const,
+            cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+            limit: {
+              context: Math.max(...allModels.map((m) => m.limit?.context ?? 128000)),
+              output: Math.max(...allModels.map((m) => m.limit?.output ?? 8192)),
+            },
+            variants: {},
+          }
         }
-        database["atomcli"].models["atomcli-auto"] = virtualModel
       }
     }
 
@@ -1212,27 +1239,54 @@ export namespace Provider {
       if (existing) return existing
 
       const customFetch = options["fetch"]
+      const timeout = requestTimeout(options)
 
       options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
         // Preserve custom fetch if it exists, wrap it with timeout logic
         const fetchFn = customFetch ?? fetch
         const opts = init ?? {}
 
-        if (options["timeout"] !== undefined && options["timeout"] !== null) {
+        if (timeout !== false) {
           const signals: AbortSignal[] = []
           if (opts.signal) signals.push(opts.signal)
-          if (options["timeout"] !== false) signals.push(AbortSignal.timeout(options["timeout"]))
+          signals.push(AbortSignal.timeout(timeout))
 
           const combined = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
 
           opts.signal = combined
         }
 
-        return fetchFn(input, {
+        const response = await fetchFn(input, {
           ...opts,
           // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
           timeout: false,
         })
+
+        if (model.providerID === "atomcli") {
+          const apiModelID = (() => {
+            if (typeof opts.body !== "string") return model.api.id
+            try {
+              const body = JSON.parse(opts.body)
+              return typeof body?.model === "string" ? body.model : model.api.id
+            } catch {
+              return model.api.id
+            }
+          })()
+          const target = Object.values(provider.models).find((candidate) => candidate.api.id === apiModelID) ?? model
+          const availability = ModelAvailability.fromResponse(response)
+          const current = ModelAvailability.active(target.availability)
+          const next = availability ?? (response.ok ? undefined : current)
+          if (JSON.stringify(current) !== JSON.stringify(next)) {
+            target.availability = next
+            void Bus.publish(ModelAvailability.Event.Updated, {
+              providerID: target.providerID,
+              modelID: target.id,
+              availability: next,
+            })
+          }
+        }
+
+        return response
       }
 
       // Special case: google-vertex-anthropic uses a subpath import
@@ -1275,7 +1329,7 @@ export namespace Provider {
     return state().then((s) => s.providers[providerID])
   }
 
-  export async function getModel(providerID: string, modelID: string) {
+  export async function getModel(providerID: string, modelID: string, context?: { session?: any; prompt?: string }) {
     const s = await state()
     const provider = s.providers[providerID]
     if (!provider) {
@@ -1302,16 +1356,18 @@ export namespace Provider {
           id !== "atomcli-auto" && id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0,
       )
 
-      let activeSession: any = undefined
-      let promptText = ""
+      let activeSession: any = context?.session
+      let promptText = context?.prompt ?? ""
       try {
         const { Session } = await import("@/core/session")
-        for await (const s of Session.list()) {
-          if (!activeSession || s.time.updated > activeSession.time.updated) {
-            activeSession = s
+        if (!activeSession) {
+          for await (const s of Session.list()) {
+            if (!activeSession || s.time.updated > activeSession.time.updated) {
+              activeSession = s
+            }
           }
         }
-        if (activeSession) {
+        if (activeSession && !promptText && context?.prompt === undefined) {
           const messages = await Session.messages({ sessionID: activeSession.id })
           const lastUser = [...messages].reverse().find((m) => m.info.role === "user")
           if (lastUser) {
@@ -1332,7 +1388,7 @@ export namespace Provider {
         inferCategorySemantic,
         pickClassifierModel,
         estimateRequiredContext,
-        buildFallbackChain,
+        buildFallbackChainFromSelection,
       } = await import("@/integrations/tool/model-router")
 
       // Semantic (LLM-based) category classification using the smallest free model
@@ -1386,15 +1442,7 @@ export namespace Provider {
       )
 
       // Build fallback chain for resilience
-      const fallbackChain = buildFallbackChain(
-        category,
-        freeModels,
-        mode,
-        complexity,
-        activeSession,
-        promptText,
-        autoRouterConfig,
-      )
+      const fallbackChain = buildFallbackChainFromSelection(category, mode, selected, ranked)
 
       try {
         const { appendRoutingLog } = await import("@/integrations/tool/routing-log")
@@ -1425,7 +1473,10 @@ export namespace Provider {
         })
         return {
           ...selected.m,
-          id: `${modelID} / ${selected.id}`,
+          // Persist a real provider catalog key in assistant messages. The
+          // virtual alias remains visible through name, while id must be safe
+          // to pass back into Provider.getModel on later turns.
+          id: selected.id,
           name: isAuto ? `AtomCLI Auto (${selected.id})` : `AtomCLI Free (${selected.id})`,
           // Store fallback chain and meta-router in options for the LLM call pipeline
           options: {

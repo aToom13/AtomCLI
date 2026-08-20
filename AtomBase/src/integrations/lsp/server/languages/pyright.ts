@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import path from "path"
 import { Global } from "@/core/global"
 import { BunProc } from "@/util/bun"
@@ -17,7 +18,7 @@ export const Pyright: Info = {
             const js = path.join(Global.Path.bin, "node_modules", "pyright", "dist", "pyright-langserver.js")
             if (!(await Bun.file(js).exists())) {
                 if (Flag.ATOMCLI_DISABLE_LSP_DOWNLOAD) return
-                await Bun.spawn([BunProc.which(), "install", "pyright"], {
+                await LSPProcess.bunSpawn([BunProc.which(), "install", "pyright"], {
                     cwd: Global.Path.bin,
                     env: {
                         ...process.env,

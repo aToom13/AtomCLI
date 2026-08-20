@@ -22,10 +22,18 @@ export const AcpCommand = cmd({
   handler: async (args) => {
     await bootstrap(process.cwd(), async () => {
       const opts = await resolveNetworkOptions(args)
+      const companionServer = opts.companion
+        ? Server.listenCompanion({ port: opts.companionPort, directory: process.cwd() })
+        : undefined
+      if (opts.pairing && companionServer) {
+        const { CompanionAuth, CompanionDiscovery } = await import("@atomcli/companion")
+        await CompanionDiscovery.printCompanionInfo(companionServer.port, CompanionAuth.issueToken())
+      }
       const server = Server.listen(opts)
 
       const sdk = createAtomcliClient({
         baseUrl: `http://${server.hostname}:${server.port}`,
+        headers: opts.auth ? { authorization: `Bearer ${opts.auth}` } : undefined,
       })
 
       const input = new WritableStream<Uint8Array>({
@@ -64,6 +72,8 @@ export const AcpCommand = cmd({
         process.stdin.on("end", resolve)
         process.stdin.on("error", reject)
       })
+      await companionServer?.stop()
+      await server.stop()
     })
   },
 })

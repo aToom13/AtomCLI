@@ -3,7 +3,6 @@ import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../providers/app_providers.dart';
-import '../services/auth_service.dart';
 
 // Cross-tab navigation: set this to navigate Chat to a specific session
 final chatJumpToSessionProvider = StateProvider<String?>((ref) => null);
@@ -661,18 +660,9 @@ class _PermissionCard extends ConsumerWidget {
       );
       return;
     }
-    final auth = AuthService.instance;
-    final payload = {
-      'type': 'permission_resolve',
-      'id': permission.reqId,
-      'resolution': resolution,
-    };
-    final sig = auth.sign(AuthService.canonicalPayload(payload));
     ws.resolvePermission(
       reqId: permission.reqId,
       resolution: resolution,
-      deviceName: auth.deviceName ?? '',
-      signature: sig,
     );
     // Optimistic removal: backend will confirm via permission_resolved event,
     // which also triggers removal in dispatchBackendEvents. Removing here keeps

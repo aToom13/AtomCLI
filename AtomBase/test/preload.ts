@@ -21,6 +21,19 @@ const testHome = path.join(dir, "home")
 await fs.mkdir(testHome, { recursive: true })
 process.env["ATOMCLI_TEST_HOME"] = testHome
 
+// A live provider audit must exercise credentials created by `atomcli auth
+// login` without letting the test process write to the user's real AtomCLI
+// directory. Copy only the encrypted auth store and its key into the isolated
+// test home; the normal suite never reads either file.
+if (process.env["ATOMCLI_PROVIDER_LIVE_TEST"] === "1") {
+  const source = path.join(os.homedir(), ".atomcli", "data")
+  const destination = path.join(testHome, ".atomcli", "data")
+  await fs.mkdir(destination, { recursive: true })
+  for (const filename of ["auth.json", ".keyfile"]) {
+    await fs.copyFile(path.join(source, filename), path.join(destination, filename)).catch(() => {})
+  }
+}
+
 process.env["XDG_DATA_HOME"] = path.join(dir, "share")
 process.env["XDG_CACHE_HOME"] = path.join(dir, "cache")
 process.env["XDG_CONFIG_HOME"] = path.join(dir, "config")
@@ -34,32 +47,50 @@ const cacheDir = path.join(dir, "cache", "atomcli")
 await fs.mkdir(cacheDir, { recursive: true })
 await fs.writeFile(path.join(cacheDir, "version"), "16")
 const modelsFixture = process.env["MODELS_DEV_API_JSON"]
+const providerLiveAudit =
+  process.env["ATOMCLI_PROVIDER_LIVE_TEST"] === "1" ||
+  process.env["ATOMCLI_PROVIDER_ANONYMOUS_TEST"] === "1" ||
+  process.env["ATOMCLI_PROVIDER_ATOMCLI_TEST"] === "1"
+let liveCatalog: Record<string, { env?: string[] }> | undefined
 if (modelsFixture) {
   await fs.copyFile(path.resolve(modelsFixture), path.join(cacheDir, "models.json"))
+} else if (providerLiveAudit) {
+  const response = await fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(10_000) })
+  if (!response.ok) throw new Error(`models.dev returned ${response.status} during provider live audit`)
+  const body = await response.text()
+  liveCatalog = JSON.parse(body)
+  await fs.writeFile(path.join(cacheDir, "models.json"), body)
 }
-// Disable models.dev refresh to avoid race conditions during tests
-process.env["ATOMCLI_DISABLE_MODELS_FETCH"] = "true"
+// Contract tests use a pinned catalog. Explicit live audits intentionally use
+// the current models.dev catalog so stale fixture URLs cannot create false
+// provider results.
+if (providerLiveAudit) delete process.env["ATOMCLI_DISABLE_MODELS_FETCH"]
+else process.env["ATOMCLI_DISABLE_MODELS_FETCH"] = "true"
 
-// Clear provider env vars to ensure clean test state
-delete process.env["ANTHROPIC_API_KEY"]
-delete process.env["OPENAI_API_KEY"]
-delete process.env["GOOGLE_API_KEY"]
-delete process.env["GOOGLE_GENERATIVE_AI_API_KEY"]
-delete process.env["AZURE_OPENAI_API_KEY"]
-delete process.env["AWS_ACCESS_KEY_ID"]
-delete process.env["AWS_PROFILE"]
-delete process.env["AWS_REGION"]
-delete process.env["AWS_BEARER_TOKEN_BEDROCK"]
-delete process.env["OPENROUTER_API_KEY"]
-delete process.env["GROQ_API_KEY"]
-delete process.env["MISTRAL_API_KEY"]
-delete process.env["PERPLEXITY_API_KEY"]
-delete process.env["TOGETHER_API_KEY"]
-delete process.env["XAI_API_KEY"]
-delete process.env["DEEPSEEK_API_KEY"]
-delete process.env["FIREWORKS_API_KEY"]
-delete process.env["CEREBRAS_API_KEY"]
-delete process.env["SAMBANOVA_API_KEY"]
+// Clear every credential advertised by the catalog to ensure a genuinely clean
+// test state. Keeping a hand-written list here allowed less common provider
+// credentials to leak into tests. The authenticated live audit is the only
+// suite allowed to consume real credentials.
+if (process.env["ATOMCLI_PROVIDER_LIVE_TEST"] !== "1") {
+  const credentialNames = new Set([
+    "KILOCODE_TOKEN",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+  ])
+  const credentialCatalog = modelsFixture ?? path.resolve("test/tool/fixtures/models-api.json")
+  if (fsSync.existsSync(credentialCatalog)) {
+    const catalog = JSON.parse(await fs.readFile(credentialCatalog, "utf8")) as Record<string, { env?: string[] }>
+    for (const provider of Object.values(catalog)) {
+      for (const name of provider.env ?? []) credentialNames.add(name)
+    }
+  }
+  for (const provider of Object.values(liveCatalog ?? {})) {
+    for (const name of provider.env ?? []) credentialNames.add(name)
+  }
+  for (const name of credentialNames) delete process.env[name]
+}
 
 // Now safe to import from src/
 const { Log } = await import("@/util/util/log")

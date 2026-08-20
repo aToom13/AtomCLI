@@ -36,6 +36,35 @@ describe("tool.bash", () => {
       },
     })
   })
+
+  test("does not expose ambient provider and cloud credentials", async () => {
+    const names = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"] as const
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+    for (const name of names) process.env[name] = `secret-${name}`
+
+    try {
+      await Instance.provide({
+        directory: projectRoot,
+        fn: async () => {
+          const bash = await BashTool.init()
+          const result = await bash.execute(
+            {
+              command: `printf '%s|%s|%s|%s' "$OPENAI_API_KEY" "$ANTHROPIC_API_KEY" "$AWS_SECRET_ACCESS_KEY" "$GITHUB_TOKEN"`,
+              description: "Check isolated child environment",
+            },
+            ctx,
+          )
+          expect(result.output).toBe("|||")
+        },
+      })
+    } finally {
+      for (const name of names) {
+        const value = previous[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
 })
 
 describe("tool.bash permissions", () => {

@@ -445,6 +445,14 @@ export type ServerConfig = {
    * Additional domains to allow for CORS
    */
   cors?: Array<string>
+  /**
+   * Bearer token required by the control-plane API
+   */
+  auth?: string
+  /**
+   * Port for the scoped companion listener
+   */
+  companionPort?: number
 }
 
 export type PermissionActionConfig = "ask" | "allow" | "deny"
@@ -716,6 +724,17 @@ export type Config = {
     diff_style?: "auto" | "stacked"
   }
   server?: ServerConfig
+  /**
+   * OS process isolation policy for model-executed commands
+   */
+  execution?: {
+    sandbox?: "off" | "prefer" | "require"
+    filesystem?: "read-only" | "workspace-write" | "full"
+    network?: "deny" | "allow"
+    environment?: "minimal" | "filtered" | "inherit"
+    processVisibility?: "restricted" | "inherit"
+    envAllow?: Array<string>
+  }
   /**
    * Command configuration, see https://atomcli.ai/docs/commands
    */
@@ -1354,6 +1373,19 @@ export type EventMcpToolsChanged = {
   }
 }
 
+export type EventProviderModelAvailabilityUpdated = {
+  type: "provider.model.availability.updated"
+  properties: {
+    providerID: string
+    modelID: string
+    availability?: {
+      status: "rate_limited"
+      retryAt?: number
+      source?: "retry-after" | "rate-limit-reset" | "daily-window"
+    }
+  }
+}
+
 export type EventLspClientDiagnostics = {
   type: "lsp.client.diagnostics"
   properties: {
@@ -1893,6 +1925,10 @@ export type Pty = {
   cwd: string
   status: "running" | "exited"
   pid: number
+  execution?: {
+    enforcement: "full" | "partial" | "off"
+    provider: string
+  }
 }
 
 export type EventPtyCreated = {
@@ -1960,6 +1996,7 @@ export type Event =
   | EventTuiSubagentReactivate
   | EventTuiSubagentRemove
   | EventMcpToolsChanged
+  | EventProviderModelAvailabilityUpdated
   | EventLspClientDiagnostics
   | EventLspUpdated
   | EventMessageUpdated
@@ -1989,6 +2026,7 @@ export type Event =
   | EventTodoUpdated
 
 export type GlobalEvent = {
+  sequence: number
   directory: string
   payload: Event
 }
@@ -2013,7 +2051,7 @@ export type Model = {
   providerID: string
   api: {
     id: string
-    url: string
+    url?: string
     npm: string
   }
   name: string
@@ -2064,6 +2102,11 @@ export type Model = {
     output: number
   }
   status: "alpha" | "beta" | "deprecated" | "active"
+  availability?: {
+    status: "rate_limited"
+    retryAt?: number
+    source?: "retry-after" | "rate-limit-reset" | "daily-window"
+  }
   options: {
     [key: string]: unknown
   }
@@ -2783,6 +2826,17 @@ export type ConfigUpdateData = {
       diff_style?: "auto" | "stacked"
     }
     server?: ServerConfig
+    /**
+     * OS process isolation policy for model-executed commands
+     */
+    execution?: {
+      sandbox?: "off" | "prefer" | "require"
+      filesystem?: "read-only" | "workspace-write" | "full"
+      network?: "deny" | "allow"
+      environment?: "minimal" | "filtered" | "inherit"
+      processVisibility?: "restricted" | "inherit"
+      envAllow?: Array<string>
+    }
     /**
      * Command configuration, see https://atomcli.ai/docs/commands
      */
@@ -5439,6 +5493,107 @@ export type ProviderKeyResponses = {
 
 export type ProviderKeyResponse = ProviderKeyResponses[keyof ProviderKeyResponses]
 
+export type ProviderCustomDiscoverData = {
+  body?: {
+    /**
+     * OpenAI-compatible base URL
+     */
+    baseURL: string
+    /**
+     * Optional API key
+     */
+    apiKey?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provider/custom/discover"
+}
+
+export type ProviderCustomDiscoverErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderCustomDiscoverError = ProviderCustomDiscoverErrors[keyof ProviderCustomDiscoverErrors]
+
+export type ProviderCustomDiscoverResponses = {
+  /**
+   * Discovery result
+   */
+  200: {
+    ok: boolean
+    models: Array<{
+      id: string
+      name: string
+      tool_call: boolean
+      reasoning: boolean
+      attachment: boolean
+      temperature: boolean
+      limit: {
+        context: number
+        output: number
+      }
+    }>
+    error?: string
+  }
+}
+
+export type ProviderCustomDiscoverResponse = ProviderCustomDiscoverResponses[keyof ProviderCustomDiscoverResponses]
+
+export type ProviderCustomSaveData = {
+  body?: {
+    /**
+     * Provider identifier (a-z, 0-9, hyphens)
+     */
+    providerID: string
+    /**
+     * Display name
+     */
+    name: string
+    /**
+     * API base URL
+     */
+    baseURL: string
+    /**
+     * Optional API key
+     */
+    apiKey?: string
+    /**
+     * Model config map
+     */
+    models: {
+      [key: string]: unknown
+    }
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provider/custom/save"
+}
+
+export type ProviderCustomSaveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderCustomSaveError = ProviderCustomSaveErrors[keyof ProviderCustomSaveErrors]
+
+export type ProviderCustomSaveResponses = {
+  /**
+   * Saved successfully
+   */
+  200: boolean
+}
+
+export type ProviderCustomSaveResponse = ProviderCustomSaveResponses[keyof ProviderCustomSaveResponses]
+
 export type LspStatusData = {
   body?: never
   path?: never
@@ -5474,38 +5629,3 @@ export type FormatterStatusResponses = {
 }
 
 export type FormatterStatusResponse = FormatterStatusResponses[keyof FormatterStatusResponses]
-
-export type CompanionPairData = {
-  body?: {
-    pairing_token: string
-    public_key: string
-    device_name: string
-  }
-  path?: never
-  query?: {
-    directory?: string
-  }
-  url: "/companion/pair"
-}
-
-export type CompanionPairErrors = {
-  /**
-   * Invalid token
-   */
-  401: {
-    error: string
-  }
-}
-
-export type CompanionPairError = CompanionPairErrors[keyof CompanionPairErrors]
-
-export type CompanionPairResponses = {
-  /**
-   * Device paired
-   */
-  200: {
-    status: "ok"
-  }
-}
-
-export type CompanionPairResponse = CompanionPairResponses[keyof CompanionPairResponses]

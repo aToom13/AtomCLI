@@ -43,6 +43,8 @@ import { fn } from "@/util/util/fn"
 import { SessionProcessor } from "./processor"
 import { TaskTool } from "@/integrations/tool/task"
 import { Tool } from "@/integrations/tool/tool"
+import { ToolRuntime } from "@/integrations/tool/runtime"
+import { EnvPolicy } from "@/core/env/policy"
 import { PermissionNext } from "@/util/permission/next"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
@@ -377,21 +379,12 @@ export namespace SessionPrompt {
             },
           },
         })) as MessageV2.ToolPart
-        const taskArgs = {
+        let taskArgs = {
           prompt: task.prompt,
           description: task.description,
           subagent_type: task.agent,
           command: task.command,
         }
-        await Plugin.trigger(
-          "tool.execute.before",
-          {
-            tool: "task",
-            sessionID,
-            callID: part.id,
-          },
-          { args: taskArgs },
-        )
         let executionError: Error | undefined
         const taskAgent = await Agent.get(task.agent)
         const taskCtx: Tool.Context = {
@@ -419,20 +412,16 @@ export namespace SessionPrompt {
             })
           },
         }
-        const result = await taskTool.execute(taskArgs, taskCtx).catch((error) => {
+        const result = await ToolRuntime.execute({
+          tool: "task",
+          args: taskArgs,
+          context: taskCtx,
+          execute: (args, context) => taskTool.execute(args, context),
+        }).catch((error) => {
           executionError = error
           log.error("subtask execution failed", { error, agent: task.agent, description: task.description })
           return undefined
         })
-        await Plugin.trigger(
-          "tool.execute.after",
-          {
-            tool: "task",
-            sessionID,
-            callID: part.id,
-          },
-          result,
-        )
         assistantMessage.finish = "tool-calls"
         assistantMessage.time.completed = Date.now()
         await Session.updateMessage(assistantMessage)
@@ -749,28 +738,12 @@ export namespace SessionPrompt {
         inputSchema: jsonSchema(schema as any),
         async execute(args, options) {
           const ctx = context(args, options)
-          await Plugin.trigger(
-            "tool.execute.before",
-            {
-              tool: item.id,
-              sessionID: ctx.sessionID,
-              callID: ctx.callID,
-            },
-            {
-              args,
-            },
-          )
-          const result = await item.execute(args, ctx)
-          await Plugin.trigger(
-            "tool.execute.after",
-            {
-              tool: item.id,
-              sessionID: ctx.sessionID,
-              callID: ctx.callID,
-            },
-            result,
-          )
-          return result
+          return ToolRuntime.execute({
+            tool: item.id,
+            args,
+            context: ctx,
+            execute: (nextArgs, nextContext) => item.execute(nextArgs, nextContext),
+          })
         },
         toModelOutput(result) {
           return {
@@ -796,64 +769,38 @@ export namespace SessionPrompt {
       // Wrap execute to add plugin hooks and format output
       item.execute = async (args, opts) => {
         const ctx = context(args, opts)
-
-        await Plugin.trigger(
-          "tool.execute.before",
-          {
-            tool: key,
-            sessionID: ctx.sessionID,
-            callID: opts.toolCallId,
+        return ToolRuntime.execute({
+          tool: key,
+          args,
+          context: ctx,
+          permission: async (_nextArgs, nextContext) =>
+            nextContext.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] }),
+          execute: async (nextArgs, nextContext) => {
+            const result = await execute(nextArgs, { ...opts, abortSignal: nextContext.abort })
+            const textParts: string[] = []
+            const attachments: MessageV2.FilePart[] = []
+            for (const contentItem of result.content) {
+              if (contentItem.type === "text") textParts.push(contentItem.text)
+              else if (contentItem.type === "image") {
+                attachments.push({
+                  id: Identifier.ascending("part"),
+                  sessionID: input.session.id,
+                  messageID: input.processor.message.id,
+                  type: "file",
+                  mime: contentItem.mimeType,
+                  url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+                })
+              }
+            }
+            return {
+              title: "",
+              metadata: result.metadata ?? {},
+              output: textParts.join("\n\n"),
+              attachments,
+              content: result.content,
+            }
           },
-          {
-            args,
-          },
-        )
-
-        await ctx.ask({
-          permission: key,
-          metadata: {},
-          patterns: ["*"],
-          always: ["*"],
         })
-
-        const result = await execute(args, opts)
-
-        await Plugin.trigger(
-          "tool.execute.after",
-          {
-            tool: key,
-            sessionID: ctx.sessionID,
-            callID: opts.toolCallId,
-          },
-          result,
-        )
-
-        const textParts: string[] = []
-        const attachments: MessageV2.FilePart[] = []
-
-        for (const contentItem of result.content) {
-          if (contentItem.type === "text") {
-            textParts.push(contentItem.text)
-          } else if (contentItem.type === "image") {
-            attachments.push({
-              id: Identifier.ascending("part"),
-              sessionID: input.session.id,
-              messageID: input.processor.message.id,
-              type: "file",
-              mime: contentItem.mimeType,
-              url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-            })
-          }
-          // Add support for other types if needed
-        }
-
-        return {
-          title: "",
-          metadata: result.metadata ?? {},
-          output: textParts.join("\n\n"),
-          attachments,
-          content: result.content, // directly return content to preserve ordering when outputting to model
-        }
       }
       item.toModelOutput = (result) => {
         return {
@@ -1597,10 +1544,7 @@ export namespace SessionPrompt {
       cwd: Instance.directory,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        TERM: "dumb",
-      },
+      env: EnvPolicy.build({ cwd: Instance.directory, scope: "session:shell", overrides: { TERM: "dumb" } }),
     })
 
     let output = ""
@@ -1742,7 +1686,11 @@ export namespace SessionPrompt {
       const results = await Promise.all(
         shell.map(async ([, cmd]) => {
           try {
-            return await $`${{ raw: cmd }}`.quiet().nothrow().text()
+            return await $`${{ raw: cmd }}`
+              .env(EnvPolicy.build({ cwd: Instance.directory, scope: "session:command-template" }))
+              .quiet()
+              .nothrow()
+              .text()
           } catch (error) {
             return `Error executing command: ${error instanceof Error ? error.message : String(error)}`
           }

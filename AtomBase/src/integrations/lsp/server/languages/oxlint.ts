@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import path from "path"
 import { readableStreamToText } from "bun"
 import { Log } from "@/util/util/log"
@@ -50,7 +51,7 @@ export const Oxlint: Info = {
         }
 
         if (lintBin) {
-            const proc = Bun.spawn([lintBin, "--help"], { stdout: "pipe" })
+            const proc = LSPProcess.bunSpawn([lintBin, "--help"], { stdout: "pipe" })
             await proc.exited
             const help = await readableStreamToText(proc.stdout)
             if (help.includes("--lsp")) {

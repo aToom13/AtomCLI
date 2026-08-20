@@ -16,6 +16,13 @@ export const TuiSpawnCommand = cmd({
   handler: async (args) => {
     upgrade()
     const opts = await resolveNetworkOptions(args)
+    const companionServer = opts.companion
+      ? Server.listenCompanion({ port: opts.companionPort, directory: process.cwd() })
+      : undefined
+    if (opts.pairing && companionServer) {
+      const { CompanionAuth, CompanionDiscovery } = await import("@atomcli/companion")
+      await CompanionDiscovery.printCompanionInfo(companionServer.port, CompanionAuth.issueToken())
+    }
     const server = Server.listen(opts)
     const bin = process.execPath
     const cmd = []
@@ -40,10 +47,12 @@ export const TuiSpawnCommand = cmd({
       env: {
         ...process.env,
         BUN_OPTIONS: "",
+        ...(opts.auth ? { ATOMCLI_SERVER_TOKEN: opts.auth } : {}),
       },
     })
     await proc.exited
     await Instance.disposeAll()
+    await companionServer?.stop(true)
     await server.stop(true)
   },
 })

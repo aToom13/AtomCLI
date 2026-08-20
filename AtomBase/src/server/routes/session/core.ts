@@ -6,6 +6,7 @@ import { SessionStatus } from "@/core/session/status"
 import { SessionPrompt } from "@/core/session/prompt"
 import { SessionSummary } from "@/core/session/summary"
 import { Todo } from "@/core/session/todo"
+import { SessionTermination } from "@/core/session/termination"
 import { errors } from "../../error"
 
 export const SessionCoreRoute = new Hono()
@@ -365,7 +366,11 @@ export const SessionCoreRoute = new Hono()
             }),
         ),
         async (c) => {
-            SessionPrompt.cancel(c.req.valid("param").sessionID)
+            const sessionID = c.req.valid("param").sessionID
+            // Mark inside the worker isolate before cancellation wakes a blocking
+            // orchestrator. TUI-side module state is not shared with this worker.
+            SessionTermination.mark(sessionID)
+            SessionPrompt.cancel(sessionID)
             return c.json(true)
         },
     )

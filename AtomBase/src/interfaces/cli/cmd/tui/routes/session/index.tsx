@@ -247,13 +247,16 @@ export function Session() {
         sync,
       }}
     >
-      <box flexDirection="row">
+      <box flexDirection="row" width="100%" height="100%">
         {/* Left: File Tree Sidebar */}
         <FileTree width={fileTreeWidth()} expanded={fileTreeExpanded()} />
 
         {/* Center: Chat Area */}
         <box
+          flexDirection="column"
           flexGrow={1}
+          minWidth={1}
+          height="100%"
           paddingBottom={layoutMode() === "compact" || verticalMode() !== "normal" ? 0 : 1}
           paddingTop={layoutMode() === "compact" || verticalMode() !== "normal" ? 0 : 1}
           paddingLeft={layoutMode() === "compact" ? 1 : 2}
@@ -278,6 +281,7 @@ export function Session() {
                 },
               }}
               maxHeight="100%"
+              minHeight={1}
               viewportCulling={false}
               stickyScroll={autoFollow()}
               stickyStart="bottom"
@@ -288,15 +292,25 @@ export function Session() {
               <VirtualList
                 data={messages()}
                 scrollRef={() => scroll}
+                itemKey={(message) => message.id}
+                measurementKey={[
+                  contentWidth(),
+                  showThinking(),
+                  showDetails(),
+                  showAssistantMetadata(),
+                  showTimestamps(),
+                  diffWrapMode(),
+                ].join(":")}
                 itemHeight={(message) => {
                   const parts = sync.data.part[message.id] ?? []
                   let lines = 4 // base: role header + margins
+                  const wrapWidth = Math.max(8, contentWidth() - 4)
                   for (const p of parts) {
                     if (!p) continue
                     if (p.type === "text" && p.text) {
                       const textLines = String(p.text).split("\n")
                       for (const l of textLines) {
-                        lines += Math.max(1, Math.ceil(l.length / (contentWidth() || 80)))
+                        lines += Math.max(1, Math.ceil(Bun.stringWidth(l) / wrapWidth))
                       }
                       lines += 3 // paddingLeft + marginTop + borders from TextPart wrapper
                     } else if (p.type === "tool") {

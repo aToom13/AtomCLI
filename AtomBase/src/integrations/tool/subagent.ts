@@ -6,6 +6,8 @@ import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { SessionReuse } from "./session-reuse"
 import type { Agent } from "../agent/agent"
+import { Instance } from "@/services/project/instance"
+import { SubAgentRuntime } from "./subagent-runtime"
 
 /**
  * Shared sub-agent session spawn utility.
@@ -99,6 +101,12 @@ export namespace SubAgent {
     title?: string
     /** Extra tools to deny beyond the base set */
     deniedTools?: Record<string, boolean>
+    /** Called as soon as the child identity is known, before its prompt starts */
+    onSession?: (session: { sessionId: string; isNewSession: boolean }) => void | Promise<void>
+    /** Runtime backend. Defaults to the behavior-compatible atom-inprocess provider. */
+    runtime?: string
+    /** Capabilities that must be supported before execution starts. */
+    require?: Array<keyof Capabilities>
   }
 
   export interface SpawnResult {
@@ -112,6 +120,61 @@ export namespace SubAgent {
     parts: any[]
   }
 
+  export type Capabilities = SubAgentRuntime.Capabilities
+
+  export interface RuntimeProvider {
+    id: string
+    capabilities: Capabilities
+    spawn(config: SpawnConfig): Promise<SpawnResult>
+    cancel?(sessionID: string): Promise<void> | void
+    dispose?(): Promise<void> | void
+  }
+
+  const runtimes = Instance.state(
+    () =>
+      new Map<string, RuntimeProvider>([
+        [
+          "atom-inprocess",
+          {
+            id: "atom-inprocess",
+            capabilities: {
+              outputSchema: false,
+              persona: true,
+              toolFilter: true,
+              depthLimit: true,
+              continuation: true,
+              cancellation: true,
+            },
+            spawn: spawnInProcess,
+            cancel: (sessionID) => SessionPrompt.cancel(sessionID),
+          },
+        ],
+      ]),
+    async (providers) => {
+      await Promise.allSettled([...providers.values()].map((provider) => provider.dispose?.()))
+      providers.clear()
+    },
+  )
+
+  export function register(provider: RuntimeProvider) {
+    runtimes().set(provider.id, provider)
+  }
+
+  export function capabilities(runtime = "atom-inprocess") {
+    const provider = runtimes().get(runtime)
+    if (!provider) throw new Error(`Unknown sub-agent runtime: ${runtime}`)
+    return provider.capabilities
+  }
+
+  export async function cancel(sessionID: string, runtime = "atom-inprocess") {
+    const provider = runtimes().get(runtime)
+    if (!provider) throw new Error(`Unknown sub-agent runtime: ${runtime}`)
+    if (!provider.capabilities.cancellation || !provider.cancel) {
+      throw new Error(`Sub-agent runtime ${runtime} does not support cancellation`)
+    }
+    await provider.cancel(sessionID)
+  }
+
   /**
    * Spawn a sub-agent: create/reuse session, emit TUI events, execute prompt.
    *
@@ -119,6 +182,14 @@ export namespace SubAgent {
    * Callers handle background detach if needed.
    */
   export async function spawn(config: SpawnConfig): Promise<SpawnResult> {
+    const runtime = config.runtime ?? "atom-inprocess"
+    const provider = runtimes().get(runtime)
+    if (!provider) throw new Error(`Unknown sub-agent runtime: ${runtime}`)
+    SubAgentRuntime.negotiate(runtime, provider.capabilities, config.require)
+    return provider.spawn(config)
+  }
+
+  async function spawnInProcess(config: SpawnConfig): Promise<SpawnResult> {
     let isNewSession = false
 
     // Try to reuse existing session
@@ -162,6 +233,11 @@ export namespace SubAgent {
       }
     }
 
+    // Expose the child identity before starting the blocking prompt. Callers use
+    // this to distinguish a user-deleted child from an ordinary model failure
+    // and must not wait until spawn() returns to learn the session ID.
+    await config.onSession?.({ sessionId: session.id, isNewSession })
+
     // Execute the prompt
     const messageID = Identifier.ascending("message")
     const result = await SessionPrompt.prompt({
@@ -180,6 +256,11 @@ export namespace SubAgent {
       },
       parts: config.parts,
     })
+
+    if (result.info.role === "assistant" && result.info.error) {
+      const detail = "message" in result.info.error ? result.info.error.message : "Sub-agent prompt failed"
+      throw new Error(`${result.info.error.name}: ${detail}`)
+    }
 
     const lastText = result.parts.findLast((x) => x.type === "text")
     const output = lastText && "text" in lastText ? (lastText as any).text : ""

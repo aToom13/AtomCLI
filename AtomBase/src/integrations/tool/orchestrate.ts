@@ -6,12 +6,17 @@ import { SessionPrompt } from "@/core/session/prompt"
 import { Agent } from "../agent/agent"
 import { MessageV2 } from "@/core/session/message-v2"
 import { Config } from "@/core/config/config"
-import { selectModel, inferCategory, type TaskCategory } from "./model-router"
+import { selectModel, inferCategory, modelIsRoutable, type TaskCategory } from "./model-router"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { SubAgent } from "./subagent"
 import { WorkflowFS } from "./workflow-fs"
 import { escapeXmlText, HarnessState } from "@/core/session/harness-state"
+import { SessionTermination } from "@/core/session/termination"
+import { Provider } from "@/integrations/provider/provider"
+import { ModelAvailability } from "@/integrations/provider/availability"
+import { WorkflowStore } from "@/core/orchestration/workflow-store"
+import { OrchestrationGraph } from "@/core/orchestration/graph"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -79,7 +84,7 @@ interface WorkflowState {
   id: string
   tasks: TaskNode[]
   results: Record<string, TaskResult>
-  status: "planned" | "running" | "completed" | "failed"
+  status: "planned" | "running" | "resumable" | "completed" | "failed"
   createdAt: number
   sessionMapKeys: string[] // F24: track keys for O(1) cleanup
 }
@@ -160,6 +165,30 @@ function cleanupOldWorkflows() {
   }
 }
 
+async function checkpoint(workflow: WorkflowState) {
+  await WorkflowStore.save(workflow)
+}
+
+async function findWorkflow(id: string) {
+  const active = WORKFLOWS.get(id)
+  if (active) return active
+  const stored = await WorkflowStore.load<WorkflowState>(id)
+  if (!stored) return undefined
+  if (stored.status === "running") {
+    stored.status = "resumable"
+    for (const result of Object.values(stored.results)) {
+      if (result.status !== "running") continue
+      result.status = "pending"
+      result.error = "Previous process stopped with an unknown task outcome; safe retry required"
+      result.startedAt = undefined
+    }
+    await checkpoint(stored)
+  }
+  WORKFLOWS.set(id, stored)
+  cleanupOldWorkflows()
+  return stored
+}
+
 // Default retry configuration
 const DEFAULT_MAX_RETRIES = 2
 const RETRY_DELAY_MS = 1000
@@ -178,84 +207,123 @@ function parseModelSpecifier(value: string) {
   return { providerID: value.slice(0, separator), modelID: value.slice(separator + 1) }
 }
 
-/**
- * Topological sort of tasks. Returns ordered task IDs.
- * Throws if a cycle is detected.
- */
-function topologicalSort(tasks: TaskNode[]): string[] {
-  const graph = new Map<string, string[]>()
-  const inDegree = new Map<string, number>()
+type ModelReference = { providerID: string; modelID: string }
 
-  for (const task of tasks) {
-    graph.set(task.id, [])
-    inDegree.set(task.id, 0)
-  }
-
-  for (const task of tasks) {
-    for (const dep of task.dependsOn) {
-      if (!graph.has(dep)) {
-        throw new Error(`Task "${task.id}" depends on unknown task "${dep}"`)
-      }
-      graph.get(dep)!.push(task.id)
-      inDegree.set(task.id, (inDegree.get(task.id) || 0) + 1)
-    }
-  }
-
-  // Kahn's algorithm
-  const queue: string[] = []
-  for (const [id, degree] of inDegree) {
-    if (degree === 0) queue.push(id)
-  }
-
-  const sorted: string[] = []
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    sorted.push(current)
-
-    for (const neighbor of graph.get(current) || []) {
-      const newDegree = (inDegree.get(neighbor) || 0) - 1
-      inDegree.set(neighbor, newDegree)
-      if (newDegree === 0) queue.push(neighbor)
-    }
-  }
-
-  if (sorted.length !== tasks.length) {
-    const remaining = tasks.filter((t) => !sorted.includes(t.id)).map((t) => t.id)
-    throw new Error(`Circular dependency detected among tasks: ${remaining.join(", ")}`)
-  }
-
-  return sorted
+function preferredModel(
+  explicit: ModelReference | undefined,
+  configured: ModelReference | undefined,
+  routed: ModelReference,
+): ModelReference {
+  return explicit ?? configured ?? routed
 }
 
-/**
- * Get tasks that are ready to run (all dependencies completed).
- */
-function getReadyTasks(workflow: WorkflowState): TaskNode[] {
-  return workflow.tasks.filter((task) => {
-    const result = workflow.results[task.id]
-    if (!result || result.status !== "pending") return false
+function canonicalReference(
+  requested: ModelReference,
+  resolved: { options?: Record<string, any> },
+): ModelReference {
+  if (requested.providerID !== "atomcli" || !["atomcli-auto", "atomcli-free"].includes(requested.modelID)) {
+    // Keep the provider catalog key. A configured alias may expose a different
+    // API model id, which cannot be passed back through Provider.getModel().
+    return requested
+  }
 
-    // All dependencies must be completed
-    return task.dependsOn.every((depId) => {
-      const depResult = workflow.results[depId]
-      return depResult && depResult.status === "completed"
+  const primary = resolved.options?._fallbackChain?.primary
+  if (!primary || typeof primary.providerID !== "string" || typeof primary.modelID !== "string") {
+    throw new Error(`Model alias ${requested.providerID}/${requested.modelID} did not resolve to a usable model`)
+  }
+  return { providerID: primary.providerID, modelID: primary.modelID }
+}
+
+/** Resolve dynamic aliases once so one sub-agent cannot change models between turns. */
+async function canonicalModel(
+  reference: ModelReference,
+  session?: Session.Info,
+  prompt?: string,
+): Promise<ModelReference> {
+  const resolved = await Provider.getModel(reference.providerID, reference.modelID, { session, prompt })
+  const canonical = canonicalReference(reference, resolved)
+  await validateModel(canonical)
+  return canonical
+}
+
+async function validateModel(reference: ModelReference) {
+  const provider = await Provider.getProvider(reference.providerID)
+  if (!provider) throw new Error(`Unknown model provider: ${reference.providerID}`)
+  const model = provider.models[reference.modelID]
+  if (!model) {
+    throw new Error(`Unknown model: ${reference.providerID}/${reference.modelID}`)
+  }
+  const availability = ModelAvailability.active(model.availability)
+  if (availability) {
+    throw new Error(
+      `Model ${reference.providerID}/${reference.modelID} is rate limited (${ModelAvailability.retryLabel(availability)})`,
+    )
+  }
+  if (!modelIsRoutable(model)) {
+    throw new Error(
+      `Unusable model: ${reference.providerID}/${reference.modelID} must support text input/output and declare positive context/output limits`,
+    )
+  }
+  return model
+}
+
+function captureTerminations(captured: Set<string>, ...sessionIDs: Array<string | undefined>) {
+  for (const sessionID of new Set(sessionIDs)) {
+    if (sessionID && SessionTermination.consume(sessionID)) captured.add(sessionID)
+  }
+  return captured.size > 0
+}
+
+const topologicalSort = (tasks: TaskNode[]) => OrchestrationGraph.topologicalSort(tasks)
+const getReadyTasks = (workflow: WorkflowState) => OrchestrationGraph.ready(workflow.tasks, workflow.results)
+const shouldSkipDueToFailedDependency = (task: TaskNode, workflow: WorkflowState) =>
+  OrchestrationGraph.hasFailedDependency(task, workflow.results)
+
+/**
+ * Return every upstream dependency once, ordered from the oldest ancestor to
+ * the direct dependency. A downstream agent then receives the whole decision
+ * trail instead of only the immediately preceding agent's summary.
+ */
+function dependencyIds(task: TaskNode, tasks: TaskNode[]): string[] {
+  const byID = new Map(tasks.map((item) => [item.id, item]))
+  const seen = new Set<string>()
+  const ordered: string[] = []
+
+  const visit = (id: string) => {
+    if (seen.has(id)) return
+    seen.add(id)
+    const dependency = byID.get(id)
+    for (const parent of dependency?.dependsOn ?? []) visit(parent)
+    ordered.push(id)
+  }
+
+  for (const id of task.dependsOn) visit(id)
+  return ordered
+}
+
+function buildDependencyContext(task: TaskNode, workflow: WorkflowState): string {
+  const direct = new Set(task.dependsOn)
+  const context = dependencyIds(task, workflow.tasks)
+    .map((dependencyID) => {
+      const output = workflow.results[dependencyID]?.output
+      if (!output) return ""
+      const relation = direct.has(dependencyID) ? "direct" : "upstream"
+      return `<dependency_output task="${escapeXmlText(dependencyID)}" relation="${relation}">\n${escapeXmlText(limitText(output))}\n</dependency_output>`
     })
-  })
+    .filter(Boolean)
+    .join("\n\n")
+  return limitText(context, MAX_DEPENDENCY_CONTEXT_BYTES)
 }
 
-/**
- * Check if any dependency has failed — if so, skip this task.
- * IMPORTANT: Only skip if task HAS dependencies. Independent tasks should NEVER be skipped.
- */
-function shouldSkipDueToFailedDependency(task: TaskNode, workflow: WorkflowState): boolean {
-  // Independent tasks (no dependencies) should never be skipped
-  if (task.dependsOn.length === 0) return false
+/** Pure investigation does not need a second agent to repeat the same read. */
+function requiresTaskQA(task: TaskNode, editedFileCount: number): boolean {
+  if (task.agent === "reviewer" || task.agent === "checker") return false
+  return task.category === "coding" || editedFileCount > 0
+}
 
-  // Only skip if a direct dependency has failed or been skipped
-  return task.dependsOn.some((depId) => {
-    const depResult = workflow.results[depId]
-    return depResult && (depResult.status === "failed" || depResult.status === "skipped")
-  })
+async function modelTemporaryAvailability(reference: ModelReference) {
+  const provider = await Provider.getProvider(reference.providerID)
+  return ModelAvailability.active(provider?.models[reference.modelID]?.availability)
 }
 
 /**
@@ -367,7 +435,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         }
         try {
           for (const task of tasks) {
-            if (task.model) parseModelSpecifier(task.model)
+            if (task.model) {
+              const model = parseModelSpecifier(task.model)
+              await validateModel(model)
+            }
           }
         } catch (error) {
           return {
@@ -400,6 +471,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           sessionMapKeys: [], // F24: populated during execution
         }
         WORKFLOWS.set(workflowId, workflow)
+        await checkpoint(workflow)
         cleanupOldWorkflows()
 
         // Publish Chain UI events for real-time progress tracking
@@ -491,7 +563,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }
         }
 
-        const workflow = WORKFLOWS.get(params.workflowId)
+        const workflow = await findWorkflow(params.workflowId)
         if (!workflow) {
           return {
             title: "Error",
@@ -518,6 +590,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         }
 
         workflow.status = "running"
+        await checkpoint(workflow)
         // Track index of current task in Chain for parallel_update
         const taskIndexMap: Record<string, number> = {}
         workflow.tasks.forEach((t, i) => {
@@ -547,9 +620,24 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           HarnessState.unlockOrchestrator(ctx.sessionID)
           throw e
         }
-        const fallbackModel = {
+        const assistantModel = {
           providerID: parentMsg.info.providerID,
           modelID: parentMsg.info.modelID,
+        }
+        let fallbackModel = assistantModel
+        try {
+          await validateModel(assistantModel)
+        } catch {
+          // Older atomcli-auto/free assistant messages stored a composite
+          // display id ("alias / selected") that is not a catalog key. Recover
+          // the original request from the parent user message when available.
+          const parentUser = parentMsg.info.parentID
+            ? await MessageV2.get({
+                sessionID: ctx.sessionID,
+                messageID: parentMsg.info.parentID,
+              }).catch(() => undefined)
+            : undefined
+          if (parentUser?.info.role === "user") fallbackModel = parentUser.info.model
         }
 
         // Get parent session permissions
@@ -571,6 +659,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 if (result.status === "pending" && shouldSkipDueToFailedDependency(task, workflow)) {
                   result.status = "skipped"
                   result.error = "Skipped due to failed dependency"
+                  await checkpoint(workflow)
                   log.warn("task skipped due to failed dependency", { taskId: task.id })
                 }
               }
@@ -586,6 +675,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 const result = workflow.results[task.id]
                 result.status = "running"
                 result.startedAt = Date.now()
+                await checkpoint(workflow)
 
                 // Update Chain UI: mark this task as running
                 const stepIdx = taskIndexMap[task.id]
@@ -599,20 +689,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   /* TUI may not be active */
                 }
 
-                // Build context from completed dependency outputs
-                const depContext = limitText(
-                  task.dependsOn
-                    .map((depId) => {
-                      const depResult = workflow.results[depId]
-                      if (depResult?.output) {
-                        return `<dependency_output task="${escapeXmlText(depId)}">\n${escapeXmlText(limitText(depResult.output))}\n</dependency_output>`
-                      }
-                      return ""
-                    })
-                    .filter(Boolean)
-                    .join("\n\n"),
-                  MAX_DEPENDENCY_CONTEXT_BYTES,
-                )
+                // Share the complete upstream result chain, not just direct
+                // parents. This keeps decisions made by early agents visible
+                // to integration tasks several layers later.
+                const depContext = buildDependencyContext(task, workflow)
 
                 const fullPrompt = depContext ? `${depContext}\n\n${task.prompt}` : task.prompt
 
@@ -626,6 +706,42 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 let lastAttemptCount = 0
                 let model: { providerID: string; modelID: string } | undefined
                 let agent: Awaited<ReturnType<typeof Agent.get>>
+                let reviewerModel: ModelReference | undefined
+                let reviewerAgent: Awaited<ReturnType<typeof Agent.get>>
+                let reviewerSessionId: string | undefined
+                const dismissedSessionIds = new Set<string>()
+                const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
+
+                const completeTask = async (
+                  spawnResult: { sessionId: string; output: string },
+                  attempt: number,
+                  qa: "reviewed" | "not-needed",
+                ) => {
+                  result.status = "completed"
+                  result.output = limitText(spawnResult.output)
+                  result.completedAt = Date.now()
+                  result.retryCount = attempt
+                  completedTasks.push(task.id)
+                  taskSuccess = true
+                  await checkpoint(workflow)
+
+                  await WorkflowFS.writeSuccess(params.workflowId!, task.id, task.agent, spawnResult.output)
+                  try {
+                    await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                      stepIndex: stepIdx,
+                      status: "complete",
+                      sessionID: ctx.sessionID,
+                    })
+                  } catch {
+                    /* TUI may not be active */
+                  }
+
+                  log.info(qa === "reviewed" ? "task passed QA" : "task completed without redundant QA", {
+                    taskId: task.id,
+                    sessionId: spawnResult.sessionId,
+                    attempts: attempt + 1,
+                  })
+                }
 
                 for (
                   let attempt = 0;
@@ -634,19 +750,49 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 ) {
                   lastAttemptCount = attempt
                   try {
-                    if (!model) {
-                      model = task.model ? parseModelSpecifier(task.model) : await selectModel(task.category, fallbackModel)
-                      result.model = model
-                      if (task.model) log.info("using specified model", { taskId: task.id, model: task.model })
-                    }
                     agent ??= await Agent.get(task.agent)
                     if (!agent) throw new Error(`Unknown agent: ${task.agent}`)
+
+                    if (!model) {
+                      const explicit = task.model ? parseModelSpecifier(task.model) : undefined
+                      const configured = agent.model
+                      const routed = await selectModel(
+                        task.category,
+                        fallbackModel,
+                        "balanced",
+                        0,
+                        parentSession,
+                        fullPrompt,
+                      )
+                      const requested = preferredModel(explicit, configured, routed)
+                      try {
+                        model = await canonicalModel(requested, parentSession, fullPrompt)
+                      } catch (error) {
+                        // User-pinned models remain strict. A stale model in an
+                        // agent definition, however, must not strand the task
+                        // when the health-aware router has a working choice.
+                        if (explicit || !configured) throw error
+                        log.warn("configured agent model unavailable; using routed model", {
+                          taskId: task.id,
+                          configured: `${configured.providerID}/${configured.modelID}`,
+                          routed: `${routed.providerID}/${routed.modelID}`,
+                          error: (error as Error).message,
+                        })
+                        model = await canonicalModel(routed, parentSession, fullPrompt)
+                      }
+                      result.model = model
+                      log.info("sub-agent model pinned", {
+                        taskId: task.id,
+                        requested: `${requested.providerID}/${requested.modelID}`,
+                        resolved: `${model.providerID}/${model.modelID}`,
+                        source: explicit ? "task" : agent.model ? "agent" : "router",
+                      })
+                    }
 
                     // Try to reuse existing session for this agent type.
                     // Priority: explicit task.sessionId (explicit continuation wins)
                     //        → AGENT_SESSION_MAP (auto-reuse from prior workflow runs)
                     //        → result.sessionId (ESC recovery / server restart)
-                    const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
                     const existingSessionId =
                       task.sessionId ??
                       AGENT_SESSION_MAP.get(sessionKey) ??
@@ -671,26 +817,64 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       deniedTools: Object.fromEntries(
                         (config.experimental?.primary_tools ?? []).map((t) => [t, false]),
                       ),
+                      onSession: ({ sessionId, isNewSession }) => {
+                        result.sessionId = sessionId
+                        if (isNewSession) {
+                          AGENT_SESSION_MAP.set(sessionKey, sessionId)
+                          if (!workflow.sessionMapKeys.includes(sessionKey)) {
+                            workflow.sessionMapKeys.push(sessionKey)
+                          }
+                        }
+                      },
                     })
 
-                    // Store mapping for future reuse if new session was created
-                    if (spawnResult.isNewSession) {
-                      AGENT_SESSION_MAP.set(sessionKey, spawnResult.sessionId)
-                      workflow.sessionMapKeys.push(sessionKey) // F24: track key for O(1) cleanup
-                    }
-
-                    // Store session ID for UI navigation
+                    // Keep compatibility with alternate spawn implementations that do
+                    // not invoke onSession (for example, external test integrations).
                     result.sessionId = spawnResult.sessionId
+                    if (captureTerminations(dismissedSessionIds, result.sessionId)) {
+                      throw new Error("Sub-agent was closed and deleted by the user")
+                    }
 
                     // Save output before QA — if QA fails, we keep the original
                     lastAttemptOutput = spawnResult.output
 
+                    if (!spawnResult.output.trim()) {
+                      throw new Error("Sub-agent returned an empty response")
+                    }
+
+                    const editedFileCount = HarnessState.getEditedFileCount(spawnResult.sessionId)
+                    if (!requiresTaskQA(task, editedFileCount)) {
+                      await completeTask(spawnResult, attempt, "not-needed")
+                      continue
+                    }
+
                     // ─── REVIEWER QA: verify sub-agent output ─────────────
-                    const reviewerAgent = await Agent.get("reviewer")
+                    reviewerAgent ??= await Agent.get("reviewer")
                     if (!reviewerAgent) {
                       throw new Error("Unknown agent: reviewer")
                     }
-                    const reviewerModel = await selectModel("analysis", fallbackModel)
+                    if (!reviewerModel) {
+                      const reviewerRouted = await selectModel(
+                        "analysis",
+                        fallbackModel,
+                        "balanced",
+                        0,
+                        parentSession,
+                        fullPrompt,
+                      )
+                      const reviewerRequested = reviewerAgent.model ?? reviewerRouted
+                      try {
+                        reviewerModel = await canonicalModel(reviewerRequested, parentSession, fullPrompt)
+                      } catch (error) {
+                        if (!reviewerAgent.model) throw error
+                        log.warn("configured reviewer model unavailable; using routed model", {
+                          configured: `${reviewerAgent.model.providerID}/${reviewerAgent.model.modelID}`,
+                          routed: `${reviewerRouted.providerID}/${reviewerRouted.modelID}`,
+                          error: (error as Error).message,
+                        })
+                        reviewerModel = await canonicalModel(reviewerRouted, parentSession, fullPrompt)
+                      }
+                    }
 
                     // Inject harness execution logs so reviewer can cross-reference
                     // real test output instead of relying on agent-provided summaries.
@@ -723,6 +907,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     // This prevents "reviewer shopping" where a new reviewer without context
                     // accepts work that a previous reviewer correctly rejected.
                     const existingQASessionId = HarnessState.getQASession(ctx.sessionID, task.id)
+                    reviewerSessionId = existingQASessionId
 
                     const reviewResult = await SubAgent.spawn({
                       parentSessionID: ctx.sessionID,
@@ -732,11 +917,23 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       parts: [{ type: "text", text: reviewPrompt }],
                       description: `[QA${attempt > 0 ? ` retry ${attempt}` : ""}] ${task.id}`,
                       sessionId: existingQASessionId,
+                      onSession: ({ sessionId, isNewSession }) => {
+                        reviewerSessionId = sessionId
+                        if (isNewSession) HarnessState.setQASession(ctx.sessionID, task.id, sessionId)
+                      },
                     })
 
-                    // Register QA session after first spawn so retries reuse it
+                    // Keep compatibility with alternate spawn implementations that
+                    // do not invoke onSession.
+                    reviewerSessionId = reviewResult.sessionId
                     if (!existingQASessionId) {
                       HarnessState.setQASession(ctx.sessionID, task.id, reviewResult.sessionId)
+                    }
+                    // Cancellation can resolve SessionPrompt with a partial/error
+                    // assistant message instead of rejecting. Consume both markers
+                    // before a streamed PASS can complete the task.
+                    if (captureTerminations(dismissedSessionIds, result.sessionId, reviewerSessionId)) {
+                      throw new Error("Sub-agent was closed and deleted by the user")
                     }
 
                     const reviewText = reviewResult.output.trim()
@@ -746,38 +943,59 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       .trim()
 
                     if (/^VERDICT:\s*PASSED\b/i.test(firstLine) || /^PASS\b/i.test(firstLine)) {
-                      // ✅ QA passed
-                      result.status = "completed"
-                      result.output = limitText(spawnResult.output)
-                      result.completedAt = Date.now()
-                      result.retryCount = attempt
-                      completedTasks.push(task.id)
-                      taskSuccess = true
-
-                      await WorkflowFS.writeSuccess(params.workflowId!, task.id, task.agent, spawnResult.output)
-
-                      // Update Chain UI: mark step as complete
-                      try {
-                        await Bus.publish(TuiEvent.ChainParallelUpdate, {
-                          stepIndex: stepIdx,
-                          status: "complete",
-                          sessionID: ctx.sessionID,
-                        })
-                      } catch {
-                        /* TUI may not be active */
-                      }
-
-                      log.info("task passed QA", {
-                        taskId: task.id,
-                        sessionId: spawnResult.sessionId,
-                        attempts: attempt + 1,
-                      })
+                      await completeTask(spawnResult, attempt, "reviewed")
                     } else {
                       // ❌ QA failed — throw to trigger retry
                       throw new Error(`QA_FAILED: ${reviewText}`)
                     }
                   } catch (e) {
-                    lastError = limitText((e as Error).message, 20_000)
+                    lastError = limitText(e instanceof Error ? e.message : String(e ?? "Sub-agent stopped"), 20_000)
+
+                    // Closing a running child is an explicit user decision. The worker's
+                    // abort route marks it before cancellation reaches this catch.
+                    captureTerminations(dismissedSessionIds, result.sessionId, reviewerSessionId)
+                    const mainWasDismissed = result.sessionId
+                      ? dismissedSessionIds.has(result.sessionId)
+                      : false
+                    const reviewerWasDismissed = reviewerSessionId
+                      ? dismissedSessionIds.has(reviewerSessionId)
+                      : false
+                    const wasDismissed = mainWasDismissed || reviewerWasDismissed
+                    if (wasDismissed) {
+                      AGENT_SESSION_MAP.delete(sessionKey)
+                      if (reviewerWasDismissed) HarnessState.clearQASession(ctx.sessionID, task.id)
+                      lastError = "Sub-agent was closed and deleted by the user"
+                      log.info("task stopped after sub-agent deletion", {
+                        taskId: task.id,
+                        sessionId: reviewerWasDismissed ? reviewerSessionId : result.sessionId,
+                      })
+                      break
+                    }
+
+                    const taskAvailability = model ? await modelTemporaryAvailability(model) : undefined
+                    const reviewerAvailability = reviewerModel
+                      ? await modelTemporaryAvailability(reviewerModel)
+                      : undefined
+                    if (taskAvailability && task.model) {
+                      lastError = `Explicit model ${task.model} is rate limited (${ModelAvailability.retryLabel(taskAvailability)})`
+                      break
+                    }
+                    if (taskAvailability) {
+                      log.warn("task model became rate limited; rerouting retry", {
+                        taskId: task.id,
+                        model: model ? `${model.providerID}/${model.modelID}` : undefined,
+                      })
+                      model = undefined
+                    }
+                    if (reviewerAvailability) {
+                      log.warn("reviewer model became rate limited; rerouting retry", {
+                        taskId: task.id,
+                        model: reviewerModel
+                          ? `${reviewerModel.providerID}/${reviewerModel.modelID}`
+                          : undefined,
+                      })
+                      reviewerModel = undefined
+                    }
 
                     if (attempt < DEFAULT_MAX_RETRIES) {
                       log.warn("task failed, retrying", {
@@ -799,6 +1017,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   result.error = lastError ?? "Workflow may have been aborted — task did not complete"
                   result.completedAt = Date.now()
                   failedTasks.push(task.id)
+                  await checkpoint(workflow)
 
                   // Write failure file (include original output if QA rejected it)
                   await WorkflowFS.writeFailed(
@@ -835,6 +1054,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
             // Determine overall status
             workflow.status = failedTasks.length > 0 ? "failed" : "completed"
+            await checkpoint(workflow)
 
             // Clear Chain UI on finish
             try {
@@ -858,6 +1078,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             log.error("workflow execution failed", { error: errorMsg })
             // Ensure the workflow is marked as failed so status() shows it
             workflow.status = "failed"
+            await checkpoint(workflow)
           }
         }
 
@@ -871,6 +1092,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         } catch (err) {
           log.error("blocking: workflow execution failed", { error: (err as Error).message })
           workflow.status = "failed"
+          await checkpoint(workflow)
         } finally {
           // ── Harness: always release orchestrator lock, even on error
           HarnessState.unlockOrchestrator(ctx.sessionID)
@@ -913,7 +1135,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }
         }
 
-        const workflow = WORKFLOWS.get(params.workflowId)
+        const workflow = await findWorkflow(params.workflowId)
         if (!workflow) {
           return {
             title: "Error",
@@ -982,7 +1204,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
         // Abort workflow and its tasks
         if (params.workflowId) {
-          const workflow = WORKFLOWS.get(params.workflowId)
+          const workflow = await findWorkflow(params.workflowId)
           if (workflow) {
             if (workflow.status === "running") {
               workflow.status = "failed"
@@ -1014,6 +1236,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 abortedCount++
               }
             }
+            await checkpoint(workflow)
           }
         }
 
@@ -1039,5 +1262,10 @@ export const _internals = {
   topologicalSort,
   getReadyTasks,
   hasFailedDependency: shouldSkipDueToFailedDependency,
+  preferredModel,
+  canonicalReference,
+  dependencyIds,
+  buildDependencyContext,
+  requiresTaskQA,
   WORKFLOWS,
 }

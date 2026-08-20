@@ -3,22 +3,83 @@ import { cmd } from "./cmd"
 import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
 import { ModelsDev } from "@/integrations/provider/models"
-import { map, pipe, sortBy, values } from "remeda"
+import { map, mergeDeep, pipe, sortBy } from "remeda"
 import path from "path"
 import os from "os"
+import fs from "fs/promises"
 import { Config } from "@/core/config/config"
 import { Global } from "@/core/global"
 import { Plugin } from "@/integrations/plugin"
+import { fetchOpenAICompatibleModels } from "@/integrations/provider/custom"
 import { Instance } from "@/services/project/instance"
 import type { Hooks } from "@atomcli/plugin"
 
 type PluginAuth = NonNullable<Hooks["auth"]>
 
+export namespace AuthLogin {
+  export type ProviderOption = {
+    id: string
+    name: string
+    env: string[]
+    models: Record<string, unknown>
+  }
+
+  export function providers(
+    database: Record<string, ModelsDev.Provider>,
+    plugins: Array<{ auth?: PluginAuth }>,
+    config: Pick<Config.Info, "disabled_providers" | "enabled_providers">,
+  ): ProviderOption[] {
+    const disabled = new Set(config.disabled_providers ?? [])
+    const enabled = config.enabled_providers ? new Set(config.enabled_providers) : undefined
+    const result = new Map<string, ProviderOption>()
+
+    for (const [providerID, provider] of Object.entries(database)) {
+      if (disabled.has(providerID) || (enabled && !enabled.has(providerID))) continue
+      result.set(providerID, provider)
+    }
+
+    for (const plugin of plugins) {
+      const providerID = plugin.auth?.provider
+      if (!providerID || result.has(providerID)) continue
+      if (disabled.has(providerID) || (enabled && !enabled.has(providerID))) continue
+      result.set(providerID, {
+        id: providerID,
+        name: providerID.charAt(0).toUpperCase() + providerID.slice(1),
+        env: [],
+        models: {},
+      })
+    }
+
+    const priority: Record<string, number> = {
+      atomcli: 0,
+      anthropic: 1,
+      "github-copilot": 2,
+      openai: 3,
+      google: 4,
+      antigravity: 5,
+      openrouter: 6,
+      vercel: 7,
+    }
+
+    return pipe(
+      [...result.values()],
+      sortBy(
+        (provider) => priority[provider.id] ?? 99,
+        (provider) => provider.name ?? provider.id,
+      ),
+    )
+  }
+}
+
 /**
  * Handle plugin-based authentication flow.
  * Returns true if auth was handled, false if it should fall through to default handling.
  */
-async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, methodIndex?: string): Promise<boolean> {
+async function handlePluginAuth(
+  plugin: { auth: PluginAuth },
+  provider: string,
+  methodIndex?: string,
+): Promise<boolean> {
   let index = 0
   if (methodIndex !== undefined) {
     index = parseInt(methodIndex)
@@ -178,7 +239,7 @@ export const AuthCommand = cmd({
   describe: "manage credentials",
   builder: (yargs) =>
     yargs.command(AuthLoginCommand).command(AuthLogoutCommand).command(AuthListCommand).demandCommand(),
-  async handler() { },
+  async handler() {},
 })
 
 export const AuthListCommand = cmd({
@@ -274,57 +335,24 @@ export const AuthLoginCommand = cmd({
           prompts.outro("Done")
           return
         }
-        await ModelsDev.refresh().catch(() => { })
+        await ModelsDev.refresh().catch(() => {})
 
         const config = await Config.get()
 
-        const disabled = new Set(config.disabled_providers ?? [])
-        const enabled = config.enabled_providers ? new Set(config.enabled_providers) : undefined
-
-        const providers = await ModelsDev.get().then((x) => {
-          const filtered: Record<string, (typeof x)[string]> = {}
-          for (const [key, value] of Object.entries(x)) {
-            if ((enabled ? enabled.has(key) : true) && !disabled.has(key)) {
-              filtered[key] = value
-            }
-          }
-          return filtered
-        })
-
-        // Get plugin-based auth providers that might not be in models.dev
-        const pluginAuthProviders = await Plugin.list().then((plugins) =>
-          plugins
-            .filter((p) => p.auth?.provider && !providers[p.auth.provider])
-            .map((p) => ({
-              id: p.auth!.provider,
-              name: p.auth!.provider.charAt(0).toUpperCase() + p.auth!.provider.slice(1),
-              env: [],
-              models: {},
-            }))
-        )
-
-        const priority: Record<string, number> = {
-          atomcli: 0,
-          anthropic: 1,
-          "github-copilot": 2,
-          openai: 3,
-          google: 4,
-          antigravity: 5,
-          openrouter: 6,
-          vercel: 7,
-        }
-        let provider = args.provider as string;
+        const providers = AuthLogin.providers(await ModelsDev.get(), await Plugin.list(), config)
+        let provider = args.provider as string
         if (!provider) {
-          provider = await prompts.autocomplete({
+          provider = (await prompts.autocomplete({
             message: "Select provider",
             maxItems: 8,
             options: [
+              {
+                value: "custom",
+                label: "Custom Provider (OpenAI Compatible)",
+                hint: "9Route, LiteLLM, local /v1",
+              },
               ...pipe(
-                [...values()(providers), ...pluginAuthProviders],
-                sortBy(
-                  (x) => priority[x.id] ?? 99,
-                  (x) => x.name ?? x.id,
-                ),
+                providers,
                 map((x) => ({
                   label: x.name,
                   value: x.id,
@@ -336,13 +364,139 @@ export const AuthLoginCommand = cmd({
                   }[x.id],
                 })),
               ),
-              {
-                value: "other",
-                label: "Other",
-              },
             ],
-          }) as string
+          })) as string
           if (prompts.isCancel(provider)) throw new UI.CancelledError()
+        }
+
+        if (provider === "custom") {
+          const customId = (await prompts.text({
+            message: "Enter provider ID",
+            placeholder: "e.g., 9route, local-llm, custom-gateway",
+            validate: (x) => (x && x.trim().match(/^[0-9a-z-]+$/) ? undefined : "a-z, 0-9 and hyphens only"),
+          })) as string
+          if (prompts.isCancel(customId)) throw new UI.CancelledError()
+          const providerID = customId.trim().replace(/^@ai-sdk\//, "")
+
+          const defaultName = providerID.charAt(0).toUpperCase() + providerID.slice(1)
+          const customName = (await prompts.text({
+            message: "Enter provider display name",
+            placeholder: defaultName,
+            defaultValue: defaultName,
+          })) as string
+          if (prompts.isCancel(customName)) throw new UI.CancelledError()
+          const providerName = (customName && customName.trim()) || defaultName
+
+          const customURL = (await prompts.text({
+            message: "Enter API Base URL",
+            placeholder: "e.g., http://localhost:20128/v1 or https://api.9route.com/v1",
+            validate: (x) => {
+              if (!x || !x.trim()) return "Endpoint URL is required"
+              try {
+                new URL(x.trim())
+                return undefined
+              } catch {
+                return "Invalid URL format"
+              }
+            },
+          })) as string
+          if (prompts.isCancel(customURL)) throw new UI.CancelledError()
+          const baseURL = customURL.trim().replace(/\/+$/, "")
+
+          const apiKey = (await prompts.password({
+            message: "Enter API key (press Enter if none)",
+            validate: () => undefined,
+          })) as string
+          if (prompts.isCancel(apiKey)) throw new UI.CancelledError()
+          const key = apiKey ? apiKey.trim() : ""
+
+          const spinner = prompts.spinner()
+          spinner.start(`Discovering models from ${baseURL}...`)
+          const discovery = await fetchOpenAICompatibleModels({
+            baseURL,
+            apiKey: key || undefined,
+            timeout: 10_000,
+          })
+
+          const modelsConfig: Record<string, any> = {}
+
+          if (discovery.ok && discovery.models.length > 0) {
+            const sample = discovery.models
+              .slice(0, 3)
+              .map((m) => m.id)
+              .join(", ")
+            spinner.stop(
+              `Discovered ${discovery.models.length} model${discovery.models.length === 1 ? "" : "s"} (${sample}${discovery.models.length > 3 ? ", ..." : ""})`,
+            )
+            for (const m of discovery.models) {
+              modelsConfig[m.id] = {
+                name: m.name,
+                tool_call: m.tool_call,
+                reasoning: m.reasoning,
+                attachment: m.attachment,
+                temperature: m.temperature,
+                ...(m.interleaved ? { interleaved: m.interleaved } : {}),
+                limit: m.limit,
+                ...(m.modalities ? { modalities: m.modalities } : {}),
+                ...(m.cost ? { cost: m.cost } : {}),
+              }
+            }
+          } else {
+            spinner.stop(`Could not auto-discover models (${discovery.error || "empty model list"})`)
+            const modelIdInput = (await prompts.text({
+              message: "Enter a default model name",
+              placeholder: "e.g., gpt-4o, deepseek-r1, llama-3.3-70b",
+              validate: (x) => (x && x.trim().length > 0 ? undefined : "Model name is required"),
+            })) as string
+            if (prompts.isCancel(modelIdInput)) throw new UI.CancelledError()
+            const modelId = modelIdInput.trim()
+            modelsConfig[modelId] = {
+              name: modelId,
+              tool_call: true,
+              limit: {
+                context: 128000,
+                output: 8192,
+              },
+            }
+          }
+
+          if (key) {
+            await Auth.set(providerID, {
+              type: "api",
+              key,
+            })
+          }
+
+          const configPath = path.join(Global.Path.config, "atomcli.json")
+          await fs.mkdir(Global.Path.config, { recursive: true })
+          const existingConfig = await Bun.file(configPath)
+            .json()
+            .catch(() => ({}))
+
+          const providerEntry = {
+            name: providerName,
+            npm: "@ai-sdk/openai-compatible",
+            api: baseURL,
+            options: {
+              baseURL,
+              ...(key ? { apiKey: key } : {}),
+            },
+            models: modelsConfig,
+          }
+
+          const updatedConfig = mergeDeep(existingConfig, {
+            provider: {
+              [providerID]: providerEntry,
+            },
+          })
+
+          await Bun.write(configPath, JSON.stringify(updatedConfig, null, 2))
+
+          prompts.log.success(
+            `Provider '${providerID}' successfully configured with ${Object.keys(modelsConfig).length} model${Object.keys(modelsConfig).length === 1 ? "" : "s"}`,
+          )
+          prompts.outro("Done")
+          return
         }
 
         const plugin = await Plugin.list().then((x) => x.find((x) => x.auth?.provider === provider))
@@ -352,10 +506,10 @@ export const AuthLoginCommand = cmd({
         }
 
         if (provider === "other") {
-          provider = await prompts.text({
+          provider = (await prompts.text({
             message: "Enter provider id",
             validate: (x) => (x && x.match(/^[0-9a-z-]+$/) ? undefined : "a-z, 0-9 and hyphens only"),
-          }) as string
+          })) as string
           if (prompts.isCancel(provider)) throw new UI.CancelledError()
           provider = provider.replace(/^@ai-sdk\//, "")
           if (prompts.isCancel(provider)) throw new UI.CancelledError()
@@ -375,10 +529,10 @@ export const AuthLoginCommand = cmd({
         if (provider === "amazon-bedrock") {
           prompts.log.info(
             "Amazon Bedrock authentication priority:\n" +
-            "  1. Bearer token (AWS_BEARER_TOKEN_BEDROCK or /connect)\n" +
-            "  2. AWS credential chain (profile, access keys, IAM roles)\n\n" +
-            "Configure via atomcli.json options (profile, region, endpoint) or\n" +
-            "AWS environment variables (AWS_PROFILE, AWS_REGION, AWS_ACCESS_KEY_ID).",
+              "  1. Bearer token (AWS_BEARER_TOKEN_BEDROCK or /connect)\n" +
+              "  2. AWS credential chain (profile, access keys, IAM roles)\n\n" +
+              "Configure via atomcli.json options (profile, region, endpoint) or\n" +
+              "AWS environment variables (AWS_PROFILE, AWS_REGION, AWS_ACCESS_KEY_ID).",
           )
         }
 

@@ -13,6 +13,7 @@ import { Read } from "@/integrations/tool/read"
 import { Bash } from "@/integrations/tool/bash"
 import path from "path"
 import fs from "fs/promises"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace SecurityScanner {
   const log = Log.create({ service: "security" })
@@ -270,6 +271,7 @@ export namespace SecurityScanner {
     try {
       // Use the repository's pinned package manager for dependency auditing.
       const proc = Bun.spawn(["bun", "audit", "--json"], {
+        env: EnvPolicy.build({ cwd: process.cwd(), scope: "cli:security-audit" }),
         stdout: "pipe",
         stderr: "pipe",
         cwd: process.cwd(),

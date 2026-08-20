@@ -57,6 +57,10 @@ export const FallbackCommand = cmd({
         type: "boolean",
         describe: "List current fallback configuration",
       })
+      .option("probe", {
+        type: "boolean",
+        describe: "Test free fallback models to see which ones are responding and available",
+      })
       .option("reset", {
         type: "boolean",
         describe: "Reset to default fallback models",
@@ -64,16 +68,39 @@ export const FallbackCommand = cmd({
   },
   handler: async (args) => {
     const config = await getGlobalConfig()
+    const dynamicDefaults = await ModelFallback.getDynamicFallbackModels()
+
+    // Probe free fallback models
+    if (args.probe) {
+      UI.println("Probing free fallback models...")
+      const candidates = Array.from(new Set([...dynamicDefaults, ...ModelFallback.DEFAULT_FALLBACK_MODELS]))
+      const results = await ModelFallback.probeModels(candidates)
+
+      UI.println("")
+      UI.println("Model Probe Results:")
+      for (const res of results) {
+        if (res.available) {
+          UI.println(`  ✓ ${res.model.padEnd(32)} [Available] (${res.latencyMs}ms)`)
+        } else {
+          UI.println(`  ✗ ${res.model.padEnd(32)} [Failed] ${res.error ? `(${res.error})` : ""}`)
+        }
+      }
+
+      const availableModels = results.filter((r) => r.available)
+      UI.println("")
+      UI.println(`Total ${availableModels.length}/${results.length} models responding.`)
+      return
+    }
 
     // List current configuration
     if (args.list) {
       UI.println("Current Fallback Configuration:")
       UI.println(`  Enabled: ${config.fallback?.enabled ?? true}`)
-      UI.println(`  Secondary: ${config.fallback?.secondary ?? "atomcli/minimax-m2.5-free (default)"}`)
-      UI.println(`  Tertiary: ${config.fallback?.tertiary ?? "atomcli/gpt-5-nano (default)"}`)
+      UI.println(`  Secondary: ${config.fallback?.secondary ?? `${dynamicDefaults[0] || "dynamic"} (default)`}`)
+      UI.println(`  Tertiary: ${config.fallback?.tertiary ?? `${dynamicDefaults[1] || "dynamic"} (default)`}`)
       UI.println("")
-      UI.println("Default fallback models:")
-      for (const model of ModelFallback.DEFAULT_FALLBACK_MODELS) {
+      UI.println("Discovered free fallback models:")
+      for (const model of dynamicDefaults) {
         UI.println(`  - ${model}`)
       }
       return
@@ -81,16 +108,18 @@ export const FallbackCommand = cmd({
 
     // Reset to defaults
     if (args.reset) {
+      const sec = dynamicDefaults[0] || ModelFallback.DEFAULT_FALLBACK_MODELS[0]
+      const ter = dynamicDefaults[1] || ModelFallback.DEFAULT_FALLBACK_MODELS[1]
       await saveGlobalConfig({
         fallback: {
           enabled: true,
-          secondary: ModelFallback.DEFAULT_FALLBACK_MODELS[0],
-          tertiary: ModelFallback.DEFAULT_FALLBACK_MODELS[1],
+          secondary: sec,
+          tertiary: ter,
         },
       })
       UI.println("✓ Fallback configuration reset to defaults:")
-      UI.println(`  Secondary: ${ModelFallback.DEFAULT_FALLBACK_MODELS[0]}`)
-      UI.println(`  Tertiary: ${ModelFallback.DEFAULT_FALLBACK_MODELS[1]}`)
+      UI.println(`  Secondary: ${sec}`)
+      UI.println(`  Tertiary: ${ter}`)
       return
     }
 
@@ -108,14 +137,17 @@ export const FallbackCommand = cmd({
         return
       }
 
+      const defaultSec = dynamicDefaults[0] || ModelFallback.DEFAULT_FALLBACK_MODELS[0]
+      const defaultTer = dynamicDefaults[1] || ModelFallback.DEFAULT_FALLBACK_MODELS[1]
+
       // Use text input instead of select (to avoid Instance context requirement)
       const secondary = await prompts.text({
         message: "Enter secondary fallback model (format: provider/model)",
-        placeholder: config.fallback?.secondary ?? ModelFallback.DEFAULT_FALLBACK_MODELS[0],
+        placeholder: config.fallback?.secondary ?? defaultSec,
         validate: (value) => {
           if (!value) return undefined // Allow empty to use default
           const parsed = parseModelID(value)
-          if (!parsed) return "Invalid format. Use: provider/model (e.g., atomcli/minimax-m2.5-free)"
+          if (!parsed) return `Invalid format. Use: provider/model (e.g., ${defaultSec})`
           return undefined
         },
       })
@@ -127,11 +159,11 @@ export const FallbackCommand = cmd({
 
       const tertiary = await prompts.text({
         message: "Enter tertiary fallback model (format: provider/model)",
-        placeholder: config.fallback?.tertiary ?? ModelFallback.DEFAULT_FALLBACK_MODELS[1],
+        placeholder: config.fallback?.tertiary ?? defaultTer,
         validate: (value) => {
           if (!value) return undefined // Allow empty to use default
           const parsed = parseModelID(value)
-          if (!parsed) return "Invalid format. Use: provider/model (e.g., atomcli/gpt-5-nano)"
+          if (!parsed) return `Invalid format. Use: provider/model (e.g., ${defaultTer})`
           return undefined
         },
       })

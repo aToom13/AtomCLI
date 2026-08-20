@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
+import 'auth_service.dart';
 
 /// Event received from the AtomCLI backend via WebSocket.
 class BackendEvent {
@@ -49,6 +50,8 @@ class WebSocketService {
   int _endpointIndex = 0;
   int _retryCount = 0;
   bool _disposed = false;
+  String? _connectionId;
+  int _counter = 0;
 
   /// Connect and return a stream of backend events.
   Stream<BackendEvent> connect() {
@@ -69,16 +72,21 @@ class WebSocketService {
       await _channel!.ready;
 
       _retryCount = 0;
-      // Signal connected state
-      onStateChange?.call(WsLifecycle.connected);
-
-      // Send initial sync
-      _send({'type': 'sync', 'last_seq_id': _seqId});
-
       _channel!.stream.listen(
         (raw) {
           try {
             final json = jsonDecode(raw as String) as Map<String, dynamic>;
+            if (json['type'] == 'auth_challenge') {
+              _authenticate(json['challenge'] as String);
+              return;
+            }
+            if (json['type'] == 'auth_ok') {
+              _connectionId = json['connection_id'] as String;
+              _counter = 0;
+              onStateChange?.call(WsLifecycle.connected);
+              _send({'type': 'sync', 'last_seq_id': _seqId});
+              return;
+            }
             final event = BackendEvent.fromJson(json);
             if (event.seqId != null && event.seqId! > _seqId) {
               _seqId = event.seqId!;
@@ -97,6 +105,8 @@ class WebSocketService {
   void _handleDisconnect() {
     if (_disposed) return;
     _channel = null;
+    _connectionId = null;
+    _counter = 0;
     _endpointIndex++;
     _retryCount++;
 
@@ -120,35 +130,27 @@ class WebSocketService {
   void resolvePermission({
     required String reqId,
     required String resolution, // 'allow' | 'deny' | 'intervene'
-    required String deviceName,
-    required String signature,
     String? interventionParams,
   }) {
-    _send({
+    _sendSigned({
       'type': 'permission_resolve',
       'id': reqId,
       'resolution': resolution,
-      'intervention_params': interventionParams,
-      'device_name': deviceName,
-      'signature': signature,
+      if (interventionParams != null) 'intervention_params': interventionParams,
     });
   }
 
   /// Send a signed request to create a new standalone session.
   void createSession({
-    required String deviceName,
-    required String signature,
     String? text,
     String? model,
     String? agent,
   }) {
-    _send({
+    _sendSigned({
       'type': 'create_session',
       if (text != null && text.isNotEmpty) 'text': text,
       if (model != null && model.isNotEmpty) 'model': model,
       if (agent != null && agent.isNotEmpty) 'agent': agent,
-      'device_name': deviceName,
-      'signature': signature,
     });
   }
 
@@ -161,19 +163,15 @@ class WebSocketService {
   void sendChatMessage({
     required String sessionId,
     required String text,
-    required String deviceName,
-    required String signature,
     String? model,
     String? agent,
   }) {
-    _send({
+    _sendSigned({
       'type': 'chat_message',
       'session_id': sessionId,
       'text': text,
       if (model != null && model.isNotEmpty) 'model': model,
       if (agent != null && agent.isNotEmpty) 'agent': agent,
-      'device_name': deviceName,
-      'signature': signature,
     });
   }
 
@@ -181,29 +179,21 @@ class WebSocketService {
   void replyQuestion({
     required String id,
     required List<List<String>> answers,
-    required String deviceName,
-    required String signature,
   }) {
-    _send({
+    _sendSigned({
       'type': 'question_reply',
       'id': id,
       'answers': answers,
-      'device_name': deviceName,
-      'signature': signature,
     });
   }
 
   /// Send a signed rejection of a question request.
   void rejectQuestion({
     required String id,
-    required String deviceName,
-    required String signature,
   }) {
-    _send({
+    _sendSigned({
       'type': 'question_reject',
       'id': id,
-      'device_name': deviceName,
-      'signature': signature,
     });
   }
 
@@ -214,6 +204,33 @@ class WebSocketService {
 
   void _send(Map<String, dynamic> msg) {
     _channel?.sink.add(jsonEncode(msg));
+  }
+
+  void _authenticate(String challenge) {
+    final auth = AuthService.instance;
+    final payload = <String, dynamic>{
+      'type': 'authenticate',
+      'challenge': challenge,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'device_name': auth.deviceName ?? '',
+    };
+    payload['signature'] = auth.sign(AuthService.canonicalPayload(payload));
+    _send(payload);
+  }
+
+  void _sendSigned(Map<String, dynamic> message) {
+    final connectionId = _connectionId;
+    if (connectionId == null) return;
+    final auth = AuthService.instance;
+    final payload = <String, dynamic>{
+      ...message,
+      'connection_id': connectionId,
+      'counter': ++_counter,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'device_name': auth.deviceName ?? '',
+    };
+    payload['signature'] = auth.sign(AuthService.canonicalPayload(payload));
+    _send(payload);
   }
 
   void dispose() {

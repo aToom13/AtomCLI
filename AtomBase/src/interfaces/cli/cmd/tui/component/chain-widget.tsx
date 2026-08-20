@@ -4,6 +4,7 @@ import { StatusIcons, type AgentChain, type ChainStep, type StepTodo, type SubSt
 import { useSession } from "@tui/routes/session/context"
 import { useTerminalDimensions } from "@opentui/solid"
 import { SessionLayout } from "@tui/routes/session/layout"
+import { Locale } from "@/util/util/locale"
 
 /**
  * Task Chain Progress Bar - Redesigned
@@ -37,6 +38,18 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
         ) ?? 0
     )
     const expandedHeight = createMemo(() => SessionLayout.chainExpandedHeight(dimensions().height, contentRows()))
+    const needsScrollbar = createMemo(() =>
+        SessionLayout.chainNeedsScrollbar(dimensions().height, expandedHeight(), contentRows())
+    )
+    const listWidth = createMemo(() =>
+        narrow() || dense() ? session.width : Math.max(24, Math.floor(session.width * 0.45))
+    )
+    const stepNameWidth = (step: ChainStep, index: number) => {
+        const agentBadge = step.agentType ? step.agentType.length + 4 : 0
+        const todoBadge = step.todos?.length ? String(step.todos.length).length * 2 + 5 : 0
+        const subStepBadge = step.subSteps?.length ? String(step.subSteps.length).length * 2 + 4 : 0
+        return SessionLayout.chainStepNameWidth(listWidth(), index, agentBadge + todoBadge + subStepBadge)
+    }
 
     const selectedStepData = createMemo(() => {
         const idx = selectedStep()
@@ -71,7 +84,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
 
     return (
         <Show when={props.chain && totalSteps() > 0}>
-            <box flexDirection="column">
+            <box flexDirection="column" flexShrink={0}>
                 {/* Progress Bar - Always Visible */}
                 <box
                     flexDirection="row"
@@ -85,7 +98,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                     gap={1}
                     onMouseUp={() => setExpanded((prev) => !prev)}
                 >
-                    <text fg={theme.accent}>
+                    <text fg={theme.accent} wrapMode="none">
                         <span style={{ bold: true }}>{expanded() ? "▼" : "▶"} {compact() ? "Tasks" : "Task plan"}</span>
                     </text>
 
@@ -114,7 +127,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                     </Show>
 
                     {/* Status summary */}
-                    <text fg={theme.textMuted} paddingLeft={1}>
+                    <text fg={theme.textMuted} paddingLeft={1} wrapMode="none">
                         ({completedSteps()}/{totalSteps()})
                     </text>
 
@@ -134,31 +147,36 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                     >
                         {/* Left: Step List */}
                         <scrollbox
-                            flexDirection="column"
                             paddingLeft={1}
                             paddingRight={dense() ? 1 : 2}
                             paddingTop={dense() ? 0 : 1}
                             paddingBottom={dense() ? 0 : 1}
                             flexGrow={narrow() || dense() ? 1 : 0}
-                            width={narrow() || dense() ? "100%" : Math.max(24, Math.floor(session.width * 0.45))}
+                            width={narrow() || dense() ? "100%" : listWidth()}
+                            height="100%"
+                            contentOptions={SessionLayout.chainScrollContentOptions}
+                            verticalScrollbarOptions={{ visible: needsScrollbar() }}
+                            horizontalScrollbarOptions={{ visible: false }}
+                            scrollX={false}
                         >
                             <For each={props.chain!.steps}>
                                 {(step, i) => (
-                                    <box flexDirection="column">
+                                    <box flexDirection="column" flexShrink={0}>
                                         <ChainStepRow
                                             step={step}
                                             index={i()}
                                             isCurrent={i() === props.chain!.currentStep}
                                             isSelected={selectedStep() === i()}
+                                            maxNameWidth={stepNameWidth(step, i())}
                                             onClick={() => selectStep(i())}
                                         />
 
                                         {/* Nested Sub-Steps (Indented) */}
                                         <Show when={(step.subSteps?.length ?? 0) > 0}>
-                                            <box flexDirection="column" paddingLeft={4} border={["left"]} borderColor={selectedStep() === i() ? theme.accent : theme.border}>
+                                            <box flexDirection="column" flexShrink={0} paddingLeft={4} border={["left"]} borderColor={selectedStep() === i() ? theme.accent : theme.border}>
                                                 <Show when={step.subPlanReason}>
-                                                    <text fg={theme.warning}>
-                                                        ⚠️ {step.subPlanReason}
+                                                    <text fg={theme.warning} wrapMode="none" height={1} flexShrink={0} overflow="hidden">
+                                                        ⚠️ {Locale.truncate(step.subPlanReason!, stepNameWidth(step, i()))}
                                                     </text>
                                                 </Show>
                                                 <For each={step.subSteps!}>
@@ -171,9 +189,9 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                                                             return theme.textMuted
                                                         })
                                                         return (
-                                                            <box onMouseUp={() => { setSelectedStep(i()); setSelectedSubStep(selectedSubStep() === si() ? null : si()) }}>
-                                                                <text fg={subColor()}>
-                                                                    {isSubSelected() ? "▶" : "─"} {StatusIcons[sub.status] ?? "⏳"} {sub.name}
+                                                            <box height={1} flexShrink={0} overflow="hidden" onMouseUp={() => { setSelectedStep(i()); setSelectedSubStep(selectedSubStep() === si() ? null : si()) }}>
+                                                                <text fg={subColor()} wrapMode="none">
+                                                                    {isSubSelected() ? "▶" : "─"} {StatusIcons[sub.status] ?? "⏳"} {Locale.truncate(sub.name, stepNameWidth(step, i()))}
                                                                 </text>
                                                             </box>
                                                         )
@@ -188,8 +206,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
 
                         {/* Right: Detail Panel */}
                         <Show when={!narrow() && !dense()}>
-                        <box
-                            flexDirection="column"
+                        <scrollbox
                             paddingLeft={2}
                             paddingRight={2}
                             paddingTop={1}
@@ -198,6 +215,10 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                             border={["left"]}
                             borderColor={theme.border}
                             backgroundColor={theme.backgroundPanel}
+                            height="100%"
+                            contentOptions={SessionLayout.chainScrollContentOptions}
+                            horizontalScrollbarOptions={{ visible: false }}
+                            scrollX={false}
                         >
                             {/* Detailed View logic based on selection */}
                             <Switch>
@@ -268,7 +289,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
                                     </text>
                                 </Match>
                             </Switch>
-                        </box>
+                        </scrollbox>
                         </Show>
                     </box>
                 </Show>
@@ -282,6 +303,7 @@ function ChainStepRow(props: {
     index: number
     isCurrent: boolean
     isSelected: boolean
+    maxNameWidth: number
     onClick: () => void
 }) {
     const { theme } = useTheme()
@@ -302,11 +324,11 @@ function ChainStepRow(props: {
     )
 
     return (
-        <box flexDirection="column" onMouseUp={props.onClick}>
+        <box flexDirection="column" flexShrink={0} overflow="hidden" onMouseUp={props.onClick}>
             {/* Main row */}
-            <text fg={color()} wrapMode="word">
+            <text fg={color()} wrapMode="none" height={1} flexShrink={0} overflow="hidden">
                 {props.isSelected ? "▶ " : "  "}
-                {props.index + 1}. {icon()} {props.step.name}
+                {props.index + 1}. {icon()} {Locale.truncate(SessionLayout.chainStepLabel(props.step.name), props.maxNameWidth)}
                 <Show when={props.step.agentType}>
                     <span style={{ fg: theme.accent, inverse: true }}> @{props.step.agentType} </span>
                 </Show>
@@ -320,8 +342,8 @@ function ChainStepRow(props: {
 
             {/* Dependency and Details summary under the step name */}
             <Show when={props.step.dependsOn && props.step.dependsOn.length > 0}>
-                <text fg={theme.textMuted} paddingLeft={5}>
-                    └─ 🔗 Beklenen: {props.step.dependsOn!.join(", ")}
+                <text fg={theme.textMuted} paddingLeft={5} wrapMode="none" height={1} flexShrink={0} overflow="hidden">
+                    └─ 🔗 Beklenen: {Locale.truncate(props.step.dependsOn!.join(", "), props.maxNameWidth)}
                 </text>
             </Show>
         </box>

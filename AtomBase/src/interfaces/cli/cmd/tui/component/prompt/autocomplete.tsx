@@ -75,7 +75,7 @@ export function Autocomplete(props: {
   fileStyleId: number
   agentStyleId: number
   promptPartTypeId: () => number
-  onSlashCommand: (command: SlashCommand.Info) => void
+  onSlashCommand: (command: SlashCommand.Info, argumentsText?: string) => void
 }) {
   const sdk = useSDK()
   const sync = useSync()
@@ -352,38 +352,58 @@ export function Autocomplete(props: {
   })
 
   const session = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID) : undefined))
+  function slashContext() {
+    return {
+      session: Boolean(session()),
+      sharing: sync.data.config.share !== "disabled",
+    }
+  }
+
+  function insertSlash(value: string, reopen: boolean) {
+    const input = props.input()
+    const cursor = input.logicalCursor
+    input.deleteRange(0, 0, cursor.row, cursor.col)
+    const next = "/" + value + " "
+    input.insertText(next)
+    input.cursorOffset = Bun.stringWidth(next)
+    props.setPrompt((draft) => {
+      draft.input = next
+    })
+    if (reopen) queueMicrotask(() => show("/", 0))
+  }
+
   const commands = createMemo((): AutocompleteOption[] => {
     const results: AutocompleteOption[] = []
     const s = session()
-    const builtins = SlashCommand.list({
-      session: !!s,
-      sharing: sync.data.config.share !== "disabled",
-    })
-    const reserved = new Set(builtins.flatMap((command) => [command.name, ...(command.aliases ?? [])]))
-    for (const command of sync.data.command) {
-      if (reserved.has(command.name)) continue
-      results.push({
-        display: "/" + command.name + (command.mcp ? " (MCP)" : ""),
-        description: command.description,
-        onSelect: () => {
-          const newText = "/" + command.name + " "
-          const cursor = props.input().logicalCursor
-          props.input().deleteRange(0, 0, cursor.row, cursor.col)
-          props.input().insertText(newText)
-          props.input().cursorOffset = Bun.stringWidth(newText)
-        },
-      })
+    const query = filter() ?? ""
+    const suggestions = SlashCommand.suggestions(query, slashContext())
+    const reserved = SlashCommand.reserved()
+    if (!query.includes(" ")) {
+      for (const command of sync.data.command) {
+        if (reserved.has(command.name)) continue
+        results.push({
+          display: "/" + command.name + (command.mcp ? " (MCP)" : ""),
+          description: command.description,
+          onSelect: () => insertSlash(command.name, false),
+        })
+      }
     }
     results.push(
-      ...builtins.map(
-        (builtin): AutocompleteOption => ({
-          display: "/" + builtin.name,
-          aliases: builtin.aliases?.map((alias) => "/" + alias),
-          description: builtin.description,
+      ...suggestions.map(
+        (suggestion): AutocompleteOption => ({
+          display: "/" + suggestion.value,
+          aliases: suggestion.aliases.map((alias) => "/" + alias),
+          description: suggestion.command.description,
           disabled:
-            (builtin.action === "session.share" && !!s?.share?.url) ||
-            (builtin.action === "session.unshare" && !s?.share?.url),
-          onSelect: () => props.onSlashCommand(builtin),
+            (suggestion.command.action === "session.share" && !!s?.share?.url) ||
+            (suggestion.command.action === "session.unshare" && !s?.share?.url),
+          onSelect: () => {
+            if (suggestion.expand || suggestion.command.acceptsArguments) {
+              insertSlash(suggestion.value, suggestion.expand)
+              return
+            }
+            props.onSlashCommand(suggestion.command, suggestion.command.presetArguments)
+          },
         }),
       ),
     )
@@ -492,11 +512,11 @@ export function Autocomplete(props: {
     setStore("selected", 0)
   }
 
-  function show(mode: "@" | "/") {
+  function show(mode: "@" | "/", index = props.input().cursorOffset) {
     command.keybinds(false)
     setStore({
       visible: mode,
-      index: props.input().cursorOffset,
+      index,
     })
   }
 
@@ -521,13 +541,13 @@ export function Autocomplete(props: {
       },
       onInput(value) {
         if (store.visible) {
+          const fragment = props.input().getTextRange(store.index + 1, props.input().cursorOffset)
+          const completingGroup = store.visible === "/" && SlashCommand.canComplete(fragment, slashContext())
           if (
             // Typed text before the trigger
             props.input().cursorOffset <= store.index ||
-            // There is a space between the trigger and the cursor
-            props.input().getTextRange(store.index, props.input().cursorOffset).match(/\s/) ||
-            // "/<command>" is not the sole content
-            (store.visible === "/" && value.match(/^\S+\s+\S+\s*$/))
+            // Arguments close autocomplete, while one grouped subcommand stays open.
+            (!completingGroup && props.input().getTextRange(store.index, props.input().cursorOffset).match(/\s/))
           ) {
             hide()
             return

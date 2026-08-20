@@ -10,6 +10,7 @@ import { Bus } from "@/core/bus"
 import { GlobalBus } from "@/core/bus/global"
 import { initConsoleEncoding } from "@/util/util/unicode"
 import type { BunWebSocketData } from "hono/bun"
+import { CompanionAuth, MobileBridge } from "@atomcli/companion"
 
 // Set Windows console to UTF-8 codepage before any rendering
 initConsoleEncoding()
@@ -42,6 +43,7 @@ GlobalBus.on("event", (event) => {
 })
 
 let server: Bun.Server<BunWebSocketData> | undefined
+let companionServer: Bun.Server<BunWebSocketData> | undefined
 
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
@@ -58,10 +60,20 @@ export const rpc = {
       body,
     }
   },
-  async server(input: { port: number; hostname: string; mdns?: boolean; cors?: string[] }) {
+  async server(input: Server.ListenOptions) {
     if (server) await server.stop(true)
     server = Server.listen(input)
     return { url: server.url.toString() }
+  },
+  async companion(input: { port: number; directory: string; pairing: boolean }) {
+    if (companionServer) await companionServer.stop(true)
+    CompanionAuth.loadDevices()
+    MobileBridge.initialize(GlobalBus)
+    companionServer = Server.listenCompanion({ port: input.port, directory: input.directory })
+    return {
+      port: companionServer.port,
+      pairingToken: input.pairing ? CompanionAuth.issueToken() : undefined,
+    }
   },
   async subscribe(input: { directory: string }) {
     return Instance.provide({
@@ -94,6 +106,7 @@ export const rpc = {
     Log.Default.info("worker shutting down")
     await Instance.disposeAll()
     if (server) server.stop(true)
+    if (companionServer) companionServer.stop(true)
   },
 }
 

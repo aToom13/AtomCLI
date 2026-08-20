@@ -526,9 +526,27 @@ export function Prompt(props: PromptProps) {
   async function executeSlashCommand(info: SlashCommand.Info, argumentsText = "") {
     clearPrompt()
     switch (info.action) {
-      case "command.show":
-        command.show()
+      case "group.help":
+        toast.show({
+          title: `/${info.name}`,
+          message: `Available: ${info.children?.map((command) => command.name).join(", ") ?? "none"}`,
+          variant: "info",
+        })
         return
+      case "workflow.prompt": {
+        const prompt = SlashCommand.renderWorkflow(info, argumentsText)
+        if (!prompt) {
+          toast.show({
+            title: `/${info.name}`,
+            message: `Required argument: ${info.workflow?.argumentHint ?? "description"}`,
+            variant: "warning",
+          })
+          return
+        }
+        setStore("prompt", { input: prompt, parts: [] })
+        await submit()
+        return
+      }
       case "mode.autonomous":
         await updateMode("autonomous")
         return
@@ -537,7 +555,8 @@ export function Prompt(props: PromptProps) {
         return
       case "smart-model.toggle": {
         const current = (sync.data.config as any)?.experimental?.smart_model_routing === true
-        const enabled = !current
+        const requested = argumentsText.toLowerCase()
+        const enabled = requested === "on" ? true : requested === "off" ? false : !current
         try {
           await sdk.client.config.update({ body: { experimental: { smart_model_routing: enabled } } } as any)
           sync.set("config", "experimental" as any, {
@@ -898,7 +917,7 @@ export function Prompt(props: PromptProps) {
         fileStyleId={fileStyleId}
         agentStyleId={agentStyleId}
         promptPartTypeId={() => promptPartTypeId}
-        onSlashCommand={(info) => void executeSlashCommand(info)}
+        onSlashCommand={(info, argumentsText) => void executeSlashCommand(info, argumentsText)}
       />
       <box ref={(r) => (anchor = r)} visible={props.visible !== false}>
         <box

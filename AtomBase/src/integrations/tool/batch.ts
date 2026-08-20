@@ -1,6 +1,7 @@
 import z from "zod"
 import { Tool } from "./tool"
 import DESCRIPTION from "./batch.txt"
+import { ToolRuntime } from "./runtime"
 
 const MAX_CALLS = 10
 const MAX_CONCURRENCY = 4
@@ -85,7 +86,13 @@ export const BatchTool = Tool.define("batch", async (initCtx) => {
             },
           })
 
-          const result = await tool.execute(validatedParams, { ...ctx, callID: partID })
+          const nestedContext = { ...ctx, callID: partID }
+          const result = await ToolRuntime.execute({
+            tool: call.tool,
+            args: validatedParams,
+            context: nestedContext,
+            execute: (args, context) => tool.execute(args, context),
+          })
           if (result.attachments?.length) {
             throw new Error("Attachment-producing reads cannot run in a batch; call the read tool directly")
           }

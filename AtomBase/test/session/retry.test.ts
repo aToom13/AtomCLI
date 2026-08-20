@@ -11,6 +11,12 @@ function apiError(headers?: Record<string, string>): MessageV2.APIError {
 }
 
 describe("session.retry.delay", () => {
+  test("stops after the configured retry budget", () => {
+    expect(SessionRetry.exhausted(3, 3)).toBe(false)
+    expect(SessionRetry.exhausted(4, 3)).toBe(true)
+    expect(SessionRetry.exhausted(1, 0)).toBe(true)
+  })
+
   test("caps delay at 30 seconds when headers missing", () => {
     const error = apiError()
     const delays = Array.from({ length: 10 }, (_, index) => SessionRetry.delay(index + 1, error))
@@ -58,15 +64,15 @@ describe("session.retry.delay", () => {
     expect(SessionRetry.delay(1, error)).toBe(2000)
   })
 
-  test("uses retry-after values even when exceeding 10 minutes with headers", () => {
+  test("caps excessive retry-after values so exhausted models cannot stall indefinitely", () => {
     const error = apiError({ "retry-after": "50" })
     expect(SessionRetry.delay(1, error)).toBe(50000)
 
     const longError = apiError({ "retry-after-ms": "700000" })
-    expect(SessionRetry.delay(1, longError)).toBe(700000)
+    expect(SessionRetry.delay(1, longError)).toBe(SessionRetry.RETRY_MAX_DELAY)
   })
 
-  test("sleep caps delay to max 32-bit signed integer to avoid TimeoutOverflowWarning", async () => {
+  test("sleep caps excessive delays without a TimeoutOverflowWarning", async () => {
     const controller = new AbortController()
 
     const warnings: string[] = []

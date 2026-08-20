@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test"
+import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
 import { Flag } from "@/interfaces/flag/flag"
@@ -83,8 +83,15 @@ describe("SubAgent.buildFromAgent — allowlist agent permissions", () => {
 })
 
 describe("PermissionNext.ask — allowlist agent ruleset", () => {
+  let previousYolo: boolean
+
   beforeEach(() => {
+    previousYolo = Flag.ATOMCLI_YOLO
     Flag.ATOMCLI_YOLO = false
+  })
+
+  afterEach(() => {
+    Flag.ATOMCLI_YOLO = previousYolo
   })
 
   test("read call resolves (catch-all deny does not shadow explicit read allow)", async () => {
@@ -128,8 +135,15 @@ describe("PermissionNext.ask — allowlist agent ruleset", () => {
 })
 
 describe("PermissionNext.ask — YOLO mode with allowlist agent ruleset", () => {
+  let previousYolo: boolean
+
   beforeEach(() => {
+    previousYolo = Flag.ATOMCLI_YOLO
     Flag.ATOMCLI_YOLO = true
+  })
+
+  afterEach(() => {
+    Flag.ATOMCLI_YOLO = previousYolo
   })
 
   test("YOLO auto-allow honors the explicit read allow (not the catch-all baseline)", async () => {

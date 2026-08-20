@@ -7,6 +7,7 @@ import { NamedError } from "@atomcli/util/error"
 import { lazy } from "@/util/util/lazy"
 import { ZipReader, BlobReader, BlobWriter } from "@zip.js/zip.js"
 import { Log } from "@/util/util/log"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace Ripgrep {
   const log = Log.create({ service: "ripgrep" })
@@ -208,6 +209,7 @@ export namespace Ripgrep {
 
           const proc = Bun.spawn(args, {
             cwd: Global.Path.bin,
+            env: EnvPolicy.build({ cwd: Global.Path.bin, scope: "ripgrep:extract" }),
             stderr: "pipe",
             stdout: "pipe",
           })
@@ -304,6 +306,7 @@ export namespace Ripgrep {
 
     const proc = Bun.spawn(args, {
       cwd: input.cwd,
+      env: EnvPolicy.build({ cwd: input.cwd, scope: "ripgrep:files" }),
       stdout: "pipe",
       stderr: "ignore",
       maxBuffer: 1024 * 1024 * 20,
@@ -506,6 +509,7 @@ export namespace Ripgrep {
     const proc = Bun.spawn({
       cmd: [rgPath, ...args],
       cwd: input.cwd,
+      env: EnvPolicy.build({ cwd: input.cwd, scope: "ripgrep:search" }),
       stdout: "pipe",
       stderr: "ignore",
     })

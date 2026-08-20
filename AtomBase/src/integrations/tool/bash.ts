@@ -18,6 +18,9 @@ import { Shell } from "@/interfaces/shell/shell"
 import { BashArity } from "@/util/permission/arity"
 import { Truncate } from "./truncation"
 import { HarnessState } from "@/core/session/harness-state"
+import { EnvPolicy } from "@/core/env/policy"
+import { ExecutionWorld } from "@/core/execution/world"
+import { Config } from "@/core/config/config"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -195,12 +198,31 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
         outputSink.once("error", reject)
       })
 
-      const proc = spawn(params.command, {
-        shell,
-        cwd,
-        env: {
-          ...process.env,
+      const execution = (await Config.get()).execution
+      const envMode = execution?.environment ?? "minimal"
+      const env = EnvPolicy.build({
+          mode: envMode,
+          allow: execution?.envAllow,
+          cwd,
+          scope: "tool:bash",
+          grants: EnvPolicy.Grant.array().parse(ctx.extra?.envGrants ?? []),
+          approvedInherit: envMode === "inherit",
+        })
+      const prepared = ExecutionWorld.prepare(
+        { executable: shell, args: ExecutionWorld.shellArguments(shell, params.command), cwd, env },
+        {
+          workspaceRoot: Instance.directory,
+          sandbox: execution?.sandbox ?? "off",
+          filesystem: execution?.filesystem ?? "workspace-write",
+          network: execution?.network ?? "allow",
+          environment: envMode,
+          processVisibility: execution?.processVisibility ?? "restricted",
         },
+      )
+      const proc = spawn(prepared.executable, prepared.args, {
+        shell: false,
+        cwd: prepared.cwd,
+        env: prepared.env,
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
       })
@@ -237,6 +259,7 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
         metadata: {
           output: "",
           description: params.description,
+          execution: { enforcement: prepared.enforcement, provider: prepared.provider },
         },
       })
 

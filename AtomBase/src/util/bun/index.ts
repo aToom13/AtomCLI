@@ -6,6 +6,7 @@ import { NamedError } from "@atomcli/util/error"
 import { readableStreamToText } from "bun"
 import { createRequire } from "module"
 import { Lock } from "../util/lock"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace BunProc {
   const log = Log.create({ service: "bun" })
@@ -20,11 +21,12 @@ export namespace BunProc {
       ...options,
       stdout: "pipe",
       stderr: "pipe",
-      env: {
-        ...process.env,
-        ...options?.env,
-        BUN_BE_BUN: "1",
-      },
+      env: EnvPolicy.build({
+        mode: "filtered",
+        allow: ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "BUN_CONFIG_REGISTRY", "NPM_CONFIG_USERCONFIG"],
+        scope: "bun",
+        overrides: { ...options?.env, BUN_BE_BUN: "1" },
+      }),
     })
     const code = await result.exited
     const stdout = result.stdout

@@ -21,11 +21,17 @@ export namespace Truncate {
   }
 
   export async function cleanup() {
-    const cutoff = Identifier.timestamp(Identifier.create("tool", false, Date.now() - RETENTION_MS))
+    // IDs store milliseconds in 36 bits (the low 12 bits are the monotonic
+    // counter), so their timestamp wraps roughly every 2.18 years. Compare
+    // circular age instead of raw values or recent files near a wrap boundary
+    // are mistaken for old ones.
+    const timestampRange = 2 ** 36
+    const now = Identifier.timestamp(Identifier.create("tool", false))
     const glob = new Bun.Glob("tool_*")
     const entries = await Array.fromAsync(glob.scan({ cwd: DIR, onlyFiles: true })).catch(() => [] as string[])
     for (const entry of entries) {
-      if (Identifier.timestamp(entry) >= cutoff) continue
+      const age = (now - Identifier.timestamp(entry) + timestampRange) % timestampRange
+      if (age <= RETENTION_MS) continue
       await fs.unlink(path.join(DIR, entry)).catch(() => {})
     }
   }

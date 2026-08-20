@@ -3,6 +3,7 @@ import { BunProc } from "@/util/bun"
 import { Instance } from "@/services/project/instance"
 import { Filesystem } from "@/util/util/filesystem"
 import { Flag } from "@/interfaces/flag/flag"
+import { EnvPolicy } from "@/core/env/policy"
 
 export interface Info {
   name: string
@@ -208,6 +209,7 @@ export const rlang: Info = {
 
     try {
       const proc = Bun.spawn(["air", "--help"], {
+        env: EnvPolicy.build({ cwd: Instance.directory, scope: "formatter:air" }),
         stdout: "pipe",
         stderr: "pipe",
       })
@@ -232,7 +234,11 @@ export const uvformat: Info = {
   async enabled() {
     if (await ruff.enabled()) return false
     if (Bun.which("uv") !== null) {
-      const proc = Bun.spawn(["uv", "format", "--help"], { stderr: "pipe", stdout: "pipe" })
+      const proc = Bun.spawn(["uv", "format", "--help"], {
+        env: EnvPolicy.build({ cwd: Instance.directory, scope: "formatter:uv" }),
+        stderr: "pipe",
+        stdout: "pipe",
+      })
       const code = await proc.exited
       return code === 0
     }

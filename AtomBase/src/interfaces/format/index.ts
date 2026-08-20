@@ -8,6 +8,7 @@ import * as Formatter from "./formatter"
 import { Config } from "@/core/config/config"
 import { mergeDeep } from "remeda"
 import { Instance } from "@/services/project/instance"
+import { EnvPolicy } from "@/core/env/policy"
 
 export namespace Format {
   const log = Log.create({ service: "format" })
@@ -113,7 +114,11 @@ export namespace Format {
           const proc = Bun.spawn({
             cmd: item.command.map((x) => x.replace("$FILE", file)),
             cwd: Instance.directory,
-            env: { ...process.env, ...item.environment },
+            env: EnvPolicy.build({
+              cwd: Instance.directory,
+              scope: `formatter:${item.name}`,
+              overrides: item.environment,
+            }),
             stdout: "ignore",
             stderr: "ignore",
           })

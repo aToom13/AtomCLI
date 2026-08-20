@@ -3,7 +3,6 @@ import { Log } from "@/util/util/log"
 import { openAPIRouteHandler, generateSpecs, validator } from "hono-openapi"
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { proxy } from "hono/proxy"
 import { websocket } from "hono/bun"
 import { MDNS } from "./mdns"
 import { QuestionRoute } from "./question"
@@ -38,7 +37,8 @@ import { PermissionRoute } from "./routes/permission"
 import { LspRoute } from "./routes/lsp"
 import { FormatterRoute } from "./routes/formatter"
 import { CompanionRoute, CompanionPairRoute } from "./companion"
-import { MobileBridge } from "@atomcli/companion"
+import { ServerSecurity } from "./security"
+import { Installation } from "@/services/installation"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -141,7 +141,7 @@ export namespace Server {
             documentation: {
               info: {
                 title: "atomcli",
-                version: "0.0.3",
+                version: Installation.VERSION,
                 description: "atomcli api",
               },
               openapi: "3.1.1",
@@ -171,25 +171,10 @@ export namespace Server {
         .route("/provider", ProviderRoute)
         .route("/lsp", LspRoute)
         .route("/formatter", FormatterRoute)
-        .route("/", CompanionPairRoute)
-        .route("/", CompanionRoute)
         .all("/dashboard", (c) => c.notFound())
         .all("/dashboard/*", (c) => c.notFound())
-        .all("/*", async (c) => {
-          const path = c.req.path
-          const response = await proxy(`https://app.atomcli.ai${path}`, {
-            ...c.req,
-            headers: {
-              ...c.req.raw.headers,
-              host: "app.atomcli.ai",
-            },
-          })
-          response.headers.set(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'",
-          )
-          return response
-        }) as unknown as Hono,
+        .all("/companion/*", (c) => c.notFound())
+        .all("/*", (c) => c.json({ error: "route_not_found" }, 404)) as unknown as Hono,
   )
 
   export async function openapi() {
@@ -198,7 +183,7 @@ export namespace Server {
       documentation: {
         info: {
           title: "atomcli",
-          version: "1.0.0",
+          version: Installation.VERSION,
           description: "atomcli api",
         },
         openapi: "3.1.1",
@@ -207,13 +192,36 @@ export namespace Server {
     return result
   }
 
-  export function listen(opts: { port: number; hostname: string; mdns?: boolean; cors?: string[] }) {
+  export interface ListenOptions {
+    port: number
+    hostname: string
+    mdns?: boolean
+    cors?: string[]
+    auth?: string
+  }
+
+  function securedFetch(app: Hono, policy: ServerSecurity.RequestPolicy) {
+    return (request: Request, server?: unknown) => {
+      const rejection = ServerSecurity.reject(request, policy)
+      if (rejection) return rejection
+      return app.fetch(request, server as never)
+    }
+  }
+
+  export function listen(opts: ListenOptions) {
+    if (!ServerSecurity.isLoopback(opts.hostname) && !opts.auth) {
+      throw new Error(`Refusing non-loopback control-plane bind on ${opts.hostname} without --auth`)
+    }
     _corsWhitelist = opts.cors ?? []
 
     const args = {
       hostname: opts.hostname,
       idleTimeout: 0,
-      fetch: App().fetch,
+      fetch: securedFetch(App(), {
+        authToken: opts.auth,
+        allowedHosts: [opts.hostname],
+        allowedOrigins: opts.cors,
+      }),
       websocket: websocket,
     } as const
     const tryServe = (port: number) => {
@@ -246,6 +254,37 @@ export namespace Server {
       return originalStop(closeActiveConnections)
     }
 
+    return server
+  }
+
+  export function listenCompanion(opts: { port: number; directory: string; hostname?: string }) {
+    const hostname = opts.hostname ?? "0.0.0.0"
+    const companionApp = new Hono()
+      .use(async (_c, next) =>
+        Instance.provide({
+          directory: opts.directory,
+          init: InstanceBootstrap,
+          fn: next,
+        }),
+      )
+      .route("/", CompanionPairRoute)
+      .route("/", CompanionRoute)
+
+    const args = {
+      hostname,
+      idleTimeout: 0,
+      fetch: securedFetch(companionApp, { allowedHosts: [hostname] }),
+      websocket,
+    } as const
+    const tryServe = (port: number) => {
+      try {
+        return Bun.serve({ ...args, port })
+      } catch {
+        return undefined
+      }
+    }
+    const server = tryServe(opts.port) ?? tryServe(0)
+    if (!server) throw new Error(`Failed to start companion server on port ${opts.port}`)
     return server
   }
 }

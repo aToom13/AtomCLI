@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import path from "path"
 import { Global } from "@/core/global"
 import { BunProc } from "@/util/bun"
@@ -17,7 +18,7 @@ export const DockerfileLS: Info = {
       const js = path.join(Global.Path.bin, "node_modules", "dockerfile-language-server-nodejs", "lib", "server.js")
       if (!(await Bun.file(js).exists())) {
         if (Flag.ATOMCLI_DISABLE_LSP_DOWNLOAD) return
-        await Bun.spawn([BunProc.which(), "install", "dockerfile-language-server-nodejs"], {
+        await LSPProcess.bunSpawn([BunProc.which(), "install", "dockerfile-language-server-nodejs"], {
           cwd: Global.Path.bin,
           env: {
             ...process.env,

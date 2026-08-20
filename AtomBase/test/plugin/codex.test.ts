@@ -173,6 +173,18 @@ describe("plugin.codex", () => {
       expect(Object.keys(models)).toEqual(["visible", "unsupported"])
     })
 
+    test("fallback excludes general OpenAI models unsupported by ChatGPT accounts", () => {
+      const models = {
+        "gpt-5.6": { id: "gpt-5.6" },
+        "gpt-5.6-sol": { id: "gpt-5.6-sol" },
+        "gpt-5.4": { id: "gpt-5.4" },
+        "gpt-5-codex": { id: "gpt-5-codex" },
+      } as unknown as Provider.Info["models"]
+
+      expect(CodexModels.applyFallback(models)).toBe(2)
+      expect(Object.keys(models)).toEqual(["gpt-5.6-sol", "gpt-5.4"])
+    })
+
     test("rejects malformed catalogs without mutating the current models", () => {
       const models = { current: { id: "current" } } as unknown as Provider.Info["models"]
 

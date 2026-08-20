@@ -5,9 +5,76 @@ interface VirtualListProps<T> {
   data: T[]
   scrollRef: () => ScrollBoxRenderable | undefined
   renderItem: (item: T, index: () => number) => any
+  itemKey?: (item: T, index: number) => string
   itemHeight?: number | ((item: T) => number)
   estimatedItemHeight?: number
   buffer?: number
+  /** Invalidates measurements when wrapping/layout-affecting state changes. */
+  measurementKey?: string | number
+}
+
+export namespace VirtualWindow {
+  export interface Range {
+    start: number
+    end: number
+    total: number
+  }
+
+  export function range(
+    prefixHeights: number[],
+    scrollTop: number,
+    viewportHeight: number,
+    total: number,
+    overscan: number,
+  ): Range {
+    if (total === 0) return { start: 0, end: -1, total }
+    if (total < 30) return { start: 0, end: total - 1, total }
+
+    const st = Math.max(0, scrollTop)
+    const vh = Math.max(1, viewportHeight)
+    const buffer = Math.max(0, overscan)
+    const totalHeight = prefixHeights[total] ?? 0
+
+    // A stale/clamped ScrollBox offset must never produce an empty viewport.
+    if (totalHeight <= 0 || st >= totalHeight) {
+      const count = Math.max(1, buffer)
+      return { start: Math.max(0, total - count), end: total - 1, total }
+    }
+
+    // Find the first item whose bottom edge is below the viewport top.
+    let low = 0
+    let high = total
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2)
+      if ((prefixHeights[middle + 1] ?? totalHeight) <= st) low = middle + 1
+      else high = middle
+    }
+    const firstVisible = Math.min(low, total - 1)
+
+    // Find the first item starting at/after the viewport bottom.
+    const bottom = st + vh
+    low = firstVisible
+    high = total
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2)
+      if ((prefixHeights[middle] ?? totalHeight) < bottom) low = middle + 1
+      else high = middle
+    }
+
+    return {
+      start: Math.max(0, firstVisible - buffer),
+      end: Math.min(total - 1, Math.max(firstVisible, low - 1) + buffer),
+      total,
+    }
+  }
+
+  /** Keep measurements for unchanged items; appends must not reset the whole list. */
+  export function pruneMeasurements(cache: Map<string, number>, activeKeys: Iterable<string>) {
+    const active = new Set(activeKeys)
+    for (const key of cache.keys()) {
+      if (!active.has(key)) cache.delete(key)
+    }
+  }
 }
 
 /**
@@ -18,9 +85,14 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   const [scrollTop, setScrollTop] = createSignal(0)
   const [viewportHeight, setViewportHeight] = createSignal(40)
   const [heightsTick, setHeightsTick] = createSignal(0)
-  const heightsCache = new Map<number, number>()
-  const visibleRefs = new Map<number, BoxRenderable>()
-  let prevDataLength = 0
+  const heightsCache = new Map<string, number>()
+  const visibleRefs = new Map<string, BoxRenderable>()
+  let activeMeasurementKeys = new Map<string, string>()
+  let previousData: T[] | undefined
+  let previousMeasurementKey: string | number | undefined
+
+  const stableKey = (item: T, index: number) => props.itemKey?.(item, index) ?? String(index)
+  const measuredKey = (item: T, index: number) => `${String(props.measurementKey ?? "default")}\u0000${stableKey(item, index)}`
 
   // Poll the scroll container periodically because TUI lacks traditional DOM scroll events
   onMount(() => {
@@ -28,22 +100,30 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       const scroll = props.scrollRef()
       if (scroll) {
         if (scrollTop() !== scroll.scrollTop) setScrollTop(Math.max(0, scroll.scrollTop))
-        if (viewportHeight() !== scroll.height) setViewportHeight(Math.max(10, scroll.height))
+        const height = scroll.viewport?.height ?? scroll.height
+        if (viewportHeight() !== height) setViewportHeight(Math.max(1, height))
       }
 
-      // Invalidate height cache when data length changes (new messages shift indices)
-      const currentLength = props.data.length
-      if (currentLength !== prevDataLength) {
-        heightsCache.clear()
-        prevDataLength = currentLength
+      const data = props.data
+      const layoutKey = props.measurementKey
+      if (data !== previousData || layoutKey !== previousMeasurementKey) {
+        activeMeasurementKeys = new Map(
+          data.map((item, index) => [stableKey(item, index), measuredKey(item, index)]),
+        )
+        // Remove measurements only for deleted/re-keyed rows. In particular,
+        // appending a streaming message must preserve all earlier measurements.
+        VirtualWindow.pruneMeasurements(heightsCache, activeMeasurementKeys.values())
+        previousData = data
+        previousMeasurementKey = layoutKey
       }
 
       let heightsChanged = false
-      for (const [index, ref] of visibleRefs.entries()) {
-        if (ref) {
+      for (const [stableItemKey, ref] of visibleRefs.entries()) {
+        const key = activeMeasurementKeys.get(stableItemKey)
+        if (ref && key) {
           const h = ref.height
-          if (h > 0 && heightsCache.get(index) !== h) {
-            heightsCache.set(index, h)
+          if (h > 0 && heightsCache.get(key) !== h) {
+            heightsCache.set(key, h)
             heightsChanged = true
           }
         }
@@ -54,8 +134,9 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   })
 
   const itemHeightProp = props.itemHeight || props.estimatedItemHeight || 6
-  const getItemHeight = (item: T) => (typeof itemHeightProp === "function" ? itemHeightProp(item) : itemHeightProp)
-  const buffer = props.buffer || 15
+  const getItemHeight = (item: T) =>
+    Math.max(1, typeof itemHeightProp === "function" ? itemHeightProp(item) : itemHeightProp)
+  const buffer = props.buffer ?? 15
 
   const prefixHeights = createMemo(() => {
     heightsTick() // establish reactivity
@@ -65,7 +146,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     for (let i = 0; i < total; i++) {
       const item = props.data[i]
       const computedHeight = getItemHeight(item)
-      const cachedHeight = heightsCache.get(i)
+      const cachedHeight = heightsCache.get(measuredKey(item, i))
       // Use cached actual height if available, otherwise fallback to computed
       sum += cachedHeight !== undefined ? cachedHeight : computedHeight
       p.push(sum)
@@ -74,50 +155,8 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   })
 
   const range = createMemo(() => {
-    const Math_max = Math.max,
-      Math_min = Math.min
-    const st = Math_max(0, scrollTop())
-    const vh = Math_max(10, viewportHeight())
     const total = props.data.length
-
-    if (total === 0) {
-      return { start: 0, end: -1, total }
-    }
-
-    if (total < 30) {
-      return { start: 0, end: total - 1, total }
-    }
-
-    const p = prefixHeights()
-    const totalHeight = p[total] || 0
-
-    // SAFETY: If scrollTop exceeds estimated total height, show the last items
-    // This prevents the black screen when height estimates are too low
-    if (totalHeight > 0 && st >= totalHeight) {
-      const start = Math_max(0, total - buffer)
-      return { start, end: total - 1, total }
-    }
-
-    let startIndex = 0
-    while (startIndex < total && p[startIndex + 1] <= st) {
-      startIndex++
-    }
-
-    let endIndex = startIndex
-    while (endIndex < total && p[endIndex] < st + vh) {
-      endIndex++
-    }
-
-    // SAFETY: If no items found visible, always show at least the last buffer items
-    if (startIndex >= total) {
-      startIndex = Math_max(0, total - buffer)
-      endIndex = total
-    }
-
-    startIndex = Math_max(0, startIndex - buffer)
-    endIndex = Math_min(total - 1, endIndex + buffer)
-
-    return { start: startIndex, end: endIndex, total }
+    return VirtualWindow.range(prefixHeights(), scrollTop(), viewportHeight(), total, buffer)
   })
 
   const paddingTop = createMemo(() => prefixHeights()[range().start] || 0)
@@ -136,16 +175,17 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       <For each={props.data.slice(range().start, range().end + 1)}>
         {(item, sliceIndex) => {
           const idx = () => range().start + sliceIndex()
+          const key = () => stableKey(item, idx())
           return (
             <box
               flexDirection="column"
               ref={(el: BoxRenderable) => {
-                const currentIdx = idx()
-                visibleRefs.set(currentIdx, el)
+                const currentKey = key()
+                visibleRefs.set(currentKey, el)
                 onCleanup(() => {
-                  // Only delete if this ref still owns the index
-                  if (visibleRefs.get(currentIdx) === el) {
-                    visibleRefs.delete(currentIdx)
+                  // Only delete if this ref still owns the stable item key.
+                  if (visibleRefs.get(currentKey) === el) {
+                    visibleRefs.delete(currentKey)
                   }
                 })
               }}

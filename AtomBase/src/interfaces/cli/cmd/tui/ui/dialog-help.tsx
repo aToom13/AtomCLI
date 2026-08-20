@@ -19,21 +19,23 @@ const HELP_SECTIONS = [
   {
     title: "💬 Session",
     items: [
-      { key: "/new", desc: "Create new session" },
-      { key: "/fork", desc: "Fork from a message" },
-      { key: "/compact", desc: "Compress session context" },
-      { key: "/share", desc: "Share session link" },
+      { key: "/session", desc: "List or switch sessions" },
+      { key: "/session new", desc: "Create new session" },
+      { key: "/session compact", desc: "Compress session context" },
+      { key: "/session sharing share", desc: "Share session link" },
       { key: "Ctrl+Z", desc: "Undo last message" },
     ],
   },
   {
-    title: "🔧 Tools & Skills",
+    title: "🔧 Models & Settings",
     items: [
-      { key: "/skill", desc: "List available skills" },
-      { key: "/mcp", desc: "Toggle MCP servers" },
-      { key: "/smart-model", desc: "Toggle smart model routing" },
+      { key: "/model", desc: "Choose a model" },
+      { key: "/model think high", desc: "Set model thinking level" },
+      { key: "/model smart on", desc: "Enable smart model routing" },
+      { key: "/agent skills", desc: "List available skills" },
+      { key: "/settings mcp", desc: "Configure MCP servers" },
+      { key: "/settings approvals safe", desc: "Use safe tool approvals" },
       { key: "@skillname", desc: "Load a skill inline" },
-      { key: "/commands", desc: "View every available TUI action" },
     ],
   },
   {
@@ -46,12 +48,13 @@ const HELP_SECTIONS = [
     ],
   },
   {
-    title: "📁 Files",
+    title: "⚙ Workflows",
     items: [
-      { key: "/review", desc: "Review uncommitted changes" },
-      { key: "/export", desc: "Export session to file" },
-      { key: "/copy", desc: "Copy transcript to clipboard" },
-      { key: "/timeline", desc: "Jump to an earlier message" },
+      { key: "/workflow review", desc: "Review workspace changes" },
+      { key: "/workflow security", desc: "Run a security audit" },
+      { key: "/workflow refactor <goal>", desc: "Refactor toward a goal" },
+      { key: "/workflow tests <scope>", desc: "Generate regression tests" },
+      { key: "/help", desc: "View keyboard help and command families" },
     ],
   },
 ]

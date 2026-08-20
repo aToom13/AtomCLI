@@ -80,6 +80,8 @@ export namespace SessionProcessor {
       ) {
         log.info("process")
         needsCompaction = false
+        const config = await Config.get()
+        const maxRetries = config.experimental?.chatMaxRetries ?? SessionRetry.DEFAULT_MAX_RETRIES
 
         // If we have a fallback model from previous iteration, use it
         if (currentFallbackModel) {
@@ -487,19 +489,38 @@ export namespace SessionProcessor {
             const retry = SessionRetry.retryable(error)
             if (retry !== undefined) {
               attempt++
+              if (SessionRetry.exhausted(attempt, maxRetries)) {
+                input.assistantMessage.error = error
+                Bus.publish(Session.Event.Error, {
+                  sessionID: input.assistantMessage.sessionID,
+                  error: input.assistantMessage.error,
+                })
+                log.error("model retry limit exhausted", {
+                  sessionID: input.sessionID,
+                  model: `${streamInput.model.providerID}/${streamInput.model.id}`,
+                  attempts: attempt,
+                  maxRetries,
+                })
+                break
+              }
               const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
 
               // FALLBACK: On first retryable error, try switching to a fallback model
               // instead of waiting (delay can be 43277s)
               if (!fallbackAttempted) {
                 try {
-                  // Get fallback models from config or use defaults
-                  const config = await Config.get()
-                  const fallbackModels = [
-                    config.fallback?.secondary,
-                    config.fallback?.tertiary,
-                    ...ModelFallback.DEFAULT_FALLBACK_MODELS,
-                  ].filter(Boolean) as string[]
+                  // Get fallback models from config or dynamically discover available free models
+                  const dynamicDefaults = await ModelFallback.getDynamicFallbackModels({
+                    excludeModelID: streamInput.model.id,
+                    excludeProviderID: streamInput.model.providerID,
+                  })
+                  const configuredModels = [config.fallback?.secondary, config.fallback?.tertiary].filter(
+                    Boolean,
+                  ) as string[]
+
+                  const fallbackModels = Array.from(
+                    new Set([...configuredModels, ...dynamicDefaults, ...ModelFallback.DEFAULT_FALLBACK_MODELS]),
+                  )
 
                   // Check if fallback is enabled
                   if (config.fallback?.enabled === false) {

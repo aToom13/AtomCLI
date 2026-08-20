@@ -8,6 +8,11 @@ import type { WSContext } from "hono/ws"
 import { Instance } from "@/services/project/instance"
 import { lazy } from "@atomcli/util/lazy"
 import { Shell } from "@/interfaces/shell/shell"
+import { EnvPolicy } from "@/core/env/policy"
+import { Filesystem } from "@/util/util/filesystem"
+import path from "node:path"
+import { Config } from "@/core/config/config"
+import { ExecutionWorld } from "@/core/execution/world"
 
 export namespace Pty {
   const log = Log.create({ service: "pty" })
@@ -29,6 +34,9 @@ export namespace Pty {
       cwd: z.string(),
       status: z.enum(["running", "exited"]),
       pid: z.number(),
+      execution: z
+        .object({ enforcement: z.enum(["full", "partial", "off"]), provider: z.string() })
+        .optional(),
     })
     .meta({ ref: "Pty" })
 
@@ -101,15 +109,38 @@ export namespace Pty {
       args.push("-l")
     }
 
-    const cwd = input.cwd || Instance.directory
-    const env = { ...process.env, ...input.env, TERM: "xterm-256color" } as Record<string, string>
+    const cwd = input.cwd ? path.resolve(Instance.directory, input.cwd) : Instance.directory
+    if (!Filesystem.contains(Instance.directory, cwd)) {
+      throw new Error("PTY working directory must stay within the active project")
+    }
+    const execution = (await Config.get()).execution
+    const envMode = execution?.environment ?? "minimal"
+    const env = EnvPolicy.build({
+      mode: envMode,
+      allow: execution?.envAllow,
+      cwd,
+      scope: "pty",
+      overrides: { ...input.env, TERM: "xterm-256color" },
+      approvedInherit: envMode === "inherit",
+    })
+    const prepared = ExecutionWorld.prepare(
+      { executable: command, args, cwd, env },
+      {
+        workspaceRoot: Instance.directory,
+        sandbox: execution?.sandbox ?? "off",
+        filesystem: execution?.filesystem ?? "workspace-write",
+        network: execution?.network ?? "allow",
+        environment: envMode,
+        processVisibility: execution?.processVisibility ?? "restricted",
+      },
+    )
     log.info("creating session", { id, cmd: command, args, cwd })
 
     const spawn = await pty()
-    const ptyProcess = spawn(command, args, {
+    const ptyProcess = spawn(prepared.executable, prepared.args, {
       name: "xterm-256color",
-      cwd,
-      env,
+      cwd: prepared.cwd,
+      env: prepared.env,
     })
 
     const info = {
@@ -120,6 +151,7 @@ export namespace Pty {
       cwd,
       status: "running",
       pid: ptyProcess.pid,
+      execution: { enforcement: prepared.enforcement, provider: prepared.provider },
     } as const
     const session: ActiveSession = {
       info,

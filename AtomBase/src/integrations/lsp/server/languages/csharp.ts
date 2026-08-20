@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import path from "path"
 import { Global } from "@/core/global"
 import { Log } from "@/util/util/log"
@@ -24,7 +25,7 @@ export const CSharp: Info = {
 
             if (Flag.ATOMCLI_DISABLE_LSP_DOWNLOAD) return
             log.info("installing csharp-ls via dotnet tool")
-            const proc = Bun.spawn({
+            const proc = LSPProcess.bunSpawn({
                 cmd: ["dotnet", "tool", "install", "csharp-ls", "--tool-path", Global.Path.bin],
                 stdout: "pipe",
                 stderr: "pipe",

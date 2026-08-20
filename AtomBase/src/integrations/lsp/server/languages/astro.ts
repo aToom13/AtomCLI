@@ -1,4 +1,5 @@
-import { spawn } from "child_process"
+import { LSPProcess } from "@/integrations/lsp/process"
+const spawn = LSPProcess.spawn
 import path from "path"
 import { Global } from "@/core/global"
 import { Log } from "@/util/util/log"
@@ -28,7 +29,7 @@ export const Astro: Info = {
             const js = path.join(Global.Path.bin, "node_modules", "@astrojs", "language-server", "bin", "nodeServer.js")
             if (!(await Bun.file(js).exists())) {
                 if (Flag.ATOMCLI_DISABLE_LSP_DOWNLOAD) return
-                await Bun.spawn([BunProc.which(), "install", "@astrojs/language-server"], {
+                await LSPProcess.bunSpawn([BunProc.which(), "install", "@astrojs/language-server"], {
                     cwd: Global.Path.bin,
                     env: {
                         ...process.env,

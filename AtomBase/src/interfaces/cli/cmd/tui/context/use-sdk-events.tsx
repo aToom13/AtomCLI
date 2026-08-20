@@ -9,6 +9,7 @@ import { useCommandDialog } from "@tui/component/dialog-command"
 import { TuiEvent } from "../event"
 import { Session as SessionApi } from "@/core/session"
 import { Installation } from "@/services/installation"
+import { ModelAvailability } from "@/integrations/provider/availability"
 
 /**
  * Registers all SDK event handlers for the TUI.
@@ -49,6 +50,7 @@ export function useSDKEventHandlers() {
     })
 
     sdk.event.on(SessionApi.Event.Deleted.type, (evt) => {
+        subAgentCtx.removeAgent(evt.properties.info.id)
         if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
             route.navigate({ type: "home" })
             toast.show({
@@ -78,6 +80,14 @@ export function useSDKEventHandlers() {
             message,
             duration: 5000,
         })
+    })
+
+    sdk.event.on(ModelAvailability.Event.Updated.type, (evt) => {
+        const providerIndex = sync.data.provider.findIndex((provider) => provider.id === evt.properties.providerID)
+        if (providerIndex < 0) return
+        const model = sync.data.provider[providerIndex]?.models[evt.properties.modelID]
+        if (!model) return
+        sync.set("provider", providerIndex, "models", evt.properties.modelID, "availability", evt.properties.availability)
     })
 
     // Installation events
@@ -207,4 +217,3 @@ export function useSDKEventHandlers() {
         subAgentCtx.removeAgent(sessionId)
     })
 }
-

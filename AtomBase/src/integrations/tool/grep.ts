@@ -5,6 +5,7 @@ import { Ripgrep } from "@/services/file/ripgrep"
 import DESCRIPTION from "./grep.txt"
 import { Instance } from "@/services/project/instance"
 import { assertExternalDirectory } from "./external-directory"
+import { EnvPolicy } from "@/core/env/policy"
 
 const MAX_RESULTS = 100
 const MAX_LINE_LENGTH = 2_000
@@ -97,7 +98,12 @@ async function readBounded(stream: ReadableStream<Uint8Array>, maxLines: number,
 }
 
 async function runRipgrep(command: string[], signal: AbortSignal) {
-  const subprocess = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" })
+  const subprocess = Bun.spawn(command, {
+    cwd: Instance.directory,
+    env: EnvPolicy.build({ cwd: Instance.directory, scope: "tool:grep" }),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
   const stop = () => {
     try {
       subprocess.kill()

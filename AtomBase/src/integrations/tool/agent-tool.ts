@@ -18,6 +18,10 @@ const parameters = z.object({
     .describe("The specialized agent type to use (e.g., 'explore', 'coder', 'checker') for action='spawn'"),
   prompt: z.string().min(1).max(100_000).optional().describe("The task prompt for the agent to perform (for action='spawn')"),
   description: z.string().min(1).max(500).optional().describe("A short (3-5 words) description of the task (for action='spawn')"),
+  model: z
+    .string().max(200)
+    .optional()
+    .describe("Exact provider/model for action='spawn'; otherwise the agent's configured model or router selection is used"),
 
   // Parameters for action='workflow' (multi-step DAG)
   workflow_action: z
@@ -76,13 +80,14 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
   const description = [
     "Unified Agent tool — the single tool for running sub-agents and multi-step workflows.",
     "",
-    "⚠️ **BLOCKING TOOL**: action='spawn' BLOCKS until the sub-agent finishes AND passes",
-    "independent reviewer QA (auto-retried up to 2 times on rejection). You CANNOT do other",
+    "⚠️ **BLOCKING TOOL**: action='spawn' BLOCKS until the sub-agent finishes. Tasks that",
+    "change files or write code receive independent reviewer QA; read-only investigation does not",
+    "spawn a redundant reviewer. Rejected reviewed work is auto-retried up to 2 times. You CANNOT do other",
     'work while a spawn is running. Do not say "I\'ll also do X while sub-agents work".',
     "",
     "ACTIONS:",
     "1. action='spawn': Run a single sub-agent task (specify subagent_type, prompt, description).",
-    "   Blocking with reviewer QA verification. This is the DEFAULT action.",
+    "   Blocking with adaptive QA verification. This is the DEFAULT action.",
     "2. action='workflow': Execute a multi-task DAG workflow (workflow_action='plan'|'execute').",
     "   'plan' first, then 'execute' with the returned workflowId.",
     "3. action='abort': Cancel a running sub-agent session or workflow (specify session_id or workflowId)",
@@ -185,6 +190,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
               id: taskId,
               prompt: params.prompt,
               agent: params.subagent_type,
+              model: params.model,
               sessionId: params.session_id,
             },
           ],

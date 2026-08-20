@@ -5,7 +5,6 @@ import 'package:intl/intl.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import '../models.dart';
 import '../providers/app_providers.dart';
-import '../services/auth_service.dart';
 import '../services/websocket_service.dart';
 import 'home_screen.dart' show chatJumpToSessionProvider;
 
@@ -219,8 +218,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final ws = ref.read(wsServiceProvider);
     if (ws == null) return;
 
-    final auth = AuthService.instance;
-
     if (_selectedSessionId == null) {
       _createNewSession(text: text);
       _msgController.clear();
@@ -229,20 +226,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     setState(() => _isSending = true);
 
-    final payload = <String, dynamic>{
-      'type': 'chat_message',
-      'session_id': _selectedSessionId!,
-      'text': text,
-      'model': _selectedModel,
-      'agent': _selectedAgent,
-    }..removeWhere((_, v) => v == null);
-    final sig = auth.sign(AuthService.canonicalPayload(payload));
-
     ws.sendChatMessage(
       sessionId: _selectedSessionId!,
       text: text,
-      deviceName: auth.deviceName ?? 'companion',
-      signature: sig,
       model: _selectedModel,
       agent: _selectedAgent,
     );
@@ -280,18 +266,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final ws = ref.read(wsServiceProvider);
     if (ws == null) return;
 
-    final auth = AuthService.instance;
-    final payload = <String, dynamic>{
-      'type': 'create_session',
-      if (text != null && text.isNotEmpty) 'text': text,
-      'model': _selectedModel,
-      'agent': _selectedAgent,
-    }..removeWhere((_, v) => v == null);
-    final sig = auth.sign(AuthService.canonicalPayload(payload));
-
     ws.createSession(
-      deviceName: auth.deviceName ?? 'companion',
-      signature: sig,
       text: text,
       model: _selectedModel,
       agent: _selectedAgent,
