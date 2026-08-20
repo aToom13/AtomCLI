@@ -2,6 +2,7 @@ import { Provider } from "../provider/provider"
 import { Config } from "@/core/config/config"
 import { Log } from "@/util/util/log"
 import { ModelAvailability } from "../provider/availability"
+import { ModelQuality } from "@/core/routing/model-quality"
 
 const log = Log.create({ service: "model-router" })
 
@@ -24,9 +25,10 @@ export interface ModelState {
 export const modelStates = new Map<string, ModelState>()
 const MAX_MODEL_STATES = 500
 
-export function recordCallResult(modelID: string, ok: boolean, latencyMs?: number) {
-  const s = modelStates.get(modelID) ?? {
-    modelID,
+export function recordCallResult(modelID: string, ok: boolean, latencyMs?: number, providerID?: string) {
+  const stateKey = providerID ? ModelQuality.key(providerID, modelID) : modelID
+  const s = modelStates.get(stateKey) ?? {
+    modelID: stateKey,
     consecutiveFailures: 0,
     lastError: null,
     recentLatenciesMs: [],
@@ -46,13 +48,17 @@ export function recordCallResult(modelID: string, ok: boolean, latencyMs?: numbe
   }
   s.usageCount++
   // Refresh insertion order so eviction behaves as a small LRU cache.
-  modelStates.delete(modelID)
-  modelStates.set(modelID, s)
+  modelStates.delete(stateKey)
+  modelStates.set(stateKey, s)
   while (modelStates.size > MAX_MODEL_STATES) {
     const oldest = modelStates.keys().next().value
     if (oldest === undefined) break
     modelStates.delete(oldest)
   }
+}
+
+function runtimeState(id: string, providerID?: string) {
+  return (providerID ? modelStates.get(ModelQuality.key(providerID, id)) : undefined) ?? modelStates.get(id)
 }
 
 /**
@@ -363,14 +369,14 @@ export function selectCandidates(
   const tiers = [
     // Tier 0: Görev kategorisi tam karşılanıyor VE model sağlıklı (hata yok)
     (id: string, m: Provider.Model) =>
-      categoryHardOk(m, category) && (modelStates.get(id)?.consecutiveFailures ?? 0) === 0,
+      categoryHardOk(m, category) && (runtimeState(id, m.providerID)?.consecutiveFailures ?? 0) === 0,
 
     // Tier 1: Görev kategorisi tam karşılanıyor (sağlık durumu ne olursa olsun)
     (id: string, m: Provider.Model) => categoryHardOk(m, category),
 
     // Tier 2: Görev kategorisi "general" olarak gevşetiliyor VE model sağlıklı
     (id: string, m: Provider.Model) =>
-      categoryHardOk(m, "general") && (modelStates.get(id)?.consecutiveFailures ?? 0) === 0,
+      categoryHardOk(m, "general") && (runtimeState(id, m.providerID)?.consecutiveFailures ?? 0) === 0,
 
     // Tier 3: Elimizde kalan ne varsa (Tier 3 her zaman true döner)
     (id: string, m: Provider.Model) => true,
@@ -422,7 +428,7 @@ export function finalScore(
   }
 
   // 4. Dinamik Latency Cezası (models.dev'de hız verisi yoktur, in-memory ModelState'ten ölçülür)
-  const state = modelStates.get(id)
+  const state = runtimeState(id, m.providerID)
   let avgLat =
     state && state.recentLatenciesMs.length > 0
       ? state.recentLatenciesMs.reduce((a, b) => a + b, 0) / state.recentLatenciesMs.length
@@ -442,18 +448,24 @@ export function finalScore(
   const userRating = autoRouterConfig?.model_ratings?.[id]?.[category] ?? 0
   score += userRating * 15 // -45 ile +45 arası bonus/ceza
 
+  // 7. Outcome quality learned from tests, reviewer verdicts and user corrections.
+  score += ModelQuality.bonus(m.providerID, id, category)
+
   return Math.max(score, 0)
 }
 
 function pickWithLoadBalancing(
   ranked: Array<{ id: string; m: Provider.Model; score: number }>,
   poolSize: number,
+  explorationRate = 0,
 ): { id: string; m: Provider.Model; score: number } {
+  if (ranked.length === 0) throw new Error("No routable model candidates")
+  if (explorationRate <= 0 || Math.random() >= explorationRate) return ranked[0]
   const topN = poolSize <= 3 ? ranked.length : Math.max(2, Math.ceil(poolSize * 0.3))
   const pool = ranked.slice(0, topN)
 
   const weights = pool.map((c) => {
-    const usage = modelStates.get(c.id)?.usageCount ?? 0
+    const usage = runtimeState(c.id, c.m.providerID)?.usageCount ?? 0
     return c.score / (1 + usage * 0.5)
   })
 
@@ -506,7 +518,7 @@ export function selectModelInternal(
     .map(([id, m]) => ({ id, m, score: finalScore(id, m, category, mode, complexity, autoRouterConfig) }))
     .sort((a, b) => b.score - a.score)
 
-  const selected = pickWithLoadBalancing(ranked, candidates.length)
+  const selected = pickWithLoadBalancing(ranked, candidates.length, autoRouterConfig?.exploration_rate ?? 0)
 
   return { selected, ranked }
 }
@@ -566,6 +578,7 @@ export async function selectModel(
   session?: any,
   prompt?: string,
 ): Promise<any> {
+  await ModelQuality.initialize()
   if (!Array.isArray(allFreeModelsOrFallback)) {
     // Old signature: selectModel(category, fallback)
     const fallback = allFreeModelsOrFallback

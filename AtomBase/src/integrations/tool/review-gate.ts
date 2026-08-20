@@ -2,6 +2,7 @@ import { Log } from "@/util/util/log"
 import { Session } from "@/core/session"
 import { Agent } from "../agent/agent"
 import { Config } from "@/core/config/config"
+import { ReviewPolicy } from "@/core/verification/review-policy"
 import { selectModel } from "./model-router"
 import { SubAgent } from "./subagent"
 import { escapeXmlText, HarnessState, REVIEW_TOTAL_ATTEMPT_MULTIPLIER } from "@/core/session/harness-state"
@@ -187,6 +188,7 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
   const config = await Config.get()
   const enabled = config.review?.enabled !== false
   const maxAttempts = config.review?.max_attempts ?? 3
+  const policy = enabled ? (config.review?.policy ?? "adaptive") : "off"
 
   if (!enabled) {
     log.info("review gate disabled via config", { sessionID })
@@ -196,6 +198,14 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
   // Aggregate sub-agent edits first so needsReview sees the union of parent
   // and descendant edits (prevents gate bypass via sub-agent delegation).
   await aggregateDescendantEdits(sessionID)
+
+  if (!ReviewPolicy.requiresIndependentReview(policy, {
+    editedFiles: HarnessState.getEditedFiles(sessionID),
+    extraHighRiskPatterns: config.review?.high_risk_patterns,
+  })) {
+    log.info("review gate skipped by risk policy", { sessionID, policy })
+    return { passed: true, exhausted: false, skipped: true }
+  }
 
   if (!HarnessState.needsReview(sessionID)) {
     return { passed: true, exhausted: false, skipped: true }

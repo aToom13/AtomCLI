@@ -38,6 +38,7 @@ const { Storage } = await import("@/core/storage/storage")
 const { Identifier } = await import("@/core/id/id")
 const { Instance } = await import("@/services/project/instance")
 const { SessionTermination } = await import("@/core/session/termination")
+const { HarnessState } = await import("@/core/session/harness-state")
 const { tmpdir } = await import("../fixture/fixture")
 
 beforeEach(() => {
@@ -235,6 +236,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
           if (!isQA) {
             taskSpawnCount++
             await args.onSession?.({ sessionId: "ses_task_under_review", isNewSession: true })
+            HarnessState.addEditedFile("ses_task_under_review", "src/auth/token.ts")
             return {
               sessionId: "ses_task_under_review",
               isNewSession: true,

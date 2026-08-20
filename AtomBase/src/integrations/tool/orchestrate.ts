@@ -17,6 +17,8 @@ import { Provider } from "@/integrations/provider/provider"
 import { ModelAvailability } from "@/integrations/provider/availability"
 import { WorkflowStore } from "@/core/orchestration/workflow-store"
 import { OrchestrationGraph } from "@/core/orchestration/graph"
+import { WorkflowBlackboard } from "@/core/orchestration/blackboard"
+import { ReviewPolicy } from "@/core/verification/review-policy"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -78,6 +80,9 @@ interface TaskNode {
   dependsOn: string[]
   model?: string // Optional: specific model (e.g. "atomcli/minimax-m2.5-free")
   sessionId?: string // Optional: existing sub-agent session to continue
+  owns?: string[]
+  maxRetries?: number
+  maxOutputChars?: number
 }
 
 interface WorkflowState {
@@ -308,7 +313,8 @@ function buildDependencyContext(task: TaskNode, workflow: WorkflowState): string
       const output = workflow.results[dependencyID]?.output
       if (!output) return ""
       const relation = direct.has(dependencyID) ? "direct" : "upstream"
-      return `<dependency_output task="${escapeXmlText(dependencyID)}" relation="${relation}">\n${escapeXmlText(limitText(output))}\n</dependency_output>`
+      const artifacts = WorkflowBlackboard.render(WorkflowBlackboard.fromOutput(dependencyID, output))
+      return `<dependency_artifacts task="${escapeXmlText(dependencyID)}" relation="${relation}">\n${escapeXmlText(artifacts)}\n</dependency_artifacts>`
     })
     .filter(Boolean)
     .join("\n\n")
@@ -316,9 +322,10 @@ function buildDependencyContext(task: TaskNode, workflow: WorkflowState): string
 }
 
 /** Pure investigation does not need a second agent to repeat the same read. */
-function requiresTaskQA(task: TaskNode, editedFileCount: number): boolean {
+function requiresTaskQA(task: TaskNode, editedFileCount: number, editedFiles: string[] = []): boolean {
   if (task.agent === "reviewer" || task.agent === "checker") return false
-  return task.category === "coding" || editedFileCount > 0
+  if (editedFileCount === 0) return false
+  return ReviewPolicy.requiresIndependentReview("adaptive", { editedFiles, prompt: task.prompt })
 }
 
 async function modelTemporaryAvailability(reference: ModelReference) {
@@ -389,6 +396,11 @@ const TaskSchema = z.object({
     .optional()
     .describe("Specific model to use (e.g. 'atomcli/minimax-m2.5-free'). If not specified, smart routing is used"),
   sessionId: z.string().max(200).optional().describe("Existing sub-agent session ID to continue (optional)"),
+  owns: z.array(z.string().max(4096)).max(200).optional().describe("Files or path prefixes exclusively owned by this task while it runs"),
+  budget: z.object({
+    maxRetries: z.number().int().min(0).max(10).optional().default(DEFAULT_MAX_RETRIES),
+    maxOutputChars: z.number().int().min(1_000).max(MAX_TASK_OUTPUT_BYTES).optional().default(MAX_TASK_OUTPUT_BYTES),
+  }).optional().describe("Per-task retry and output budget"),
 })
 
 export const OrchestrateTool = Tool.define("orchestrate", {
@@ -422,6 +434,9 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           dependsOn: t.dependsOn || [],
           model: t.model, // Include specified model
           sessionId: t.sessionId, // Include explicit session continuation
+          owns: t.owns ?? [],
+          maxRetries: t.budget?.maxRetries ?? DEFAULT_MAX_RETRIES,
+          maxOutputChars: t.budget?.maxOutputChars ?? MAX_TASK_OUTPUT_BYTES,
         }))
 
         const availableAgents = new Set((await Agent.list()).map((agent) => agent.name))
@@ -434,6 +449,16 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }
         }
         try {
+          for (let i = 0; i < tasks.length; i++) {
+            for (let j = i + 1; j < tasks.length; j++) {
+              const a = tasks[i]
+              const b = tasks[j]
+              const ordered = dependencyIds(a, tasks).includes(b.id) || dependencyIds(b, tasks).includes(a.id)
+              if (ordered) continue
+              const overlap = (a.owns ?? []).find((left) => (b.owns ?? []).some((right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)))
+              if (overlap) throw new Error(`Parallel tasks ${a.id} and ${b.id} claim overlapping ownership: ${overlap}`)
+            }
+          }
           for (const task of tasks) {
             if (task.model) {
               const model = parseModelSpecifier(task.model)
@@ -718,7 +743,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   qa: "reviewed" | "not-needed",
                 ) => {
                   result.status = "completed"
-                  result.output = limitText(spawnResult.output)
+                  result.output = limitText(spawnResult.output, task.maxOutputChars ?? MAX_TASK_OUTPUT_BYTES)
                   result.completedAt = Date.now()
                   result.retryCount = attempt
                   completedTasks.push(task.id)
@@ -745,7 +770,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                 for (
                   let attempt = 0;
-                  attempt <= DEFAULT_MAX_RETRIES && !taskSuccess && workflow.status === "running";
+                  attempt <= (task.maxRetries ?? DEFAULT_MAX_RETRIES) && !taskSuccess && workflow.status === "running";
                   attempt++
                 ) {
                   lastAttemptCount = attempt
@@ -843,7 +868,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     }
 
                     const editedFileCount = HarnessState.getEditedFileCount(spawnResult.sessionId)
-                    if (!requiresTaskQA(task, editedFileCount)) {
+                    if (!requiresTaskQA(task, editedFileCount, HarnessState.getEditedFiles(spawnResult.sessionId))) {
                       await completeTask(spawnResult, attempt, "not-needed")
                       continue
                     }
@@ -997,11 +1022,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       reviewerModel = undefined
                     }
 
-                    if (attempt < DEFAULT_MAX_RETRIES) {
+                    if (attempt < (task.maxRetries ?? DEFAULT_MAX_RETRIES)) {
                       log.warn("task failed, retrying", {
                         taskId: task.id,
                         attempt: attempt + 1,
-                        maxRetries: DEFAULT_MAX_RETRIES,
+                        maxRetries: task.maxRetries ?? DEFAULT_MAX_RETRIES,
                         error: lastError,
                       })
 
@@ -1042,7 +1067,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                   log.error("task failed after all retries", {
                     taskId: task.id,
-                    maxRetries: DEFAULT_MAX_RETRIES,
+                    maxRetries: task.maxRetries ?? DEFAULT_MAX_RETRIES,
                     error: lastError,
                   })
                 }

@@ -291,12 +291,12 @@ describe("orchestrate - agent collaboration context", () => {
         expect(context).toContain('task="design" relation="direct"')
     })
 
-    test("uses reviewer QA only for changed or coding work", () => {
+    test("uses reviewer QA only for high-risk changed work", () => {
         expect(requiresTaskQA(tasks[0], 0)).toBe(false)
-        expect(requiresTaskQA(tasks[0], 1)).toBe(true)
-        expect(requiresTaskQA(tasks[2], 0)).toBe(true)
-        expect(requiresTaskQA({ ...tasks[2], agent: "checker" }, 3)).toBe(false)
-        expect(requiresTaskQA({ ...tasks[2], agent: "reviewer" }, 3)).toBe(false)
+        expect(requiresTaskQA(tasks[0], 1, ["src/ui.ts"])).toBe(false)
+        expect(requiresTaskQA(tasks[0], 1, ["src/auth/token.ts"])).toBe(true)
+        expect(requiresTaskQA({ ...tasks[2], agent: "checker" }, 3, ["src/auth.ts"])).toBe(false)
+        expect(requiresTaskQA({ ...tasks[2], agent: "reviewer" }, 3, ["src/auth.ts"])).toBe(false)
     })
 })
 

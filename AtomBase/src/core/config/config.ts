@@ -1149,6 +1149,17 @@ export namespace Config {
             .optional()
             .default(3)
             .describe("Maximum consecutive FAIL verdicts before the review gate escalates to the user"),
+          policy: z
+            .enum(["adaptive", "always", "off"])
+            .optional()
+            .default("adaptive")
+            .describe("Run independent review only for high-risk edits, for every edit, or never"),
+          high_risk_patterns: z
+            .array(z.string().max(500))
+            .max(100)
+            .optional()
+            .default([])
+            .describe("Additional regular expressions that mark edited paths as high risk"),
         })
         .passthrough()
         .optional()
@@ -1304,6 +1315,13 @@ export namespace Config {
                 })
                 .optional()
                 .describe("Force a specific model for a task category"),
+              exploration_rate: z
+                .number()
+                .min(0)
+                .max(0.5)
+                .optional()
+                .default(0)
+                .describe("Controlled probability of exploring a non-top model; zero keeps routing deterministic"),
             })
             .optional()
             .describe("Auto router user preferences"),

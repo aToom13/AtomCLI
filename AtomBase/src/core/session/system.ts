@@ -1,5 +1,4 @@
 import { Log } from "@/util/util/log"
-import { Ripgrep } from "@/services/file/ripgrep"
 import { Global } from "../global"
 import { Filesystem } from "@/util/util/filesystem"
 import { Config } from "../config/config"
@@ -11,6 +10,7 @@ import { Instance } from "@/services/project/instance"
 import path from "path"
 import os from "os"
 import { ProjectDetector } from "./project-detector"
+import { ContextManifest } from "./context-manifest"
 
 // Unified prompt system
 import { PromptManager } from "./prompt/manager"
@@ -51,7 +51,7 @@ export namespace SystemPrompt {
     return [prompt]
   }
 
-  export async function environment(): Promise<string[]> {
+  export async function environment(query = ""): Promise<string[]> {
     const project = Instance.project
     const now = new Date()
     const year = now.getFullYear()
@@ -74,7 +74,8 @@ export namespace SystemPrompt {
     await SessionMemoryIntegration.initialize()
 
     // Detect project commands (test, typecheck, lint) from manifest files
-    const projectCommands = await ProjectDetector.detect(Instance.directory)
+    const manifest = await ContextManifest.get(query)
+    const projectCommands = manifest.commands
     const projectCommandsBlock = ProjectDetector.format(projectCommands)
 
     const envBlock = [
@@ -99,13 +100,7 @@ export namespace SystemPrompt {
       `</env>`,
       ...(projectCommandsBlock ? [projectCommandsBlock] : []),
       `<files>`,
-      `  ${project.vcs === "git"
-        ? await Ripgrep.tree({
-          cwd: Instance.directory,
-          limit: 200,
-        })
-        : ""
-      }`,
+      `  ${manifest.tree}`,
       `</files>`,
     ].join("\n")
 

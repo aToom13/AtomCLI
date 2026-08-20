@@ -6,7 +6,7 @@
  */
 
 import { Log } from "@/util/util/log"
-import { Provider } from "@/integrations/provider/provider"
+import { ModelPurpose } from "@/core/routing/model-purpose"
 import { getStreamText } from "@/util/util/ai-compat"
 import { z } from "zod"
 
@@ -43,40 +43,6 @@ export type UserInformation = z.infer<typeof UserInformationSchema>
 // ============================================================================
 
 export class SemanticLearningService {
-  private static model: Awaited<ReturnType<typeof Provider.getModel>> | null = null
-
-  /** Fallback chain for semantic learning */
-  private static readonly FALLBACK_CHAIN = [
-    { provider: "atomcli", model: "minimax-m2.5-free" },
-    { provider: "atomcli", model: "glm-5-free" },
-    { provider: "atomcli", model: "trinity-large-preview-free" },
-    { provider: "atomcli", model: "gpt-5-nano" },
-    { provider: "atomcli", model: "big-pickle" },
-  ]
-
-  /**
-   * Get or initialize the model for semantic learning using fallback chain
-   */
-  private static async getModel() {
-    if (!this.model) {
-      for (const entry of this.FALLBACK_CHAIN) {
-        try {
-          this.model = await Provider.getModel(entry.provider, entry.model)
-          if (this.model) {
-            log.info("Selected semantic-learning model", { model: `${entry.provider}/${entry.model}` })
-            break
-          }
-        } catch {
-          // Try next
-        }
-      }
-      if (!this.model) {
-        throw new Error("All semantic-learning fallback models failed")
-      }
-    }
-    return this.model
-  }
-
   /**
    * Extract user information from a message using LLM
    */
@@ -88,8 +54,7 @@ export class SemanticLearningService {
     }
   ): Promise<UserInformation> {
     try {
-      const model = await this.getModel()
-      const language = await Provider.getLanguage(model)
+      const language = await ModelPurpose.language("analysis", message)
       const streamText = await getStreamText()
 
       const systemPrompt = `You are a memory extraction assistant. Your job is to analyze user messages and extract personal information, preferences, and corrections.
@@ -182,8 +147,7 @@ Now analyze this message:`
     acknowledgedPreferences?: string[]
   }> {
     try {
-      const model = await this.getModel()
-      const language = await Provider.getLanguage(model)
+      const language = await ModelPurpose.language("analysis", `${userMessage}\n${response}`)
       const streamText = await getStreamText()
 
       const systemPrompt = `You are analyzing an AI assistant's response to determine what information it acknowledged or confirmed about the user.

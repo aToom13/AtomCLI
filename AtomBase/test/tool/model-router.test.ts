@@ -250,6 +250,14 @@ describe("model-router - pickWithLoadBalancing", () => {
     const highCount = results.filter((id) => id === "lb-skewed-high").length
     expect(highCount).toBeGreaterThan(15)
   })
+
+  test("is deterministic by default and only explores when explicitly configured", () => {
+    const ranked = [
+      { id: "best", m: { ...baseModel }, score: 100 },
+      { id: "second", m: { ...baseModel, id: "second" }, score: 90 },
+    ]
+    expect(pickWithLoadBalancing(ranked, ranked.length).id).toBe("best")
+  })
 })
 
 describe("model-router - selectModelInternal", () => {

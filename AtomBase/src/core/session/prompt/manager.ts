@@ -100,11 +100,11 @@ You MUST read() a file BEFORE you can edit() it. The edit tool WILL FAIL otherwi
 
 // ─── Dynamic Context Generator ──────────────────────────────
 
-async function generateDynamicContext(): Promise<string> {
+async function generateDynamicContext(options: { includeLearningMemory: boolean; includeUserProfile: boolean }): Promise<string> {
   const parts: string[] = []
 
   // User profile
-  try {
+  if (options.includeUserProfile) try {
     const profilePath = path.join(Global.Path.root, "personality", "user-profile.json")
     const data = await fs.readFile(profilePath, "utf-8")
     const profile = JSON.parse(data)
@@ -123,7 +123,7 @@ async function generateDynamicContext(): Promise<string> {
   }
 
   // Learning memory
-  try {
+  if (options.includeLearningMemory) try {
     const memorySummary = await buildMemorySummary()
     if (memorySummary) {
       parts.push(`<learning_memory>\n${memorySummary}\n</learning_memory>`)
@@ -188,7 +188,7 @@ async function buildAsync(options: BuildOptions): Promise<string> {
   // Load dynamic context
   let dynamicCtx = ""
   if (includeLearningMemory || includeUserProfile) {
-    dynamicCtx = await generateDynamicContext()
+    dynamicCtx = await generateDynamicContext({ includeLearningMemory, includeUserProfile })
   }
 
   const coreSections = getCorePromptsForAgent(agent)
@@ -233,26 +233,35 @@ function getStats(options: BuildOptions): {
   const prompt = build(options)
   const estimateTokens = (text: string) => Math.ceil(text.length / 4)
 
-  const sections = [
-    { name: "thinking-pattern", tokens: estimateTokens(PROMPT_THINKING_PATTERN), chars: PROMPT_THINKING_PATTERN.length },
-    { name: "identity", tokens: estimateTokens(PROMPT_IDENTITY), chars: PROMPT_IDENTITY.length },
-    { name: "tools", tokens: estimateTokens(PROMPT_TOOLS), chars: PROMPT_TOOLS.length },
-    { name: "workflow", tokens: estimateTokens(PROMPT_WORKFLOW), chars: PROMPT_WORKFLOW.length },
-    { name: "communication", tokens: estimateTokens(PROMPT_COMMUNICATION), chars: PROMPT_COMMUNICATION.length },
-    { name: "code-editing", tokens: estimateTokens(PROMPT_CODE_EDITING), chars: PROMPT_CODE_EDITING.length },
-    { name: "git-safety", tokens: estimateTokens(PROMPT_GIT_SAFETY), chars: PROMPT_GIT_SAFETY.length },
-    { name: "extensions", tokens: estimateTokens(PROMPT_EXTENSIONS), chars: PROMPT_EXTENSIONS.length },
-    {
+  const names = new Map<string, string>([
+    [PROMPT_THINKING_PATTERN, "thinking-pattern"],
+    [PROMPT_IDENTITY, "identity"],
+    [PROMPT_TOOLS, "tools"],
+    [PROMPT_WORKFLOW, "workflow"],
+    [PROMPT_COMMUNICATION, "communication"],
+    [PROMPT_CODE_EDITING, "code-editing"],
+    [PROMPT_GIT_SAFETY, "git-safety"],
+    [PROMPT_EXTENSIONS, "extensions"],
+  ])
+  const agent = options.agent || "agent"
+  const selected = getCorePromptsForAgent(agent)
+  const sections = selected.map((text) => ({
+    name: names.get(text) ?? "core",
+    tokens: estimateTokens(text),
+    chars: text.length,
+  }))
+  if (selected.includes(PROMPT_CODE_EDITING)) {
+    sections.push({
       name: "read-before-edit",
       tokens: estimateTokens(READ_BEFORE_EDIT_EMPHASIS),
       chars: READ_BEFORE_EDIT_EMPHASIS.length,
-    },
-    {
-      name: `agent:${options.agent || "agent"}`,
-      tokens: estimateTokens(AGENT_PROMPTS[options.agent || "agent"]),
-      chars: AGENT_PROMPTS[options.agent || "agent"].length,
-    },
-  ]
+    })
+  }
+  sections.push({
+    name: `agent:${agent}`,
+    tokens: estimateTokens(AGENT_PROMPTS[agent]),
+    chars: AGENT_PROMPTS[agent].length,
+  })
 
   return {
     totalTokens: estimateTokens(prompt),

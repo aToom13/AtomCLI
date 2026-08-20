@@ -24,6 +24,7 @@ import MAX_STEPS from "../session/prompt/runtime/max-steps.txt"
 import { defer } from "@/util/util/defer"
 import { recall } from "@/integrations/tool/memory"
 import { SessionMemoryIntegration } from "../memory/integration/session"
+import { MemoryLifecycle } from "../memory/services/lifecycle"
 import { ToolRegistry } from "@/integrations/tool/registry"
 import { MCP } from "@/integrations/mcp"
 import { LSP } from "@/integrations/lsp"
@@ -618,7 +619,7 @@ export namespace SessionPrompt {
 
       // Run environment, custom rules, memory recall and skill auto-injection in parallel
       const [environment, custom, memoryContext, autoSkillContext] = await Promise.all([
-        SystemPrompt.environment(),
+        SystemPrompt.environment(userText),
         SystemPrompt.custom(),
         userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
         userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
@@ -664,7 +665,10 @@ export namespace SessionPrompt {
       continue
     }
     SessionCompaction.prune({ sessionID })
-    for await (const item of MessageV2.stream(sessionID)) {
+    const completedMessages: MessageV2.WithParts[] = []
+    for await (const item of MessageV2.stream(sessionID)) completedMessages.push(item)
+    if (!session.parentID) MemoryLifecycle.schedule(sessionID, completedMessages)
+    for (const item of completedMessages) {
       if (item.info.role === "user") continue
       const queued = state()[sessionID]?.callbacks ?? []
       for (const q of queued) {

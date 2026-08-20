@@ -46,7 +46,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-run-1"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         const result = await runBlockingReview(sessionID)
 
@@ -73,7 +73,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-run-1"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         const result = await runBlockingReview(sessionID)
 
@@ -94,7 +94,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-run-1"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         // Simulate 3 consecutive FAILs (max_attempts default = 3)
         HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason: "fail 1" })
@@ -113,14 +113,14 @@ describe("ReviewGate - runBlockingReview", () => {
 
   test("disabled via config returns skipped without spawning", async () => {
     await using tmp = await tmpdir({
-      config: { review: { enabled: false, max_attempts: 3 } },
+      config: { review: { enabled: false, max_attempts: 3, policy: "adaptive", high_risk_patterns: [] } },
     })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-run-1"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         const result = await runBlockingReview(sessionID)
 
@@ -159,7 +159,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-run-1"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         const result = await runBlockingReview(sessionID)
 
@@ -184,7 +184,7 @@ describe("ReviewGate - runBlockingReview", () => {
 
         // Simulate a sub-agent editing a file under its OWN session (the
         // main agent delegated the edit — parent tracker has no edits).
-        HarnessState.addEditedFile(child.id, "src/subagent-edit.ts")
+        HarnessState.addEditedFile(child.id, "src/auth/subagent-edit.ts")
 
         const result = await runBlockingReview(parent.id)
 
@@ -192,11 +192,11 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(result.passed).toBe(true)
         expect(result.skipped).toBe(false)
         expect(spawnMock).toHaveBeenCalledTimes(1)
-        expect(HarnessState.getEditedFiles(parent.id)).toContain("src/subagent-edit.ts")
+        expect(HarnessState.getEditedFiles(parent.id)).toContain("src/auth/subagent-edit.ts")
 
         const promptArg = spawnMock.mock.calls[0]?.[0]
         const promptText = (promptArg as any)?.parts?.[0]?.text ?? ""
-        expect(promptText).toContain("src/subagent-edit.ts")
+        expect(promptText).toContain("src/auth/subagent-edit.ts")
 
         await Session.remove(parent.id)
       },
@@ -210,7 +210,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const parent = await Session.create({})
-        HarnessState.addEditedFile(parent.id, "src/parent-edit.ts")
+        HarnessState.addEditedFile(parent.id, "src/auth/parent-edit.ts")
 
         const result = await runBlockingReview(parent.id)
 
@@ -219,7 +219,7 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(spawnMock).toHaveBeenCalledTimes(1)
         const promptArg = spawnMock.mock.calls[0]?.[0]
         const promptText = (promptArg as any)?.parts?.[0]?.text ?? ""
-        expect(promptText).toContain("src/parent-edit.ts")
+        expect(promptText).toContain("src/auth/parent-edit.ts")
 
         await Session.remove(parent.id)
       },
@@ -233,7 +233,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-run-1"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         const [a, b] = await Promise.all([runBlockingReview(sessionID), runBlockingReview(sessionID)])
 
@@ -257,7 +257,7 @@ describe("ReviewGate - runBlockingReview", () => {
         await Config.clearCache()
         const parent = await Session.create({})
         const child = await Session.create({ parentID: parent.id })
-        HarnessState.addEditedFile(child.id, "src/subagent-edit.ts")
+        HarnessState.addEditedFile(child.id, "src/auth/subagent-edit.ts")
 
         // Attacker deletes the child session BEFORE clear — Session.remove must
         // merge the child's edits into the parent so the gate still reviews them.
@@ -268,7 +268,7 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(result.skipped).toBe(false)
         expect(result.passed).toBe(true)
         expect(spawnMock).toHaveBeenCalledTimes(1)
-        expect(HarnessState.getEditedFiles(parent.id)).toContain("src/subagent-edit.ts")
+        expect(HarnessState.getEditedFiles(parent.id)).toContain("src/auth/subagent-edit.ts")
 
         await Session.remove(parent.id)
       },
@@ -284,7 +284,7 @@ describe("ReviewGate - runBlockingReview", () => {
       fn: async () => {
         await Config.clearCache()
         const sessionID = "session-gate-no-reviewer"
-        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
 
         const result = await runBlockingReview(sessionID)
 

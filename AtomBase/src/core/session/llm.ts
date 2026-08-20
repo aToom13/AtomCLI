@@ -268,14 +268,14 @@ export namespace LLM {
           const latency = Date.now() - startTime
           import("@/integrations/tool/model-router")
             .then(({ recordCallResult }) => {
-              recordCallResult(input.model.id, true, latency)
+              recordCallResult(input.model.id, true, latency, input.model.providerID)
             })
             .catch(() => {})
         },
         () => {
           import("@/integrations/tool/model-router")
             .then(({ recordCallResult }) => {
-              recordCallResult(input.model.id, false)
+              recordCallResult(input.model.id, false, undefined, input.model.providerID)
             })
             .catch(() => {})
         }

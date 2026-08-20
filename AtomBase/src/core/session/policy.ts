@@ -1,6 +1,6 @@
-import { Provider } from "@/integrations/provider/provider"
 import { ToolRegistry } from "@/integrations/tool/registry"
-import { selectCandidates, type TaskCategory } from "@/integrations/tool/model-router"
+import type { TaskCategory } from "@/integrations/tool/model-router"
+import { ModelPurpose } from "@/core/routing/model-purpose"
 
 export namespace SessionPolicy {
   /**
@@ -34,21 +34,7 @@ export namespace SessionPolicy {
       (category as TaskCategory) ||
       (agentName === "documenter" ? "documentation" : agentName === "analyst" ? "analysis" : "coding")
 
-    try {
-      const provider = await Provider.getProvider("atomcli")
-      if (provider) {
-        const freeModels = Object.entries(provider.models).filter(
-          ([id, m]) => id !== "atomcli-auto" && id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0,
-        ) as Array<[string, Provider.Model]>
-        const candidates = selectCandidates(freeModels, taskCat)
-        if (candidates.length > 0) {
-          return { providerID: "atomcli", modelID: candidates[0][0] }
-        }
-      }
-    } catch {
-      /* fallback */
-    }
-    return { providerID: "atomcli", modelID: "atomcli/minimax-m2.5-free" }
+    return ModelPurpose.select(taskCat, agentName)
   }
 
   /**

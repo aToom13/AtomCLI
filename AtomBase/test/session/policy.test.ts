@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { SessionPolicy } from "@/core/session/policy"
+import { Instance } from "@/services/project/instance"
+import { tmpdir } from "../fixture/fixture"
 
 describe("SessionPolicy", () => {
   test("decideAgent selects correct agent by task keywords", async () => {
@@ -27,8 +29,11 @@ describe("SessionPolicy", () => {
   })
 
   test("decideModel returns fallback model structure", async () => {
-    const model = await SessionPolicy.decideModel("coder", "coding")
-    expect(model.providerID).toBe("atomcli")
-    expect(model.modelID).toBeDefined()
+    await using tmp = await tmpdir()
+    await Instance.provide({ directory: tmp.path, fn: async () => {
+      const model = await SessionPolicy.decideModel("coder", "coding")
+      expect(model.providerID).toBeDefined()
+      expect(model.modelID).toBeDefined()
+    } })
   })
 })

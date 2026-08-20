@@ -87,6 +87,9 @@ describe("tool.browser integration", () => {
 
                     await tool.execute({ action: "click", selector: "#btn" }, ctx)
                     expect(mockPage.click).toHaveBeenCalled()
+
+                    await tool.execute({ action: "click", ref: "e7" }, ctx)
+                    expect(mockPage.click).toHaveBeenLastCalledWith('[data-atomcli-ref="e7"]', expect.any(Object))
                 } finally {
                     Browser.getPage = originalGetPage
                     Browser.isPlaywrightAvailable = originalAvailable

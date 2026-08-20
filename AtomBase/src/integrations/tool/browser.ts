@@ -34,6 +34,8 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
             "clear",
             "read",
             "snapshot",
+            "accessibility",
+            "network",
             "wait",
             "screenshot",
             "scroll",
@@ -52,6 +54,7 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
         // Common parameters
         url: z.string().max(8192).optional().describe("URL to navigate to (required for 'navigate')"),
         selector: z.string().max(4096).optional().describe("CSS selector to interact with (required for click, type, press, clear, drag, hover)"),
+        ref: z.string().regex(/^e\d+$/).optional().describe("Stable element reference returned by snapshot, for example e12"),
         script: z.string().max(100_000).optional().describe("JavaScript code to execute (required for 'evaluate')"),
 
         // specific parameters
@@ -98,6 +101,17 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                 metadata: { count: logs.length },
             }
         }
+
+        if (params.action === "network") {
+            const entries = Browser.getNetworkLogs()
+            Browser.clearNetworkLogs()
+            const output = entries.length
+                ? entries.map((item) => `${item.method} ${item.status ?? "FAILED"} ${item.url}${item.error ? ` — ${item.error}` : ""}`).join("\n").slice(-MAX_BROWSER_OUTPUT)
+                : "No network activity captured."
+            return { output, title: "Browser: network", metadata: { count: entries.length } }
+        }
+
+        if (params.ref) params.selector = `[data-atomcli-ref="${params.ref}"]`
 
         if (params.action === "navigate" && !params.url) throw new Error("URL is required for navigate")
         if (["click", "tap", "type", "clear", "drag", "hover"].includes(params.action) && !params.selector) {
@@ -269,8 +283,10 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                         const interactive = candidates
                             .filter(visible)
                             .slice(0, maximum)
-                            .map((element) => {
+                            .map((element, index) => {
                                 const node = element as HTMLInputElement
+                                const ref = `e${index + 1}`
+                                node.setAttribute("data-atomcli-ref", ref)
                                 const labelledBy = node.getAttribute("aria-labelledby")
                                 const labelledText = labelledBy
                                     ? labelledBy.split(/\s+/).map((id) => clean(document.getElementById(id)?.textContent)).filter(Boolean).join(" ")
@@ -286,6 +302,7 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                                 )
                                 return {
                                     type: node.getAttribute("role") || node.getAttribute("type") || node.tagName.toLowerCase(),
+                                    ref,
                                     label,
                                     selector: selector(node),
                                     href: node instanceof HTMLAnchorElement ? node.href : undefined,
@@ -306,7 +323,9 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                             "",
                             "## Interactive elements",
                             ...snapshot.interactive.map((item, index) =>
-                                `- [${index + 1}] ${item.type}${item.label ? ` \"${item.label}\"` : ""} — selector: ${item.selector}${item.href ? ` — ${item.href}` : ""}`,
+                                item.ref
+                                    ? `- [ref=${item.ref}] ${item.type}${item.label ? ` \"${item.label}\"` : ""}${item.href ? ` — ${item.href}` : ""}`
+                                    : `- [${index + 1}] ${item.type}${item.label ? ` \"${item.label}\"` : ""} — selector: ${item.selector}${item.href ? ` — ${item.href}` : ""}`,
                             ),
                         )
                     }
@@ -314,6 +333,13 @@ NOTE: This tool requires Playwright to be installed. If not available, you'll se
                     result = lines.join("\n").slice(0, MAX_BROWSER_OUTPUT)
                     metadata.elementCount = snapshot.interactive.length
                     metadata.headingCount = snapshot.headings.length
+                    break
+                }
+
+                case "accessibility": {
+                    const locator = page.locator(params.selector ?? "body") as any
+                    result = String(await locator.ariaSnapshot({ timeout: params.timeout ?? 30_000 })).slice(0, MAX_BROWSER_OUTPUT)
+                    metadata.format = "aria-snapshot"
                     break
                 }
 

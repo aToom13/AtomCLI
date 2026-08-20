@@ -50,6 +50,7 @@ export class BrowserManager {
   private observedPages = new WeakSet<Page>()
   private log = Log.create({ service: "browser" })
   private consoleLogs: string[] = []
+  private networkLogs: Array<{ method: string; status?: number; url: string; error?: string }> = []
   private playwrightAvailable: boolean | null = null
   private playwrightPath: string = "playwright"
   private playwrightVersion: string | null = null
@@ -142,6 +143,14 @@ export class BrowserManager {
     this.consoleLogs = []
   }
 
+  public getNetworkLogs() {
+    return [...this.networkLogs]
+  }
+
+  public clearNetworkLogs() {
+    this.networkLogs = []
+  }
+
   private observePage(page: Page) {
     if (this.observedPages.has(page)) return
     this.observedPages.add(page)
@@ -156,6 +165,14 @@ export class BrowserManager {
       this.consoleLogs.push(text)
       if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
       this.log.error(`pageerror: ${text}`)
+    })
+    page.on("response", (response) => {
+      this.networkLogs.push({ method: response.request().method(), status: response.status(), url: response.url().slice(0, 8_192) })
+      if (this.networkLogs.length > 500) this.networkLogs.splice(0, this.networkLogs.length - 500)
+    })
+    page.on("requestfailed", (request) => {
+      this.networkLogs.push({ method: request.method(), url: request.url().slice(0, 8_192), error: request.failure()?.errorText })
+      if (this.networkLogs.length > 500) this.networkLogs.splice(0, this.networkLogs.length - 500)
     })
   }
 

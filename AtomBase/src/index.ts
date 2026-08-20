@@ -45,6 +45,7 @@ import { FallbackCommand } from "@/interfaces/cli/cmd/fallback"
 import { AutoupdateCommand } from "@/interfaces/cli/cmd/autoupdate"
 import { SmartModelCommand } from "@/interfaces/cli/cmd/smart-model"
 import { CompletionCommand, ShellCompletion } from "@/interfaces/cli/cmd/completion"
+import { EvalCommand } from "@/interfaces/cli/cmd/eval"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -153,6 +154,7 @@ const cli = yargs(hideBin(process.argv))
   .command(MemoryCommand)
   .command(AutoupdateCommand)
   .command(SmartModelCommand)
+  .command(EvalCommand)
   .command(FallbackCommand)
   .fail((msg, err) => {
     if (

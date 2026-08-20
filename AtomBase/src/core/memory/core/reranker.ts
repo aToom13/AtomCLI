@@ -8,7 +8,7 @@
  */
 
 import { Log } from "@/util/util/log"
-import { Provider } from "@/integrations/provider/provider"
+import { ModelPurpose } from "@/core/routing/model-purpose"
 import { getGenerateText } from "@/util/util/ai-compat"
 
 const log = Log.create({ service: "memory.reranker" })
@@ -16,14 +16,6 @@ const log = Log.create({ service: "memory.reranker" })
 // ============================================================================
 // FALLBACK CHAIN
 // ============================================================================
-
-const RERANKER_FALLBACK_CHAIN = [
-    { provider: "atomcli", model: "minimax-m2.5-free" },
-    { provider: "atomcli", model: "glm-5-free" },
-    { provider: "atomcli", model: "trinity-large-preview-free" },
-    { provider: "atomcli", model: "gpt-5-nano" },
-    { provider: "atomcli", model: "big-pickle" },
-]
 
 /** Max time to wait for LLM reranking before falling back to BM25 order */
 const RERANK_TIMEOUT_MS = 5000
@@ -47,21 +39,6 @@ export interface RerankResult {
 /**
  * Get a working model from the fallback chain
  */
-async function getWorkingModel() {
-    for (const entry of RERANKER_FALLBACK_CHAIN) {
-        try {
-            const model = await Provider.getModel(entry.provider, entry.model)
-            if (model) {
-                log.info("Selected reranker model", { model: `${entry.provider}/${entry.model}` })
-                return model
-            }
-        } catch {
-            // Try next
-        }
-    }
-    return null
-}
-
 /**
  * Rerank BM25 candidates using LLM
  * 
@@ -85,17 +62,7 @@ export async function rerank(
     }
 
     try {
-        const model = await getWorkingModel()
-        if (!model) {
-            log.warn("No reranker model available, using BM25 order")
-            return candidates.slice(0, limit).map((c, i) => ({
-                id: c.id,
-                score: c.score || 0,
-                rerankScore: candidates.length - i,
-            }))
-        }
-
-        const language = await Provider.getLanguage(model)
+        const language = await ModelPurpose.language("analysis", query)
         const generateText = await getGenerateText()
 
         // Build prompt with numbered candidates

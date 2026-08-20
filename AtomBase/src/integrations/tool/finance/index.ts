@@ -19,7 +19,7 @@ import { analyzeKlines } from "./technical"
 import { detectAssetType, getAssetTypeEmoji, getAssetTypeName } from "./symbols"
 import type { FinanceAnalysis, AssetType } from "./types"
 import { getGenerateText } from "@/util/util/ai-compat"
-import { Provider } from "../../provider/provider"
+import { ModelPurpose } from "@/core/routing/model-purpose"
 import { Log } from "@/util/util/log"
 import DESCRIPTION from "./finance.txt"
 
@@ -185,82 +185,11 @@ ${dataContext}
  * Public fallback models (atomcli provider - no API key needed)
  * These are used when preferred models (ollama, claude) are unavailable
  */
-const PUBLIC_FALLBACK_MODELS = [
-    // Risk Analyst fallbacks
-    "minimax-m2.1-free",
-    "glm-4.7-free",
-    // Strategy Analyst fallbacks
-    "deepseek-v3",
-    "big-pickle",
-    // Coordinator fallbacks
-    "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gpt-4o-mini"
-]
-
-async function resolveModel(preferredIds: string[]) {
-    try {
-        const providers = await Provider.list()
-        const allModels = Object.values(providers).flatMap(p => Object.values(p.models))
-
-        // First, try preferred models
-        for (const id of preferredIds) {
-            const model = allModels.find(m => m.id === id || m.id.includes(id))
-            if (model) {
-                log.info("Resolved model", { preferred: id, found: model.id })
-                return model
-            }
-        }
-
-        log.warn("Preferred models not found, trying public fallbacks...", { preferred: preferredIds })
-
-        // Second, try public fallback models (atomcli provider)
-        for (const fallbackId of PUBLIC_FALLBACK_MODELS) {
-            const model = allModels.find(m =>
-                m.id === fallbackId ||
-                m.id.includes(fallbackId) ||
-                (m.providerID === "atomcli" && m.id.includes(fallbackId.replace("-free", "")))
-            )
-            if (model) {
-                log.info("Using public fallback model", { model: model.id, provider: model.providerID })
-                return model
-            }
-        }
-
-        // Third, try any available gemini or gpt model
-        const anyGemini = allModels.find(m => m.id.includes("gemini"))
-        if (anyGemini) {
-            log.info("Using any available Gemini model", { model: anyGemini.id })
-            return anyGemini
-        }
-
-        const anyGpt = allModels.find(m => m.id.includes("gpt"))
-        if (anyGpt) {
-            log.info("Using any available GPT model", { model: anyGpt.id })
-            return anyGpt
-        }
-
-        // Last resort: first available model
-        if (allModels.length > 0) {
-            log.warn("Using first available model as last resort", { model: allModels[0].id })
-            return allModels[0]
-        }
-
-        return undefined
-    } catch (error) {
-        log.error("Failed to resolve model", { error })
-        return undefined
-    }
-}
-
 async function runAnalysis(role: string, preferredModels: string[], systemPrompt: string, userContent: string): Promise<string> {
     try {
-        const model = await resolveModel(preferredModels)
-        if (!model) throw new Error(`Model not found for ${role}`)
+        const languageModel = await ModelPurpose.language("analysis", `${role}\n${userContent.slice(0, 2_000)}`)
 
-        const languageModel = await Provider.getLanguage(model)
-
-        log.info(`Running ${role} analysis`, { model: model.id })
+        log.info(`Running ${role} analysis`, { routed: true })
 
         const generateText = await getGenerateText()
         const { text } = await generateText({

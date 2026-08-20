@@ -1,5 +1,5 @@
 import { Log } from "@/util/util/log"
-import { Provider } from "@/integrations/provider/provider"
+import { ModelPurpose } from "@/core/routing/model-purpose"
 import { getStreamText } from "@/util/util/ai-compat"
 import { z } from "zod"
 import { MessageV2 } from "@/core/session/message-v2"
@@ -22,36 +22,6 @@ export const SessionRetrospectiveSchema = z.object({
 export type SessionRetrospective = z.infer<typeof SessionRetrospectiveSchema>
 
 export class SessionRetrospectiveService {
-    /**
-     * Sequence of models to use for retrospective analysis, 
-     * exactly as requested by the user.
-     */
-    private static readonly FALLBACK_CHAIN = [
-        { provider: "atomcli", model: "minimax-m2.5-free" },
-        { provider: "atomcli", model: "glm-5-free" },
-        { provider: "atomcli", model: "trinity-large-preview-free" },
-        { provider: "atomcli", model: "gpt-5-nano" },
-        { provider: "atomcli", model: "big-pickle" },
-    ]
-
-    /**
-     * Attempts to get a working model starting from minimax and falling back
-     */
-    private static async getWorkingModel() {
-        for (const entry of this.FALLBACK_CHAIN) {
-            try {
-                const model = await Provider.getModel(entry.provider, entry.model)
-                if (model) {
-                    log.info(`Selected retrospective model: ${entry.provider}/${entry.model}`)
-                    return model
-                }
-            } catch (e) {
-                log.warn(`Fallback model ${entry.provider}/${entry.model} failed, trying next...`)
-            }
-        }
-        throw new Error("All retrospective fallback models failed")
-    }
-
     /**
      * Analyze the session messages and extract memories
      */
@@ -89,8 +59,7 @@ export class SessionRetrospectiveService {
             }
 
             // 2. Get LLM Model
-            const model = await this.getWorkingModel()
-            const language = await Provider.getLanguage(model)
+            const language = await ModelPurpose.language("analysis", conversationDump.slice(0, 2_000))
             const streamText = await getStreamText()
 
             // 3. System Prompt
