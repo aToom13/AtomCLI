@@ -1,0 +1,16 @@
+{
+  "name": "atomcli-core",
+  "version": "1",
+  "cases": [
+    { "id": "small-bug-fix", "category": "coding", "prompt": "Fix a small deterministic bug and run its focused test.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
+    { "id": "multi-file-refactor", "category": "coding", "prompt": "Refactor a feature across multiple files without changing its public behavior.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 1, "maxRetries": 1 },
+    { "id": "test-authoring", "category": "coding", "prompt": "Add regression coverage for an existing behavior and execute it.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
+    { "id": "provider-audit", "category": "analysis", "prompt": "Audit a provider implementation and report evidence-backed compatibility findings.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 0, "maxRetries": 1 },
+    { "id": "browser-workflow", "category": "general", "prompt": "Navigate a web UI with stable references and inspect accessibility and network output.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 1, "maxRetries": 1 },
+    { "id": "auth-risk-change", "category": "coding", "prompt": "Make a bounded authentication change and independently verify the security-sensitive diff.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
+    { "id": "large-repo-discovery", "category": "analysis", "prompt": "Find the relevant implementation and tests in a large repository without broad file dumping.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 0, "maxRetries": 1 },
+    { "id": "tool-error-recovery", "category": "coding", "prompt": "Recover from one intentionally invalid tool target by gathering new evidence and changing strategy.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 1, "maxRetries": 1 },
+    { "id": "resume-checkpoint", "category": "coding", "prompt": "Resume a partially completed workflow from its checkpoint without repeating completed work.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
+    { "id": "agent-coordination", "category": "analysis", "prompt": "Coordinate dependent agents, preserve evidence, and resolve conflicting findings.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 0, "maxRetries": 1 }
+  ]
+}

@@ -148,10 +148,15 @@ describe("model-router - selectCandidates (Degradation Ladder)", () => {
     }
 
     expect(modelIsRoutable(missingLimits)).toBe(false)
-    expect(selectCandidates([
-      ["missing-limits", missingLimits],
-      ["valid", baseModel],
-    ], "general").map(([id]) => id)).toEqual(["valid"])
+    expect(
+      selectCandidates(
+        [
+          ["missing-limits", missingLimits],
+          ["valid", baseModel],
+        ],
+        "general",
+      ).map(([id]) => id),
+    ).toEqual(["valid"])
     expect(() => selectCandidates([["missing-limits", missingLimits]], "general")).toThrow("NoFreeModelsError")
   })
 
@@ -348,6 +353,28 @@ describe("model-router - selectModelInternal", () => {
     // noToolcall fails categoryHardOk for coding (no toolcall), but falls back via Tier 2 (general)
     const ids = result.ranked.map((r) => r.id)
     expect(ids).toContain("smi-tc-model")
+  })
+
+  test("routes read-only repository inspection as tool-using analysis", () => {
+    const withToolcall: Provider.Model = { ...baseModel, id: "inspection-tools" }
+    const withoutToolcall: Provider.Model = {
+      ...baseModel,
+      id: "inspection-no-tools",
+      capabilities: { ...baseModel.capabilities, toolcall: false },
+    }
+    const result = selectModelInternal(
+      "general",
+      [
+        ["inspection-no-tools", withoutToolcall],
+        ["inspection-tools", withToolcall],
+      ],
+      "balanced",
+      0,
+      undefined,
+      "Auth kodunu incele ve testleri bul, dosyaları değiştirme",
+    )
+    expect(result.selected.id).toBe("inspection-tools")
+    expect(result.ranked.map((item) => item.id)).not.toContain("inspection-no-tools")
   })
 })
 

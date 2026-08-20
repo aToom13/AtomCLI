@@ -49,6 +49,7 @@ refs/
 **/.atomcli/plan/
 **/.atomcli/plans/
 **/.atomcli/runs/
+**/.atomcli/reports/
 
 # Build and release outputs
 dist/
@@ -66,9 +67,20 @@ release_bin/
 
 # Test, documentation, and generated working output
 coverage/
+.nyc_output/
+*.lcov
+test-results/
+playwright-report/
+blob-report/
+junit*.xml
 .screenshots/
 docs/plans/
 AtomBase/Testcli/
+benchmark-results/
+eval-results/
+
+# Local release helper (never commit)
+.local-release-v3.3.9.sh
 dependabot-open.jsonl
 simulate-harness*.log
 sst-env.d.ts

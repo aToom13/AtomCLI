@@ -703,6 +703,14 @@ export class Config extends HeyApiClient {
          * Maximum consecutive FAIL verdicts before the review gate escalates to the user
          */
         max_attempts?: number
+        /**
+         * Run independent review only for high-risk edits, for every edit, or never
+         */
+        policy?: "adaptive" | "always" | "off"
+        /**
+         * Additional regular expressions that mark edited paths as high risk
+         */
+        high_risk_patterns?: Array<string>
         [key: string]: unknown
       }
       provider?: {
@@ -843,6 +851,10 @@ export class Config extends HeyApiClient {
             analysis?: string
             general?: string
           }
+          /**
+           * Controlled probability of exploring a non-top model; zero keeps routing deterministic
+           */
+          exploration_rate?: number
         }
         /**
          * Timeout in milliseconds for model context protocol (MCP) requests

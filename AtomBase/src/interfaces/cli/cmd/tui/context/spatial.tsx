@@ -1,11 +1,37 @@
 import type { JSX } from "solid-js"
-import { createContext, createSignal, onCleanup, useContext, createEffect, onMount, Show } from "solid-js"
+import { createContext, createSignal, onCleanup, useContext, createEffect } from "solid-js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { Log } from "@/util/util/log"
-import { useTheme } from "./theme"
 
 const log = Log.create({ service: "tui-spatial" })
+
+export namespace SpatialGeometry {
+    export interface Bounds {
+        x: number
+        y: number
+        width: number
+        height: number
+    }
+
+    export function bounds(node: any): Bounds {
+        return {
+            x: typeof node?.screenX === "number" ? node.screenX : (node?.x ?? 0),
+            y: typeof node?.screenY === "number" ? node.screenY : (node?.y ?? 0),
+            width: node?.width ?? 0,
+            height: node?.height ?? 0,
+        }
+    }
+
+    export function contains(bounds: Bounds, point: { x: number; y: number }) {
+        return (
+            point.x >= bounds.x &&
+            point.x < bounds.x + bounds.width &&
+            point.y >= bounds.y &&
+            point.y < bounds.y + bounds.height
+        )
+    }
+}
 
 export type FocusableElement = {
     id: string
@@ -28,19 +54,14 @@ const SpatialLayerContext = createContext<number>(0)
 
 export function SpatialLayer(props: { children: JSX.Element }) {
     const parentLayer = useContext(SpatialLayerContext) || 0
-    return (
-        <SpatialLayerContext.Provider value={parentLayer + 1}>
-            {props.children}
-        </SpatialLayerContext.Provider>
-    )
+    return <SpatialLayerContext.Provider value={parentLayer + 1}>{props.children}</SpatialLayerContext.Provider>
 }
 
 export function SpatialProvider(props: { children: JSX.Element }) {
     const [focusedId, setFocusedId] = createSignal<string | null>(null)
     const [elements, setElements] = createSignal<Map<string, FocusableElement>>(new Map())
-    const [cursorPos, setCursorPos] = createSignal<{ x: number, y: number } | null>(null)
+    const [cursorPos, setCursorPos] = createSignal<{ x: number; y: number } | null>(null)
     const renderer = useRenderer()
-    const { theme } = useTheme()
 
     const register = (element: FocusableElement) => {
         setElements((prev) => {
@@ -69,13 +90,9 @@ export function SpatialProvider(props: { children: JSX.Element }) {
     // Calculates center X, Y coordinates of an element on screen using absolute points
     const getCenter = (node: any) => {
         try {
-            if (!node || typeof node.x !== "number") return null
-            return {
-                x: node.x + (node.width / 2),
-                y: node.y + (node.height / 2),
-                width: node.width,
-                height: node.height
-            }
+            if (!node || (typeof node.screenX !== "number" && typeof node.x !== "number")) return null
+            const bounds = SpatialGeometry.bounds(node)
+            return { ...bounds, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
         } catch (e) {
             log.error("Failed to calculate center", { error: String(e) })
             return null
@@ -98,10 +115,13 @@ export function SpatialProvider(props: { children: JSX.Element }) {
         if (!currentPos) {
             let startEl = focusedId() ? currentElements.get(focusedId()!) : undefined
             if (!startEl || startEl.layer !== maxLayer || !startEl.ref || startEl.ref.width === 0) {
-                startEl = Array.from(currentElements.values()).find(e => !e.disabled && e.layer === maxLayer && e.ref?.width > 0)
+                startEl = Array.from(currentElements.values()).find(
+                    (e) => !e.disabled && e.layer === maxLayer && e.ref?.width > 0,
+                )
             }
             if (startEl && startEl.ref) {
-                currentPos = { x: startEl.ref.x + Math.floor(startEl.ref.width / 2), y: startEl.ref.y + Math.floor(startEl.ref.height / 2) }
+                const bounds = SpatialGeometry.bounds(startEl.ref)
+                currentPos = { x: bounds.x + Math.floor(bounds.width / 2), y: bounds.y + Math.floor(bounds.height / 2) }
             } else {
                 currentPos = { x: 2, y: 2 }
             }
@@ -129,10 +149,10 @@ export function SpatialProvider(props: { children: JSX.Element }) {
             if (element.disabled || element.layer !== maxLayer) continue
             const ref = element.ref
             if (!ref || ref.width === 0) continue
+            const bounds = SpatialGeometry.bounds(ref)
 
             // AABB Collision Detection against cell area
-            if (newX >= ref.x && newX < ref.x + ref.width &&
-                newY >= ref.y && newY < ref.y + ref.height) {
+            if (SpatialGeometry.contains(bounds, { x: newX, y: newY })) {
                 collidedId = id
                 break
             }
@@ -149,10 +169,12 @@ export function SpatialProvider(props: { children: JSX.Element }) {
                         const sb = parent as ScrollBoxRenderable
                         const viewport = sb.viewport
                         if (viewport) {
-                            const vTop = viewport.y
-                            const vBottom = viewport.y + viewport.height
-                            const elTop = el.ref.y
-                            const elBottom = el.ref.y + el.ref.height
+                            const viewportBounds = SpatialGeometry.bounds(viewport)
+                            const vTop = viewportBounds.y
+                            const vBottom = viewportBounds.y + viewportBounds.height
+                            const bounds = SpatialGeometry.bounds(el.ref)
+                            const elTop = bounds.y
+                            const elBottom = bounds.y + bounds.height
 
                             if (elTop < vTop) {
                                 sb.scrollTo(sb.scrollTop - (vTop - elTop))
@@ -174,10 +196,22 @@ export function SpatialProvider(props: { children: JSX.Element }) {
         if (e.meta || e.option) {
             let handled = false
             const multiplier = e.shift ? 4 : 1
-            if (e.name === "up") { navigate("up", multiplier); handled = true }
-            if (e.name === "down") { navigate("down", multiplier); handled = true }
-            if (e.name === "left") { navigate("left", multiplier); handled = true }
-            if (e.name === "right") { navigate("right", multiplier); handled = true }
+            if (e.name === "up") {
+                navigate("up", multiplier)
+                handled = true
+            }
+            if (e.name === "down") {
+                navigate("down", multiplier)
+                handled = true
+            }
+            if (e.name === "left") {
+                navigate("left", multiplier)
+                handled = true
+            }
+            if (e.name === "right") {
+                navigate("right", multiplier)
+                handled = true
+            }
 
             if (handled) {
                 e.preventDefault()
@@ -203,88 +237,18 @@ export function SpatialProvider(props: { children: JSX.Element }) {
     })
 
     const state = {
-        get focusedId() { return focusedId() },
-        get elements() { return elements() },
+        get focusedId() {
+            return focusedId()
+        },
+        get elements() {
+            return elements()
+        },
         register,
         unregister,
-        focus: setFocusedId
+        focus: setFocusedId,
     }
 
-    return (
-        <SpatialContext.Provider value={state}>
-            {props.children}
-            <GlowCursor />
-            <Show when={cursorPos()}>
-                <box
-                    position="absolute"
-                    left={cursorPos()!.x}
-                    top={cursorPos()!.y}
-                    width={1}
-                    height={1}
-                    backgroundColor={theme.primary}
-                >
-                    <text fg={theme.background}>+</text>
-                </box>
-            </Show>
-        </SpatialContext.Provider>
-    )
-}
-
-function GlowCursor() {
-    const ctx = useSpatial()
-    const { theme } = useTheme()
-
-    const current = () => {
-        if (!ctx.focusedId) return null
-        return ctx.elements.get(ctx.focusedId)
-    }
-
-    // Keep track of the active layout bounds
-    const [bounds, setBounds] = createSignal({ x: 0, y: 0, width: 0, height: 0 })
-
-    createEffect(() => {
-        const el = current()
-        if (!el || !el.ref) return
-
-        let frameId: Timer
-        const tick = () => {
-            const node = el.ref
-            if (node && typeof node.x === "number") {
-                setBounds(prev => {
-                    if (prev.x !== node.x || prev.y !== node.y || prev.width !== node.width || prev.height !== node.height) {
-                        return { x: node.x, y: node.y, width: node.width, height: node.height }
-                    }
-                    return prev
-                })
-            }
-            frameId = setTimeout(tick, 250) // 4fps checks
-        }
-        tick()
-
-        onCleanup(() => {
-            clearTimeout(frameId)
-        })
-    })
-
-    const isVisible = () => current() && bounds().width > 0
-
-    return (
-        <box
-            position="absolute"
-            left={isVisible() ? bounds().x - 1 : 0}
-            top={isVisible() ? bounds().y - 1 : 0}
-            width={isVisible() ? bounds().width + 2 : 0}
-            height={isVisible() ? bounds().height + 2 : 0}
-            borderStyle="rounded"
-            borderColor="#3b82f6" // Glow color
-            border={isVisible() ? true : false}
-            // Forward clicks that this overlay intercepts to the actual element
-            onMouseUp={() => {
-                const el = current()
-                if (el) el.onPress()
-            }}
-        />
-    )
+    return <SpatialContext.Provider value={state}>{props.children}</SpatialContext.Provider>
 }
 
 export function useSpatial() {
@@ -300,7 +264,6 @@ export function Focusable(props: {
     children: (focused: () => boolean) => JSX.Element
 }) {
     const spatial = useSpatial()
-    const { theme } = useTheme()
     const layer = useContext(SpatialLayerContext) || 0
     let ref: BoxRenderable | undefined
 
@@ -316,7 +279,7 @@ export function Focusable(props: {
             ref,
             onPress: props.onPress,
             disabled: props.disabled,
-            layer
+            layer,
         })
     })
 
@@ -333,7 +296,7 @@ export function Focusable(props: {
                         ref,
                         onPress: props.onPress,
                         disabled: props.disabled,
-                        layer
+                        layer,
                     })
                 }
             }}

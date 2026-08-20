@@ -22,6 +22,9 @@ import { Token } from "@/util/util/token"
 import { HarnessState } from "./harness-state"
 import path from "path"
 import { Instance } from "@/services/project/instance"
+import { ToolReliability } from "@/core/routing/tool-reliability"
+import { RepairPlanner } from "@/core/execution/repair-planner"
+import { AgentEval } from "@/core/eval/harness"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -81,7 +84,9 @@ export namespace SessionProcessor {
         log.info("process")
         needsCompaction = false
         const config = await Config.get()
-        const maxRetries = config.experimental?.chatMaxRetries ?? SessionRetry.DEFAULT_MAX_RETRIES
+        const evalPolicy = AgentEval.executionPolicy(input.sessionID)
+        const maxRetries =
+          evalPolicy.maxRetries ?? config.experimental?.chatMaxRetries ?? SessionRetry.DEFAULT_MAX_RETRIES
 
         // If we have a fallback model from previous iteration, use it
         if (currentFallbackModel) {
@@ -273,6 +278,14 @@ export namespace SessionProcessor {
                       },
                     })
 
+                    void ToolReliability.record({
+                      providerID: streamInput.model.providerID,
+                      modelID: streamInput.model.id,
+                      tool: match.tool,
+                      ok: true,
+                      latencyMs: Math.max(0, Date.now() - match.state.time.start),
+                    }).catch((error) => log.warn("failed to record tool success", { error }))
+
                     // Track edited files for system reminder injection
                     if (match.tool === "edit" || match.tool === "write") {
                       // filepath is in the output title (relative path) or metadata.filepath
@@ -293,18 +306,29 @@ export namespace SessionProcessor {
                 case "tool-error": {
                   const match = toolcalls[value.toolCallId]
                   if (match && match.state.status === "running") {
+                    const repairedError = RepairPlanner.annotate(value.error, match.tool)
                     await Session.updatePart({
                       ...match,
                       state: {
                         status: "error",
                         input: normalizeToolInput(value.input),
-                        error: value.error instanceof Error ? value.error.message : String(value.error ?? ""),
+                        error: repairedError,
+                        metadata: { repair: RepairPlanner.classify(value.error, match.tool) },
                         time: {
                           start: match.state.time.start,
                           end: Date.now(),
                         },
                       },
                     })
+
+                    void ToolReliability.record({
+                      providerID: streamInput.model.providerID,
+                      modelID: streamInput.model.id,
+                      tool: match.tool,
+                      ok: false,
+                      latencyMs: Math.max(0, Date.now() - match.state.time.start),
+                      error: repairedError,
+                    }).catch((error) => log.warn("failed to record tool failure", { error }))
 
                     if (
                       value.error instanceof PermissionNext.RejectedError ||
@@ -383,10 +407,12 @@ export namespace SessionProcessor {
                     }
                     snapshot = undefined
                   }
-                  SessionSummary.summarize({
-                    sessionID: input.sessionID,
-                    messageID: input.assistantMessage.parentID,
-                  })
+                  if (evalPolicy.allowAuxiliarySummaries) {
+                    SessionSummary.summarize({
+                      sessionID: input.sessionID,
+                      messageID: input.assistantMessage.parentID,
+                    })
+                  }
 
                   // Auto-save plan output to .atomcli/plan/latest.md for plan agent
                   if (input.assistantMessage.agent === "plan") {
@@ -462,9 +488,12 @@ export namespace SessionProcessor {
                     // Learn from assistant response — fire-and-forget.
                     // This is a background memory operation (LLM API call) and must NOT
                     // block the stream finish path, which is what drives the UI response timer.
-                    SessionMemoryIntegration.learnFromResponse(currentText.text, userMessageText).catch((error) =>
-                      log.error("Failed to learn from assistant response", { error }),
-                    )
+                    if (evalPolicy.allowMemoryLearning) {
+                      SessionMemoryIntegration.learnFromResponse(currentText.text, userMessageText, {
+                        providerID: streamInput.model.providerID,
+                        modelID: streamInput.model.id,
+                      }).catch((error) => log.error("Failed to learn from assistant response", { error }))
+                    }
                   }
                   currentText = undefined
                   break
@@ -507,7 +536,7 @@ export namespace SessionProcessor {
 
               // FALLBACK: On first retryable error, try switching to a fallback model
               // instead of waiting (delay can be 43277s)
-              if (!fallbackAttempted) {
+              if (!fallbackAttempted && AgentEval.allowsModelFallback(input.sessionID)) {
                 try {
                   // Get fallback models from config or dynamically discover available free models
                   const dynamicDefaults = await ModelFallback.getDynamicFallbackModels({

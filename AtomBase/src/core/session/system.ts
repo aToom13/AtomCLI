@@ -15,7 +15,6 @@ import { ContextManifest } from "./context-manifest"
 // Unified prompt system
 import { PromptManager } from "./prompt/manager"
 
-
 import type { Provider } from "@/integrations/provider/provider"
 import { Flag } from "@/interfaces/flag/flag"
 
@@ -38,7 +37,7 @@ export namespace SystemPrompt {
     // Map agent name to PromptManager AgentType
     // Known agent types get their specific prompts; others fall back to "agent"
     const knownAgentTypes = ["agent", "explore", "plan", "build", "checker", "reviewer"] as const
-    type KnownAgent = typeof knownAgentTypes[number]
+    type KnownAgent = (typeof knownAgentTypes)[number]
     const agentType: KnownAgent = knownAgentTypes.includes(agentName as KnownAgent)
       ? (agentName as KnownAgent)
       : "agent"
@@ -58,7 +57,7 @@ export namespace SystemPrompt {
     const dateStr = now.toLocaleString("tr-TR", {
       dateStyle: "full",
       timeStyle: "long",
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     })
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
@@ -102,6 +101,9 @@ export namespace SystemPrompt {
       `<files>`,
       `  ${manifest.tree}`,
       `</files>`,
+      `<semantic_project_map>`,
+      manifest.semantic,
+      `</semantic_project_map>`,
     ].join("\n")
 
     // Get user context from memory
@@ -109,11 +111,13 @@ export namespace SystemPrompt {
     const userContextBlock = userContext ? `\n\n## 🧠 User Memory\n\n${userContext}` : ""
 
     const [skills, mcpStatus] = await Promise.all([Skill.state(), MCP.status()])
-    const skillList = Object.values(skills).map(s => `  - ${s.name}: ${s.description}`).join("\n")
+    const skillList = Object.values(skills)
+      .map((s) => `  - ${s.name}: ${s.description}`)
+      .join("\n")
     const connectedMcps = Object.entries(mcpStatus)
       .filter(([_, status]) => status.status === "connected")
       .map(([name, _]) => name)
-    const mcpList = connectedMcps.map(name => `  - ${name}`).join("\n")
+    const mcpList = connectedMcps.map((name) => `  - ${name}`).join("\n")
 
     // Build MCP usage instructions based on connected servers
     const mcpInstructions: string[] = []
@@ -166,7 +170,7 @@ This helps you think through problems systematically before acting.
       `<mcp_servers>`,
       mcpList || "  (No MCP servers connected)",
       `</mcp_servers>`,
-      ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : [])
+      ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : []),
     ].join("\n")
 
     return [envBlock + userContextBlock, skillsMcpBlock]

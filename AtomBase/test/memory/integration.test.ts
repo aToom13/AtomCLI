@@ -1,11 +1,12 @@
 /**
  * Memory Integration Tests
- * 
+ *
  * Tests for session memory integration
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { SessionMemoryIntegration } from "@/core/memory/integration/session"
+import { SemanticLearningService } from "@/core/memory/integration/semantic-learning"
 import { getUserProfile } from "@/core/memory/services/user-profile"
 import { getPreferencesService } from "@/core/memory/services/preferences"
 import os from "os"
@@ -27,20 +28,37 @@ describe("SessionMemoryIntegration", () => {
 
   it("should initialize memory system", async () => {
     await SessionMemoryIntegration.initialize()
-    
+
     const profile = await getUserProfile().getProfile()
     expect(profile).toBeDefined()
     expect(profile.techLevel).toBeDefined()
     expect(["beginner", "junior", "mid", "senior", "expert"]).toContain(profile.techLevel)
   })
 
+  it("forwards the active session model to semantic memory learning", async () => {
+    const model = { providerID: "selected-provider", modelID: "selected-model" }
+    const extract = spyOn(SemanticLearningService, "extractUserInformation").mockResolvedValue({
+      hasInformation: false,
+    })
+    const analyze = spyOn(SemanticLearningService, "analyzeAssistantResponse").mockResolvedValue({})
+    try {
+      await SessionMemoryIntegration.learnFromMessage("I prefer concise answers", model)
+      await SessionMemoryIntegration.learnFromResponse("Understood", "I prefer concise answers", model)
+      expect(extract).toHaveBeenCalledWith("I prefer concise answers", expect.any(Object), model)
+      expect(analyze).toHaveBeenCalledWith("Understood", "I prefer concise answers", model)
+    } finally {
+      extract.mockRestore()
+      analyze.mockRestore()
+    }
+  })
+
   it.skip("should learn user name from message", async () => {
     // NOTE: This test requires actual LLM API calls
     // Run manually with: bun test --only "should learn user name from message"
     await SessionMemoryIntegration.initialize()
-    
+
     await SessionMemoryIntegration.learnFromMessage("Benim adım Ahmet")
-    
+
     const profile = await getUserProfile().getProfile()
     expect(profile.name).toBe("Ahmet")
   })
@@ -48,9 +66,9 @@ describe("SessionMemoryIntegration", () => {
   it.skip("should learn user name from English message", async () => {
     // NOTE: This test requires actual LLM API calls
     await SessionMemoryIntegration.initialize()
-    
+
     await SessionMemoryIntegration.learnFromMessage("My name is John")
-    
+
     // Force reload to get fresh data
     const profile = await getUserProfile().getProfile(true)
     expect(profile.name).toBe("John")
@@ -59,10 +77,10 @@ describe("SessionMemoryIntegration", () => {
   it.skip("should learn from assistant response", async () => {
     // NOTE: This test requires actual LLM API calls
     await SessionMemoryIntegration.initialize()
-    
+
     // Simulate AI acknowledging a name
     await SessionMemoryIntegration.learnFromResponse("Tamam, adın Mehmet olarak kayıtlı.")
-    
+
     const profile = await getUserProfile().getProfile(true)
     expect(profile.name).toBe("Mehmet")
   })
@@ -70,12 +88,12 @@ describe("SessionMemoryIntegration", () => {
   it.skip("should process conversation turn", async () => {
     // NOTE: This test requires actual LLM API calls
     await SessionMemoryIntegration.initialize()
-    
+
     await SessionMemoryIntegration.processConversationTurn(
       "Benim adım Ayşe",
-      "Merhaba Ayşe! Nasıl yardımcı olabilirim?"
+      "Merhaba Ayşe! Nasıl yardımcı olabilirim?",
     )
-    
+
     const profile = await getUserProfile().getProfile(true)
     expect(profile.name).toBe("Ayşe")
     expect(profile.totalInteractions).toBeGreaterThan(0)
@@ -85,9 +103,9 @@ describe("SessionMemoryIntegration", () => {
     // NOTE: This test requires actual LLM API calls
     await SessionMemoryIntegration.initialize()
     await SessionMemoryIntegration.learnFromMessage("My name is Alice")
-    
+
     const context = await SessionMemoryIntegration.getUserContext()
-    
+
     expect(context).toContain("Alice")
     expect(context).toContain("Tech Level")
     expect(context).toContain("Communication Style")
@@ -95,21 +113,21 @@ describe("SessionMemoryIntegration", () => {
 
   it("should learn code style from TypeScript code", async () => {
     await SessionMemoryIntegration.initialize()
-    
+
     const code = `
 function hello() {
   const name = "world";
   console.log("Hello, " + name);
 }
 `
-    
+
     await SessionMemoryIntegration.learnCodeStyle(code, "typescript")
-    
+
     const prefs = getPreferencesService()
     const indentStyle = await prefs.get("code_style", "indent_style")
     const quoteStyle = await prefs.get("code_style", "quote_style")
     const semicolons = await prefs.get("code_style", "semicolons")
-    
+
     expect(indentStyle?.value).toBe("space")
     expect(quoteStyle?.value).toBe("double")
     expect(semicolons?.value).toBe(true)
@@ -117,19 +135,19 @@ function hello() {
 
   it("should track project work", async () => {
     await SessionMemoryIntegration.initialize()
-    
+
     await SessionMemoryIntegration.trackProject("MyProject")
-    
+
     const profile = await getUserProfile().getProfile()
     expect(profile.recentlyWorkedOn).toContain("MyProject")
   })
 
   it("should add interests", async () => {
     await SessionMemoryIntegration.initialize()
-    
+
     await SessionMemoryIntegration.addInterest("React")
     await SessionMemoryIntegration.addInterest("TypeScript")
-    
+
     const profile = await getUserProfile().getProfile()
     expect(profile.interests).toContain("React")
     expect(profile.interests).toContain("TypeScript")
@@ -137,9 +155,9 @@ function hello() {
 
   it("should get style guide", async () => {
     await SessionMemoryIntegration.initialize()
-    
+
     const styleGuide = await SessionMemoryIntegration.getStyleGuide()
-    
+
     expect(styleGuide).toBeDefined()
     expect(styleGuide.indent).toBeDefined()
     expect(styleGuide.quotes).toBeDefined()

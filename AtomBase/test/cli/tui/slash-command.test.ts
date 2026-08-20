@@ -54,6 +54,25 @@ describe("TUI slash commands", () => {
     expect(homeSession).not.toContain("session transcript")
   })
 
+  test("shows only thinking levels supported by the active model", () => {
+    const openAICompatible = { ...active, thinkingLevels: ["low", "medium", "high"] }
+    expect(SlashCommand.suggestions("model think ", openAICompatible).map((item) => item.value)).toEqual([
+      "model think low",
+      "model think medium",
+      "model think high",
+      "model think off",
+    ])
+    expect(SlashCommand.parse("/model think xhigh", openAICompatible)).toBeUndefined()
+    expect(SlashCommand.parse("/model think high", openAICompatible)?.arguments).toBe("high")
+  })
+
+  test("keeps reset available when the active model has no configurable thinking level", () => {
+    const fixedReasoning = { ...active, thinkingLevels: [] }
+    expect(SlashCommand.suggestions("model think ", fixedReasoning).map((item) => item.value)).toEqual([
+      "model think off",
+    ])
+  })
+
   test("parses grouped actions and useful defaults", () => {
     expect(SlashCommand.parse("/session", active)?.command.action).toBe("session.list")
     expect(SlashCommand.parse("/session compact", active)?.command.action).toBe("session.compact")

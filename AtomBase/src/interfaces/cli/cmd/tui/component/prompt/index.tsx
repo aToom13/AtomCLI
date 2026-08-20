@@ -43,6 +43,7 @@ export type PromptProps = {
   hint?: JSX.Element
   showPlaceholder?: boolean
   width?: number
+  onAutocompleteChange?: (visible: false | "@" | "/") => void
 }
 
 export type PromptRef = {
@@ -589,10 +590,14 @@ export function Prompt(props: PromptProps) {
           })
           return
         }
-        if (!valid.includes(level)) {
+        const supported = local.model.variant.list()
+        if (!valid.includes(level) || (level !== "off" && !supported.includes(level))) {
           toast.show({
             title: "Thinking level",
-            message: `Invalid level '${level}'. Allowed: ${valid.join(", ")}`,
+            message:
+              supported.length === 0
+                ? "The selected model does not expose configurable thinking levels"
+                : `Level '${level}' is not supported. Available: ${[...supported, "off"].join(", ")}`,
             variant: "warning",
           })
           return
@@ -626,6 +631,7 @@ export function Prompt(props: PromptProps) {
     const builtin = SlashCommand.parse(trimmed, {
       session: !!props.sessionID,
       sharing: sync.data.config.share !== "disabled",
+      thinkingLevels: local.model.variant.list(),
     })
     if (builtin) {
       await executeSlashCommand(builtin.command, builtin.arguments)
@@ -918,6 +924,8 @@ export function Prompt(props: PromptProps) {
         agentStyleId={agentStyleId}
         promptPartTypeId={() => promptPartTypeId}
         onSlashCommand={(info, argumentsText) => void executeSlashCommand(info, argumentsText)}
+        onVisibilityChange={props.onAutocompleteChange}
+        thinkingLevels={() => local.model.variant.list()}
       />
       <box ref={(r) => (anchor = r)} visible={props.visible !== false}>
         <box

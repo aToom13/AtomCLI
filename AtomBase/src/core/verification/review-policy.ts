@@ -1,4 +1,5 @@
 export namespace ReviewPolicy {
+  type Impact = import("./change-impact").ChangeImpact.Report
   export type Risk = "low" | "medium" | "high"
   export interface Input {
     editedFiles?: string[]
@@ -6,6 +7,8 @@ export namespace ReviewPolicy {
     retries?: number
     testsFailed?: boolean
     extraHighRiskPatterns?: string[]
+    diff?: string
+    impact?: Impact
   }
 
   const HIGH_RISK = [
@@ -24,12 +27,17 @@ export namespace ReviewPolicy {
   export function assess(input: Input): Risk {
     const files = input.editedFiles ?? []
     if (files.length === 0) return "low"
-    if (input.testsFailed || (input.retries ?? 0) >= 2) return "high"
+    if (input.testsFailed || (input.retries ?? 0) >= 2 || input.impact?.level === "high") return "high"
     const custom = (input.extraHighRiskPatterns ?? []).flatMap((value) => {
-      try { return [new RegExp(value, "i")] } catch { return [] }
+      try {
+        return [new RegExp(value, "i")]
+      } catch {
+        return []
+      }
     })
     const text = `${files.join("\n")}\n${input.prompt ?? ""}`
     if ([...HIGH_RISK, ...custom].some((pattern) => pattern.test(text))) return "high"
+    if (/^-\s*(?:if|throw|return).*?(?:auth|permission|validate|sanitize|check)/im.test(input.diff ?? "")) return "high"
     return "medium"
   }
 

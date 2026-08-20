@@ -54,6 +54,8 @@ Run `atomcli <command> --help` for the current options. The complete top-level c
 
 Inside the interactive TUI, use `/model` or `/models` to open the model picker. The picker supports search by model name, ID, provider, and capability; it also exposes favorites and free/reasoning filters. OAuth-backed ChatGPT/Codex models are marked as subscription models rather than free models.
 
+Use `/model think` to select a reasoning level. The menu is derived from the active model, so unsupported levels are not offered. `/model visibility` only controls whether reasoning output is shown; it does not change the model's reasoning level.
+
 Useful commands include:
 
 ```sh
@@ -113,6 +115,14 @@ bun run dev
 bun run typecheck
 MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
 ```
+
+The agent-quality benchmark is separate from the deterministic unit test suite. Reporting existing benchmark observations is read-only:
+
+```sh
+bun run dev -- eval benchmark
+```
+
+Passing `--execute` runs model-driven cases in the current Git workspace and can take substantially longer. It is not required for normal development validation.
 
 From the repository root, validate all workspace packages with `bun turbo typecheck` and `bun turbo test`.
 

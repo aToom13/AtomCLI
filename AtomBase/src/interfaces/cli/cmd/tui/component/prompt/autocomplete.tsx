@@ -76,6 +76,8 @@ export function Autocomplete(props: {
   agentStyleId: number
   promptPartTypeId: () => number
   onSlashCommand: (command: SlashCommand.Info, argumentsText?: string) => void
+  onVisibilityChange?: (visible: false | "@" | "/") => void
+  thinkingLevels?: () => string[]
 }) {
   const sdk = useSDK()
   const sync = useSync()
@@ -356,6 +358,7 @@ export function Autocomplete(props: {
     return {
       session: Boolean(session()),
       sharing: sync.data.config.share !== "disabled",
+      thinkingLevels: props.thinkingLevels?.(),
     }
   }
 
@@ -484,8 +487,8 @@ export function Autocomplete(props: {
     }
   }
 
-  function select() {
-    const selected = options()[store.selected]
+  function select(index = store.selected) {
+    const selected = options()[index]
     if (!selected) return
     hide()
     selected.onSelect?.()
@@ -518,6 +521,7 @@ export function Autocomplete(props: {
       visible: mode,
       index,
     })
+    props.onVisibilityChange?.(mode)
   }
 
   function hide() {
@@ -532,9 +536,14 @@ export function Autocomplete(props: {
     }
     command.keybinds(true)
     setStore("visible", false)
+    props.onVisibilityChange?.(false)
   }
 
   onMount(() => {
+    onCleanup(() => {
+      command.keybinds(true)
+      props.onVisibilityChange?.(false)
+    })
     props.ref({
       get visible() {
         return store.visible
@@ -625,7 +634,8 @@ export function Autocomplete(props: {
       top={position().y - height()}
       left={position().x}
       width={position().width}
-      zIndex={100}
+      zIndex={10_000}
+      backgroundColor={theme.backgroundMenu}
       {...SplitBorder}
       borderColor={theme.border}
     >
@@ -650,7 +660,7 @@ export function Autocomplete(props: {
               backgroundColor={index === store.selected ? theme.primary : undefined}
               flexDirection="row"
               onMouseOver={() => moveTo(index)}
-              onMouseUp={() => select()}
+              onMouseUp={() => select(index)}
             >
               <text fg={index === store.selected ? selectedForeground(theme) : theme.text} flexShrink={0}>
                 {option().display}

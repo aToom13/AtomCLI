@@ -1,6 +1,6 @@
 /**
  * Semantic Learning - LLM-based Memory Extraction
- * 
+ *
  * Uses LLM to understand and extract information from conversations
  * instead of rigid regex patterns.
  */
@@ -9,6 +9,7 @@ import { Log } from "@/util/util/log"
 import { ModelPurpose } from "@/core/routing/model-purpose"
 import { getStreamText } from "@/util/util/ai-compat"
 import { z } from "zod"
+import { Provider } from "@/integrations/provider/provider"
 
 const log = Log.create({ service: "memory.semantic-learning" })
 
@@ -22,18 +23,28 @@ const log = Log.create({ service: "memory.semantic-learning" })
 export const UserInformationSchema = z.object({
   hasInformation: z.boolean().describe("Whether the message contains user information"),
   name: z.string().optional().describe("User's name if mentioned"),
-  preferences: z.array(z.object({
-    category: z.enum(["code_style", "communication", "tool_usage", "workflow", "language"]),
-    key: z.string(),
-    value: z.any(),
-    confidence: z.number().min(0).max(1),
-  })).optional().describe("User preferences mentioned"),
+  preferences: z
+    .array(
+      z.object({
+        category: z.enum(["code_style", "communication", "tool_usage", "workflow", "language"]),
+        key: z.string(),
+        value: z.any(),
+        confidence: z.number().min(0).max(1),
+      }),
+    )
+    .optional()
+    .describe("User preferences mentioned"),
   interests: z.array(z.string()).optional().describe("Topics or technologies user is interested in"),
-  corrections: z.array(z.object({
-    field: z.string(),
-    oldValue: z.string(),
-    newValue: z.string(),
-  })).optional().describe("Corrections to previously stored information"),
+  corrections: z
+    .array(
+      z.object({
+        field: z.string(),
+        oldValue: z.string(),
+        newValue: z.string(),
+      }),
+    )
+    .optional()
+    .describe("Corrections to previously stored information"),
 })
 
 export type UserInformation = z.infer<typeof UserInformationSchema>
@@ -43,6 +54,12 @@ export type UserInformation = z.infer<typeof UserInformationSchema>
 // ============================================================================
 
 export class SemanticLearningService {
+  private static async language(prompt: string, model?: { providerID: string; modelID: string }) {
+    if (!model) return ModelPurpose.language("analysis", prompt)
+    const selected = await Provider.getModel(model.providerID, model.modelID)
+    return Provider.getLanguage(selected)
+  }
+
   /**
    * Extract user information from a message using LLM
    */
@@ -51,10 +68,11 @@ export class SemanticLearningService {
     context?: {
       currentName?: string
       recentMessages?: string[]
-    }
+    },
+    model?: { providerID: string; modelID: string },
   ): Promise<UserInformation> {
     try {
-      const language = await ModelPurpose.language("analysis", message)
+      const language = await this.language(message, model)
       const streamText = await getStreamText()
 
       const systemPrompt = `You are a memory extraction assistant. Your job is to analyze user messages and extract personal information, preferences, and corrections.
@@ -112,8 +130,8 @@ Now analyze this message:`
       // Try to parse as JSON
       try {
         // Extract JSON from markdown code blocks if present
-        const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) ||
-          responseText.match(/(\{[\s\S]*\})/)
+        const jsonMatch =
+          responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || responseText.match(/(\{[\s\S]*\})/)
 
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[1])
@@ -127,7 +145,6 @@ Now analyze this message:`
       return {
         hasInformation: false,
       }
-
     } catch (error) {
       log.error("Failed to extract user information", { error })
       return {
@@ -141,13 +158,14 @@ Now analyze this message:`
    */
   static async analyzeAssistantResponse(
     response: string,
-    userMessage: string
+    userMessage: string,
+    model?: { providerID: string; modelID: string },
   ): Promise<{
     confirmedName?: string
     acknowledgedPreferences?: string[]
   }> {
     try {
-      const language = await ModelPurpose.language("analysis", `${userMessage}\n${response}`)
+      const language = await this.language(`${userMessage}\n${response}`, model)
       const streamText = await getStreamText()
 
       const systemPrompt = `You are analyzing an AI assistant's response to determine what information it acknowledged or confirmed about the user.
@@ -176,7 +194,7 @@ Now analyze:`
           { role: "system", content: systemPrompt },
           {
             role: "user",
-            content: `User said: "${userMessage}"\nAssistant replied: "${response}"\n\nWhat did the assistant confirm?`
+            content: `User said: "${userMessage}"\nAssistant replied: "${response}"\n\nWhat did the assistant confirm?`,
           },
         ],
         temperature: 0.1,
@@ -195,7 +213,6 @@ Now analyze:`
         confirmedName: nameMatch ? nameMatch[1] : undefined,
         acknowledgedPreferences: [],
       }
-
     } catch (error) {
       log.error("Failed to analyze assistant response", { error })
       return {}
@@ -214,7 +231,7 @@ Now analyze:`
       /söyler misin/i,
     ]
 
-    return questionPatterns.some(pattern => pattern.test(message.trim()))
+    return questionPatterns.some((pattern) => pattern.test(message.trim()))
   }
 }
 

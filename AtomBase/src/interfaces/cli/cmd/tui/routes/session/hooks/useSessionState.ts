@@ -123,7 +123,10 @@ export function useSessionState() {
       return new CustomSpeedScroll(tui.scroll_speed)
     }
 
-    return new CustomSpeedScroll(8)
+    // The previous fixed 8-row multiplier made mouse-wheel input look like
+    // frame drops. Use OpenTUI's time-aware acceleration for precise slow
+    // scrolling and faster sustained gestures.
+    return new MacOSScrollAccel({ maxMultiplier: 4 })
   })
 
   return {

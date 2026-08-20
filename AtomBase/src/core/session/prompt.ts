@@ -53,6 +53,7 @@ import { iife } from "@/util/util/iife"
 import { Shell } from "@/interfaces/shell/shell"
 import { Skill } from "@/integrations/skill"
 import { HarnessState } from "./harness-state"
+import { AgentEval } from "@/core/eval/harness"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -570,7 +571,7 @@ export namespace SessionPrompt {
         bypassAgentCheck,
       })
 
-      if (step === 1) {
+      if (step === 1 && AgentEval.executionPolicy(sessionID).allowAuxiliarySummaries) {
         SessionSummary.summarize({
           sessionID: sessionID,
           messageID: lastUser.id,
@@ -667,7 +668,7 @@ export namespace SessionPrompt {
     SessionCompaction.prune({ sessionID })
     const completedMessages: MessageV2.WithParts[] = []
     for await (const item of MessageV2.stream(sessionID)) completedMessages.push(item)
-    if (!session.parentID) MemoryLifecycle.schedule(sessionID, completedMessages)
+    MemoryLifecycle.schedule(sessionID, completedMessages, { retrospective: !session.parentID })
     for (const item of completedMessages) {
       if (item.info.role === "user") continue
       const queued = state()[sessionID]?.callbacks ?? []
@@ -1235,9 +1236,9 @@ export namespace SessionPrompt {
       // F13: static import — no dynamic import() in hot path
       const textParts = parts.filter((p) => p.type === "text" && !("synthetic" in p && p.synthetic))
       const userText = textParts.map((p) => (p as any).text).join(" ")
-      if (userText) {
+      if (userText && AgentEval.executionPolicy(input.sessionID).allowMemoryLearning) {
         // Fire-and-forget: don't block prompt processing on memory learning
-        SessionMemoryIntegration.learnFromMessage(userText).catch((error) => {
+        SessionMemoryIntegration.learnFromMessage(userText, info.model).catch((error) => {
           log.error("Failed to learn from user message", { error })
         })
       }
@@ -1823,6 +1824,7 @@ export namespace SessionPrompt {
     providerID: string
     modelID: string
   }) {
+    if (!AgentEval.executionPolicy(input.session.id).allowAuxiliarySummaries) return
     if (input.session.parentID) return
     if (!Session.isDefaultTitle(input.session.title)) return
 

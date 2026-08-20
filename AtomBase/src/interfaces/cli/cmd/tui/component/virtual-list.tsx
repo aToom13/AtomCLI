@@ -1,4 +1,4 @@
-import { createSignal, createMemo, onMount, onCleanup, For, Show } from "solid-js"
+import { createSignal, createMemo, createEffect, onCleanup, For, Show } from "solid-js"
 import type { ScrollBoxRenderable, BoxRenderable } from "@opentui/core"
 
 interface VirtualListProps<T> {
@@ -90,13 +90,19 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   let activeMeasurementKeys = new Map<string, string>()
   let previousData: T[] | undefined
   let previousMeasurementKey: string | number | undefined
+  let measurementFrame = 0
 
   const stableKey = (item: T, index: number) => props.itemKey?.(item, index) ?? String(index)
-  const measuredKey = (item: T, index: number) => `${String(props.measurementKey ?? "default")}\u0000${stableKey(item, index)}`
+  const measuredKey = (item: T, index: number) =>
+    `${String(props.measurementKey ?? "default")}\u0000${stableKey(item, index)}`
 
-  // Poll the scroll container periodically because TUI lacks traditional DOM scroll events
-  onMount(() => {
+  const windowed = createMemo(() => props.data.length >= 30)
+
+  // Poll only while windowing is active because TUI lacks traditional DOM scroll events.
+  createEffect(() => {
+    if (!windowed()) return
     const timer = setInterval(() => {
+      const data = props.data
       const scroll = props.scrollRef()
       if (scroll) {
         if (scrollTop() !== scroll.scrollTop) setScrollTop(Math.max(0, scroll.scrollTop))
@@ -104,12 +110,9 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
         if (viewportHeight() !== height) setViewportHeight(Math.max(1, height))
       }
 
-      const data = props.data
       const layoutKey = props.measurementKey
       if (data !== previousData || layoutKey !== previousMeasurementKey) {
-        activeMeasurementKeys = new Map(
-          data.map((item, index) => [stableKey(item, index), measuredKey(item, index)]),
-        )
+        activeMeasurementKeys = new Map(data.map((item, index) => [stableKey(item, index), measuredKey(item, index)]))
         // Remove measurements only for deleted/re-keyed rows. In particular,
         // appending a streaming message must preserve all earlier measurements.
         VirtualWindow.pruneMeasurements(heightsCache, activeMeasurementKeys.values())
@@ -117,19 +120,24 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
         previousMeasurementKey = layoutKey
       }
 
-      let heightsChanged = false
-      for (const [stableItemKey, ref] of visibleRefs.entries()) {
-        const key = activeMeasurementKeys.get(stableItemKey)
-        if (ref && key) {
-          const h = ref.height
-          if (h > 0 && heightsCache.get(key) !== h) {
-            heightsCache.set(key, h)
-            heightsChanged = true
+      // Scroll position needs responsive sampling for fluid windowing, while
+      // layout measurement is intentionally throttled to avoid extra work.
+      measurementFrame++
+      if (measurementFrame % 2 === 0) {
+        let heightsChanged = false
+        for (const [stableItemKey, ref] of visibleRefs.entries()) {
+          const key = activeMeasurementKeys.get(stableItemKey)
+          if (ref && key) {
+            const h = ref.height
+            if (h > 0 && heightsCache.get(key) !== h) {
+              heightsCache.set(key, h)
+              heightsChanged = true
+            }
           }
         }
+        if (heightsChanged) setHeightsTick((t) => t + 1)
       }
-      if (heightsChanged) setHeightsTick((t) => t + 1)
-    }, 200)
+    }, 32)
     onCleanup(() => clearInterval(timer))
   })
 

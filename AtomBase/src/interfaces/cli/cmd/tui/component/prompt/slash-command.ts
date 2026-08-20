@@ -54,7 +54,7 @@ export namespace SlashCommand {
     expand: boolean
   }
 
-  type Context = { session: boolean; sharing: boolean }
+  type Context = { session: boolean; sharing: boolean; thinkingLevels?: string[] }
 
   const sessionUndo: Info = {
     name: "undo",
@@ -410,7 +410,15 @@ export namespace SlashCommand {
   }
 
   function children(command: Info, context: Context) {
-    return (command.children ?? []).filter((child) => visible(child, context))
+    return (command.children ?? [])
+      .filter(
+        (child) =>
+          command.action !== "think.set" ||
+          child.presetArguments === "off" ||
+          !context.thinkingLevels ||
+          context.thinkingLevels.includes(child.presetArguments ?? child.name),
+      )
+      .filter((child) => visible(child, context))
   }
 
   function visible(command: Info, context: Context): boolean {
@@ -508,6 +516,7 @@ export namespace SlashCommand {
         consumed++
       }
 
+      if (command.action === "think.set" && command.children?.length && consumed < normalized.length) return
       const remaining = tokens.slice(consumed).join(" ")
       if (remaining && command.presetArguments) return
       if (remaining && !command.acceptsArguments) return

@@ -1,38 +1,39 @@
-# AtomCLI v3.3.8
+# AtomCLI v3.3.9
 
-AtomCLI v3.3.8 focuses on a more responsive terminal interface, a clearer model-selection workflow, leaner runtime code, and safer release preparation.
+AtomCLI v3.3.9 improves the reliability of agent workflows, model and provider handling, terminal interaction, evaluation, and regression coverage.
+
+## Agent workflows and context
+
+- Added task-aware model routing that considers required tools, browser use, vision, planning, risk, context size, prior model quality, and tool reliability.
+- Improved shared workflow evidence, conflict reporting, repair guidance, change-impact analysis, and review policy selection.
+- Added a semantic project map so repository inspection can prioritize relevant files, symbols, imports, and tests without broad file dumping.
+- Improved automatic session evaluation while keeping benchmark sessions isolated from model fallback, auxiliary summaries, memory learning, and normal retries.
+- Updated semantic memory learning to use the model selected for the active session instead of a separate hard-coded model.
+
+## Evaluation and regression testing
+
+- Added reproducible benchmark suites, isolated per-case execution, rate-limit detection, progress counters, and durable reports.
+- Strengthened benchmark schema validation so duplicate case identifiers cannot alias observations.
+- Expanded tests for real session-derived signals, including tool calls, test outcomes, review verdicts, retries, tokens, duration, concurrent capture, and failed validation commands.
+- Added coverage for same-size project file changes, deleted files, staged and untracked diffs, symlink boundaries, binary and oversized artifacts, tool reliability scoring, and rate-limit progress output.
+- Improved thinking-level tests so the terminal only offers variants supported by the selected model and rejects unsupported levels instead of reporting false success.
 
 ## Terminal interface
 
-- Reworked responsive layout behavior for the session header, task plan, prompt area, side panels, and short or narrow terminals.
-- Centered dialogs vertically and horizontally while keeping them within the available terminal dimensions.
-- Improved scrolling so the highlighted option remains visible when navigating long lists with the arrow keys.
-- Added clearer keyboard shortcut hints and a more resilient slash-command experience.
+- Improved task-plan sizing, scrolling, hit testing, autocomplete placement, and narrow-terminal behavior.
+- Reduced unnecessary virtual-list polling and improved mouse selection behavior for nested command menus.
+- Prevented the startup artwork from obscuring slash-command results.
+- Added clearer benchmark progress with the active case, attempted-case count, elapsed case time, total elapsed time, errors, and rate-limit termination.
 
-## Model selection
+## Providers and model behavior
 
-- Redesigned the `/model` and `/models` picker with search across model names, identifiers, providers, and capabilities.
-- Added recent and favorite model sections, free-model and reasoning filters, detailed model information, and visible keyboard actions.
-- Marked ChatGPT and Codex OAuth models as subscription access instead of incorrectly presenting them as free.
-- Prevented the model dialog from crashing when selection changes or model metadata is incomplete.
-
-## CLI and reliability
-
-- Removed the unused web dashboard while retaining the headless server and API workflows required by CLI, SDK, ACP, and companion integrations.
-- Added shell completion support, improved file search and session recovery, and strengthened TUI behavior across terminal sizes.
-- Simplified legacy tool registration and consolidated planning progress around TaskFlow.
-- Improved provider catalog handling, configuration precedence, authentication safety, and error recovery.
-
-## Development and release safety
-
-- Updated the project release version to 3.3.8.
-- Added broader CI, platform smoke testing, installer validation, and generated SDK checks.
-- Fixed Windows ARM64 release packaging by including its native file-watcher binding and aligning watcher packages across release targets.
-- Tightened ignore rules so local configuration, credentials, dependencies, logs, plans, runs, session data, build output, and release staging files remain local.
-- Updated repository documentation, development instructions, provider guidance, skill guidance, MCP guidance, prompt architecture, and release hygiene checks.
+- Improved provider compatibility checks, model availability tracking, rate-limit labels, and automatic recovery timing.
+- Kept rate-limited models visible while excluding them from automatic routing until their retry window expires.
+- Prevented benchmark fallback from silently measuring a different model than the one requested.
+- Ensured configurable thinking levels are derived from the active model rather than a global static list.
 
 ## Validation
 
-- Workspace typechecks pass with Bun.
-- The complete workspace test suite passes with the pinned models fixture.
-- Markdown links, skill frontmatter, secret signatures, tracked-ignore conflicts, and release metadata are checked before publishing.
+- AtomBase typechecking and the complete Bun test suite pass with the pinned models fixture.
+- Workspace typechecking and tests pass through Turbo.
+- Release hygiene checks report no tracked files hidden by ignore rules.

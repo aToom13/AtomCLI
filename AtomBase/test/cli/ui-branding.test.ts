@@ -29,7 +29,7 @@ describe("AtomCLI branding", () => {
     expect(UI.Logo.width).toBe(Math.max(...UI.Logo.lines.map((line) => line.length)))
     expect(
       UI.logo()
-        .replaceAll(/\x1b\[[0-9;]*m/g, "")
+        .replaceAll(/\x1b\[[0-9;]*m|\x1b\[38;5;[\x00-\x7f]*m/g, "")
         .split("\n"),
     ).toEqual(UI.Logo.lines)
   })

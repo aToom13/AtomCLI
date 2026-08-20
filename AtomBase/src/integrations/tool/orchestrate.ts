@@ -6,7 +6,7 @@ import { SessionPrompt } from "@/core/session/prompt"
 import { Agent } from "../agent/agent"
 import { MessageV2 } from "@/core/session/message-v2"
 import { Config } from "@/core/config/config"
-import { selectModel, inferCategory, modelIsRoutable, type TaskCategory } from "./model-router"
+import { selectModel, modelIsRoutable, type TaskCategory } from "./model-router"
 import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { SubAgent } from "./subagent"
@@ -19,6 +19,7 @@ import { WorkflowStore } from "@/core/orchestration/workflow-store"
 import { OrchestrationGraph } from "@/core/orchestration/graph"
 import { WorkflowBlackboard } from "@/core/orchestration/blackboard"
 import { ReviewPolicy } from "@/core/verification/review-policy"
+import { TaskProfile } from "@/core/routing/task-profile"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -103,6 +104,7 @@ interface TaskResult {
   completedAt?: number
   sessionId?: string // Child session ID for navigation
   retryCount?: number // Number of retries attempted
+  artifacts?: WorkflowBlackboard.Artifact[]
 }
 
 // In-memory workflow store (per session)
@@ -222,10 +224,7 @@ function preferredModel(
   return explicit ?? configured ?? routed
 }
 
-function canonicalReference(
-  requested: ModelReference,
-  resolved: { options?: Record<string, any> },
-): ModelReference {
+function canonicalReference(requested: ModelReference, resolved: { options?: Record<string, any> }): ModelReference {
   if (requested.providerID !== "atomcli" || !["atomcli-auto", "atomcli-free"].includes(requested.modelID)) {
     // Keep the provider catalog key. A configured alias may expose a different
     // API model id, which cannot be passed back through Provider.getModel().
@@ -308,17 +307,35 @@ function dependencyIds(task: TaskNode, tasks: TaskNode[]): string[] {
 
 function buildDependencyContext(task: TaskNode, workflow: WorkflowState): string {
   const direct = new Set(task.dependsOn)
+  const allArtifacts: WorkflowBlackboard.Artifact[] = []
   const context = dependencyIds(task, workflow.tasks)
     .map((dependencyID) => {
       const output = workflow.results[dependencyID]?.output
       if (!output) return ""
       const relation = direct.has(dependencyID) ? "direct" : "upstream"
-      const artifacts = WorkflowBlackboard.render(WorkflowBlackboard.fromOutput(dependencyID, output))
+      const extracted = workflow.results[dependencyID]?.artifacts ?? WorkflowBlackboard.fromOutput(dependencyID, output)
+      allArtifacts.push(...extracted)
+      const artifacts = WorkflowBlackboard.render(extracted)
       return `<dependency_artifacts task="${escapeXmlText(dependencyID)}" relation="${relation}">\n${escapeXmlText(artifacts)}\n</dependency_artifacts>`
     })
     .filter(Boolean)
     .join("\n\n")
-  return limitText(context, MAX_DEPENDENCY_CONTEXT_BYTES)
+  const conflicts = WorkflowBlackboard.conflicts(allArtifacts)
+  const conflictContext = conflicts.length
+    ? `\n\n<dependency_conflicts>\n${conflicts.map((conflict) => escapeXmlText(`${conflict.key}: ${conflict.artifacts.map((item) => `${item.taskID}=${item.content}`).join(" <> ")}`)).join("\n")}\n</dependency_conflicts>`
+    : ""
+  return limitText(context + conflictContext, MAX_DEPENDENCY_CONTEXT_BYTES)
+}
+
+const AGENT_RESULT_CONTRACT = `At the end, include one machine-readable block using this exact shape (valid JSON, no comments):
+<agent_result>{"summary":"...","facts":[{"key":"stable-key","value":"...","evidence":["file:line or command"]}],"decisions":[{"key":"stable-key","value":"...","evidence":["..."]}],"constraints":[],"openQuestions":[],"editedFiles":[],"tests":[],"failures":[],"confidence":0.0}</agent_result>
+Use confidence between 0 and 1. Keep the normal human-readable answer before the block.`
+
+function humanOutput(output: string) {
+  return output
+    .replace(/<agent_result>\s*[\s\S]*?\s*<\/agent_result>/gi, "")
+    .replace(/```agent-result\s*[\s\S]*?```/gi, "")
+    .trim()
 }
 
 /** Pure investigation does not need a second agent to repeat the same read. */
@@ -383,24 +400,41 @@ function formatWorkflowOutput(workflow: WorkflowState): string {
 // ─── Tool Definition ─────────────────────────────────────────
 
 const TaskSchema = z.object({
-  id: z.string().min(1).max(100).regex(SAFE_ID, "Use letters, numbers, dots, underscores, or hyphens").describe("Unique task identifier"),
+  id: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(SAFE_ID, "Use letters, numbers, dots, underscores, or hyphens")
+    .describe("Unique task identifier"),
   prompt: z.string().min(1).max(100_000).describe("The prompt/instruction for the agent"),
   agent: z.string().max(100).regex(SAFE_ID).optional().describe("Agent type to use (defaults to 'coder')"),
   category: z
     .enum(["coding", "documentation", "analysis", "general"])
     .optional()
     .describe("Task category for smart model routing (auto-inferred from prompt if not specified)"),
-  dependsOn: z.array(z.string().max(100).regex(SAFE_ID)).max(MAX_TASKS).optional().describe("IDs of tasks that must complete before this one"),
+  dependsOn: z
+    .array(z.string().max(100).regex(SAFE_ID))
+    .max(MAX_TASKS)
+    .optional()
+    .describe("IDs of tasks that must complete before this one"),
   model: z
-    .string().max(200)
+    .string()
+    .max(200)
     .optional()
     .describe("Specific model to use (e.g. 'atomcli/minimax-m2.5-free'). If not specified, smart routing is used"),
   sessionId: z.string().max(200).optional().describe("Existing sub-agent session ID to continue (optional)"),
-  owns: z.array(z.string().max(4096)).max(200).optional().describe("Files or path prefixes exclusively owned by this task while it runs"),
-  budget: z.object({
-    maxRetries: z.number().int().min(0).max(10).optional().default(DEFAULT_MAX_RETRIES),
-    maxOutputChars: z.number().int().min(1_000).max(MAX_TASK_OUTPUT_BYTES).optional().default(MAX_TASK_OUTPUT_BYTES),
-  }).optional().describe("Per-task retry and output budget"),
+  owns: z
+    .array(z.string().max(4096))
+    .max(200)
+    .optional()
+    .describe("Files or path prefixes exclusively owned by this task while it runs"),
+  budget: z
+    .object({
+      maxRetries: z.number().int().min(0).max(10).optional().default(DEFAULT_MAX_RETRIES),
+      maxOutputChars: z.number().int().min(1_000).max(MAX_TASK_OUTPUT_BYTES).optional().default(MAX_TASK_OUTPUT_BYTES),
+    })
+    .optional()
+    .describe("Per-task retry and output budget"),
 })
 
 export const OrchestrateTool = Tool.define("orchestrate", {
@@ -408,7 +442,12 @@ export const OrchestrateTool = Tool.define("orchestrate", {
   parameters: z.object({
     action: z.enum(["plan", "execute", "status", "abort"]).describe("Action to perform"),
     tasks: z.array(TaskSchema).max(MAX_TASKS).optional().describe("Task list for 'plan' action"),
-    workflowId: z.string().max(200).regex(SAFE_ID).optional().describe("Workflow ID for 'execute', 'status', and 'abort' actions"),
+    workflowId: z
+      .string()
+      .max(200)
+      .regex(SAFE_ID)
+      .optional()
+      .describe("Workflow ID for 'execute', 'status', and 'abort' actions"),
     sessionId: z.string().max(200).optional().describe("Session ID to abort when action is 'abort'"),
   }),
   async execute(params, ctx): Promise<any> {
@@ -430,7 +469,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           id: t.id,
           prompt: t.prompt,
           agent: t.agent || "coder",
-          category: t.category || inferCategory(t.prompt),
+          category: t.category || TaskProfile.infer(t.prompt).category,
           dependsOn: t.dependsOn || [],
           model: t.model, // Include specified model
           sessionId: t.sessionId, // Include explicit session continuation
@@ -455,7 +494,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
               const b = tasks[j]
               const ordered = dependencyIds(a, tasks).includes(b.id) || dependencyIds(b, tasks).includes(a.id)
               if (ordered) continue
-              const overlap = (a.owns ?? []).find((left) => (b.owns ?? []).some((right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)))
+              const overlap = (a.owns ?? []).find((left) =>
+                (b.owns ?? []).some(
+                  (right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`),
+                ),
+              )
               if (overlap) throw new Error(`Parallel tasks ${a.id} and ${b.id} claim overlapping ownership: ${overlap}`)
             }
           }
@@ -719,7 +762,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 // to integration tasks several layers later.
                 const depContext = buildDependencyContext(task, workflow)
 
-                const fullPrompt = depContext ? `${depContext}\n\n${task.prompt}` : task.prompt
+                const fullPrompt = `${depContext ? `${depContext}\n\n` : ""}${task.prompt}\n\n${AGENT_RESULT_CONTRACT}`
 
                 // Subagent permissions via shared utility
                 const permissions = SubAgent.buildPermissions(parentPermissions)
@@ -743,7 +786,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   qa: "reviewed" | "not-needed",
                 ) => {
                   result.status = "completed"
-                  result.output = limitText(spawnResult.output, task.maxOutputChars ?? MAX_TASK_OUTPUT_BYTES)
+                  result.artifacts = WorkflowBlackboard.fromOutput(task.id, spawnResult.output)
+                  result.output = limitText(
+                    humanOutput(spawnResult.output) || result.artifacts[0]?.content || "Task completed",
+                    task.maxOutputChars ?? MAX_TASK_OUTPUT_BYTES,
+                  )
                   result.completedAt = Date.now()
                   result.retryCount = attempt
                   completedTasks.push(task.id)
@@ -979,12 +1026,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     // Closing a running child is an explicit user decision. The worker's
                     // abort route marks it before cancellation reaches this catch.
                     captureTerminations(dismissedSessionIds, result.sessionId, reviewerSessionId)
-                    const mainWasDismissed = result.sessionId
-                      ? dismissedSessionIds.has(result.sessionId)
-                      : false
-                    const reviewerWasDismissed = reviewerSessionId
-                      ? dismissedSessionIds.has(reviewerSessionId)
-                      : false
+                    const mainWasDismissed = result.sessionId ? dismissedSessionIds.has(result.sessionId) : false
+                    const reviewerWasDismissed = reviewerSessionId ? dismissedSessionIds.has(reviewerSessionId) : false
                     const wasDismissed = mainWasDismissed || reviewerWasDismissed
                     if (wasDismissed) {
                       AGENT_SESSION_MAP.delete(sessionKey)
@@ -1015,9 +1058,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     if (reviewerAvailability) {
                       log.warn("reviewer model became rate limited; rerouting retry", {
                         taskId: task.id,
-                        model: reviewerModel
-                          ? `${reviewerModel.providerID}/${reviewerModel.modelID}`
-                          : undefined,
+                        model: reviewerModel ? `${reviewerModel.providerID}/${reviewerModel.modelID}` : undefined,
                       })
                       reviewerModel = undefined
                     }

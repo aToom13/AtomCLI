@@ -49,6 +49,10 @@ bun turbo test
 
 The models.dev fixture is the required test convention. `test/preload.ts` copies that fixture into the isolated test data directory, so the standard test suite does not require a live models.dev request.
 
+Prefer behavior-level tests over implementation-only assertions. A regression test should exercise the public boundary that failed, use an isolated temporary project when filesystem or Git state matters, and assert an observable result. Provider unit tests may mock transport, but live provider probes must remain explicitly opt-in and must distinguish rate limits from compatibility failures.
+
+The `eval benchmark` command measures model-driven agent behavior and is not part of the deterministic validation commands above. `eval benchmark` without `--execute` only reports stored observations. Executing a benchmark may make isolated workspace changes, contact the selected provider, consume quota, and take several minutes per case.
+
 ## Build and release
 
 ```sh

@@ -1,5 +1,5 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import { createMemo, Match, onMount, Show, Switch } from "solid-js"
+import { createMemo, createSignal, Match, onMount, Show, Switch } from "solid-js"
 import { useTheme } from "@tui/context/theme"
 import { Logo } from "../component/logo"
 import { DidYouKnow, randomizeTip } from "../component/did-you-know"
@@ -15,6 +15,7 @@ import { useKV } from "../context/kv"
 import { useCommandDialog } from "../component/dialog-command"
 import { useKeybind } from "../context/keybind"
 import { useTerminalDimensions } from "@opentui/solid"
+import { UI } from "@/interfaces/cli/ui"
 
 let cliPromptSubmitted = false
 
@@ -27,6 +28,7 @@ export function Home() {
   const command = useCommandDialog()
   const keybind = useKeybind()
   const dimensions = useTerminalDimensions()
+  const [autocompleteVisible, setAutocompleteVisible] = createSignal(false)
   const mcp = createMemo(() => Object.keys(sync.data.mcp).length > 0)
   const mcpAttentionCount = createMemo(() => {
     return Object.values(sync.data.mcp).filter((x) =>
@@ -98,7 +100,11 @@ export function Home() {
   return (
     <>
       <box flexGrow={1} justifyContent="center" alignItems="center" paddingLeft={2} paddingRight={2} gap={1}>
-        <Logo />
+        <box minHeight={dimensions().width >= UI.Logo.width + 4 ? UI.Logo.left.length : 1}>
+          <Show when={!autocompleteVisible()}>
+            <Logo />
+          </Show>
+        </box>
         <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1}>
           <Prompt
             ref={(r) => {
@@ -106,6 +112,7 @@ export function Home() {
               promptRef.set(r)
             }}
             hint={Hint}
+            onAutocompleteChange={(visible) => setAutocompleteVisible(!!visible)}
           />
         </box>
         <Show when={isFirstTimeUser()}>

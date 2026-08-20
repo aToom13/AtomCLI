@@ -3,6 +3,8 @@ import { Config } from "@/core/config/config"
 import { Log } from "@/util/util/log"
 import { ModelAvailability } from "../provider/availability"
 import { ModelQuality } from "@/core/routing/model-quality"
+import { TaskProfile } from "@/core/routing/task-profile"
+import { ToolReliability } from "@/core/routing/tool-reliability"
 
 const log = Log.create({ service: "model-router" })
 
@@ -270,9 +272,7 @@ Categories:
  * Pick the smallest/fastest free model to use as the semantic classifier.
  * Prefers non-reasoning models (faster) and smaller context windows (proxy for speed).
  */
-export function pickClassifierModel(
-  freeModels: Array<[string, Provider.Model]>,
-): [string, Provider.Model] | null {
+export function pickClassifierModel(freeModels: Array<[string, Provider.Model]>): [string, Provider.Model] | null {
   const candidates = freeModels
     .filter(([, m]) => modelIsRoutable(m) && !m.capabilities.reasoning) // non-reasoning = faster
     .sort(([, a], [, b]) => (a.limit?.context ?? 0) - (b.limit?.context ?? 0))
@@ -305,7 +305,10 @@ export async function inferCategorySemantic(
       prompt: prompt.slice(0, 800), // Limit for speed
     })
 
-    const raw = result.text.trim().toLowerCase().replace(/[^a-z]/g, "")
+    const raw = result.text
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z]/g, "")
 
     // Exact match
     if (raw === "coding" || raw === "documentation" || raw === "analysis" || raw === "general") {
@@ -493,8 +496,10 @@ export function selectModelInternal(
   prompt?: string,
   autoRouterConfig?: any,
 ): ModelSelectionResult {
+  const profile = TaskProfile.infer(prompt ?? "", category === "general" && prompt ? undefined : category)
+  const routingCategory = category === "general" && prompt ? profile.category : category
   // Category override: kullanıcı belirli bir model sabitlemişse direkt onu seç
-  const override = autoRouterConfig?.category_overrides?.[category]
+  const override = autoRouterConfig?.category_overrides?.[routingCategory]
   if (override) {
     const model = allFreeModels.find(([id, candidate]) => id === override && modelIsRoutable(candidate))
     if (model) {
@@ -512,11 +517,35 @@ export function selectModelInternal(
   }
 
   const pool = filtered.length > 0 ? filtered : allFreeModels.filter(([, model]) => modelIsRoutable(model))
-  const candidates = selectCandidates(pool, category, autoRouterConfig)
+  const candidates = selectCandidates(pool, routingCategory, autoRouterConfig)
 
+  const expectedTools = profile.needsBrowser ? ["browser"] : profile.needsTools ? ["read", "grep", "edit", "bash"] : []
   const ranked = candidates
-    .map(([id, m]) => ({ id, m, score: finalScore(id, m, category, mode, complexity, autoRouterConfig) }))
+    .filter(([, model]) => TaskProfile.modelBonus(profile, model) > -1_000)
+    .map(([id, m]) => ({
+      id,
+      m,
+      score:
+        finalScore(id, m, routingCategory, mode, Math.max(complexity, profile.complexity), autoRouterConfig) +
+        TaskProfile.modelBonus(profile, m) +
+        ToolReliability.modelBonus(m.providerID, id, expectedTools),
+    }))
     .sort((a, b) => b.score - a.score)
+
+  // A stale/incomplete catalog must not make routing impossible. The regular
+  // candidate list remains a safe fallback when a requested modality has no match.
+  if (ranked.length === 0) {
+    if (profile.needsTools || profile.needsVision) {
+      throw new Error("No routable model supports the task's required tools or input modalities")
+    }
+    const fallbackRanked = candidates
+      .map(([id, m]) => ({ id, m, score: finalScore(id, m, routingCategory, mode, complexity, autoRouterConfig) }))
+      .sort((a, b) => b.score - a.score)
+    return {
+      selected: pickWithLoadBalancing(fallbackRanked, candidates.length, autoRouterConfig?.exploration_rate ?? 0),
+      ranked: fallbackRanked,
+    }
+  }
 
   const selected = pickWithLoadBalancing(ranked, candidates.length, autoRouterConfig?.exploration_rate ?? 0)
 
@@ -551,7 +580,6 @@ export function buildFallbackChainFromSelection(
   selected: { id: string; m: Provider.Model; score: number },
   ranked: Array<{ id: string; m: Provider.Model; score: number }>,
 ) {
-
   const fallbacks = ranked
     .filter((x) => x.id !== selected.id)
     .slice(0, 2)
@@ -578,7 +606,7 @@ export async function selectModel(
   session?: any,
   prompt?: string,
 ): Promise<any> {
-  await ModelQuality.initialize()
+  await Promise.all([ModelQuality.initialize(), ToolReliability.initialize()])
   if (!Array.isArray(allFreeModelsOrFallback)) {
     // Old signature: selectModel(category, fallback)
     const fallback = allFreeModelsOrFallback
@@ -749,26 +777,28 @@ export const _internals = {
  */
 export function selectMetaRouter(freeModels: Array<[string, Provider.Model]>): { providerID: string; modelID: string } {
   const activeMr = freeModels
-    .filter(([, m]) => modelIsRoutable(m) && m.capabilities.reasoning && m.capabilities.toolcall && m.status === "active")
+    .filter(
+      ([, m]) => modelIsRoutable(m) && m.capabilities.reasoning && m.capabilities.toolcall && m.status === "active",
+    )
     .map(([id, m]) => ({
       id,
       providerID: m.providerID,
-      score: 100 
-           + Math.min((m.limit?.context ?? 0) / 10000, 30) 
-           + Math.min((m.limit?.output ?? 0) / 1000, 20)
+      score: 100 + Math.min((m.limit?.context ?? 0) / 10000, 30) + Math.min((m.limit?.output ?? 0) / 1000, 20),
     }))
     .sort((a, b) => b.score - a.score)
-    
+
   if (activeMr.length === 0) {
     const fallbackMr = freeModels
-      .filter(([, m]) => modelIsRoutable(m) && (m.capabilities.reasoning || m.capabilities.toolcall) && m.status === "active")
+      .filter(
+        ([, m]) => modelIsRoutable(m) && (m.capabilities.reasoning || m.capabilities.toolcall) && m.status === "active",
+      )
       .map(([id, m]) => ({
         id,
         providerID: m.providerID,
-        score: (m.capabilities.reasoning ? 50 : 0) + (m.capabilities.toolcall ? 50 : 0)
+        score: (m.capabilities.reasoning ? 50 : 0) + (m.capabilities.toolcall ? 50 : 0),
       }))
       .sort((a, b) => b.score - a.score)
-      
+
     if (fallbackMr.length > 0) {
       return { providerID: fallbackMr[0].providerID, modelID: fallbackMr[0].id }
     }
