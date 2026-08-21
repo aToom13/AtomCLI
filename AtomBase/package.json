@@ -100,7 +100,7 @@
     "turndown": "7.2.4",
     "ulid": "catalog:",
     "vscode-jsonrpc": "8.2.1",
-    "web-tree-sitter": "0.25.10",
+    "web-tree-sitter": "0.26.12",
     "xdg-basedir": "5.1.0",
     "xstate": "5.28.0",
     "yargs": "18.0.0",
