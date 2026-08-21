@@ -57,7 +57,7 @@
   "devDependencies": {
     "@tsconfig/bun": "catalog:",
     "prettier": "3.6.2",
-    "turbo": "2.9.18"
+    "turbo": "2.10.11"
   },
   "repository": {
     "type": "git",
