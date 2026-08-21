@@ -13,4 +13,4 @@ bun run build
 
 See the [development guide](../../docs/DEVELOPMENT.md) for validation and SDK generation requirements.
 
-Do not invoke publishing scripts directly for a GitHub release. From the repository root, use `./release.sh --dry-run` to validate and `./release.sh` to commit, push the exact version tag, and wait for the release workflow.
+The repository does not track a publishing helper. Run the validation commands in the [development guide](../../docs/DEVELOPMENT.md), then create and push only the exact version tag after explicit release authorization. A maintainer-specific helper must remain ignored and local.

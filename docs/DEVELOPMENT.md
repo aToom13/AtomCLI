@@ -62,7 +62,7 @@ bun run build
 
 `AtomBase/script/build.ts` removes `dist/` before each build, bundles the application for supported targets, and includes root `.atomcli/` and `.claude/` assets. Do not store source files in `dist/`.
 
-Pushing a `v*` Git tag is the only automated release trigger. The supported release entrypoint is the root `release.sh`; do not manually publish generated release directories.
+Pushing a `v*` Git tag is the only automated release trigger. This repository does not track a release helper script; maintainers may use an ignored local helper, but must not manually publish generated release directories.
 
 Release jobs run from a clean checkout. The build copies root `.atomcli/` and `.claude/` directories, so only tracked, reviewable skills and agents belong there. Local configuration, credentials, package manifests/locks, installed dependencies, plans, runs, and session state must remain ignored.
 
@@ -73,10 +73,20 @@ The build matrix produces Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and
 Prepare `AtomBase/package.json` and `RELEASE_NOTES.md`, then run the complete release audit without changing Git or contacting GitHub:
 
 ```sh
-./release.sh --dry-run
+cd AtomBase
+bun run typecheck
+MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
+cd ..
+bun turbo typecheck
+bun turbo test
+git diff --check
+git status --short
+git status --short --ignored
+git ls-files -ci --exclude-standard
+git ls-files --others --exclude-standard
 ```
 
-The dry run installs the locked Bun dependencies, runs workspace typechecks and tests, constructs the candidate commit in a temporary Git index, checks ignored/tracked conflicts, rejects local runtime artifacts, scans for common credential signatures, and validates that the release note contains no emoji.
+These commands run package and workspace validation, check patch formatting, expose ignored and untracked artifacts, and detect tracked files hidden by ignore rules. Review `RELEASE_NOTES.md` separately and verify that its heading matches `AtomBase/package.json` and contains no emoji.
 
 The underlying repository checks are:
 
@@ -89,13 +99,15 @@ git ls-files --others --exclude-standard
 
 Review every tracked and untracked path. `git ls-files -ci --exclude-standard` must print nothing: a tracked file hidden by an ignore rule can otherwise change without appearing in normal status output. Do not force-add local `.atomcli/` or `.claude/` state. Do not commit `AtomBase/dist/`, `release_assets/`, logs, credentials, or generated test sandboxes.
 
-The release version is sourced from `AtomBase/package.json`. To perform the authorized release:
+The release version is sourced from `AtomBase/package.json`. After explicit authorization, commit the reviewed changes, create the exact `v<version>` annotated tag, and atomically push the branch and that tag. For example, with `VERSION` set to the package version:
 
 ```sh
-./release.sh
+git commit -m "release: v${VERSION}"
+git tag -a "v${VERSION}" -m "AtomCLI v${VERSION}"
+git push --atomic origin main "refs/tags/v${VERSION}"
 ```
 
-The script requires authenticated GitHub CLI access. It displays the working tree and requires the exact version tag as confirmation, safely syncs a behind-only `main` branch with autostash, validates the repository, commits all non-ignored changes, pushes `main`, creates and pushes only the exact release tag, and waits for `.github/workflows/release.yml` to publish the GitHub release. It aborts on divergent history, merge conflicts, an existing tag, failed validation, or a failed release workflow.
+Do not replace the exact-tag push with `git push --tags`. Confirm that the local and remote tag do not already exist and that `main` is not divergent before publishing. The tag push starts `.github/workflows/release.yml`, which builds and publishes the GitHub release.
 
 ## Configuration
 

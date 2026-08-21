@@ -47,7 +47,10 @@ export namespace TaskProfile {
     const readOnly =
       has(text, /\b(incele|analiz|audit|review|explain|açıkla|değiştirme|read[- ]?only)\b/) &&
       !has(withoutNegativeMutation(text), /\b(düzelt|değiştir|uygula|implement|fix|write|edit|refactor|ekle|kaldır)\b/)
-    const needsBrowser = has(text, /\b(browser|playwright|web ui|website|sayfa|tarayıcı|dom|accessibility)\b/)
+    const needsBrowser = has(
+      text,
+      /\b(browser|playwright|web ui|website|web search|search online|latest|current|news|weather|price|sayfa|tarayıcı|internette ara|güncel|haber|hava durumu|fiyat|dom|accessibility)\b/,
+    )
     const needsVision = has(text, /\b(image|screenshot|görsel|ekran görüntüsü|vision|pdf)\b/)
     const needsPlanning =
       words > 120 ||

@@ -1,6 +1,14 @@
-# AtomCLI v3.3.9
+# AtomCLI v3.3.9-debug
 
-AtomCLI v3.3.9 improves the reliability of agent workflows, model and provider handling, terminal interaction, evaluation, and regression coverage.
+AtomCLI v3.3.9-debug is a diagnostic build focused on agent workflows, model and provider handling, terminal interaction, evaluation, and regression coverage.
+
+## Debug build updates
+
+- Reduced hidden provider calls during prompt preparation, memory learning, title generation, and session summaries.
+- Limited automatic memory learning to explicit, durable user information while retaining relevant memory recall.
+- Improved provider catalog synchronization and request-time model detection for shared provider clients.
+- Connected model-specific thinking levels to real provider request options and preserved the level used by each response.
+- Added regression coverage for prompt latency, MCP startup, memory signals, provider model selection, and thinking controls.
 
 ## Agent workflows and context
 

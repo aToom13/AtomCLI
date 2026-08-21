@@ -21,6 +21,17 @@ describe("TaskProfile", () => {
     expect(profile.needsTools).toBe(true)
   })
 
+  test("keeps casual conversation tool-free", () => {
+    expect(TaskProfile.infer("Selam, naber?").needsTools).toBe(false)
+  })
+
+  test("recognizes current-information requests as browser tasks", () => {
+    expect(TaskProfile.infer("Bugünkü hava durumu nasıl?")).toMatchObject({
+      needsBrowser: true,
+      needsTools: true,
+    })
+  })
+
   test.each([
     "Review the repository implementation and tests without changing files",
     "Provider kodunu incele ve dosyaları değiştirme",

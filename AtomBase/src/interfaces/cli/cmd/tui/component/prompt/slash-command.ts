@@ -134,7 +134,7 @@ export namespace SlashCommand {
     },
   ]
 
-  const thinkingLevels = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"].map(
+  const thinkingLevels = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "default", "off"].map(
     (level): Info => ({
       name: level,
       description: level === "off" ? "reset to the model default" : `use ${level} thinking effort`,

@@ -159,7 +159,7 @@ export function Prompt(props: PromptProps) {
         local.agent.set(msg.agent)
       }
       if (msg.model) local.model.set(msg.model)
-      if (msg.variant) local.model.variant.set(msg.variant)
+      local.model.variant.set(msg.variant)
     }
   })
 
@@ -580,7 +580,7 @@ export function Prompt(props: PromptProps) {
       }
       case "think.set": {
         const level = argumentsText.toLowerCase() || undefined
-        const valid = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "off"]
+        const valid = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "default", "off"]
         if (!level) {
           const current = local.model.variant.current()
           toast.show({

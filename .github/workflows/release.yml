@@ -28,7 +28,11 @@ jobs:
           VERSION="$(bun -e 'console.log(require("./AtomBase/package.json").version)')"
           test "v${VERSION}" = "${GITHUB_REF_NAME}"
           echo "ATOMCLI_VERSION=${VERSION}" >> "${GITHUB_ENV}"
-          echo "ATOMCLI_CHANNEL=latest" >> "${GITHUB_ENV}"
+          if [[ "${VERSION}" == *-* ]]; then
+            echo "ATOMCLI_CHANNEL=debug" >> "${GITHUB_ENV}"
+          else
+            echo "ATOMCLI_CHANNEL=latest" >> "${GITHUB_ENV}"
+          fi
           test -s RELEASE_NOTES.md
           test "$(sed -n '1p' RELEASE_NOTES.md)" = "# AtomCLI ${GITHUB_REF_NAME}"
           RELEASE_NOTES_FILE=RELEASE_NOTES.md bun -e '
@@ -89,5 +93,5 @@ jobs:
             release_assets/atomcli-windows-x64-baseline.exe
             release_assets/SHA256SUMS
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: false

@@ -45,6 +45,7 @@ describe("TUI slash commands", () => {
       "model think high",
       "model think max",
       "model think xhigh",
+      "model think default",
       "model think off",
     ])
 

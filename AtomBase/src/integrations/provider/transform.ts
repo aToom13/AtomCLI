@@ -1,5 +1,5 @@
 import type { APICallError, ModelMessage } from "ai"
-import { unique } from "remeda"
+import { mergeDeep, unique } from "remeda"
 import type { JSONSchema } from "zod/v4/core"
 import type { Provider } from "./provider"
 import type { ModelsDev } from "./models"
@@ -270,12 +270,183 @@ export namespace ProviderTransform {
 
   const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
   const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+  const ATOMCLI_TOGGLE_DISABLED = "__atomcli_thinking_disabled__"
+  const ATOMCLI_TOGGLE_ENABLED = "__atomcli_thinking_enabled__"
+
+  function reasoningEffort(model: Provider.Model, effort: string): Record<string, any> | undefined {
+    switch (model.api.npm) {
+      case "@openrouter/ai-sdk-provider":
+      case "@atomcli/kilocode":
+        return { reasoning: { effort } }
+      case "@ai-sdk/anthropic":
+        return { effort }
+      case "@ai-sdk/google":
+      case "@ai-sdk/google-vertex":
+        return { thinkingConfig: { includeThoughts: true, thinkingLevel: effort } }
+      case "@ai-sdk/amazon-bedrock":
+        // The installed Bedrock SDK only accepts token budgets. Do not expose
+        // effort controls that would be silently ignored by the provider.
+        return undefined
+      case "@ai-sdk/openai":
+      case "@ai-sdk/azure":
+        return {
+          reasoningEffort: effort,
+          reasoningSummary: "auto",
+          include: ["reasoning.encrypted_content"],
+        }
+      case "@ai-sdk/gateway":
+      case "@ai-sdk/openai-compatible":
+      case "@ai-sdk/cerebras":
+      case "@ai-sdk/deepinfra":
+      case "@ai-sdk/groq":
+      case "@ai-sdk/mistral":
+      case "@ai-sdk/togetherai":
+      case "@ai-sdk/xai":
+        return { reasoningEffort: effort }
+      default:
+        return undefined
+    }
+  }
+
+  function reasoningToggle(model: Provider.Model): Record<string, Record<string, any>> {
+    switch (model.api.npm) {
+      case "@openrouter/ai-sdk-provider":
+      case "@atomcli/kilocode":
+        return { none: { reasoning: { enabled: false } }, high: { reasoning: { enabled: true } } }
+      case "@ai-sdk/cohere":
+        return { none: { thinking: { type: "disabled" } }, high: { thinking: { type: "enabled" } } }
+      case "@ai-sdk/openai-compatible":
+        if (model.providerID === "atomcli") {
+          return {
+            none: { reasoningEffort: ATOMCLI_TOGGLE_DISABLED },
+            high: { reasoningEffort: ATOMCLI_TOGGLE_ENABLED },
+          }
+        }
+        return {}
+      default:
+        return {}
+    }
+  }
+
+  function reasoningBudget(model: Provider.Model, budget: number): Record<string, any> | undefined {
+    switch (model.api.npm) {
+      case "@openrouter/ai-sdk-provider":
+      case "@atomcli/kilocode":
+        return { reasoning: { max_tokens: budget } }
+      case "@ai-sdk/anthropic":
+        return { thinking: { type: "enabled", budgetTokens: budget } }
+      case "@ai-sdk/google":
+      case "@ai-sdk/google-vertex":
+        return { thinkingConfig: { includeThoughts: true, thinkingBudget: budget } }
+      case "@ai-sdk/amazon-bedrock":
+        return { reasoningConfig: { type: "enabled", budgetTokens: budget } }
+      case "@ai-sdk/cohere":
+        return { thinking: { type: "enabled", tokenBudget: budget } }
+      default:
+        return undefined
+    }
+  }
+
+  /**
+   * Convert the catalog's declared reasoning controls into concrete AI SDK
+   * provider options. An explicitly empty declaration means the model reasons,
+   * but its effort is not configurable.
+   */
+  export function reasoningVariants(
+    catalogModel: Pick<ModelsDev.Model, "reasoning_options">,
+    model: Provider.Model,
+  ): Provider.Model["variants"] | undefined {
+    const options = catalogModel.reasoning_options
+    if (options === undefined) return undefined
+    if (options.length === 0) return {}
+
+    const toggle = options.some((option) => option.type === "toggle")
+    const variants = toggle ? reasoningToggle(model) : {}
+    const effort = options.find((option) => option.type === "effort")
+    if (effort?.type === "effort") {
+      Object.assign(
+        variants,
+        Object.fromEntries(
+          effort.values.flatMap((value) => {
+            const name = value === null ? "none" : value
+            const settings = reasoningEffort(model, name)
+            return settings ? [[name, settings] as const] : []
+          }),
+        ),
+      )
+      return variants
+    }
+
+    const budget = options.find((option) => option.type === "budget_tokens")
+    if (!budget || budget.type !== "budget_tokens") return variants
+
+    const maximum = Math.min(budget.max ?? model.limit.output - 1, model.limit.output - 1)
+    if (maximum <= 0) return {}
+    const high = Math.min(Math.max(budget.min ?? 0, Math.floor((maximum + 1) / 2)), maximum)
+    Object.assign(
+      variants,
+      Object.fromEntries(
+        [
+          ["high", high],
+          ["max", maximum],
+        ].flatMap(([name, tokens]) => {
+          const settings = reasoningBudget(model, tokens as number)
+          return settings ? [[name, settings] as const] : []
+        }),
+      ),
+    )
+    return variants
+  }
+
+  /** Translate Zen's separate toggle and effort controls at the fetch boundary. */
+  export function atomcliThinkingBody(model: Provider.Model, body: Record<string, any>) {
+    const hasToggle = Object.values(model.variants ?? {}).some(
+      (variant) => variant?.reasoningEffort === ATOMCLI_TOGGLE_DISABLED,
+    )
+    if (!hasToggle) return body
+
+    const effort = body.reasoning_effort
+    if (effort === ATOMCLI_TOGGLE_DISABLED || effort === ATOMCLI_TOGGLE_ENABLED) {
+      const result: Record<string, any> = {
+        ...body,
+        thinking: { type: effort === ATOMCLI_TOGGLE_DISABLED ? "disabled" : "enabled" },
+      }
+      delete result.reasoning_effort
+      return result
+    }
+    if (typeof effort === "string") return { ...body, thinking: { type: "enabled" } }
+    return body
+  }
+
+  /** Apply a selected model variant after base, model and agent options. */
+  export function applyVariant(
+    model: Provider.Model,
+    variantName: string | undefined,
+    base: Record<string, any>,
+    modelOptions: Record<string, any> = {},
+    agentOptions: Record<string, any> = {},
+    small = false,
+  ): Record<string, any> {
+    const variant = !small && variantName ? model.variants?.[variantName] : undefined
+    const withModel = mergeDeep(base, modelOptions) as Record<string, any>
+    const withAgent = mergeDeep(withModel, agentOptions) as Record<string, any>
+    return mergeDeep(withAgent, variant ?? {}) as Record<string, any>
+  }
 
   export function variants(model: Provider.Model): Record<string, Record<string, any>> {
     if (!model.capabilities.reasoning) return {}
 
     const id = model.id.toLowerCase()
-    if (id.includes("deepseek") || id.includes("minimax") || id.includes("glm") || id.includes("mistral")) return {}
+    if (
+      id.includes("deepseek") ||
+      id.includes("minimax") ||
+      id.includes("glm") ||
+      id.includes("mistral") ||
+      id.includes("kimi") ||
+      id.includes("qwen") ||
+      id.includes("big-pickle")
+    )
+      return {}
 
     switch (model.api.npm) {
       case "@atomcli/kilocode":
@@ -286,12 +457,12 @@ export namespace ProviderTransform {
         // (auto-routed, StepFun, etc.). Use `enabled: false` for none and `max_tokens` for
         // budget-based levels to ensure consistent behavior across all reasoning models.
         return {
-          none:    { reasoning: { enabled: false } },
+          none: { reasoning: { enabled: false } },
           minimal: { reasoning: { max_tokens: 1024 } },
-          low:     { reasoning: { effort: "low" } },
-          medium:  { reasoning: { effort: "medium" } },
-          high:    { reasoning: { effort: "high" } },
-          xhigh:   { reasoning: { max_tokens: 32768 } },
+          low: { reasoning: { effort: "low" } },
+          medium: { reasoning: { effort: "medium" } },
+          high: { reasoning: { effort: "high" } },
+          xhigh: { reasoning: { max_tokens: 32768 } },
         }
 
       case "@ai-sdk/gateway":
@@ -375,18 +546,9 @@ export namespace ProviderTransform {
         }
 
       case "@ai-sdk/amazon-bedrock":
-        // https://v5.ai-sdk.dev/providers/ai-sdk-providers/amazon-bedrock
-        return Object.fromEntries(
-          WIDELY_SUPPORTED_EFFORTS.map((effort) => [
-            effort,
-            {
-              reasoningConfig: {
-                type: "enabled",
-                maxReasoningEffort: effort,
-              },
-            },
-          ]),
-        )
+        // Bedrock reasoning is model-specific and budget based. Without an
+        // explicit catalog declaration, showing guessed effort levels is false.
+        return {}
 
       case "@ai-sdk/google-vertex":
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/google-vertex
@@ -412,8 +574,10 @@ export namespace ProviderTransform {
           ["low", "high"].map((effort) => [
             effort,
             {
-              includeThoughts: true,
-              thinkingLevel: effort,
+              thinkingConfig: {
+                includeThoughts: true,
+                thinkingLevel: effort,
+              },
             },
           ]),
         )
@@ -429,15 +593,7 @@ export namespace ProviderTransform {
       case "@ai-sdk/groq":
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/groq
         const groqEffort = ["none", ...WIDELY_SUPPORTED_EFFORTS]
-        return Object.fromEntries(
-          groqEffort.map((effort) => [
-            effort,
-            {
-              includeThoughts: true,
-              thinkingLevel: effort,
-            },
-          ]),
-        )
+        return Object.fromEntries(groqEffort.map((effort) => [effort, { reasoningEffort: effort }]))
 
       case "@ai-sdk/perplexity":
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/perplexity
@@ -473,7 +629,11 @@ export namespace ProviderTransform {
       result["promptCacheKey"] = sessionID
     }
 
-    if (model.api.npm === "@ai-sdk/google" || model.api.npm === "@ai-sdk/google-vertex" || model.providerID === "antigravity") {
+    if (
+      model.api.npm === "@ai-sdk/google" ||
+      model.api.npm === "@ai-sdk/google-vertex" ||
+      model.providerID === "antigravity"
+    ) {
       result["thinkingConfig"] = {
         includeThoughts: true,
       }

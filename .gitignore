@@ -80,7 +80,7 @@ benchmark-results/
 eval-results/
 
 # Local release helper (never commit)
-.local-release-v3.3.9.sh
+.local-release-*.sh
 dependabot-open.jsonl
 simulate-harness*.log
 sst-env.d.ts

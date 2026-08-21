@@ -42,7 +42,9 @@ export namespace ModelDialog {
     provider: Pick<Provider.Info, "id">,
     model: Pick<Provider.Model, "api" | "cost" | "status" | "availability">,
   ) {
-    if (ModelAvailability.active(model.availability)) return "RATE LIMITED"
+    const availability = ModelAvailability.active(model.availability)
+    if (availability?.status === "rate_limited") return "RATE LIMITED"
+    if (availability?.status === "unavailable") return "UNAVAILABLE"
     const kind = billing(provider, model)
     if (kind === "free") return "FREE"
     if (kind === "subscription") return "SUBSCRIPTION"
@@ -90,7 +92,8 @@ export namespace ModelDialog {
       model.name,
       model.family,
       model.status,
-      ModelAvailability.active(model.availability) ? "rate limited kota limit sınırlı" : undefined,
+      ModelAvailability.active(model.availability)?.status === "rate_limited" ? "rate limited kota limit sınırlı" : undefined,
+      ModelAvailability.active(model.availability)?.status === "unavailable" ? "unavailable kullanılamaz erişilemiyor" : undefined,
       ...capabilities(model),
       kind === "free"
         ? "free ücretsiz"
@@ -165,7 +168,9 @@ function ModelDetails(props: { value?: ModelDialog.Value }) {
           </text>
           <Show when={ModelAvailability.active(selected().model.availability)}>
             <text fg={theme.warning}>
-              Temporarily rate limited by the upstream gateway · {ModelAvailability.retryLabel(selected().model.availability)}
+              {selected().model.availability?.status === "rate_limited"
+                ? "Temporarily rate limited by the upstream gateway"
+                : "The upstream gateway reports this model as unavailable"} · {ModelAvailability.retryLabel(selected().model.availability)}
             </text>
           </Show>
           <box flexDirection="row" flexWrap="wrap" gap={2}>

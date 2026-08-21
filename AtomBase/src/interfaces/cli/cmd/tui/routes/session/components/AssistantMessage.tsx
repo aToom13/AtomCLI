@@ -30,10 +30,11 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
         return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
     })
 
-    // Find the parent user message creation time
-    const userCreated = createMemo(() => {
-        const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-        return user?.time?.created ?? 0
+    const userMessage = createMemo(() => messages().find((x) => x.role === "user" && x.id === props.message.parentID))
+    const userCreated = createMemo(() => userMessage()?.time?.created ?? 0)
+    const thinkingVariant = createMemo(() => {
+        const message = userMessage()
+        return message?.role === "user" ? message.variant : undefined
     })
 
     // Live ticking timer — updates every second while the message is in progress
@@ -124,8 +125,8 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
                             <Show when={reasoningTokens() > 0 && !compact()}>
                                 <span style={{ fg: theme.textMuted }}> · 🧠 {reasoningTokens().toLocaleString()} tokens</span>
                             </Show>
-                            <Show when={local.model.variant.current() && session.width >= 70}>
-                                <span style={{ fg: theme.accent }}> · 🧠 {local.model.variant.current()?.toUpperCase()}</span>
+                            <Show when={thinkingVariant() && session.width >= 70}>
+                                <span style={{ fg: theme.accent }}> · think {thinkingVariant()?.toUpperCase()}</span>
                             </Show>
                             <Show when={duration() > 0}>
                                 <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>

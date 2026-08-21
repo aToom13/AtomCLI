@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "3.3.9",
+  "version": "3.3.9-debug",
   "name": "atomcli",
   "type": "module",
   "license": "MIT",
@@ -12,7 +12,6 @@
     "test:providers:anonymous": "ATOMCLI_PROVIDER_ANONYMOUS_TEST=1 bun test test/provider/compatibility.test.ts",
     "test:providers:atomcli": "ATOMCLI_PROVIDER_ATOMCLI_TEST=1 bun test test/provider/compatibility.test.ts",
     "test:providers:live": "ATOMCLI_PROVIDER_LIVE_TEST=1 bun test test/provider/compatibility.test.ts",
-    "release": "bash ../release.sh",
     "build": "bun run script/build.ts",
     "dev": "bun run --conditions=browser ./src/index.ts",
     "format": "bunx prettier --write \"src/**/*.{ts,tsx}\""

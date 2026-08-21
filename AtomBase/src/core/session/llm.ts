@@ -8,7 +8,7 @@ import {
   type Tool,
   type ToolSet,
 } from "ai"
-import { clone, mergeDeep, pipe } from "remeda"
+import { clone } from "remeda"
 import { ProviderTransform } from "@/integrations/provider/transform"
 import { Config } from "@/core/config/config"
 import { Instance } from "@/services/project/instance"
@@ -89,16 +89,16 @@ export namespace LLM {
     const auth = await Auth.get(input.model.providerID)
     const isCodex = provider.id === "openai" && auth?.type === "oauth"
 
-    const variant =
-      !input.small && input.model.variants && input.user.variant ? input.model.variants[input.user.variant] : {}
     const base = input.small
       ? ProviderTransform.smallOptions(input.model)
       : ProviderTransform.options(input.model, input.sessionID, provider.options)
-    const options: Record<string, any> = pipe(
+    const options: Record<string, any> = ProviderTransform.applyVariant(
+      input.model,
+      input.user.variant,
       base,
-      mergeDeep(input.model.options),
-      mergeDeep(input.agent.options),
-      mergeDeep(variant),
+      input.model.options,
+      input.agent.options,
+      input.small,
     )
     if (isCodex) {
       options.instructions = SystemPrompt.instructions()

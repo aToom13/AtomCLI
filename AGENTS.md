@@ -12,7 +12,7 @@
   bun run build
   ```
   Do not manually edit files in `libs/sdk/js/src/v2/gen/` — they are auto-generated.
-- **Releases are triggered by `v*` git tags only.** CI builds and publishes on tag push. The supported entrypoint is root `release.sh`; do not manually push to `AtomBase/dist/` or `release_assets/`.
+- **Releases are triggered by `v*` git tags only.** CI builds and publishes on tag push. No release helper is tracked; maintainer-specific helpers must remain ignored. Do not manually push to `AtomBase/dist/` or `release_assets/`.
 - **`AtomBase/dist/` is wiped on every build.** `build.ts` runs `rm -rf dist` unconditionally. Never store anything in `dist/`.
 - **Tracked release assets under `.atomcli/` and `.claude/` are bundled into every binary release.** Local configuration, credentials, package manifests/locks, dependencies, plans, runs, and session state in those directories must remain ignored and must never be force-added.
 - `strict: false` in both `tsconfig.json` files is intentional. Do not enable strict mode.
@@ -23,7 +23,7 @@
 - Before a release, inspect `git status --short`, `git status --short --ignored`, and `git ls-files -ci --exclude-standard`. The last command must produce no output; tracked files must not also be ignored.
 - Do not use `git add -f` to bypass repository ignore rules for `.atomcli/` or `.claude/` runtime state.
 - Do not push commits or tags, create a release, or publish packages unless the user explicitly authorizes that exact action.
-- When release authorization is explicit, validate with `./release.sh --dry-run` and use `./release.sh`. Do not replace its exact-tag push with `git push --tags`. `RELEASE_NOTES.md` must match the package version and contain no emoji.
+- When release authorization is explicit, run the documented validation commands and push only the exact version tag. Do not replace its exact-tag push with `git push --tags`. `RELEASE_NOTES.md` must match the package version and contain no emoji.
 
 ## Validation before finishing
 

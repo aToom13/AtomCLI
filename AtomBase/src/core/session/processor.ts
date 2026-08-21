@@ -17,7 +17,7 @@ import { PermissionNext } from "@/util/permission/next"
 import { Question } from "@/interfaces/question"
 import { AmendmentQueue } from "./amendment"
 import { ModelFallback } from "@/integrations/provider/fallback"
-import { SessionMemoryIntegration } from "../memory/integration/session"
+import { ModelAvailability } from "@/integrations/provider/availability"
 import { Token } from "@/util/util/token"
 import { HarnessState } from "./harness-state"
 import path from "path"
@@ -66,7 +66,6 @@ export namespace SessionProcessor {
     let fallbackAttempted = !!input.initialFallbackModel
     let currentFallbackModel = input.initialFallbackModel
     let needsCompaction = false
-    let userMessageText: string | undefined // Store user message for context
 
     const result = {
       get message() {
@@ -91,16 +90,6 @@ export namespace SessionProcessor {
         // If we have a fallback model from previous iteration, use it
         if (currentFallbackModel) {
           streamInput = { ...streamInput, model: currentFallbackModel }
-        }
-
-        // Store user message text for semantic learning
-        try {
-          const userMsg = streamInput.user
-          const userParts = await MessageV2.parts(userMsg.id)
-          const textParts = userParts.filter((p) => p.type === "text" && !("synthetic" in p && p.synthetic))
-          userMessageText = textParts.map((p) => (p as any).text).join(" ")
-        } catch (error) {
-          log.warn("Failed to get user message text", { error })
         }
 
         // Enable amendment processing by default
@@ -485,15 +474,9 @@ export namespace SessionProcessor {
                     if (value.providerMetadata) currentText.metadata = value.providerMetadata
                     await Session.updatePart(currentText)
 
-                    // Learn from assistant response — fire-and-forget.
-                    // This is a background memory operation (LLM API call) and must NOT
-                    // block the stream finish path, which is what drives the UI response timer.
-                    if (evalPolicy.allowMemoryLearning) {
-                      SessionMemoryIntegration.learnFromResponse(currentText.text, userMessageText, {
-                        providerID: streamInput.model.providerID,
-                        modelID: streamInput.model.id,
-                      }).catch((error) => log.error("Failed to learn from assistant response", { error }))
-                    }
+                    // The user-message learner already extracts explicit durable
+                    // information. Re-analyzing every assistant response would spend
+                    // another hidden provider request without adding reliable evidence.
                   }
                   currentText = undefined
                   break
@@ -560,6 +543,8 @@ export namespace SessionProcessor {
                       try {
                         const parsed = Provider.parseModel(fallbackModelID)
                         const fallbackModel = await Provider.getModel(parsed.providerID, parsed.modelID)
+
+                        if (ModelAvailability.active(fallbackModel.availability)) continue
 
                         // Skip if same as current model
                         if (

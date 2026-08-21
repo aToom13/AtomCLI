@@ -9,6 +9,7 @@
 
 import { Log } from "@/util/util/log"
 import { Provider } from "../provider/provider"
+import { ModelAvailability } from "./availability"
 import { LLM } from "@/core/session/llm"
 import type { StreamTextResult, ToolSet } from "ai"
 
@@ -86,6 +87,7 @@ export namespace ModelFallback {
         for (const [mID, m] of Object.entries(atomcli.models)) {
           if (mID === "atomcli-auto" || mID === "atomcli-free") continue
           if (m.status === "deprecated") continue
+          if (ModelAvailability.active(m.availability)) continue
           // Must be free
           const isFree = (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0
           if (!isFree) continue
@@ -115,6 +117,7 @@ export namespace ModelFallback {
           if (pID === "atomcli") continue
           for (const [mID, m] of Object.entries(p.models || {})) {
             if (m.status === "deprecated") continue
+            if (ModelAvailability.active(m.availability)) continue
             const isFree = (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0
             if (isFree) {
               if (options?.excludeProviderID === pID && options?.excludeModelID === mID) continue

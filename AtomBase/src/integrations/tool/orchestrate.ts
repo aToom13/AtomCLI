@@ -259,9 +259,7 @@ async function validateModel(reference: ModelReference) {
   }
   const availability = ModelAvailability.active(model.availability)
   if (availability) {
-    throw new Error(
-      `Model ${reference.providerID}/${reference.modelID} is rate limited (${ModelAvailability.retryLabel(availability)})`,
-    )
+    throw new Error(availabilityMessage(reference, availability))
   }
   if (!modelIsRoutable(model)) {
     throw new Error(
@@ -348,6 +346,11 @@ function requiresTaskQA(task: TaskNode, editedFileCount: number, editedFiles: st
 async function modelTemporaryAvailability(reference: ModelReference) {
   const provider = await Provider.getProvider(reference.providerID)
   return ModelAvailability.active(provider?.models[reference.modelID]?.availability)
+}
+
+function availabilityMessage(reference: ModelReference, availability: ModelAvailability.Info) {
+  const state = availability.status === "rate_limited" ? "rate limited" : "temporarily unavailable"
+  return `Model ${reference.providerID}/${reference.modelID} is ${state} (${ModelAvailability.retryLabel(availability)})`
 }
 
 /**
@@ -1045,18 +1048,18 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       ? await modelTemporaryAvailability(reviewerModel)
                       : undefined
                     if (taskAvailability && task.model) {
-                      lastError = `Explicit model ${task.model} is rate limited (${ModelAvailability.retryLabel(taskAvailability)})`
+                      lastError = `Explicit ${availabilityMessage(model!, taskAvailability)}`
                       break
                     }
                     if (taskAvailability) {
-                      log.warn("task model became rate limited; rerouting retry", {
+                      log.warn("task model became temporarily unavailable; rerouting retry", {
                         taskId: task.id,
                         model: model ? `${model.providerID}/${model.modelID}` : undefined,
                       })
                       model = undefined
                     }
                     if (reviewerAvailability) {
-                      log.warn("reviewer model became rate limited; rerouting retry", {
+                      log.warn("reviewer model became temporarily unavailable; rerouting retry", {
                         taskId: task.id,
                         model: reviewerModel ? `${reviewerModel.providerID}/${reviewerModel.modelID}` : undefined,
                       })

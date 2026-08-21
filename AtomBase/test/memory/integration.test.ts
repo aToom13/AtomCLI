@@ -52,6 +52,26 @@ describe("SessionMemoryIntegration", () => {
     }
   })
 
+  it("does not spend a model request on ordinary task instructions", async () => {
+    const extract = spyOn(SemanticLearningService, "extractUserInformation").mockResolvedValue({
+      hasInformation: false,
+    })
+    try {
+      await SessionMemoryIntegration.learnFromMessage("Provider dosyalarını incele ve testleri çalıştır")
+      expect(extract).not.toHaveBeenCalled()
+    } finally {
+      extract.mockRestore()
+    }
+  })
+
+  it("detects explicit durable memory requests without matching ordinary commands", () => {
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("I prefer concise answers")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Benim adım Ahmet, bunu unutma")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("From now on, use Bun for this project")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Dosyayı düzelt ve testleri çalıştır")).toBe(false)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Bu dosyayı değiştirme")).toBe(false)
+  })
+
   it.skip("should learn user name from message", async () => {
     // NOTE: This test requires actual LLM API calls
     // Run manually with: bun test --only "should learn user name from message"

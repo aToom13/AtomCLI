@@ -9,8 +9,7 @@
     "dev": "bun run --cwd AtomBase --conditions=browser src/index.ts",
     "build": "bun turbo build",
     "typecheck": "bun turbo typecheck",
-    "test": "bun turbo test",
-    "release": "bash ./release.sh"
+    "test": "bun turbo test"
   },
   "workspaces": {
     "packages": [

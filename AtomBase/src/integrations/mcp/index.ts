@@ -107,6 +107,16 @@ export namespace MCP {
   // Cache is invalidated on ToolListChangedNotification, disconnect, or reconnect
   const toolsCache = new Map<string, Record<string, Tool>>()
 
+  function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return promise
+    if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"))
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => reject(new DOMException("Aborted", "AbortError"))
+      signal.addEventListener("abort", abort, { once: true })
+      promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort))
+    })
+  }
+
   function invalidateToolsCache(serverName?: string) {
     if (serverName) {
       toolsCache.delete(serverName)
@@ -500,8 +510,8 @@ export namespace MCP {
     }
   }
 
-  export async function status() {
-    const s = await state()
+  export async function status(signal?: AbortSignal) {
+    const s = await abortable(state(), signal)
     const cfg = await Config.get()
     const config = cfg.mcp ?? {}
     const result: Record<string, Status> = {}
@@ -564,8 +574,12 @@ export namespace MCP {
     invalidateToolsCache(name)
   }
 
-  export async function tools(signal?: AbortSignal) {
-    const s = await state()
+  function listClientTools(client: { listTools(): Promise<{ tools: unknown[] }> }, signal?: AbortSignal) {
+    return abortable(client.listTools(), signal)
+  }
+
+  export async function tools(signal?: AbortSignal, loadedClients?: Set<string>) {
+    const s = await abortable(state(), signal)
     const result: Record<string, Tool> = {}
 
     for (const [clientName, client] of Object.entries(s.clients)) {
@@ -579,11 +593,13 @@ export namespace MCP {
       // Use cache if available
       const cached = toolsCache.get(clientName)
       if (cached) {
+        if (Object.keys(cached).length > 0) loadedClients?.add(clientName)
         Object.assign(result, cached)
         continue
       }
 
-      const toolsResult = await client.listTools().catch((e) => {
+      const toolsResult = await listClientTools(client, signal).catch((e) => {
+        if (e instanceof DOMException && e.name === "AbortError") throw e
         log.error("failed to get tools", { clientName, error: e.message })
         const failedStatus = {
           status: "failed" as const,
@@ -604,9 +620,15 @@ export namespace MCP {
         clientTools[sanitizedClientName + "_" + sanitizedToolName] = await convertMcpTool(mcpTool, client)
       }
       toolsCache.set(clientName, clientTools)
+      if (Object.keys(clientTools).length > 0) loadedClients?.add(clientName)
       Object.assign(result, clientTools)
     }
     return result
+  }
+
+  export const _internals = {
+    abortable,
+    listClientTools,
   }
 
   export async function prompts() {

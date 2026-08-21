@@ -1,5 +1,3 @@
-import { Provider } from "@/integrations/provider/provider"
-
 import { fn } from "@/util/util/fn"
 import z from "zod"
 import { Session } from "."
@@ -14,8 +12,6 @@ import { Instance } from "@/services/project/instance"
 import { Storage } from "@/core/storage/storage"
 import { Bus } from "@/core/bus"
 
-import { LLM } from "./llm"
-import { Agent } from "@/integrations/agent/agent"
 
 export namespace SessionSummary {
   const log = Log.create({ service: "session.summary" })
@@ -23,6 +19,24 @@ export namespace SessionSummary {
   // F11: Debounce summarization per session — only run after 5s idle
   const DEBOUNCE_MS = 5_000
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  export function localTitle(text: string) {
+    const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, " ").replace(/\s+/g, " ").trim()
+    if (!cleaned) return
+    return cleaned.length > 100 ? cleaned.slice(0, 97) + "..." : cleaned
+  }
+
+  export function localDiffSummary(diffs: Snapshot.FileDiff[]) {
+    if (diffs.length === 0) return
+    const additions = diffs.reduce((sum, item) => sum + item.additions, 0)
+    const deletions = diffs.reduce((sum, item) => sum + item.deletions, 0)
+    const files = diffs
+      .slice(0, 8)
+      .map((item) => item.file)
+      .join(", ")
+    const remaining = diffs.length > 8 ? ` and ${diffs.length - 8} more` : ""
+    return `Changed ${diffs.length} file${diffs.length === 1 ? "" : "s"} (+${additions}/-${deletions}): ${files}${remaining}`
+  }
 
   export const summarize = fn(
     z.object({
@@ -115,39 +129,9 @@ export namespace SessionSummary {
       log.warn("summarizeMessage: assistant message not found", { messageID: input.messageID })
       return
     }
-    const assistantMsg = assistantMsgMatch.info as MessageV2.Assistant
-    const small =
-      (await Provider.getSmallModel(assistantMsg.providerID)) ??
-      (await Provider.getModel(assistantMsg.providerID, assistantMsg.modelID))
-
     const textPart = msgWithParts.parts.find((p) => p.type === "text" && !p.synthetic) as MessageV2.TextPart
     if (textPart && !userMsg.summary?.title) {
-      const agent = await Agent.get("title")
-      const stream = await LLM.stream({
-        agent,
-        user: userMsg,
-        tools: {},
-        model: agent.model ? await Provider.getModel(agent.model.providerID, agent.model.modelID) : small,
-        small: true,
-        messages: [
-          {
-            role: "user" as const,
-            content: `
-              The following is the text to summarize:
-              <text>
-              ${textPart?.text ?? ""}
-              </text>
-            `,
-          },
-        ],
-        abort: new AbortController().signal,
-        sessionID: userMsg.sessionID,
-        system: [],
-        retries: 3,
-      })
-      const result = await stream.text
-      log.info("title", { title: result })
-      userMsg.summary.title = result
+      userMsg.summary.title = localTitle(textPart.text)
       await Session.updateMessage(userMsg)
     }
 
@@ -158,38 +142,7 @@ export namespace SessionSummary {
       )
     ) {
       if (diffs.length > 0) {
-        for (const msg of messages) {
-          for (const part of msg.parts) {
-            if (part.type === "tool" && part.state.status === "completed") {
-              part.state.output = "[TOOL OUTPUT PRUNED]"
-            }
-          }
-        }
-        const summaryAgent = await Agent.get("summary")
-        const stream = await LLM.stream({
-          agent: summaryAgent,
-          user: userMsg,
-          tools: {},
-          model: summaryAgent.model
-            ? await Provider.getModel(summaryAgent.model.providerID, summaryAgent.model.modelID)
-            : small,
-          small: true,
-          messages: [
-            ...(await MessageV2.toModelMessage(messages)),
-            {
-              role: "user" as const,
-              content: `Summarize the above conversation according to your system prompts.`,
-            },
-          ],
-          abort: new AbortController().signal,
-          sessionID: userMsg.sessionID,
-          system: [],
-          retries: 3,
-        })
-        const result = await stream.text
-        if (result) {
-          userMsg.summary.body = result
-        }
+        userMsg.summary.body = localDiffSummary(diffs)
       }
       await Session.updateMessage(userMsg)
     }

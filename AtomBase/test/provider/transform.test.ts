@@ -1006,7 +1006,7 @@ describe("ProviderTransform.variants", () => {
   })
 
   describe("@ai-sdk/amazon-bedrock", () => {
-    test("returns WIDELY_SUPPORTED_EFFORTS with reasoningConfig", () => {
+    test("does not invent unsupported effort controls", () => {
       const model = createMockModel({
         id: "bedrock/llama-4",
         providerID: "bedrock",
@@ -1017,13 +1017,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
-      expect(result.low).toEqual({
-        reasoningConfig: {
-          type: "enabled",
-          maxReasoningEffort: "low",
-        },
-      })
+      expect(result).toEqual({})
     })
   })
 
@@ -1067,12 +1061,16 @@ describe("ProviderTransform.variants", () => {
       const result = ProviderTransform.variants(model)
       expect(Object.keys(result)).toEqual(["low", "high"])
       expect(result.low).toEqual({
-        includeThoughts: true,
-        thinkingLevel: "low",
+        thinkingConfig: {
+          includeThoughts: true,
+          thinkingLevel: "low",
+        },
       })
       expect(result.high).toEqual({
-        includeThoughts: true,
-        thinkingLevel: "high",
+        thinkingConfig: {
+          includeThoughts: true,
+          thinkingLevel: "high",
+        },
       })
     })
   })
@@ -1124,7 +1122,7 @@ describe("ProviderTransform.variants", () => {
   })
 
   describe("@ai-sdk/groq", () => {
-    test("returns none and WIDELY_SUPPORTED_EFFORTS with thinkingLevel", () => {
+    test("returns none and WIDELY_SUPPORTED_EFFORTS with reasoningEffort", () => {
       const model = createMockModel({
         id: "groq/llama-4",
         providerID: "groq",
@@ -1136,13 +1134,178 @@ describe("ProviderTransform.variants", () => {
       })
       const result = ProviderTransform.variants(model)
       expect(Object.keys(result)).toEqual(["none", "low", "medium", "high"])
-      expect(result.none).toEqual({
-        includeThoughts: true,
-        thinkingLevel: "none",
+      expect(result.none).toEqual({ reasoningEffort: "none" })
+      expect(result.low).toEqual({ reasoningEffort: "low" })
+    })
+  })
+
+  describe("catalog reasoning options", () => {
+    test("combines toggle and effort controls without losing the disable option", () => {
+      const model = createMockModel({
+        providerID: "atomcli",
+        api: { id: "hy3-free", url: "https://atomcli.ai/zen/v1", npm: "@ai-sdk/openai-compatible" },
       })
-      expect(result.low).toEqual({
-        includeThoughts: true,
-        thinkingLevel: "low",
+      const variants = ProviderTransform.reasoningVariants(
+        {
+          reasoning_options: [{ type: "toggle" }, { type: "effort", values: ["low", "medium", "high"] }],
+        } as any,
+        model,
+      )!
+      model.variants = variants
+
+      expect(Object.keys(variants)).toEqual(["none", "high", "low", "medium"])
+      expect(
+        ProviderTransform.atomcliThinkingBody(model, {
+          model: "hy3-free",
+          reasoning_effort: variants.none.reasoningEffort,
+        }),
+      ).toEqual({ model: "hy3-free", thinking: { type: "disabled" } })
+      expect(
+        ProviderTransform.atomcliThinkingBody(model, {
+          model: "hy3-free",
+          reasoning_effort: variants.low.reasoningEffort,
+        }),
+      ).toEqual({ model: "hy3-free", reasoning_effort: "low", thinking: { type: "enabled" } })
+    })
+
+    test("maps toggle-only controls and keeps explicit unsupported declarations authoritative", () => {
+      const supported = createMockModel({
+        providerID: "atomcli",
+        api: { id: "toggle", url: "https://atomcli.ai/zen/v1", npm: "@ai-sdk/openai-compatible" },
+      })
+      expect(
+        ProviderTransform.reasoningVariants({ reasoning_options: [{ type: "toggle" }] } as any, supported),
+      ).toMatchObject({ none: {}, high: {} })
+
+      const unsupported = createMockModel({
+        api: { id: "local", url: "http://localhost", npm: "unknown-provider" },
+      })
+      expect(
+        ProviderTransform.reasoningVariants({ reasoning_options: [{ type: "toggle" }] } as any, unsupported),
+      ).toEqual({})
+
+      const genericCompatible = createMockModel({
+        providerID: "custom",
+        api: { id: "custom", url: "https://example.com/v1", npm: "@ai-sdk/openai-compatible" },
+      })
+      expect(
+        ProviderTransform.reasoningVariants({ reasoning_options: [{ type: "toggle" }] } as any, genericCompatible),
+      ).toEqual({})
+    })
+
+    test("maps token-budget declarations to the provider's supported wire shape", () => {
+      const model = createMockModel({
+        api: { id: "claude", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+        limit: { context: 128_000, output: 20_000 },
+      })
+      expect(
+        ProviderTransform.reasoningVariants(
+          { reasoning_options: [{ type: "budget_tokens", min: 4_000, max: 12_000 }] } as any,
+          model,
+        ),
+      ).toEqual({
+        high: { thinking: { type: "enabled", budgetTokens: 6_000 } },
+        max: { thinking: { type: "enabled", budgetTokens: 12_000 } },
+      })
+    })
+
+    test("does not reduce catalog budgets below their declared minimum", () => {
+      const model = createMockModel({
+        api: { id: "claude", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+        limit: { context: 128_000, output: 64_001 },
+      })
+      expect(
+        ProviderTransform.reasoningVariants(
+          { reasoning_options: [{ type: "budget_tokens", min: 40_000, max: 50_000 }] } as any,
+          model,
+        ),
+      ).toEqual({
+        high: { thinking: { type: "enabled", budgetTokens: 40_000 } },
+        max: { thinking: { type: "enabled", budgetTokens: 50_000 } },
+      })
+    })
+
+    test("uses only effort levels explicitly declared by the catalog", () => {
+      const model = createMockModel({
+        id: "atomcli/muse-spark-1.2-contributor-free",
+        providerID: "atomcli",
+        api: {
+          id: "muse-spark-1.2-contributor-free",
+          url: "https://atomcli.ai/zen/v1",
+          npm: "@ai-sdk/openai",
+        },
+      })
+      const result = ProviderTransform.reasoningVariants(
+        {
+          reasoning_options: [{ type: "effort", values: ["minimal", "low", "medium", "high", "xhigh"] }],
+        } as any,
+        model,
+      )
+
+      expect(Object.keys(result ?? {})).toEqual(["minimal", "low", "medium", "high", "xhigh"])
+      expect(result?.xhigh).toEqual({
+        reasoningEffort: "xhigh",
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      })
+    })
+
+    test("treats an explicitly empty declaration as non-configurable", () => {
+      const model = createMockModel()
+      expect(ProviderTransform.reasoningVariants({ reasoning_options: [] } as any, model)).toEqual({})
+    })
+
+    test("maps null effort to the none variant", () => {
+      const model = createMockModel()
+      expect(
+        ProviderTransform.reasoningVariants(
+          { reasoning_options: [{ type: "effort", values: [null, "high"] }] } as any,
+          model,
+        ),
+      ).toMatchObject({
+        none: { reasoningEffort: "none" },
+        high: { reasoningEffort: "high" },
+      })
+    })
+  })
+
+  describe("applyVariant", () => {
+    test("applies the selected variant last and preserves nested options", () => {
+      const model = createMockModel({
+        variants: {
+          high: {
+            thinkingConfig: { thinkingLevel: "high" },
+            reasoningEffort: "high",
+          },
+        },
+      })
+
+      expect(
+        ProviderTransform.applyVariant(
+          model,
+          "high",
+          { thinkingConfig: { includeThoughts: true }, reasoningEffort: "low" },
+          { custom: "model" },
+          { custom: "agent" },
+        ),
+      ).toEqual({
+        thinkingConfig: { includeThoughts: true, thinkingLevel: "high" },
+        reasoningEffort: "high",
+        custom: "agent",
+      })
+    })
+
+    test("does not apply user variants to small-model calls", () => {
+      const model = createMockModel({ variants: { high: { reasoningEffort: "high" } } })
+      expect(ProviderTransform.applyVariant(model, "high", { reasoningEffort: "minimal" }, {}, {}, true)).toEqual({
+        reasoningEffort: "minimal",
+      })
+    })
+
+    test("ignores stale or unsupported variant names", () => {
+      const model = createMockModel({ variants: { high: { reasoningEffort: "high" } } })
+      expect(ProviderTransform.applyVariant(model, "xhigh", { reasoningEffort: "low" })).toEqual({
+        reasoningEffort: "low",
       })
     })
   })

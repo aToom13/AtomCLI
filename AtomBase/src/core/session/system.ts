@@ -50,7 +50,7 @@ export namespace SystemPrompt {
     return [prompt]
   }
 
-  export async function environment(query = ""): Promise<string[]> {
+  export async function environment(query = "", availableMcpNames?: Iterable<string>): Promise<string[]> {
     const project = Instance.project
     const now = new Date()
     const year = now.getFullYear()
@@ -110,13 +110,26 @@ export namespace SystemPrompt {
     const userContext = await SessionMemoryIntegration.getUserContext()
     const userContextBlock = userContext ? `\n\n## 🧠 User Memory\n\n${userContext}` : ""
 
-    const [skills, mcpStatus] = await Promise.all([Skill.state(), MCP.status()])
+    // MCP servers initialize in the background and may legitimately take tens of
+    // seconds (for example an npx-backed local server on first launch). Prompt
+    // construction must not wait for that initialization; resolveTools() has its
+    // own bounded wait and later turns will see the connected servers.
+    const skills = await Skill.state()
     const skillList = Object.values(skills)
       .map((s) => `  - ${s.name}: ${s.description}`)
       .join("\n")
-    const connectedMcps = Object.entries(mcpStatus)
-      .filter(([_, status]) => status.status === "connected")
-      .map(([name, _]) => name)
+    let connectedMcps: string[]
+    if (availableMcpNames) {
+      connectedMcps = [...availableMcpNames]
+    } else {
+      const mcpAbort = new AbortController()
+      const mcpTimer = setTimeout(() => mcpAbort.abort(), 250)
+      const mcpStatus = await MCP.status(mcpAbort.signal).catch(() => ({} as Record<string, MCP.Status>))
+      clearTimeout(mcpTimer)
+      connectedMcps = Object.entries(mcpStatus)
+        .filter(([_, status]) => status.status === "connected")
+        .map(([name, _]) => name)
+    }
     const mcpList = connectedMcps.map((name) => `  - ${name}`).join("\n")
 
     // Build MCP usage instructions based on connected servers

@@ -62,6 +62,49 @@ export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
   export const OUTPUT_TOKEN_MAX = LLM.OUTPUT_TOKEN_MAX
 
+  function prepareTurnContext<T>(system: string[], messages: T[], isLastStep: boolean) {
+    return {
+      system: isLastStep ? [...system, MAX_STEPS] : system,
+      messages,
+    }
+  }
+
+  function shouldLoadTools(input: {
+    prompt: string
+    explicitTools: boolean
+    bypassAgentCheck: boolean
+    hasPriorToolActivity: boolean
+  }) {
+    if (input.explicitTools || input.bypassAgentCheck || input.hasPriorToolActivity) return true
+    const normalized = input.prompt
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+    if (!normalized) return true
+    const casual = new Set([
+      "selam",
+      "merhaba",
+      "naber",
+      "nasılsın",
+      "nasılsınız",
+      "hello",
+      "hi",
+      "hey",
+      "thanks",
+      "thank you",
+      "teşekkürler",
+      "teşekkür ederim",
+    ])
+    return !casual.has(normalized)
+  }
+
+  export const _internals = {
+    prepareTurnContext,
+    shouldLoadTools,
+    lastModel,
+  }
+
   const state = Instance.state(
     () => {
       const data: Record<
@@ -326,8 +369,6 @@ export namespace SessionPrompt {
       if (step === 1)
         ensureTitle({
           session,
-          modelID: lastUser.model.modelID,
-          providerID: lastUser.model.providerID,
           history: msgs,
         })
 
@@ -561,6 +602,10 @@ export namespace SessionPrompt {
       // Check if user explicitly invoked an agent via @ in this turn
       const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
       const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
+      const hasPriorToolActivity = msgs.some((message) =>
+        message.parts.some((part) => part.type === "tool" || part.type === "subtask"),
+      )
+      const loadedMcpNames = new Set<string>()
 
       const tools = await resolveTools({
         agent,
@@ -569,6 +614,12 @@ export namespace SessionPrompt {
         tools: lastUser.tools,
         processor,
         bypassAgentCheck,
+        hasPriorToolActivity,
+        loadedMcpNames,
+        prompt: (lastUserMsg?.parts ?? [])
+          .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+          .map((part) => part.text)
+          .join("\n"),
       })
 
       if (step === 1 && AgentEval.executionPolicy(sessionID).allowAuxiliarySummaries) {
@@ -620,7 +671,7 @@ export namespace SessionPrompt {
 
       // Run environment, custom rules, memory recall and skill auto-injection in parallel
       const [environment, custom, memoryContext, autoSkillContext] = await Promise.all([
-        SystemPrompt.environment(userText),
+        SystemPrompt.environment(userText, loadedMcpNames),
         SystemPrompt.custom(),
         userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
         userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
@@ -629,24 +680,15 @@ export namespace SessionPrompt {
       const system = [...environment, ...custom]
       if (memoryContext) system.push(memoryContext)
       if (autoSkillContext) system.push(autoSkillContext)
+      const turnContext = prepareTurnContext(system, await MessageV2.toModelMessage(sessionMessages), isLastStep)
 
       const result = await processor.process({
         user: lastUser,
         agent,
         abort,
         sessionID,
-        system,
-        messages: [
-          ...(await MessageV2.toModelMessage(sessionMessages)),
-          ...(isLastStep
-            ? [
-                {
-                  role: "assistant" as const,
-                  content: MAX_STEPS,
-                },
-              ]
-            : []),
-        ],
+        system: turnContext.system,
+        messages: turnContext.messages,
         tools,
         model: currentModel,
       })
@@ -668,7 +710,10 @@ export namespace SessionPrompt {
     SessionCompaction.prune({ sessionID })
     const completedMessages: MessageV2.WithParts[] = []
     for await (const item of MessageV2.stream(sessionID)) completedMessages.push(item)
-    MemoryLifecycle.schedule(sessionID, completedMessages, { retrospective: !session.parentID })
+    // Automatic evaluation is local and cheap. Keep the optional LLM
+    // retrospective off the automatic completion path so a user request never
+    // silently spends a second provider request.
+    MemoryLifecycle.schedule(sessionID, completedMessages, { retrospective: false })
     for (const item of completedMessages) {
       if (item.info.role === "user") continue
       const queued = state()[sessionID]?.callbacks ?? []
@@ -682,7 +727,11 @@ export namespace SessionPrompt {
 
   async function lastModel(sessionID: string) {
     for await (const item of MessageV2.stream(sessionID)) {
-      if (item.info.role === "user" && item.info.model) return item.info.model
+      if (item.info.role !== "user" || !item.info.model) continue
+      const available = await Provider.getModel(item.info.model.providerID, item.info.model.modelID).catch(() => undefined)
+      if (available) return item.info.model
+      log.warn("session model is no longer available; selecting a current model", { model: item.info.model })
+      break
     }
     return Provider.defaultModel()
   }
@@ -694,8 +743,23 @@ export namespace SessionPrompt {
     tools?: Record<string, boolean>
     processor: SessionProcessor.Info
     bypassAgentCheck: boolean
+    hasPriorToolActivity: boolean
+    loadedMcpNames: Set<string>
+    prompt: string
   }) {
     using _ = log.time("resolveTools")
+    const explicitTools = Object.values(input.tools ?? {}).some((enabled) => enabled === true)
+    if (
+      !shouldLoadTools({
+        prompt: input.prompt,
+        explicitTools,
+        bypassAgentCheck: input.bypassAgentCheck,
+        hasPriorToolActivity: input.hasPriorToolActivity,
+      })
+    ) {
+      log.debug("casual turn does not require tools; omitting tool schemas")
+      return {}
+    }
     const tools: Record<string, AITool> = {}
 
     const context = (args: any, options: ToolCallOptions): Tool.Context => ({
@@ -763,9 +827,14 @@ export namespace SessionPrompt {
     const mcpAbort = new AbortController()
     const mcpTimer = setTimeout(() => {
       mcpAbort.abort()
-      log.warn("MCP tools loading timed out after 5s, skipping MCP tools")
-    }, 5000)
-    const mcpTools = await MCP.tools(mcpAbort.signal).catch(() => ({}))
+      log.debug("MCP tools are still initializing; skipping them for this turn")
+    }, 250)
+    const mcpTools = await MCP.tools(mcpAbort.signal, input.loadedMcpNames).catch(() => {
+      // MCP.tools() is atomic for a turn: if a later client aborts, its partial
+      // tool map is discarded, so discard the matching client metadata too.
+      input.loadedMcpNames.clear()
+      return {}
+    })
     clearTimeout(mcpTimer)
     for (const [key, item] of Object.entries(mcpTools)) {
       const execute = item.execute
@@ -1236,7 +1305,11 @@ export namespace SessionPrompt {
       // F13: static import — no dynamic import() in hot path
       const textParts = parts.filter((p) => p.type === "text" && !("synthetic" in p && p.synthetic))
       const userText = textParts.map((p) => (p as any).text).join(" ")
-      if (userText && AgentEval.executionPolicy(input.sessionID).allowMemoryLearning) {
+      if (
+        userText &&
+        SessionMemoryIntegration.hasExplicitMemorySignal(userText) &&
+        AgentEval.executionPolicy(input.sessionID).allowMemoryLearning
+      ) {
         // Fire-and-forget: don't block prompt processing on memory learning
         SessionMemoryIntegration.learnFromMessage(userText, info.model).catch((error) => {
           log.error("Failed to learn from user message", { error })
@@ -1821,8 +1894,6 @@ export namespace SessionPrompt {
   async function ensureTitle(input: {
     session: Session.Info
     history: MessageV2.WithParts[]
-    providerID: string
-    modelID: string
   }) {
     if (!AgentEval.executionPolicy(input.session.id).allowAuxiliarySummaries) return
     if (input.session.parentID) return
@@ -1839,55 +1910,23 @@ export namespace SessionPrompt {
         .length === 1
     if (!isFirst) return
 
-    // Gather all messages up to and including the first real user message for context
-    // This includes any shell/subtask executions that preceded the user's first prompt
-    const contextMessages = input.history.slice(0, firstRealUserIdx + 1)
-    const firstRealUser = contextMessages[firstRealUserIdx]
+    const firstRealUser = input.history[firstRealUserIdx]
 
     // For subtask-only messages (from command invocations), extract the prompt directly
     // since toModelMessage converts subtask parts to generic "The following tool was executed by the user"
     const subtaskParts = firstRealUser.parts.filter((p) => p.type === "subtask") as MessageV2.SubtaskPart[]
     const hasOnlySubtaskParts = subtaskParts.length > 0 && firstRealUser.parts.every((p) => p.type === "subtask")
 
-    const agent = await Agent.get("title")
-    if (!agent) return
-    const result = await LLM.stream({
-      agent,
-      user: firstRealUser.info as MessageV2.User,
-      system: [],
-      small: true,
-      tools: {},
-      model: await iife(async () => {
-        if (agent.model) return await Provider.getModel(agent.model.providerID, agent.model.modelID)
-        return (
-          (await Provider.getSmallModel(input.providerID)) ?? (await Provider.getModel(input.providerID, input.modelID))
-        )
-      }),
-      abort: new AbortController().signal,
-      sessionID: input.session.id,
-      retries: 2,
-      messages: [
-        {
-          role: "user",
-          content: "Generate a title for this conversation:\n",
-        },
-        ...(hasOnlySubtaskParts
-          ? [{ role: "user" as const, content: subtaskParts.map((p) => p.prompt).join("\n") }]
-          : await MessageV2.toModelMessage(contextMessages)),
-      ],
+    const text = hasOnlySubtaskParts
+      ? subtaskParts.map((part) => part.prompt).join(" ")
+      : firstRealUser.parts
+          .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+          .map((part) => part.text)
+          .join(" ")
+    const title = SessionSummary.localTitle(text)
+    if (!title) return
+    return Session.update(input.session.id, (draft) => {
+      draft.title = title
     })
-    const text = await result.text.catch((err) => log.error("failed to generate title", { error: err }))
-    if (text)
-      return Session.update(input.session.id, (draft) => {
-        const cleaned = text
-          .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
-          .split("\n")
-          .map((line) => line.trim())
-          .find((line) => line.length > 0)
-        if (!cleaned) return
-
-        const title = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
-        draft.title = title
-      })
   }
 }

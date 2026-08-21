@@ -10,7 +10,7 @@
 - New native agents must be added to the `state` factory in `src/integrations/agent/agent.ts`. Custom user agents come from `.atomcli/agent/*.md` with YAML frontmatter — they extend native agents, not replace them.
 - `strict: false` in `tsconfig.json` is intentional. Do not enable strict mode.
 - After changing a route under `src/server/`, regenerate the SDK from this directory with `bun run dev generate > ../libs/sdk/js/openapi.json`, then run `cd ../libs/sdk/js && bun run build`. Never hand-edit `../libs/sdk/js/src/v2/gen/`.
-- Releases are triggered only by `v*` tags. Root `release.sh` is the supported release entrypoint. Never push a commit or tag, publish a package, or add generated release output without explicit user authorization.
+- Releases are triggered only by `v*` tags. No release helper is tracked; maintainer-specific helpers must remain ignored. Never push a commit or tag, publish a package, or add generated release output without explicit user authorization.
 - Root `.atomcli/` and `.claude/` contain tracked release assets. Their local config, credentials, package manifests/locks, dependencies, plans, runs, and session state must stay ignored.
 
 ## Validation before finishing

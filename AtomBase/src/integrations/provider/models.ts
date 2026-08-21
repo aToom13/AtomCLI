@@ -16,6 +16,26 @@ export namespace ModelsDev {
   // catalog, so project instances should share the same refresh operation.
   let refreshing: Promise<boolean> | undefined
 
+  const ReasoningEffort = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "default"])
+  const ReasoningOption = z.union([
+    z.object({
+      type: z.literal("effort"),
+      values: z.array(ReasoningEffort.nullable()),
+    }),
+    z.object({
+      type: z.literal("toggle"),
+    }),
+    z
+      .object({
+        type: z.literal("budget_tokens"),
+        min: z.number().finite().min(-1).optional(),
+        max: z.number().finite().min(0).optional(),
+      })
+      .refine((value) => value.min === undefined || value.max === undefined || value.min <= value.max, {
+        message: "reasoning token budget minimum cannot exceed maximum",
+      }),
+  ])
+
   export const Model = z
     .object({
       id: z.string(),
@@ -24,6 +44,7 @@ export namespace ModelsDev {
       release_date: z.string(),
       attachment: z.boolean(),
       reasoning: z.boolean(),
+      reasoning_options: z.array(ReasoningOption).optional(),
       temperature: z.boolean().optional().default(false),
       tool_call: z.boolean(),
       interleaved: z
@@ -235,4 +256,8 @@ export namespace ModelsDev {
   }
 }
 
-setInterval(() => void ModelsDev.refresh().catch((error) => Log.create({ service: "models.dev" }).error("refresh failed", { error })), 60 * 60 * 1000).unref()
+setInterval(
+  () =>
+    void ModelsDev.refresh().catch((error) => Log.create({ service: "models.dev" }).error("refresh failed", { error })),
+  60 * 60 * 1000,
+).unref()

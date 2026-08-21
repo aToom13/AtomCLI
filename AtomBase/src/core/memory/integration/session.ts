@@ -112,13 +112,26 @@ export class SessionMemoryIntegration {
   /**
    * Learn from user message using semantic analysis
    */
+  static hasExplicitMemorySignal(message: string): boolean {
+    const text = message.trim().toLowerCase()
+    if (!text) return false
+    return [
+      /\bmy name is\b|\bcall me\b|\bbenim adım\b|\bbana .{1,40} de\b/,
+      /\bi (?:strongly )?(?:prefer|like|dislike)\b|\btercih ederim\b|\bseviyorum\b|\bsevmiyorum\b/,
+      /\bremember (?:that|this|my)\b|\bdon't forget\b|\bdo not forget\b|\bunutma\b|\bhatırla\b/,
+      /\bfrom now on\b|\bbundan sonra\b|\bher zaman yanıtlarında\b/,
+      /\bthat is (?:wrong|incorrect)\b|\byanlış hatırlıyorsun\b|\bdüzeltme:\s*/,
+    ].some((pattern) => pattern.test(text))
+  }
+
   static async learnFromMessage(message: string, model?: { providerID: string; modelID: string }): Promise<void> {
     try {
       await this.initialize()
 
-      // Quick check: Skip if it's just a question
-      if (SemanticLearningService.isQuestion(message)) {
-        log.debug("Skipping question message", { message: message.slice(0, 50) })
+      // Semantic extraction is an LLM request. Only spend latency/quota when the
+      // user explicitly shares durable personal information or asks us to retain it.
+      if (!this.hasExplicitMemorySignal(message)) {
+        log.debug("Skipping message without an explicit memory signal", { message: message.slice(0, 50) })
         return
       }
 

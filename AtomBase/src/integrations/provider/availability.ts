@@ -3,9 +3,9 @@ import z from "zod"
 
 export namespace ModelAvailability {
   export const Info = z.object({
-    status: z.literal("rate_limited"),
+    status: z.enum(["rate_limited", "unavailable"]),
     retryAt: z.number().optional(),
-    source: z.enum(["retry-after", "rate-limit-reset", "daily-window"]).optional(),
+    source: z.enum(["retry-after", "rate-limit-reset", "daily-window", "provider-response"]).optional(),
   })
   export type Info = z.infer<typeof Info>
 
@@ -55,6 +55,22 @@ export namespace ModelAvailability {
     return { status: "rate_limited", retryAt: nextUTCWindow(now), source: "daily-window" }
   }
 
+  const UNAVAILABLE_RETRY_MS = 5 * 60 * 1000
+
+  export async function unavailableFromResponse(response: Response, now = Date.now()): Promise<Info | undefined> {
+    if (![400, 404, 503].includes(response.status)) return
+    const body = await response
+      .clone()
+      .text()
+      .catch(() => "")
+    if (!/\bmodel\s+(?:is\s+)?unavailable\b|\bmodel_not_found\b/i.test(body)) return
+    return {
+      status: "unavailable",
+      retryAt: retryAfter(response.headers.get("retry-after"), now) ?? now + UNAVAILABLE_RETRY_MS,
+      source: "provider-response",
+    }
+  }
+
   export function active(value: Info | undefined, now = Date.now()) {
     if (!value) return
     if (value.retryAt !== undefined && value.retryAt <= now) return
@@ -63,11 +79,13 @@ export namespace ModelAvailability {
 
   export function retryLabel(value: Info | undefined, now = Date.now()) {
     const current = active(value, now)
+    if (current?.status === "unavailable" && !current.retryAt) return "upstream model unavailable, retry time unknown"
     if (!current?.retryAt) return "retry time unknown"
     const seconds = Math.max(0, Math.ceil((current.retryAt - now) / 1000))
     const hours = Math.floor(seconds / 3600)
     const minutes = Math.ceil((seconds % 3600) / 60)
-    if (hours > 0) return `retry in ~${hours}h ${minutes}m`
-    return `retry in ~${Math.max(1, minutes)}m`
+    const duration = hours > 0 ? `~${hours}h ${minutes}m` : `~${Math.max(1, minutes)}m`
+    if (current.status === "unavailable") return `upstream model unavailable, retry in ${duration}`
+    return `retry in ${duration}`
   }
 }

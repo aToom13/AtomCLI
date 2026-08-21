@@ -3,6 +3,7 @@ import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "@/services/project/instance"
 import { Provider } from "@/integrations/provider/provider"
+import { ProviderTransform } from "@/integrations/provider/transform"
 import { Env } from "@/core/env"
 import { Config } from "@/core/config/config"
 
@@ -10,6 +11,122 @@ test("provider requests have a finite default timeout", () => {
   expect(Provider.requestTimeout({})).toBe(300_000)
   expect(Provider.requestTimeout({ timeout: 12_000 })).toBe(12_000)
   expect(Provider.requestTimeout({ timeout: false })).toBe(false)
+})
+
+test("AtomCLI public catalog excludes deprecated and paid models", () => {
+  const model = {
+    cost: { input: 0, output: 0 },
+    status: "active",
+  } as unknown as Provider.Model
+
+  expect(Provider._internals.isPublicAtomCLIModel(model)).toBe(true)
+  expect(Provider._internals.isPublicAtomCLIModel({ ...model, status: "deprecated" })).toBe(false)
+  expect(
+    Provider._internals.isPublicAtomCLIModel({
+      ...model,
+      cost: { input: 0.1, output: 0, cache: { read: 0, write: 0 } },
+    }),
+  ).toBe(false)
+})
+
+test("models.dev reasoning declarations replace guessed thinking variants", () => {
+  const provider = Provider.fromModelsDevProvider({
+    id: "atomcli",
+    name: "AtomCLI Zen",
+    env: [],
+    npm: "@ai-sdk/openai-compatible",
+    api: "https://atomcli.ai/zen/v1",
+    models: {
+      fixed: {
+        id: "fixed",
+        name: "Fixed Reasoning",
+        reasoning: true,
+        reasoning_options: [],
+        tool_call: true,
+        attachment: false,
+        release_date: "2026-01-01",
+        modalities: { input: ["text"], output: ["text"] },
+        limit: { context: 128_000, output: 32_000 },
+      },
+      adjustable: {
+        id: "adjustable",
+        name: "Adjustable Reasoning",
+        reasoning: true,
+        reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+        tool_call: true,
+        attachment: false,
+        release_date: "2026-01-01",
+        modalities: { input: ["text"], output: ["text"] },
+        limit: { context: 128_000, output: 32_000 },
+      },
+    },
+  } as any)
+
+  expect(provider.models.fixed.variants).toEqual({})
+  expect(provider.models.adjustable.variants).toEqual({
+    low: { reasoningEffort: "low" },
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+  })
+})
+
+test("config overrides invalidate catalog variants when reasoning or transport changes", () => {
+  const existing = {
+    id: "model",
+    api: { id: "model", npm: "@ai-sdk/openai-compatible" },
+    capabilities: { reasoning: true },
+    variants: { high: { reasoningEffort: "high" } },
+  } as unknown as Provider.Model
+
+  expect(
+    Provider._internals.configuredVariants(existing, {
+      ...existing,
+      capabilities: { ...existing.capabilities, reasoning: false },
+    }),
+  ).toEqual({})
+
+  expect(
+    Provider._internals.configuredVariants(existing, {
+      ...existing,
+      api: { ...existing.api, npm: "@ai-sdk/amazon-bedrock" },
+    }),
+  ).toEqual({})
+
+  expect(
+    Provider._internals.configuredVariants(existing, {
+      ...existing,
+      api: { ...existing.api, url: "https://other.example/v1" },
+    }),
+  ).toEqual({})
+})
+
+test("shared provider fetch resolves thinking behavior from the request model", () => {
+  const plain = {
+    id: "plain",
+    providerID: "atomcli",
+    api: { id: "plain-api", npm: "@ai-sdk/openai-compatible", url: "https://atomcli.ai/zen/v1" },
+    variants: {},
+  } as unknown as Provider.Model
+  const toggle = {
+    ...plain,
+    id: "toggle",
+    api: { ...plain.api, id: "toggle-api" },
+    variants: {},
+  } as Provider.Model
+  toggle.variants = ProviderTransform.reasoningVariants({ reasoning_options: [{ type: "toggle" }] } as any, toggle)
+  const provider = { models: { plain, toggle } } as unknown as Provider.Info
+
+  const toggleBody = { model: "toggle-api", reasoning_effort: toggle.variants!.none.reasoningEffort }
+  const toggleTarget = Provider._internals.requestModel(provider, plain, toggleBody)
+  expect(ProviderTransform.atomcliThinkingBody(toggleTarget, toggleBody)).toEqual({
+    model: "toggle-api",
+    thinking: { type: "disabled" },
+  })
+
+  const plainBody = { model: "plain-api", reasoning_effort: "high" }
+  const plainTarget = Provider._internals.requestModel(provider, toggle, plainBody)
+  expect(ProviderTransform.atomcliThinkingBody(plainTarget, plainBody)).toEqual(plainBody)
+  expect(Provider._internals.requestModel(provider, plain, { model: "missing" })).toBe(plain)
 })
 
 test("atomcli-auto persists the selected provider catalog key", async () => {
@@ -430,6 +547,41 @@ test("defaultModel respects config model setting", async () => {
       const model = await Provider.defaultModel()
       expect(model.providerID).toBe("anthropic")
       expect(model.modelID).toBe("claude-sonnet-4-20250514")
+    },
+  })
+})
+
+test("defaultModel recovers when the configured catalog model was removed", async () => {
+  await Config.clearCache()
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "atomcli.json"),
+        JSON.stringify({
+          $schema: "https://atomcli.ai/config.json",
+          model: "atomcli/removed-free-model",
+          provider: {
+            atomcli: {
+              models: {
+                "removed-free-model": {
+                  name: "Removed Free Model",
+                  limit: { context: 128000, output: 8192 },
+                },
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = await Provider.getProvider("atomcli")
+      expect(provider?.models["removed-free-model"]).toBeUndefined()
+      const model = await Provider.defaultModel()
+      expect(model).not.toEqual({ providerID: "atomcli", modelID: "removed-free-model" })
+      expect(await Provider.getModel(model.providerID, model.modelID)).toBeDefined()
     },
   })
 })

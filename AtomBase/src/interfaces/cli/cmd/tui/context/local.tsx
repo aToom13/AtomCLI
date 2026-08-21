@@ -374,7 +374,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             const m = currentModel()
             if (!m) return undefined
             const key = `${m.providerID}/${m.modelID}`
-            return modelStore.variant[key]
+            const value = modelStore.variant[key]
+            if (!value) return undefined
+            const provider = sync.data.provider.find((x) => x.id === m.providerID)
+            const variants = provider?.models[m.modelID]?.variants
+            return variants && value in variants ? value : undefined
           },
           list() {
             const m = currentModel()
@@ -388,7 +392,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             const m = currentModel()
             if (!m) return
             const key = `${m.providerID}/${m.modelID}`
-            setModelStore("variant", key, value)
+            const next = value && this.list().includes(value) ? value : undefined
+            setModelStore("variant", key, next)
             save()
           },
           cycle() {

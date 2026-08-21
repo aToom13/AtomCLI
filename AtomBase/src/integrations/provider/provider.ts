@@ -730,7 +730,8 @@ export namespace Provider {
       variants: {},
     }
 
-    m.variants = mapValues(ProviderTransform.variants(m), (v) => v)
+    const declaredVariants = ProviderTransform.reasoningVariants(model, m)
+    m.variants = mapValues(declaredVariants ?? ProviderTransform.variants(m), (v) => v)
 
     return m
   }
@@ -744,6 +745,33 @@ export namespace Provider {
       options: {},
       models: mapValues(provider.models, (model) => fromModelsDevModel(provider, model)),
     }
+  }
+
+  function isPublicAtomCLIModel(model: Model): boolean {
+    if (model.status === "deprecated") return false
+    if (!model.cost || model.cost.input === undefined || model.cost.output === undefined) return false
+    return model.cost.input === 0 && model.cost.output === 0
+  }
+
+  export const _internals = {
+    isPublicAtomCLIModel,
+    requestModel(provider: Info, fallback: Model, body: unknown) {
+      if (!body || typeof body !== "object") return fallback
+      const modelID = (body as { model?: unknown }).model
+      if (typeof modelID !== "string") return fallback
+      return Object.values(provider.models).find((candidate) => candidate.api.id === modelID) ?? fallback
+    },
+    configuredVariants(existingModel: Model | undefined, parsedModel: Model) {
+      const catalogStillApplies =
+        !!existingModel &&
+        existingModel.capabilities.reasoning &&
+        parsedModel.capabilities.reasoning &&
+        existingModel.api.id === parsedModel.api.id &&
+        existingModel.api.npm === parsedModel.api.npm &&
+        existingModel.api.url === parsedModel.api.url
+      if (existingModel) return catalogStillApplies ? existingModel.variants : {}
+      return ProviderTransform.variants(parsedModel)
+    },
   }
 
   async function initialize() {
@@ -760,13 +788,6 @@ export namespace Provider {
     }
 
     if (database["opencode"]) {
-      const isConfirmedFree = (model: Model): boolean => {
-        if (!model.cost || model.cost.input === undefined || model.cost.output === undefined) {
-          return false
-        }
-        return model.cost.input === 0 && model.cost.output === 0
-      }
-
       const isTestEnv =
         typeof process !== "undefined" &&
         process.env.NODE_ENV !== "production" &&
@@ -776,7 +797,7 @@ export namespace Provider {
         if (isTestEnv) {
           return true
         }
-        return isConfirmedFree(model)
+        return isPublicAtomCLIModel(model)
       })
 
       database["atomcli"] = {
@@ -793,6 +814,12 @@ export namespace Provider {
         }),
         options: { apiKey: "public" }, // Hint that no API key is needed
       }
+    }
+
+    // Newer catalogs publish this provider directly. Apply the same visibility
+    // contract as OpenCode itself: public, zero-cost, non-deprecated models only.
+    if (database["atomcli"] && !database["opencode"] && process.env.ATOMCLI_TEST_ALL_MODELS !== "1") {
+      database["atomcli"].models = pickBy(database["atomcli"].models, isPublicAtomCLIModel)
     }
 
     // Current catalogs may expose AtomCLI directly instead of under the legacy
@@ -822,6 +849,10 @@ export namespace Provider {
         }
       }
     }
+
+    // AtomCLI's anonymous catalog is managed upstream. Configuration may
+    // override known entries, but must not resurrect models removed upstream.
+    const publicAtomCLIModelIDs = database["atomcli"] ? new Set(Object.keys(database["atomcli"].models)) : undefined
 
     // Add Kilocode provider - Cloud LLM gateway with device auth
     // Models are fetched dynamically from Kilocode API when authenticated
@@ -996,7 +1027,8 @@ export namespace Provider {
           release_date: model.release_date ?? existingModel?.release_date ?? "",
           variants: {},
         }
-        const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})
+        const generated = _internals.configuredVariants(existingModel, parsedModel)
+        const merged = mergeDeep(generated, model.variants ?? {})
         parsedModel.variants = mapValues(
           pickBy(merged, (v) => !(v as any).disabled),
           (v) => omit(v as any, ["disabled"]),
@@ -1004,6 +1036,10 @@ export namespace Provider {
         parsed.models[modelID] = parsedModel
       }
       database[providerID] = parsed
+    }
+
+    if (database["atomcli"] && publicAtomCLIModelIDs && process.env.ATOMCLI_TEST_ALL_MODELS !== "1") {
+      database["atomcli"].models = pickBy(database["atomcli"].models, (_model, id) => publicAtomCLIModelIDs.has(id))
     }
 
     // load env
@@ -1256,6 +1292,17 @@ export namespace Provider {
           opts.signal = combined
         }
 
+        let requestModel = model
+        if (model.providerID === "atomcli" && typeof opts.body === "string") {
+          try {
+            const body = JSON.parse(opts.body)
+            requestModel = _internals.requestModel(provider, model, body)
+            opts.body = JSON.stringify(ProviderTransform.atomcliThinkingBody(requestModel, body))
+          } catch {
+            // Preserve non-JSON request bodies.
+          }
+        }
+
         const response = await fetchFn(input, {
           ...opts,
           // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
@@ -1263,24 +1310,15 @@ export namespace Provider {
         })
 
         if (model.providerID === "atomcli") {
-          const apiModelID = (() => {
-            if (typeof opts.body !== "string") return model.api.id
-            try {
-              const body = JSON.parse(opts.body)
-              return typeof body?.model === "string" ? body.model : model.api.id
-            } catch {
-              return model.api.id
-            }
-          })()
-          const target = Object.values(provider.models).find((candidate) => candidate.api.id === apiModelID) ?? model
-          const availability = ModelAvailability.fromResponse(response)
-          const current = ModelAvailability.active(target.availability)
+          const availability =
+            ModelAvailability.fromResponse(response) ?? (await ModelAvailability.unavailableFromResponse(response))
+          const current = ModelAvailability.active(requestModel.availability)
           const next = availability ?? (response.ok ? undefined : current)
           if (JSON.stringify(current) !== JSON.stringify(next)) {
-            target.availability = next
+            requestModel.availability = next
             void Bus.publish(ModelAvailability.Event.Updated, {
-              providerID: target.providerID,
-              modelID: target.id,
+              providerID: requestModel.providerID,
+              modelID: requestModel.id,
               availability: next,
             })
           }
@@ -1385,32 +1423,16 @@ export namespace Provider {
         selectModelInternal,
         estimateComplexity,
         inferCategoryMulti,
-        inferCategorySemantic,
-        pickClassifierModel,
         estimateRequiredContext,
         buildFallbackChainFromSelection,
       } = await import("@/integrations/tool/model-router")
 
-      // Semantic (LLM-based) category classification using the smallest free model
-      let categoryRes: { category: "coding" | "documentation" | "analysis" | "general"; confidence: number }
-      if (promptText) {
-        const classifierEntry = pickClassifierModel(freeModels)
-        if (classifierEntry) {
-          try {
-            const classifierLang = await getLanguage(classifierEntry[1])
-            categoryRes = await inferCategorySemantic(promptText, classifierLang)
-          } catch (classifyErr) {
-            log.warn("semantic classifier failed, using keyword fallback", {
-              error: (classifyErr as Error).message,
-            })
-            categoryRes = inferCategoryMulti(promptText)
-          }
-        } else {
-          categoryRes = inferCategoryMulti(promptText)
-        }
-      } else {
-        categoryRes = { category: "general" as const, confidence: 1.0 }
-      }
+      // Classification must stay local. Spending a free-model request merely to
+      // choose the model doubles first-token latency and consumes the same shared
+      // quota as the user's actual request.
+      const categoryRes = promptText
+        ? inferCategoryMulti(promptText)
+        : { category: "general" as const, confidence: 1.0 }
       const category = categoryRes.category
       const complexity = promptText ? estimateComplexity(promptText) : 0
 
@@ -1591,7 +1613,12 @@ export namespace Provider {
 
   export async function defaultModel() {
     const cfg = await Config.get()
-    if (cfg.model) return parseModel(cfg.model)
+    if (cfg.model) {
+      const configured = parseModel(cfg.model)
+      const provider = await getProvider(configured.providerID).catch(() => undefined)
+      if (provider?.models[configured.modelID]) return configured
+      log.warn("configured default model is no longer available; selecting a current model", { model: cfg.model })
+    }
 
     // Explicit check for atomcli provider first
     const atomcli = await getProvider("atomcli").catch(() => undefined)

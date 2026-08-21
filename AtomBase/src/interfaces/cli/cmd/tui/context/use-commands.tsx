@@ -131,7 +131,7 @@ export function useCommands() {
         const current = local.model.variant.current()
         toast.show({
           title: "Thinking Level",
-          message: current ? `Level: ${current.toUpperCase()} 🧠` : "Level: DEFAULT (medium) 🛡️",
+          message: current ? `Level: ${current.toUpperCase()}` : "Level: MODEL DEFAULT",
           variant: "info",
           duration: 2500,
         })
