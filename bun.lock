@@ -12,7 +12,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "3.3.9-debug",
+      "version": "3.3.9-debug2",
       "bin": {
         "atomcli": "./bin/atomcli",
       },

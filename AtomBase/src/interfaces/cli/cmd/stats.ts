@@ -208,7 +208,7 @@ export async function aggregateSessionStats(days?: number, projectFilter?: strin
     const batchPromises = batch.map(async (session) => {
       let messages
       try {
-        messages = await Session.messages({ sessionID: session.id })
+        messages = await Session.messages({ sessionID: session.id, excludePatches: true })
       } catch (error) {
         log.warn("skipping session with unreadable messages", { sessionID: session.id, error })
         return undefined

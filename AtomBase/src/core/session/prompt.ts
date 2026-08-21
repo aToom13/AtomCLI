@@ -336,7 +336,7 @@ export namespace SessionPrompt {
       SessionStatus.set(sessionID, { type: "busy" })
       log.info("loop", { step, sessionID })
       if (abort.aborted) break
-      let msgs = await MessageV2.filterCompacted(MessageV2.stream(sessionID))
+      let msgs = await MessageV2.filterCompacted(MessageV2.stream({ sessionID, excludePatches: true }))
 
       let lastUser: MessageV2.User | undefined
       let lastAssistant: MessageV2.Assistant | undefined
@@ -709,7 +709,7 @@ export namespace SessionPrompt {
     }
     SessionCompaction.prune({ sessionID })
     const completedMessages: MessageV2.WithParts[] = []
-    for await (const item of MessageV2.stream(sessionID)) completedMessages.push(item)
+    for await (const item of MessageV2.stream({ sessionID, excludePatches: true })) completedMessages.push(item)
     // Automatic evaluation is local and cheap. Keep the optional LLM
     // retrospective off the automatic completion path so a user request never
     // silently spends a second provider request.
@@ -726,7 +726,7 @@ export namespace SessionPrompt {
   })
 
   async function lastModel(sessionID: string) {
-    for await (const item of MessageV2.stream(sessionID)) {
+    for await (const item of MessageV2.stream({ sessionID, excludePatches: true })) {
       if (item.info.role !== "user" || !item.info.model) continue
       const available = await Provider.getModel(item.info.model.providerID, item.info.model.modelID).catch(() => undefined)
       if (available) return item.info.model

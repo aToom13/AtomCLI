@@ -7,8 +7,6 @@ import { Identifier } from "@/core/id/id"
 import { Snapshot } from "@/core/snapshot"
 
 import { Log } from "@/util/util/log"
-import path from "path"
-import { Instance } from "@/services/project/instance"
 import { Storage } from "@/core/storage/storage"
 import { Bus } from "@/core/bus"
 
@@ -54,7 +52,7 @@ export namespace SessionSummary {
         setTimeout(async () => {
           debounceTimers.delete(input.sessionID)
           try {
-            const all = await Session.messages({ sessionID: input.sessionID })
+            const all = await Session.messages({ sessionID: input.sessionID, excludePatches: true })
             await Promise.all([
               summarizeSession({ sessionID: input.sessionID, messages: all }),
               summarizeMessage({ messageID: input.messageID, messages: all }),
@@ -81,18 +79,7 @@ export namespace SessionSummary {
   }
 
   async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {
-    const files = new Set(
-      input.messages
-        .flatMap((x) => x.parts)
-        .filter((x) => x.type === "patch")
-        .flatMap((x) => x.files)
-        .map((x) => path.relative(Instance.worktree, x)),
-    )
-    const diffs = await computeDiff({ messages: input.messages }).then((x) =>
-      x.filter((x) => {
-        return files.has(x.file)
-      }),
-    )
+    const diffs = await computeDiff({ messages: input.messages })
     await Session.update(input.sessionID, (draft) => {
       draft.summary = {
         additions: diffs.reduce((sum, x) => sum + x.additions, 0),

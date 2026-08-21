@@ -647,7 +647,7 @@ export async function selectModel(
           }
         }
         if (activeSession && !promptText) {
-          const messages = await Session.messages({ sessionID: activeSession.id })
+          const messages = await Session.messages({ sessionID: activeSession.id, limit: 20, excludePatches: true })
           const lastUser = [...messages].reverse().find((m) => m.info.role === "user")
           if (lastUser) {
             promptText = lastUser.parts

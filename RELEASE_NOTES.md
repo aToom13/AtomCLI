@@ -1,6 +1,13 @@
-# AtomCLI v3.3.9-debug
+# AtomCLI v3.3.9-debug2
 
-AtomCLI v3.3.9-debug is a diagnostic build focused on agent workflows, model and provider handling, terminal interaction, evaluation, and regression coverage.
+AtomCLI v3.3.9-debug2 is a diagnostic build focused on long-session stability, agent workflows, model and provider handling, terminal interaction, evaluation, and regression coverage.
+
+## Debug2 stability updates
+
+- Fixed excessive memory growth in long-running sessions with very large generated file sets.
+- Bounded snapshot manifests, diff content, and the storage read cache.
+- Kept operational patch data out of normal model history, terminal history, sharing, and export flows.
+- Added regression coverage for large snapshots, legacy patch records, safe revert behavior, and repeated long-session loading.
 
 ## Debug build updates
 

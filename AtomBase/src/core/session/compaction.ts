@@ -52,7 +52,7 @@ export namespace SessionCompaction {
     const config = await Config.get()
     if (config.compaction?.prune === false) return
     log.info("pruning")
-    const msgs = await Session.messages({ sessionID: input.sessionID })
+    const msgs = await Session.messages({ sessionID: input.sessionID, excludePatches: true })
     let total = 0
     let pruned = 0
     const toPrune = []

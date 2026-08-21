@@ -103,7 +103,7 @@ export async function buildReviewPrompt(sessionID: string, impact?: ChangeImpact
  */
 async function findOriginalUserRequest(sessionID: string): Promise<string> {
   try {
-    const messages = await Session.messages({ sessionID })
+    const messages = await Session.messages({ sessionID, excludePatches: true })
     const realUser = messages.find(
       (m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic),
     )

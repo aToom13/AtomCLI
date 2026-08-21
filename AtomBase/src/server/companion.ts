@@ -440,7 +440,7 @@ export const CompanionRoute = new Hono().get(
               case "get_messages": {
                 log.info("get_messages requested", { session_id: msg.session_id })
                 try {
-                  const msgs = await Session.messages({ sessionID: msg.session_id })
+                  const msgs = await Session.messages({ sessionID: msg.session_id, excludePatches: true })
                   const serialized = msgs.map((m) => ({
                     id: m.info.id,
                     role: m.info.role,

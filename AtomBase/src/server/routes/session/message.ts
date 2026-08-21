@@ -46,6 +46,7 @@ export const SessionMessageRoute = new Hono()
             const messages = await Session.messages({
                 sessionID: c.req.valid("param").sessionID,
                 limit: query.limit,
+                excludePatches: true,
             })
             return c.json(messages)
         },

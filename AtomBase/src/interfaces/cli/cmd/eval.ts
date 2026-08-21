@@ -97,7 +97,7 @@ export const EvalCommand = cmd({
                       failure?.data?.message ?? failure?.message ?? failure?.name ?? "model returned an unknown error"
                     throw new Error(String(message))
                   }
-                  const messages = await Session.messages({ sessionID: session.id })
+                  const messages = await Session.messages({ sessionID: session.id, excludePatches: true })
                   await AgentEval.recordSession(session.id, messages)
                   return { sessionID: session.id }
                 } catch (error) {

@@ -14,7 +14,10 @@ export namespace Storage {
 
   // ── LRU Read Cache ────────────────────────────────────────
   const CACHE_MAX_SIZE = 2000
-  const readCache = new Map<string, any>()
+  const CACHE_MAX_BYTES = 64 * 1024 * 1024
+  const CACHE_MAX_ENTRY_BYTES = 1024 * 1024
+  const readCache = new Map<string, { value: any; bytes: number }>()
+  let readCacheBytes = 0
 
   function cacheKey(key: string[]): string {
     return key.join("\0")
@@ -27,31 +30,81 @@ export namespace Storage {
 
   function cacheGet(key: string[]): any | undefined {
     const k = cacheKey(key)
-    const v = readCache.get(k)
-    if (v === undefined) return undefined
+    const entry = readCache.get(k)
+    if (entry === undefined) return undefined
     // LRU: delete + re-insert to move to end
     readCache.delete(k)
-    readCache.set(k, v)
+    readCache.set(k, entry)
     // Security: return a deep clone so callers cannot alias (and silently mutate)
     // the cached object without going through Storage.write / Storage.update.
-    return isPrimitive(v) ? v : structuredClone(v)
+    return isPrimitive(entry.value) ? entry.value : structuredClone(entry.value)
   }
 
-  function cacheSet(key: string[], value: any): void {
+  function estimateCacheBytes(value: any): number {
+    if (value === null || value === undefined) return 8
+    if (typeof value === "string") return value.length * 2
+    if (typeof value !== "object") return 16
+
+    let bytes = 0
+    const seen = new Set<object>()
+    const pending: any[] = [value]
+    while (pending.length) {
+      const item = pending.pop()
+      if (item === null || item === undefined) {
+        bytes += 8
+      } else if (typeof item === "string") {
+        bytes += item.length * 2
+      } else if (typeof item !== "object") {
+        bytes += 16
+      } else if (!seen.has(item)) {
+        seen.add(item)
+        bytes += 64
+        if (bytes > CACHE_MAX_ENTRY_BYTES) return bytes
+        if (Array.isArray(item)) {
+          bytes += item.length * 8
+          if (bytes > CACHE_MAX_ENTRY_BYTES) return bytes
+          for (const child of item) pending.push(child)
+        } else {
+          for (const [property, child] of Object.entries(item)) {
+            bytes += property.length * 2
+            pending.push(child)
+          }
+        }
+      }
+      if (bytes > CACHE_MAX_ENTRY_BYTES) return bytes
+    }
+    return bytes
+  }
+
+  function cacheSet(key: string[], value: any, sizeHint?: number): void {
     const k = cacheKey(key)
+    const previous = readCache.get(k)
+    if (previous) {
+      readCacheBytes -= previous.bytes
+      readCache.delete(k)
+    }
+    if (sizeHint !== undefined && sizeHint > CACHE_MAX_ENTRY_BYTES) return
+    const bytes = estimateCacheBytes(value)
+    if (bytes > CACHE_MAX_ENTRY_BYTES) return
     // Security: store a deep clone so the caller's reference cannot alias the cache
     // after this call — mutations to their copy won't corrupt cached state.
     const stored = isPrimitive(value) ? value : structuredClone(value)
-    readCache.delete(k)
-    readCache.set(k, stored)
-    if (readCache.size > CACHE_MAX_SIZE) {
+    readCache.set(k, { value: stored, bytes })
+    readCacheBytes += bytes
+    while (readCache.size > CACHE_MAX_SIZE || readCacheBytes > CACHE_MAX_BYTES) {
       const first = readCache.keys().next().value
-      if (first !== undefined) readCache.delete(first)
+      if (first === undefined) break
+      const removed = readCache.get(first)
+      if (removed) readCacheBytes -= removed.bytes
+      readCache.delete(first)
     }
   }
 
   function cacheDelete(key: string[]): void {
-    readCache.delete(cacheKey(key))
+    const k = cacheKey(key)
+    const previous = readCache.get(k)
+    if (previous) readCacheBytes -= previous.bytes
+    readCache.delete(k)
   }
 
   // ── List Cache (prefix-based invalidation) ────────────────
@@ -234,9 +287,114 @@ export namespace Storage {
     const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
       using _ = await Lock.read(target)
-      const result = await Bun.file(target).json()
-      cacheSet(key, result)
+      const file = Bun.file(target)
+      const result = await file.json()
+      cacheSet(key, result, file.size)
       return result as T
+    })
+  }
+
+  export async function peek(key: string[], maxBytes = 1024) {
+    const dir = await state().then((x) => x.dir)
+    const target = path.join(dir, ...key) + ".json"
+    return withErrorHandling(async () => {
+      using _ = await Lock.read(target)
+      return Bun.file(target).slice(0, Math.max(0, maxBytes)).text()
+    })
+  }
+
+  /**
+   * Reads a top-level JSON string field without materializing the full document.
+   * This is used for discriminators on potentially very large persisted records.
+   */
+  export async function topLevelString(key: string[], field: string) {
+    const dir = await state().then((x) => x.dir)
+    const target = path.join(dir, ...key) + ".json"
+    return withErrorHandling(async () => {
+      using _ = await Lock.read(target)
+      const reader = Bun.file(target).stream().getReader()
+      const decoder = new TextDecoder()
+      let depth = 0
+      let inString = false
+      let escaped = false
+      let mode: "key" | "value" | "skip" = "skip"
+      let capture = ""
+      let currentKey: string | undefined
+      let expectKey = false
+      let expectValue = false
+
+      const consume = (text: string): string | undefined => {
+        for (const character of text) {
+          if (inString) {
+            if (escaped) {
+              escaped = false
+              if (mode !== "skip" && capture.length < 256) capture += character
+              continue
+            }
+            if (character === "\\") {
+              escaped = true
+              continue
+            }
+            if (character !== '"') {
+              if (mode !== "skip" && capture.length < 256) capture += character
+              continue
+            }
+            inString = false
+            if (mode === "key") {
+              currentKey = capture
+              expectKey = false
+            } else if (mode === "value" && currentKey === field) {
+              return capture
+            }
+            capture = ""
+            mode = "skip"
+            continue
+          }
+
+          if (character === "{" || character === "[") {
+            depth++
+            if (character === "{" && depth === 1) expectKey = true
+            continue
+          }
+          if (character === "}" || character === "]") {
+            if (depth === 1) {
+              currentKey = undefined
+              expectKey = false
+              expectValue = false
+            }
+            depth--
+            continue
+          }
+          if (depth !== 1) continue
+          if (character === ",") {
+            currentKey = undefined
+            expectKey = true
+            expectValue = false
+            continue
+          }
+          if (character === ":" && currentKey !== undefined) {
+            expectValue = true
+            continue
+          }
+          if (character === '"') {
+            inString = true
+            capture = ""
+            mode = expectKey ? "key" : expectValue && currentKey === field ? "value" : "skip"
+            continue
+          }
+          if (expectValue && currentKey === field && !/\s/.test(character)) return
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        const found = consume(decoder.decode(value, { stream: !done }))
+        if (found !== undefined) {
+          await reader.cancel()
+          return found
+        }
+        if (done) return
+      }
     })
   }
 

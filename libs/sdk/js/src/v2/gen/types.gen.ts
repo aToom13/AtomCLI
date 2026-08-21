@@ -542,6 +542,20 @@ export type ProviderConfig = {
       release_date?: string
       attachment?: boolean
       reasoning?: boolean
+      reasoning_options?: Array<
+        | {
+            type: "effort"
+            values: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default" | null>
+          }
+        | {
+            type: "toggle"
+          }
+        | {
+            type: "budget_tokens"
+            min?: number
+            max?: number
+          }
+      >
       temperature?: boolean
       tool_call?: boolean
       interleaved?:
@@ -1391,9 +1405,9 @@ export type EventProviderModelAvailabilityUpdated = {
     providerID: string
     modelID: string
     availability?: {
-      status: "rate_limited"
+      status: "rate_limited" | "unavailable"
       retryAt?: number
-      source?: "retry-after" | "rate-limit-reset" | "daily-window"
+      source?: "retry-after" | "rate-limit-reset" | "daily-window" | "provider-response"
     }
   }
 }
@@ -1419,6 +1433,7 @@ export type FileDiff = {
   after: string
   additions: number
   deletions: number
+  truncated?: boolean
 }
 
 export type UserMessage = {
@@ -1734,6 +1749,9 @@ export type PatchPart = {
   type: "patch"
   hash: string
   files: Array<string>
+  after?: string
+  total?: number
+  truncated?: boolean
 }
 
 export type AgentPart = {
@@ -2115,9 +2133,9 @@ export type Model = {
   }
   status: "alpha" | "beta" | "deprecated" | "active"
   availability?: {
-    status: "rate_limited"
+    status: "rate_limited" | "unavailable"
     retryAt?: number
-    source?: "retry-after" | "rate-limit-reset" | "daily-window"
+    source?: "retry-after" | "rate-limit-reset" | "daily-window" | "provider-response"
   }
   options: {
     [key: string]: unknown
@@ -5320,6 +5338,20 @@ export type ProviderListResponses = {
           release_date: string
           attachment: boolean
           reasoning: boolean
+          reasoning_options?: Array<
+            | {
+                type: "effort"
+                values: Array<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default" | null>
+              }
+            | {
+                type: "toggle"
+              }
+            | {
+                type: "budget_tokens"
+                min?: number
+                max?: number
+              }
+          >
           temperature?: boolean
           tool_call: boolean
           interleaved?:

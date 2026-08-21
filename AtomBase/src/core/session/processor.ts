@@ -392,6 +392,9 @@ export namespace SessionProcessor {
                         type: "patch",
                         hash: patch.hash,
                         files: patch.files,
+                        after: patch.after,
+                        total: patch.total,
+                        truncated: patch.truncated,
                       })
                     }
                     snapshot = undefined
@@ -625,6 +628,9 @@ export namespace SessionProcessor {
                 type: "patch",
                 hash: patch.hash,
                 files: patch.files,
+                after: patch.after,
+                total: patch.total,
+                truncated: patch.truncated,
               })
             }
             snapshot = undefined

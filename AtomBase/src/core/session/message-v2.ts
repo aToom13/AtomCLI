@@ -55,6 +55,9 @@ export namespace MessageV2 {
     type: z.literal("patch"),
     hash: z.string(),
     files: z.string().array(),
+    after: z.string().optional(),
+    total: z.number().int().nonnegative().optional(),
+    truncated: z.boolean().optional(),
   }).meta({
     ref: "PatchPart",
   })
@@ -550,17 +553,32 @@ export namespace MessageV2 {
     return convertToModelMessages(result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")))
   }
 
+  async function readParts(messageID: string, excludePatches = false) {
+    const result = [] as MessageV2.Part[]
+    for (const item of await Storage.list(["part", messageID])) {
+      if (excludePatches) {
+        const type = await Storage.topLevelString(item, "type")
+        if (type === "patch") continue
+      }
+      result.push(await Storage.read<MessageV2.Part>(item))
+    }
+    result.sort((a, b) => (a.id > b.id ? 1 : -1))
+    return result
+  }
+
   export const stream = fn(
     z.union([
       Identifier.schema("session"),
       z.object({
         sessionID: Identifier.schema("session"),
         limit: z.number().optional(),
+        excludePatches: z.boolean().optional(),
       }),
     ]),
     async function* (input) {
       const sessionID = typeof input === "string" ? input : input.sessionID
       const limit = typeof input === "string" ? undefined : input.limit
+      const excludePatches = typeof input === "string" ? false : input.excludePatches
       const allKeys = await Array.fromAsync(await Storage.list(["message", sessionID]))
       // When limit is specified, only take the N newest (from the end)
       const keys = limit ? allKeys.slice(-limit) : allKeys
@@ -568,30 +586,26 @@ export namespace MessageV2 {
         yield await get({
           sessionID,
           messageID: keys[i][2],
+          excludePatches,
         })
       }
     },
   )
 
   export const parts = fn(Identifier.schema("message"), async (messageID) => {
-    const result = [] as MessageV2.Part[]
-    for (const item of await Storage.list(["part", messageID])) {
-      const read = await Storage.read<MessageV2.Part>(item)
-      result.push(read)
-    }
-    result.sort((a, b) => (a.id > b.id ? 1 : -1))
-    return result
+    return readParts(messageID)
   })
 
   export const get = fn(
     z.object({
       sessionID: Identifier.schema("session"),
       messageID: Identifier.schema("message"),
+      excludePatches: z.boolean().optional(),
     }),
     async (input) => {
       return {
         info: await Storage.read<MessageV2.Info>(["message", input.sessionID, input.messageID]),
-        parts: await parts(input.messageID),
+        parts: await readParts(input.messageID, input.excludePatches),
       }
     },
   )

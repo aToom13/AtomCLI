@@ -282,11 +282,14 @@ export namespace Session {
     z.object({
       sessionID: Identifier.schema("session"),
       limit: z.number().optional(),
+      excludePatches: z.boolean().optional(),
     }),
     async (input) => {
       const result = [] as MessageV2.WithParts[]
       for await (const msg of MessageV2.stream(
-        input.limit ? { sessionID: input.sessionID, limit: input.limit } : input.sessionID,
+        input.limit || input.excludePatches
+          ? { sessionID: input.sessionID, limit: input.limit, excludePatches: input.excludePatches }
+          : input.sessionID,
       )) {
         result.push(msg)
       }

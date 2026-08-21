@@ -440,6 +440,78 @@ test("concurrent file operations during patch", async () => {
   })
 })
 
+test("patch caps generated file manifests without losing the post-change tree", async () => {
+  await using tmp = await bootstrap()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const before = await Snapshot.track()
+      expect(before).toBeTruthy()
+
+      const count = Snapshot.PATCH_FILE_LIMIT + 25
+      await Promise.all(
+        Array.from({ length: count }, (_, index) => Bun.write(`${tmp.path}/generated/file-${index}.txt`, "x")),
+      )
+
+      const patch = await Snapshot.patch(before!)
+      expect(patch.files).toHaveLength(Snapshot.PATCH_FILE_LIMIT)
+      expect(patch.total).toBe(count)
+      expect(patch.truncated).toBe(true)
+      expect(patch.after).toBeTruthy()
+    },
+  })
+})
+
+test("revert enumerates a truncated patch from its git tree hashes", async () => {
+  await using tmp = await bootstrap()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const before = await Snapshot.track()
+      expect(before).toBeTruthy()
+      const generated = ["one.txt", "two.txt", "three.txt"].map((file) => `${tmp.path}/${file}`)
+      await Promise.all(generated.map((file) => Bun.write(file, "generated")))
+
+      const patch = await Snapshot.patch(before!)
+      await Snapshot.revert([
+        {
+          ...patch,
+          files: patch.files.slice(0, 1),
+          total: generated.length,
+          truncated: true,
+        },
+      ])
+
+      for (const file of generated) expect(await Bun.file(file).exists()).toBe(false)
+    },
+  })
+})
+
+test("revert rejects a truncated patch when its post-change tree cannot be scanned", async () => {
+  await using tmp = await bootstrap()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const before = await Snapshot.track()
+      expect(before).toBeTruthy()
+      await Bun.write(`${tmp.path}/generated.txt`, "generated")
+
+      await expect(
+        Snapshot.revert([
+          {
+            hash: before!,
+            after: "missing-tree",
+            files: [`${tmp.path}/generated.txt`],
+            total: 2,
+            truncated: true,
+          },
+        ]),
+      ).rejects.toThrow("changed-file scan failed")
+      expect(await Bun.file(`${tmp.path}/generated.txt`).exists()).toBe(true)
+    },
+  })
+})
+
 test("snapshot state isolation between projects", async () => {
   // Test that different projects don't interfere with each other
   await using tmp1 = await bootstrap()
@@ -934,6 +1006,29 @@ test("diffFull with whitespace changes", async () => {
       const whitespaceDiff = diffs[0]
       expect(whitespaceDiff.file).toBe("whitespace.txt")
       expect(whitespaceDiff.additions).toBeGreaterThan(0)
+    },
+  })
+})
+
+test("diffFull bounds file count and omits oversized text bodies", async () => {
+  await using tmp = await bootstrap()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const before = await Snapshot.track()
+      expect(before).toBeTruthy()
+      await Promise.all([
+        Bun.write(`${tmp.path}/a-large.txt`, "x".repeat(256)),
+        Bun.write(`${tmp.path}/c-small.txt`, "small"),
+        Bun.write(`${tmp.path}/d-small.txt`, "small"),
+      ])
+      const after = await Snapshot.track()
+      expect(after).toBeTruthy()
+
+      const diffs = await Snapshot.diffFull(before!, after!, { fileLimit: 2, contentLimit: 32 })
+      expect(diffs).toHaveLength(2)
+      const large = diffs.find((item) => item.file === "a-large.txt")
+      expect(large).toMatchObject({ after: "", truncated: true })
     },
   })
 })
