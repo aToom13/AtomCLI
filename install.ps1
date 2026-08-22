@@ -727,9 +727,12 @@ function Setup-OptionalFeatures {
         $skillsDir = Join-Path $ConfigDir "skills"
         New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
 
-        $bundledSkills = Join-Path $PSScriptRoot ".atomcli\skills"
-        if (Test-Path $bundledSkills) {
-            Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
+        # $PSScriptRoot is empty when this script runs via irm | iex
+        if ($PSScriptRoot) {
+            $bundledSkills = Join-Path $PSScriptRoot ".atomcli\skills"
+            if (Test-Path $bundledSkills) {
+                Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
 
         $ralph = Join-Path $skillsDir "ralph"
@@ -924,12 +927,33 @@ function Update-AtomCLI {
 # ─────────────────────────────────────────────────────────────
 # Main install
 # ─────────────────────────────────────────────────────────────
+function Get-ProcessorEnvArch {
+    # Fallback for Windows PowerShell 5.1 on .NET < 4.7.1 where
+    # RuntimeInformation.OSArchitecture is absent. PROCESSOR_ARCHITEW6432 wins
+    # because it reports the real architecture when the process runs under WOW64.
+    $procArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    switch ($procArch) {
+        "AMD64" { return "x64" }
+        "ARM64" { return "arm64" }
+        default { return $null }
+    }
+}
+
 function Get-SystemInfo {
-    $script:OsType   = "windows"
-    $runtimeArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-    $script:ArchType = if ($runtimeArch -eq "arm64") { "arm64" } elseif ($runtimeArch -eq "x64") { "x64" } else { "unsupported" }
-    if ($script:ArchType -eq "unsupported") {
-        throw "AtomCLI supports Windows x64 and ARM64; detected architecture: $runtimeArch"
+    $script:OsType = "windows"
+
+    # A missing static property yields $null silently (even under EAP=Stop),
+    # so guard before calling methods on it.
+    $runtimeArch = $null
+    try {
+        $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        if ($null -ne $osArch) { $runtimeArch = "$osArch".ToLowerInvariant() }
+    } catch { }
+
+    $script:ArchType = if (@("x64", "arm64") -contains $runtimeArch) { $runtimeArch } else { Get-ProcessorEnvArch }
+    if (@("x64", "arm64") -notcontains $script:ArchType) {
+        $seen = if ($runtimeArch) { $runtimeArch } elseif ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE } else { "unknown" }
+        throw "AtomCLI supports Windows x64 and ARM64; detected architecture: $seen"
     }
     Write-Info "OS: $script:OsType | Arch: $script:ArchType"
 }

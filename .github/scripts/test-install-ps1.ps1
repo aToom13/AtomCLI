@@ -29,6 +29,39 @@ try {
     if (Test-ReleaseChecksum -BinaryPath $binaryPath -ManifestPath $manifestPath -AssetName "atomcli-windows-x64.exe") {
         throw "tampered installer fixture unexpectedly passed checksum verification"
     }
+
+    Get-SystemInfo
+    if (@("x64", "arm64") -notcontains $script:ArchType) {
+        throw "installer arch detection failed: $($script:ArchType)"
+    }
+
+    $savedProcArch = $env:PROCESSOR_ARCHITECTURE
+    $savedWow64Arch = $env:PROCESSOR_ARCHITEW6432
+    try {
+        Remove-Item Env:PROCESSOR_ARCHITEW6432 -ErrorAction SilentlyContinue
+        foreach ($case in @(
+            @{ Arch = "AMD64"; Expected = "x64" },
+            @{ Arch = "ARM64"; Expected = "arm64" },
+            @{ Arch = "x86";   Expected = $null }
+        )) {
+            $env:PROCESSOR_ARCHITECTURE = $case.Arch
+            $resolved = Get-ProcessorEnvArch
+            if ($resolved -ne $case.Expected) {
+                throw "fallback arch mapping for $($case.Arch) returned '$resolved'"
+            }
+        }
+
+        $env:PROCESSOR_ARCHITECTURE = "x86"
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        if ((Get-ProcessorEnvArch) -ne "x64") {
+            throw "WOW64 PROCESSOR_ARCHITEW6432 override ignored"
+        }
+    } finally {
+        if ($null -eq $savedProcArch) { Remove-Item Env:PROCESSOR_ARCHITECTURE -ErrorAction SilentlyContinue }
+        else { $env:PROCESSOR_ARCHITECTURE = $savedProcArch }
+        if ($null -eq $savedWow64Arch) { Remove-Item Env:PROCESSOR_ARCHITEW6432 -ErrorAction SilentlyContinue }
+        else { $env:PROCESSOR_ARCHITEW6432 = $savedWow64Arch }
+    }
 } finally {
     Remove-Item Env:ATOMCLI_INSTALLER_LIBRARY_ONLY -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $fixtureDir -Recurse -Force -ErrorAction SilentlyContinue
