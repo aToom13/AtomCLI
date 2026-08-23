@@ -649,6 +649,12 @@ export class Config extends HeyApiClient {
       }
       plugin?: Array<string>
       snapshot?: boolean
+      memory?: {
+        /**
+         * Run an LLM retrospective at session close and persist what it learns (default: true)
+         */
+        retrospective?: boolean
+      }
       share?: "manual" | "auto" | "disabled"
       autoshare?: boolean
       autoupdate?: boolean | "notify"
@@ -881,6 +887,7 @@ export class Config extends HeyApiClient {
             { in: "body", key: "watcher" },
             { in: "body", key: "plugin" },
             { in: "body", key: "snapshot" },
+            { in: "body", key: "memory" },
             { in: "body", key: "share" },
             { in: "body", key: "autoshare" },
             { in: "body", key: "autoupdate" },

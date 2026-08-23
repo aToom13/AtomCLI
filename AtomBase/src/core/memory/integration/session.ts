@@ -72,12 +72,17 @@ export class SessionMemoryIntegration {
       parts.push(`- Learning Style: ${profile.learningStyle}`)
       parts.push(`- Work Style: ${profile.workStyle}`)
 
-      // Preferences
-      if (stats.total > 0) {
+      // Preferences: surface actual values, not just counts. Only entries the
+      // model has confirmed at least once (confidence >= 0.7) are exposed.
+      const allPrefs = await this.preferences.getAll()
+      const meaningful = allPrefs.filter((p) => p.confidence >= 0.7).slice(0, 10)
+      if (meaningful.length > 0) {
         parts.push(``)
         parts.push(`# Learned Preferences`)
-        parts.push(`- Total preferences learned: ${stats.total}`)
-        parts.push(`- High confidence preferences: ${stats.highConfidenceCount}`)
+        for (const p of meaningful) {
+          const value = typeof p.value === "string" ? p.value : JSON.stringify(p.value)
+          parts.push(`- ${p.category}/${p.key}: ${value}`)
+        }
       }
 
       // Recent work
@@ -113,7 +118,12 @@ export class SessionMemoryIntegration {
    * Learn from user message using semantic analysis
    */
   static hasExplicitMemorySignal(message: string): boolean {
-    const text = message.trim().toLowerCase()
+    // Turkish "İ".toLowerCase() produces "i" + U+0307 (combining dot above),
+    // which breaks \b-anchored patterns on İ-initial words. Strip it first.
+    const text = message
+      .trim()
+      .toLowerCase()
+      .replace(/\u0307/g, "")
     if (!text) return false
     return [
       /\bmy name is\b|\bcall me\b|\bbenim adım\b|\bbana .{1,40} de\b/,
@@ -121,6 +131,14 @@ export class SessionMemoryIntegration {
       /\bremember (?:that|this|my)\b|\bdon't forget\b|\bdo not forget\b|\bunutma\b|\bhatırla\b/,
       /\bfrom now on\b|\bbundan sonra\b|\bher zaman yanıtlarında\b/,
       /\bthat is (?:wrong|incorrect)\b|\byanlış hatırlıyorsun\b|\bdüzeltme:\s*/,
+      // durable prohibitions and dropped habits
+      /\bartık\b[^\n]{0,30}?\b(?:kullanma|yapma|etme|silme|ekleme|koyma)\b/,
+      /\b(?:don'?t|do not|never|stop)\b[^\n]{0,25}?\b(?:use|using|add|commit|send)\b/i,
+      // project conventions
+      /(?:bu projede|in this project)[^\n]{0,60}?(?:her zaman|always|asla|never|hiçbir zaman)/i,
+      // indirect communication-style preferences
+      /\b(?:kısa|detaylı|adım adım|örnek vererek)\b[^\n]{0,20}\b(?:cevap|yanıt|anlat|açıkla)/,
+      /\b(?:türkçe|ingilizce|turkish|english)\b[^\n]{0,15}\b(?:yanıt|cevap|anlat|answer|respond|write)\b/i,
     ].some((pattern) => pattern.test(text))
   }
 
@@ -266,12 +284,13 @@ export class SessionMemoryIntegration {
     try {
       await this.initialize()
 
-      // Detect indent style
-      const hasSpaces = /^\s{2,}/m.test(code)
+      // Detect indent style. Horizontal whitespace only: \s would swallow a
+      // leading newline and report indent_size=1 (see Bugs/Memory/08).
+      const hasSpaces = /^[ \t]{2,}/m.test(code)
       const hasTabs = /^\t/m.test(code)
 
       if (hasSpaces) {
-        const match = code.match(/^(\s+)/m)
+        const match = code.match(/^([ \t]+)/m)
         if (match) {
           const indentSize = match[1].length
           await this.preferences.learn("code_style", "indent_style", "space", code.slice(0, 100))

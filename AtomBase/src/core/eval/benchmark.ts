@@ -1,4 +1,7 @@
 import z from "zod"
+import fs from "fs/promises"
+import path from "path"
+import { Global } from "@/core/global"
 import type { AgentEval } from "./harness"
 
 export namespace AgentBenchmark {
@@ -8,10 +11,21 @@ export namespace AgentBenchmark {
     prompt: z.string().min(1),
     requiresTools: z.boolean().default(false),
     expectsTests: z.boolean().default(false),
+    // Threshold on retries observed in the trajectory, not an execution retry
+    // budget — benchmark sessions always run with executionPolicy maxRetries 0.
     maxToolErrors: z.number().int().nonnegative().default(0),
     maxRetries: z.number().int().nonnegative().default(1),
     maxDurationMs: z.number().positive().optional(),
+    /** Shell command materializing the task fixture. Runs after Snapshot.track(), before prompting. */
+    setupCommand: z.string().optional(),
+    /** Hidden verifier command. Runs after the agent finishes, before snapshot revert. Must exit 0 to pass. */
+    verifyCommand: z.string().optional(),
+    /** Hard per-case watchdog. The session is cancelled and the case fails when exceeded. */
+    timeoutMs: z.number().positive().optional(),
   })
+  export const DEFAULT_CASE_TIMEOUT_MS = 300_000
+  export const SETUP_TIMEOUT_MS = 60_000
+  export const VERIFY_TIMEOUT_MS = 120_000
   export const Suite = z
     .object({
       name: z.string().min(1),
@@ -38,6 +52,14 @@ export namespace AgentBenchmark {
     ok: boolean
     sessionID?: string
     error?: string
+    verifierPassed?: boolean
+    verifierDetail?: string
+  }
+
+  export interface Outcome {
+    sessionID?: string
+    verifierPassed?: boolean
+    verifierDetail?: string
   }
 
   export type Progress =
@@ -68,23 +90,139 @@ export namespace AgentBenchmark {
     )
   }
 
+  export interface ShellResult {
+    exitCode: number
+    output: string
+    timedOut: boolean
+  }
+
+  export interface VerifierRelocation {
+    /** Directory holding the stashed verify/ trees, undefined when nothing moved. */
+    stashRoot: string | undefined
+    restore(): Promise<void>
+  }
+
+  const VERIFIER_STASH_MANIFEST = "manifest.json"
+
+  function verifierStashRoot(casesRoot: string) {
+    const digest = new Bun.CryptoHasher("sha1").update(casesRoot).digest("hex").slice(0, 12)
+    return path.join(Global.Path.data, "eval-verifier-stash", digest)
+  }
+
+  /**
+   * Puts verifier sources of a previously interrupted run back into the
+   * worktree. Returns true when a stash existed and was restored.
+   */
+  export async function restoreStashedVerifiers(casesRoot: string, stashRoot?: string): Promise<boolean> {
+    const root = stashRoot ?? verifierStashRoot(casesRoot)
+    const manifest = await Bun.file(path.join(root, VERIFIER_STASH_MANIFEST))
+      .json()
+      .catch(() => null)
+    if (!manifest?.entries?.length) return false
+    for (const entry of manifest.entries) {
+      if (!(await fs.stat(entry.stash).catch(() => null))?.isDirectory()) continue
+      await fs.mkdir(path.dirname(entry.original), { recursive: true })
+      await fs.cp(entry.stash, entry.original, { recursive: true }).catch(() => {})
+    }
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {})
+    return true
+  }
+
+  /**
+   * Hides verifier sources from the agent under test. While a run is active,
+   * every case's verify/ directory is moved out of the worktree into a stash —
+   * an agent browsing the repository must never be able to read expected
+   * answers. The stash lives under the AtomCLI data directory (not tmpfs) and
+   * carries a manifest, so even a hard kill is recoverable: the next call to
+   * relocateVerifierSources self-heals, and signal handlers restore on exit.
+   */
+  export async function relocateVerifierSources(casesRoot: string, explicitStashRoot?: string): Promise<VerifierRelocation> {
+    const stashRoot = explicitStashRoot ?? verifierStashRoot(casesRoot)
+    // A crashed predecessor may have left its stash behind — heal before moving.
+    await restoreStashedVerifiers(casesRoot, stashRoot)
+
+    const entries = await fs.readdir(casesRoot).catch(() => [])
+    const moved: Array<{ original: string; stash: string }> = []
+    for (const entry of entries) {
+      const verify = path.join(casesRoot, entry, "verify")
+      if (!(await fs.stat(verify).catch(() => null))?.isDirectory()) continue
+      // Keep the "verify" level in the stash so staging copies stay uniform.
+      const stash = path.join(stashRoot, entry, "verify")
+      await fs.mkdir(path.dirname(stash), { recursive: true })
+      await fs
+        .rename(verify, stash)
+        .catch(async () => {
+          // Cross-device fallback (e.g. tmpfs): copy then remove.
+          await fs.cp(verify, stash, { recursive: true })
+          await fs.rm(verify, { recursive: true, force: true })
+        })
+      moved.push({ original: verify, stash })
+    }
+    if (moved.length === 0) return { stashRoot: undefined, restore: async () => {} }
+
+    await Bun.write(
+      path.join(stashRoot, VERIFIER_STASH_MANIFEST),
+      JSON.stringify({ casesRoot, movedAt: Date.now(), entries: moved }, null, 2),
+    )
+    let restored = false
+    return {
+      stashRoot,
+      async restore() {
+        if (restored) return
+        restored = true
+        for (const { stash, original } of moved) {
+          if (!(await fs.stat(stash).catch(() => null))?.isDirectory()) continue
+          await fs.mkdir(path.dirname(original), { recursive: true })
+          await fs.cp(stash, original, { recursive: true }).catch(() => {})
+        }
+        await fs.rm(stashRoot, { recursive: true, force: true }).catch(() => {})
+      },
+    }
+  }
+
+  /** Run a shell command with a hard timeout; combined output is truncated for diagnostics. */
+  export async function shell(
+    command: string,
+    options: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
+  ): Promise<ShellResult> {
+    const timeoutMs = options.timeoutMs ?? VERIFY_TIMEOUT_MS
+    const proc = Bun.spawn(["bash", "-c", command], {
+      cwd: options.cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: options.env ? { ...process.env, ...options.env } : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    const exitCode = await proc.exited
+    const timedOut = exitCode === 143 || exitCode === 124
+    const output = `${stderr}
+${stdout}`.trim()
+    return { exitCode, output: output.length > 2_000 ? `…${output.slice(-2_000)}` : output, timedOut }
+  }
+
   export function bucket(suite: Suite) {
     const label = `${suite.name}-${suite.version}`
       .toLowerCase()
       .replace(/[^a-z0-9._-]+/g, "-")
       .slice(0, 80)
-    const digest = new Bun.CryptoHasher("sha1").update(`${suite.name}\n${suite.version}`).digest("hex").slice(0, 12)
+    const digest = new Bun.CryptoHasher("sha1").update(`${suite.name}
+${suite.version}`).digest("hex").slice(0, 12)
     return `benchmark-${label}-${digest}`
   }
 
   /** Execute every case sequentially so workspace mutations remain deterministic. */
   export async function run(
     suite: Suite,
-    execute: (testCase: z.infer<typeof Case>) => Promise<{ sessionID?: string } | void>,
+    execute: (testCase: z.infer<typeof Case>) => Promise<Outcome | void>,
     collect: () => Promise<AgentEval.Result[]>,
     onProgress?: (event: Progress) => void,
   ) {
     const executions: Execution[] = []
+    const verifiers = new Map<string, { passed?: boolean; detail?: string }>()
     const emit = (event: Progress) => {
       try {
         onProgress?.(event)
@@ -104,8 +242,16 @@ export namespace AgentBenchmark {
         startedAt,
       })
       try {
-        const result = await execute(testCase)
-        const execution = { id: testCase.id, ok: true, sessionID: result ? result.sessionID : undefined }
+        const result: Outcome = ((await execute(testCase)) as Outcome | undefined) ?? {}
+        const execution: Execution = {
+          id: testCase.id,
+          ok: true,
+          sessionID: result.sessionID,
+          verifierPassed: result.verifierPassed,
+          verifierDetail: result.verifierDetail,
+        }
+        if (testCase.verifyCommand)
+          verifiers.set(testCase.id, { passed: result.verifierPassed, detail: result.verifierDetail })
         executions.push(execution)
         emit({
           type: "case_finished",
@@ -140,10 +286,10 @@ export namespace AgentBenchmark {
         if (rateLimited) break
       }
     }
-    return { executions, ...evaluate(suite, await collect()) }
+    return { executions, ...evaluate(suite, await collect(), verifiers) }
   }
 
-  export function evaluate(suite: Suite, results: AgentEval.Result[]) {
+  export function evaluate(suite: Suite, results: AgentEval.Result[], verifiers?: Map<string, { passed?: boolean; detail?: string }>) {
     const cases = suite.cases.map((testCase) => {
       const matches = results.filter((result) => result.id === testCase.id)
       const latest = matches.sort((a, b) => b.timestamp - a.timestamp)[0]
@@ -158,6 +304,14 @@ export namespace AgentBenchmark {
         if (latest.retries > testCase.maxRetries) failures.push(`retries ${latest.retries} > ${testCase.maxRetries}`)
         if (testCase.maxDurationMs && latest.durationMs > testCase.maxDurationMs)
           failures.push(`duration ${latest.durationMs}ms > ${testCase.maxDurationMs}ms`)
+      }
+      // Hidden-verifier ground truth outranks trajectory signals. A case with a
+      // verifier can only pass when that verifier actually ran and exited 0.
+      if (testCase.verifyCommand) {
+        const verdict = verifiers?.get(testCase.id)
+        if (!verdict || verdict.passed === undefined) failures.push("hidden verifier was not run")
+        else if (verdict.passed === false)
+          failures.push(`hidden verifier failed${verdict.detail ? `: ${verdict.detail}` : ""}`)
       }
       return { id: testCase.id, passed: failures.length === 0, failures, observation: latest }
     })

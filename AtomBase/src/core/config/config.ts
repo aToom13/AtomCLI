@@ -1044,6 +1044,14 @@ export namespace Config {
         .optional(),
       plugin: z.string().array().optional(),
       snapshot: z.boolean().optional(),
+      memory: z
+        .object({
+          retrospective: z
+            .boolean()
+            .optional()
+            .describe("Run an LLM retrospective at session close and persist what it learns (default: true)"),
+        })
+        .optional(),
       share: z
         .enum(["manual", "auto", "disabled"])
         .optional()

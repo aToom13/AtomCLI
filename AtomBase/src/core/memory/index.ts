@@ -1,9 +1,9 @@
 /**
  * AtomCLI Memory System - Main Entry Point
- * 
+ *
  * Persistent memory system for learning, preferences, and knowledge.
  * Supports both JSON file storage and ChromaDB vector storage.
- * 
+ *
  * Features:
  * - Learning from errors and experiences
  * - User preferences memory
@@ -91,7 +91,9 @@ export function getCapabilities(): {
     jsonStorage: true,
     vectorStorage: false, // Explicitly false as it's an optional dependency now
     embedding: true,
-    backgroundLearning: true,
+    // BackgroundLearningService is scaffolded but not wired to any scheduler;
+    // advertising it would let consumers rely on work that never runs.
+    backgroundLearning: false,
     knowledgeGraph: true,
   }
 }
@@ -102,7 +104,27 @@ export function getCapabilities(): {
 
 import type { EmbeddingService } from "./core/embedding"
 import type { MemoryStorage } from "./storage/adapter"
-import type { MemoryConfig, createMemoryItem as createMemoryItemFn, createUserPreference as createUserPreferenceFn } from "./types"
+import type {
+  MemoryConfig,
+  createMemoryItem as createMemoryItemFn,
+  createUserPreference as createUserPreferenceFn,
+} from "./types"
+
+/**
+ * Bounded best-effort recall of core memory items for prompt injection.
+ * Returns formatted lines (max `limit`); never throws — an empty string means
+ * "nothing relevant found" so callers can skip the block entirely.
+ */
+export async function recallCoreMemories(query: string, limit = 3): Promise<string> {
+  if (!query.trim()) return ""
+  try {
+    const { storage } = await initialize()
+    const items = await storage.search(query.trim(), { limit, minRelevance: 0, tags: undefined })
+    return items.map((item) => `- ${item.title}: ${item.content}`).join("\n")
+  } catch {
+    return ""
+  }
+}
 
 export async function initialize(config?: Partial<MemoryConfig>): Promise<{
   storage: MemoryStorage
@@ -193,10 +215,7 @@ import {
   EmojiPreference,
 } from "./services/communication"
 
-import {
-  PromptContextBuilder,
-  getPromptContextBuilder,
-} from "./services/prompt-context"
+import { PromptContextBuilder, getPromptContextBuilder } from "./services/prompt-context"
 
 const memorySystem = {
   // Types

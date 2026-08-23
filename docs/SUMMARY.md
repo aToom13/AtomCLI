@@ -15,6 +15,7 @@ The repository version is defined by `AtomBase/package.json`; do not duplicate i
 | MCP configuration                   | `AtomBase/src/core/config/config.ts` and `AtomBase/src/integrations/mcp/` |
 | Prompt assembly                     | `AtomBase/src/core/session/prompt/manager.ts`                             |
 | HTTP routes and SDK generation      | `AtomBase/src/server/` and `libs/sdk/js/`                                 |
+| Agent-quality evaluation            | `AtomBase/src/core/eval/` and `AtomBase/evals/`                           |
 | Ignore and local-state policy       | `.gitignore`, `AtomBase/.gitignore`, and `AGENTS.md`                      |
 | Release trigger and artifacts       | `.github/workflows/release.yml` and `AtomBase/script/build.ts`            |
 

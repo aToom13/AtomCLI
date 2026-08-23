@@ -516,7 +516,8 @@ export namespace SessionProcessor {
                   attempts: attempt,
                   maxRetries,
                 })
-                break
+                // Fall through to the completion tail: breaking out here would
+                // skip the completed stamp and return undefined to the caller.
               }
               const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
 

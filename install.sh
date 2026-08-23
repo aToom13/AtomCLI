@@ -777,6 +777,86 @@ prefetch_models_cache() {
     fi
 }
 
+# Install bundled skills so they are available on first run.
+# Preference order: local repository checkout -> verified release archive
+# (skills.tar.gz) -> minimal core-skill stubs as offline fallback.
+# This runs automatically and must not depend on interactive prompts,
+# because curl | bash leaves $SCRIPT_DIR empty.
+install_skills_bundle() {
+    if [ "$OS_TYPE" = "nixos" ]; then
+        info "NixOS source install: bundled skills load from the source tree"
+        return 0
+    fi
+
+    step "Installing bundled skills..."
+
+    local skills_dir="$CONFIG_DIR/skills"
+    mkdir -p "$skills_dir"
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -d "$script_dir/.atomcli/skills" ]; then
+        cp -r "$script_dir/.atomcli/skills/"* "$skills_dir/" 2>/dev/null || true
+        if ls "$skills_dir"/*/SKILL.md >/dev/null 2>&1; then
+            success "Installed bundled skills from repository"
+            return 0
+        fi
+    fi
+
+    local version=""
+    case "$VERSION" in
+        v*)  version="$VERSION" ;;
+        "")  version=$(get_latest_release) ;;
+        *)   version="v$VERSION" ;;
+    esac
+
+    if [ -n "$version" ]; then
+        local url="https://github.com/aToom13/AtomCLI/releases/download/${version}/skills.tar.gz"
+        local checksum_url="https://github.com/aToom13/AtomCLI/releases/download/${version}/SHA256SUMS"
+        local download_dir tmp_archive tmp_manifest
+        download_dir=$(mktemp -d)
+        tmp_archive="$download_dir/skills.tar.gz"
+        tmp_manifest="$download_dir/SHA256SUMS"
+
+        if download_file "$url" "$tmp_archive" \
+            && download_file "$checksum_url" "$tmp_manifest" \
+            && [ -s "$tmp_archive" ] \
+            && verify_release_checksum "$tmp_archive" "$tmp_manifest" "skills.tar.gz" \
+            && tar -xzf "$tmp_archive" -C "$CONFIG_DIR"; then
+            rm -rf "$download_dir"
+            success "Installed bundled skills (${version})"
+            return 0
+        fi
+
+        rm -rf "$download_dir"
+        warn "Skills bundle download failed, creating core skills only..."
+    else
+        warn "Could not resolve a release for the skills bundle, creating core skills only..."
+    fi
+
+    mkdir -p "$skills_dir/ralph"
+    cat > "$skills_dir/ralph/SKILL.md" << 'EOF'
+---
+name: Ralph
+description: Friendly AI coding assistant with personality
+---
+
+You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
+EOF
+
+    mkdir -p "$skills_dir/git-commit"
+    cat > "$skills_dir/git-commit/SKILL.md" << 'EOF'
+---
+name: git-commit
+description: Generate conventional commit messages
+---
+
+Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
+EOF
+
+    success "Installed core skills into ~/.atomcli/skills/"
+}
+
 # Setup default config
 setup_config() {
     step "Setting up configuration..."
@@ -854,30 +934,6 @@ setup_optional_features() {
     echo ""
     
     # ─────────────────────────────────────────────────────────────
-    # Default Skills
-    # ─────────────────────────────────────────────────────────────
-    echo -e "${MAGENTA}┌─────────────────────────────────────────────────┐${NC}"
-    echo -e "${MAGENTA}│${NC}  ${BOLD}📚 Default Skills${NC}                            ${MAGENTA}│${NC}"
-    echo -e "${MAGENTA}├─────────────────────────────────────────────────┤${NC}"
-    echo -e "${MAGENTA}│${NC}  ${DIM}Pre-configured skills for common tasks:${NC}      ${MAGENTA}│${NC}"
-    echo -e "${MAGENTA}│${NC}  ${DIM}• Ralph - AI assistant personality${NC}           ${MAGENTA}│${NC}"
-    echo -e "${MAGENTA}│${NC}  ${DIM}• Code Review - automatic code analysis${NC}      ${MAGENTA}│${NC}"
-    echo -e "${MAGENTA}│${NC}  ${DIM}• Git Commit - smart commit messages${NC}         ${MAGENTA}│${NC}"
-    echo -e "${MAGENTA}└─────────────────────────────────────────────────┘${NC}"
-    echo ""
-    
-    INSTALL_SKILLS=false
-    read -p "Install default skills? [Y/n] " -n 1 -r REPLY < /dev/tty
-    echo ""
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        INSTALL_SKILLS=true
-        success "Default skills will be installed"
-    else
-        info "Skipping default skills"
-    fi
-    echo ""
-    
-    # ─────────────────────────────────────────────────────────────
     # MCP Servers
     # ─────────────────────────────────────────────────────────────
     echo -e "${YELLOW}┌─────────────────────────────────────────────────┐${NC}"
@@ -932,42 +988,6 @@ setup_optional_features() {
 }
 EOF
         success "Kilocode configured"
-    fi
-    
-    # Apply Skills
-    if [ "$INSTALL_SKILLS" = true ]; then
-        step "Installing default skills..."
-        
-        mkdir -p "$CONFIG_DIR/skills"
-        
-        # Copy bundled skills if present in repo/package, otherwise create core skills
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        if [ -d "$SCRIPT_DIR/.atomcli/skills" ]; then
-            cp -r "$SCRIPT_DIR/.atomcli/skills/"* "$CONFIG_DIR/skills/" 2>/dev/null || true
-        fi
-        
-        # Ensure core skills exist
-        mkdir -p "$CONFIG_DIR/skills/ralph"
-        cat > "$CONFIG_DIR/skills/ralph/SKILL.md" << 'EOF'
----
-name: Ralph
-description: Friendly AI coding assistant with personality
----
-
-You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
-EOF
-
-        mkdir -p "$CONFIG_DIR/skills/git-commit"
-        cat > "$CONFIG_DIR/skills/git-commit/SKILL.md" << 'EOF'
----
-name: git-commit
-description: Generate conventional commit messages
----
-
-Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
-EOF
-        
-        success "Installed default skills globally into ~/.atomcli/skills/"
     fi
     
     # Apply MCPs
@@ -1095,6 +1115,7 @@ main_install() {
             setup_completion
             setup_config
             prefetch_models_cache
+            install_skills_bundle
             setup_optional_features
             verify_installation 
             print_complete
@@ -1107,6 +1128,7 @@ main_install() {
     setup_completion
     setup_config
     prefetch_models_cache
+    install_skills_bundle
     setup_optional_features
     verify_installation
     print_complete
@@ -1334,6 +1356,8 @@ update() {
     setup_path
     setup_completion
     setup_config
+    prefetch_models_cache
+    install_skills_bundle
     setup_optional_features
     
     verify_installation

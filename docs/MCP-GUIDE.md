@@ -21,13 +21,16 @@ atomcli mcp logout <name>
 
 MCP entries can live in global `~/.atomcli/mcp.json`, global AtomCLI config, or a project `mcp.json`. A bare `mcp.json` is interpreted as the MCP map; the same data may also appear beneath `mcp` in `atomcli.json` or `atomcli.jsonc`.
 
-Local servers use an argument array:
+Local servers use a command array:
 
 ```json
 {
   "filesystem": {
     "type": "local",
-    "command": ["bunx", "@modelcontextprotocol/server-filesystem", "."]
+    "command": ["bunx", "@modelcontextprotocol/server-filesystem", "."],
+    "environment": { "HOME": "/home/user" },
+    "enabled": true,
+    "timeout": 10000
   }
 }
 ```
@@ -38,10 +41,28 @@ Remote servers use a URL:
 {
   "example": {
     "type": "remote",
-    "url": "https://example.com/mcp"
+    "url": "https://example.com/mcp",
+    "headers": { "X-Custom-Header": "value" },
+    "oauth": { "scope": "read write" },
+    "enabled": true,
+    "timeout": 5000
   }
 }
 ```
+
+Supported fields for both types:
+
+| Field         | Types  | Purpose                                                                                              |
+| ------------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| `command`     | local  | Command and arguments used to launch the server                                                      |
+| `environment` | local  | Extra environment variables set for the launched server process                                      |
+| `url`         | remote | Endpoint of the remote MCP server                                                                    |
+| `headers`     | remote | HTTP headers sent with requests to the server                                                        |
+| `oauth`       | remote | OAuth settings (`clientId`, `clientSecret`, `scope`); set to `false` to disable OAuth auto-detection |
+| `enabled`     | both   | Enable or disable the server on startup without removing its entry                                   |
+| `timeout`     | both   | Milliseconds allowed for fetching tools from the server; defaults to 5000                            |
+
+For OAuth servers that require dynamic client registration, omitting `clientId` is sufficient; AtomCLI registers itself where the authorization server supports it.
 
 For a remote server that requires OAuth, use the interactive `atomcli mcp add` flow or add the server's OAuth settings according to the configuration schema. Never place client secrets in a project configuration file that is committed to version control.
 

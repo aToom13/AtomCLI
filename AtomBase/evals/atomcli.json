@@ -1,16 +1,126 @@
 {
   "name": "atomcli-core",
-  "version": "1",
+  "version": "2",
   "cases": [
-    { "id": "small-bug-fix", "category": "coding", "prompt": "Fix a small deterministic bug and run its focused test.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
-    { "id": "multi-file-refactor", "category": "coding", "prompt": "Refactor a feature across multiple files without changing its public behavior.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 1, "maxRetries": 1 },
-    { "id": "test-authoring", "category": "coding", "prompt": "Add regression coverage for an existing behavior and execute it.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
-    { "id": "provider-audit", "category": "analysis", "prompt": "Audit a provider implementation and report evidence-backed compatibility findings.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 0, "maxRetries": 1 },
-    { "id": "browser-workflow", "category": "general", "prompt": "Navigate a web UI with stable references and inspect accessibility and network output.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 1, "maxRetries": 1 },
-    { "id": "auth-risk-change", "category": "coding", "prompt": "Make a bounded authentication change and independently verify the security-sensitive diff.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
-    { "id": "large-repo-discovery", "category": "analysis", "prompt": "Find the relevant implementation and tests in a large repository without broad file dumping.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 0, "maxRetries": 1 },
-    { "id": "tool-error-recovery", "category": "coding", "prompt": "Recover from one intentionally invalid tool target by gathering new evidence and changing strategy.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 1, "maxRetries": 1 },
-    { "id": "resume-checkpoint", "category": "coding", "prompt": "Resume a partially completed workflow from its checkpoint without repeating completed work.", "requiresTools": true, "expectsTests": true, "maxToolErrors": 0, "maxRetries": 1 },
-    { "id": "agent-coordination", "category": "analysis", "prompt": "Coordinate dependent agents, preserve evidence, and resolve conflicting findings.", "requiresTools": true, "expectsTests": false, "maxToolErrors": 0, "maxRetries": 1 }
+    {
+      "id": "small-bug-fix",
+      "category": "coding",
+      "prompt": "The helper in eval-fixtures/small-bug-fix/retry.ts fails its focused test suite at a boundary case. Find the root cause, fix the implementation (do not modify retry.test.ts), and run that focused test file until it passes.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/small-bug-fix/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": true,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 600000
+    },
+    {
+      "id": "multi-file-refactor",
+      "category": "coding",
+      "prompt": "In eval-fixtures/multi-file-refactor the pricing-tier formula is duplicated across catalog.ts, checkout.ts, and reporting.ts. Extract it into a new pricing.ts exporting applyTierDiscount(unitPrice: number): number that returns the price after the tier discount, update all three modules to use it, keep every public signature and behavior unchanged, and make the existing tests pass.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/multi-file-refactor/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": true,
+      "maxToolErrors": 1,
+      "maxRetries": 1,
+      "timeoutMs": 600000
+    },
+    {
+      "id": "test-authoring",
+      "category": "coding",
+      "prompt": "eval-fixtures/test-authoring/slugify.ts has no tests. Write regression coverage for every behavior documented in its README as eval-fixtures/test-authoring/slugify.test.ts, then run that suite until it passes.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/test-authoring/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": true,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 600000
+    },
+    {
+      "id": "provider-audit",
+      "category": "analysis",
+      "prompt": "Audit every provider under eval-fixtures/provider-audit against the compatibility contract in its README. Write an evidence-backed report to eval-fixtures/provider-audit/AUDIT.md citing the concrete files for each finding.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/provider-audit/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": false,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 480000
+    },
+    {
+      "id": "browser-workflow",
+      "category": "general",
+      "prompt": "Open http://localhost:4591 in the browser. Fill the email field with test@example.com, submit the form, then inspect the accessibility tree and network activity. Write your findings, including any accessibility problems you observed, to eval-fixtures/browser-workflow/REPORT.md.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/browser-workflow/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": false,
+      "maxToolErrors": 1,
+      "maxRetries": 1,
+      "timeoutMs": 600000
+    },
+    {
+      "id": "auth-risk-change",
+      "category": "coding",
+      "prompt": "In eval-fixtures/auth-risk-change, session tokens are unsigned base64 and never checked for expiry. Implement exactly this token scheme: payload is JSON {userId, expiresAt} with expiresAt in epoch milliseconds; token is base64url(payload) + \".\" + hex(hmacSHA256(payload, process.env.AUTH_SECRET)). Update issueToken and verifyToken accordingly, keep their public signatures unchanged, do not touch hashPassword, extend auth.test.ts so it proves expired tokens and tampered tokens are rejected, and run the focused tests until they pass.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/auth-risk-change/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": true,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 600000
+    },
+    {
+      "id": "large-repo-discovery",
+      "category": "analysis",
+      "prompt": "A feature flag named ORION_GATE_V2 is defined somewhere under eval-fixtures/large-repo-discovery. Locate the file that defines it and the test file that covers it, then write the two relative paths to eval-fixtures/large-repo-discovery/ANSWER.md, one per line. Do not dump file contents; be careful about similarly named decoys.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/large-repo-discovery/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": false,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 480000
+    },
+    {
+      "id": "tool-error-recovery",
+      "category": "coding",
+      "prompt": "Read eval-fixtures/tool-error-recovery/config/settings.json and wire its retry_budget and backoff_ms values into the WORKER_CONFIG placeholder in eval-fixtures/tool-error-recovery/worker.ts, then run the focused worker test until it passes.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/tool-error-recovery/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": true,
+      "maxToolErrors": 1,
+      "maxRetries": 1,
+      "timeoutMs": 480000
+    },
+    {
+      "id": "resume-checkpoint",
+      "category": "coding",
+      "prompt": "Resume the partially completed workflow described in eval-fixtures/resume-checkpoint/CHECKPOINT.md. Finish only the remaining steps without redoing completed work, and run migrate.test.ts until it passes.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/resume-checkpoint/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": true,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 600000
+    },
+    {
+      "id": "agent-coordination",
+      "category": "analysis",
+      "prompt": "Two analyses disagree about gateway latency: eval-fixtures/agent-coordination/evidence/metrics-a.json claims 842ms while evidence/metrics-b.json claims 118ms. Investigate using the raw log under logs/, resolve the conflict, and write your adjudicated conclusion with supporting numbers to eval-fixtures/agent-coordination/VERDICT.md. Preserve references to both evidence sources.",
+      "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/agent-coordination/setup.sh\"",
+      "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
+      "requiresTools": true,
+      "expectsTests": false,
+      "maxToolErrors": 0,
+      "maxRetries": 1,
+      "timeoutMs": 720000
+    }
   ]
 }

@@ -51,7 +51,7 @@ The models.dev fixture is the required test convention. `test/preload.ts` copies
 
 Prefer behavior-level tests over implementation-only assertions. A regression test should exercise the public boundary that failed, use an isolated temporary project when filesystem or Git state matters, and assert an observable result. Provider unit tests may mock transport, but live provider probes must remain explicitly opt-in and must distinguish rate limits from compatibility failures.
 
-The `eval benchmark` command measures model-driven agent behavior and is not part of the deterministic validation commands above. `eval benchmark` without `--execute` only reports stored observations. Executing a benchmark may make isolated workspace changes, contact the selected provider, consume quota, and take several minutes per case.
+The `eval benchmark` command measures model-driven agent behavior and is not part of the deterministic validation commands above. Without `--execute` it only reports stored observations. With `--execute`, every case materializes its own fixture into the workspace, prompts the selected agent under a hard per-case timeout, and is then graded by an independent verifier before all changes are reverted. Verifier sources are moved out of the worktree for the duration of a run and restored automatically, including after interruption. On an interactive terminal the command offers provider, model, and agent menus unless `--model` is given. Executing the benchmark contacts the selected provider, consumes quota, and takes minutes per case. See `AtomBase/evals/README.md`.
 
 ## Build and release
 
@@ -134,6 +134,7 @@ Global files include `config.json`, `atomcli.json`, `atomcli.jsonc`, and `mcp.js
 | Tools                        | `AtomBase/src/integrations/tool/`           |
 | MCP                          | `AtomBase/src/integrations/mcp/`            |
 | Server routes                | `AtomBase/src/server/`                      |
+| Agent evaluation             | `AtomBase/src/core/eval/`                   |
 
 Follow the namespace export pattern and use path aliases (`@/*`, `@tui/*`). Code built with `--conditions=browser` must use type-only imports for `ai` and dynamic imports for its runtime use.
 

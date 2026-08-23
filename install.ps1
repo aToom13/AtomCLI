@@ -629,6 +629,86 @@ function Initialize-Config {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Bundled skills installation
+# ─────────────────────────────────────────────────────────────
+function Install-SkillsBundle {
+    Write-Step "Installing bundled skills..."
+
+    $skillsDir = Join-Path $ConfigDir "skills"
+    New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
+
+    # Local repository checkout first; $PSScriptRoot is empty under irm | iex
+    if ($PSScriptRoot) {
+        $bundledSkills = Join-Path $PSScriptRoot ".atomcli\skills"
+        if (Test-Path $bundledSkills) {
+            Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $installedCount = @(Get-ChildItem -Path $skillsDir -Filter "SKILL.md" -Recurse -ErrorAction SilentlyContinue).Count
+    if ($installedCount -gt 0) {
+        Write-Success "Installed bundled skills from repository ($installedCount skills)"
+        return
+    }
+
+    # Verified release archive: skills.zip ships next to the binaries since v* releases
+    $version = if ($script:SelectedVersion) { "v$($script:SelectedVersion)" } else { Get-LatestRelease }
+    if ($version) {
+        $normalizedVersion = if ($version.StartsWith("v")) { $version } else { "v$version" }
+        $archiveName = "skills.zip"
+        $releaseBase = "https://github.com/aToom13/AtomCLI/releases/download/$normalizedVersion"
+        $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "atomcli-skills-$PID"
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+        try {
+            Invoke-WithSpinner -Message "Downloading skills bundle..." -Action {
+                param($u, $t, $cu, $ct)
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $web = New-Object System.Net.WebClient
+                $web.DownloadFile($u, $t)
+                $web.DownloadFile($cu, $ct)
+            } -ArgumentList "$releaseBase/$archiveName", (Join-Path $tmpDir $archiveName), "$releaseBase/SHA256SUMS", (Join-Path $tmpDir "SHA256SUMS")
+
+            if (-not (Test-ReleaseChecksum -BinaryPath (Join-Path $tmpDir $archiveName) -ManifestPath (Join-Path $tmpDir "SHA256SUMS") -AssetName $archiveName)) {
+                throw "SHA-256 checksum verification failed"
+            }
+            Expand-Archive -LiteralPath (Join-Path $tmpDir $archiveName) -DestinationPath $ConfigDir -Force
+            Write-Success "Installed bundled skills ($normalizedVersion)"
+            return
+        } catch {
+            Write-Warn "Skills bundle download failed, creating core skills only... ($($_.Exception.Message))"
+        } finally {
+            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Warn "Could not resolve a release for the skills bundle, creating core skills only..."
+    }
+
+    # Offline fallback: minimal core skills so the feature still works out of the box
+    $ralph = Join-Path $skillsDir "ralph"
+    New-Item -ItemType Directory -Force -Path $ralph | Out-Null
+    Set-Content -Path (Join-Path $ralph "SKILL.md") -Value @"
+---
+name: Ralph
+description: Friendly AI coding assistant with personality
+---
+
+You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
+"@ -Encoding UTF8
+
+    $gc = Join-Path $skillsDir "git-commit"
+    New-Item -ItemType Directory -Force -Path $gc | Out-Null
+    Set-Content -Path (Join-Path $gc "SKILL.md") -Value @"
+---
+name: git-commit
+description: Generate conventional commit messages
+---
+
+Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
+"@ -Encoding UTF8
+
+    Write-Success "Installed core skills into ~/.atomcli/skills/"
+}
+
+# ─────────────────────────────────────────────────────────────
 # Interactive optional features
 # ─────────────────────────────────────────────────────────────
 function Prompt-YesNo {
@@ -669,15 +749,12 @@ function Setup-OptionalFeatures {
 
     # ── Skills ───────────────────────────────────────────────
     Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Magenta
-    Write-Host "  |  Default Skills                             |" -ForegroundColor Magenta
+    Write-Host "  |  Bundled Skills                            |" -ForegroundColor Magenta
     Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Magenta
-    Write-Host "  |  - Ralph        AI assistant personality   |" -ForegroundColor DarkGray
-    Write-Host "  |  - Code Review  automatic code analysis    |" -ForegroundColor DarkGray
-    Write-Host "  |  - Git Commit   smart commit messages      |" -ForegroundColor DarkGray
+    Write-Host "  |  Installed automatically with the release. |" -ForegroundColor DarkGray
+    Write-Host "  |  OS admin skills for Windows/Linux/macOS   |" -ForegroundColor DarkGray
+    Write-Host "  |  load on demand via trigger words.         |" -ForegroundColor DarkGray
     Write-Host "  +─────────────────────────────────────────────+" -ForegroundColor Magenta
-    Write-Host ""
-    $installSkills = Prompt-YesNo "Install default skills?"
-    if ($installSkills) { Write-Success "Default skills will be installed" } else { Write-Info "Skipping skills" }
     Write-Host ""
 
     # ── MCP Servers ──────────────────────────────────────────
@@ -720,44 +797,6 @@ function Setup-OptionalFeatures {
 "@
         Set-Content -Path $configFile -Value $kilocodeConfig -Encoding UTF8
         Write-Success "Kilocode configured"
-    }
-
-    if ($installSkills) {
-        Write-Step "Installing default skills..."
-        $skillsDir = Join-Path $ConfigDir "skills"
-        New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
-
-        # $PSScriptRoot is empty when this script runs via irm | iex
-        if ($PSScriptRoot) {
-            $bundledSkills = Join-Path $PSScriptRoot ".atomcli\skills"
-            if (Test-Path $bundledSkills) {
-                Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
-
-        $ralph = Join-Path $skillsDir "ralph"
-        New-Item -ItemType Directory -Force -Path $ralph | Out-Null
-        Set-Content -Path (Join-Path $ralph "SKILL.md") -Value @"
----
-name: Ralph
-description: Friendly AI coding assistant with personality
----
-
-You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
-"@ -Encoding UTF8
-
-        $gc = Join-Path $skillsDir "git-commit"
-        New-Item -ItemType Directory -Force -Path $gc | Out-Null
-        Set-Content -Path (Join-Path $gc "SKILL.md") -Value @"
----
-name: git-commit
-description: Generate conventional commit messages
----
-
-Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
-"@ -Encoding UTF8
-
-        Write-Success "Installed default skills globally into ~/.atomcli/skills/"
     }
 
     if ($installMcps) {
@@ -913,6 +952,7 @@ function Update-AtomCLI {
     Install-Binary -FromSource:($script:InstallFromSource -eq $true)
     Add-ToPath
     Install-Completion
+    Install-SkillsBundle
     Test-Installation
 
     Write-Host ""
@@ -970,6 +1010,7 @@ function Install-AtomCLI {
     Add-ToPath
     Install-Completion
     Initialize-Config
+    Install-SkillsBundle
     Setup-OptionalFeatures
     Test-Installation
     Show-Complete -Kilocode:$script:EnableKilocode

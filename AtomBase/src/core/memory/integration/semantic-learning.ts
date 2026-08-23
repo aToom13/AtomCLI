@@ -49,6 +49,16 @@ export const UserInformationSchema = z.object({
 
 export type UserInformation = z.infer<typeof UserInformationSchema>
 
+/**
+ * What the assistant confirmed or acknowledged in its reply
+ */
+export const AssistantResponseAnalysisSchema = z.object({
+  confirmedName: z.string().optional().describe("Name the assistant addressed the user by, if any"),
+  acknowledgedPreferences: z.array(z.string()).optional().describe("Preferences the assistant agreed to follow"),
+})
+
+export type AssistantResponseAnalysis = z.infer<typeof AssistantResponseAnalysisSchema>
+
 // ============================================================================
 // SEMANTIC LEARNING SERVICE
 // ============================================================================
@@ -58,6 +68,30 @@ export class SemanticLearningService {
     if (!model) return ModelPurpose.language("analysis", prompt)
     const selected = await Provider.getModel(model.providerID, model.modelID)
     return Provider.getLanguage(selected)
+  }
+
+  /**
+   * Extract a JSON object from an LLM response that may wrap it in prose,
+   * markdown fences, or trailing commentary. Returns null when no valid
+   * object can be recovered.
+   */
+  static parseJsonPayload(text: string): Record<string, unknown> | null {
+    const fenced = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/)
+    if (fenced) {
+      try {
+        return JSON.parse(fenced[1])
+      } catch {
+        // fall through to brace scanning
+      }
+    }
+    const start = text.indexOf("{")
+    const end = text.lastIndexOf("}")
+    if (start === -1 || end <= start) return null
+    try {
+      return JSON.parse(text.slice(start, end + 1))
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -128,18 +162,12 @@ Now analyze this message:`
       }
 
       // Try to parse as JSON
-      try {
-        // Extract JSON from markdown code blocks if present
-        const jsonMatch =
-          responseText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || responseText.match(/(\{[\s\S]*\})/)
-
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[1])
-          return UserInformationSchema.parse(parsed)
-        }
-      } catch (parseError) {
-        log.warn("Failed to parse LLM response as JSON", { responseText, parseError })
+      const parsed = this.parseJsonPayload(responseText)
+      if (parsed) {
+        return UserInformationSchema.parse(parsed)
       }
+
+      log.warn("LLM memory extraction returned no parsable JSON", { responseText: responseText.slice(0, 400) })
 
       // Fallback: no information extracted
       return {
@@ -172,19 +200,24 @@ Now analyze this message:`
 
 TASK: Extract what the assistant confirmed or acknowledged.
 
+Respond with ONLY a JSON object, no prose:
+{"confirmedName": "string or omitted", "acknowledgedPreferences": ["strings or omitted"]}
+
+Omit fields the assistant did not confirm.
+
 EXAMPLES:
 
 User: "My name is John"
 Assistant: "Hello John! How can I help?"
-→ confirmedName: "John"
+→ {"confirmedName": "John"}
 
 User: "I prefer TypeScript"
 Assistant: "Got it, I'll use TypeScript for examples."
-→ acknowledgedPreferences: ["TypeScript"]
+→ {"acknowledgedPreferences": ["TypeScript"]}
 
 User: "What's my name?"
 Assistant: "Your name is Alice."
-→ confirmedName: "Alice"
+→ {"confirmedName": "Alice"}
 
 Now analyze:`
 
@@ -206,13 +239,12 @@ Now analyze:`
         responseText += chunk
       }
 
-      // Simple extraction
-      const nameMatch = responseText.match(/confirmedName[:\s]+"([^"]+)"/i)
-
-      return {
-        confirmedName: nameMatch ? nameMatch[1] : undefined,
-        acknowledgedPreferences: [],
+      const parsed = this.parseJsonPayload(responseText)
+      if (!parsed) {
+        log.warn("Assistant response analysis returned no parsable JSON", { responseText: responseText.slice(0, 400) })
+        return {}
       }
+      return AssistantResponseAnalysisSchema.parse(parsed)
     } catch (error) {
       log.error("Failed to analyze assistant response", { error })
       return {}

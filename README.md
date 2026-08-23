@@ -116,13 +116,13 @@ bun run typecheck
 MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
 ```
 
-The agent-quality benchmark is separate from the deterministic unit test suite. Reporting existing benchmark observations is read-only:
+The agent-quality benchmark is separate from the deterministic unit test suite. Reporting stored observations is read-only:
 
 ```sh
 bun run dev -- eval benchmark
 ```
 
-Passing `--execute` runs model-driven cases in the current Git workspace and can take substantially longer. It is not required for normal development validation.
+Passing `--execute` runs all cases against the current Git workspace and can take substantially longer. Each case materializes its own fixture, runs under a per-case watchdog, and is graded by an independent verifier whose sources are kept out of the workspace while the agent works. On an interactive terminal you pick provider, model, and agent from menus; pass `--model provider/model` to select them explicitly. See [the benchmark guide](AtomBase/evals/README.md).
 
 From the repository root, validate all workspace packages with `bun turbo typecheck` and `bun turbo test`.
 

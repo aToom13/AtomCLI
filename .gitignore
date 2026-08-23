@@ -1,3 +1,6 @@
+# Local bug analysis reports (never commit)
+Bugs/
+
 # Operating-system and editor files
 .DS_Store
 .idea/
@@ -78,6 +81,7 @@ docs/plans/
 AtomBase/Testcli/
 benchmark-results/
 eval-results/
+scratch/
 
 # Local release helper (never commit)
 .local-release-*.sh

@@ -72,6 +72,9 @@ export namespace SystemPrompt {
     // Initialize session integration (profiles & preferences)
     await SessionMemoryIntegration.initialize()
 
+    // Cheap local learning: remember which project this session runs in.
+    void SessionMemoryIntegration.trackProject(path.basename(Instance.directory))
+
     // Detect project commands (test, typecheck, lint) from manifest files
     const manifest = await ContextManifest.get(query)
     const projectCommands = manifest.commands
@@ -124,7 +127,7 @@ export namespace SystemPrompt {
     } else {
       const mcpAbort = new AbortController()
       const mcpTimer = setTimeout(() => mcpAbort.abort(), 250)
-      const mcpStatus = await MCP.status(mcpAbort.signal).catch(() => ({} as Record<string, MCP.Status>))
+      const mcpStatus = await MCP.status(mcpAbort.signal).catch(() => ({}) as Record<string, MCP.Status>)
       clearTimeout(mcpTimer)
       connectedMcps = Object.entries(mcpStatus)
         .filter(([_, status]) => status.status === "connected")
@@ -153,9 +156,10 @@ You have access to a persistent memory system. USE IT PROACTIVELY:
 - Working on a topic you might have notes about
 - Before making assumptions about user preferences
 
-Example usage:
-- mcp_memory_save: key="user_preference_typescript", value="User prefers explicit type annotations"
-- mcp_memory_search: query="project conventions"
+Note: AtomCLI also has a built-in persistent "memory" tool that stores durable
+facts across sessions and injects relevant entries into prompts automatically.
+Prefer the built-in memory tool for long-lived user/project facts; use this
+MCP server only when you specifically need its separate storage.
 `)
     }
 

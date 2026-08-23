@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import fs from "fs/promises"
+import path from "path"
 import { AgentBenchmark } from "@/core/eval/benchmark"
 import { AgentEval } from "@/core/eval/harness"
 import { Instance } from "@/services/project/instance"
@@ -273,5 +275,163 @@ describe("AgentBenchmark", () => {
     expect(AgentBenchmark.isRateLimitError("insufficient quota for model usage")).toBe(true)
     expect(AgentBenchmark.isRateLimitError("usage limit reached for token bucket")).toBe(true)
     expect(AgentBenchmark.isRateLimitError("Unhandled TypeError: null is not an object")).toBe(false)
+  })
+
+  test("cases with a hidden verifier can only pass when it ran and exited zero", async () => {
+    const suite = AgentBenchmark.Suite.parse({
+      name: "verified",
+      version: "1",
+      cases: [
+        { id: "passed", category: "coding", prompt: "p1", verifyCommand: "true" },
+        { id: "failed", category: "coding", prompt: "p2", verifyCommand: "false" },
+        { id: "skipped", category: "coding", prompt: "p3", verifyCommand: "true" },
+        { id: "unverified", category: "coding", prompt: "p4" },
+      ],
+    })
+    const observation = (id: string) =>
+      AgentEval.score(
+        AgentEval.Observation.parse({
+          id,
+          category: "coding",
+          providerID: "p",
+          modelID: "m",
+          completed: true,
+          timestamp: 1000,
+        }),
+      )
+    const results = [observation("passed"), observation("failed"), observation("skipped")]
+    const report = await AgentBenchmark.run(
+      suite,
+      async (item) => {
+        if (item.id === "passed") return { sessionID: "s1", verifierPassed: true }
+        if (item.id === "failed") return { sessionID: "s2", verifierPassed: false, verifierDetail: "exit code 1" }
+        return { sessionID: `s-${item.id}` }
+      },
+      async () => results,
+    )
+    const byId = Object.fromEntries(report.cases.map((c) => [c.id, c]))
+    expect(byId.passed.passed).toBe(true)
+    expect(byId.failed.passed).toBe(false)
+    expect(byId.failed.failures[0]).toContain("hidden verifier failed")
+    expect(byId.skipped.passed).toBe(false)
+    expect(byId.skipped.failures).toContain("hidden verifier was not run")
+    expect(byId.unverified.passed).toBe(false)
+    expect(report.executions.find((e) => e.id === "failed")?.verifierDetail).toBe("exit code 1")
+  })
+
+  test("shell runs commands with a hard timeout and captures combined output", async () => {
+    const ok = await AgentBenchmark.shell("echo out; echo err >&2", { cwd: import.meta.dir })
+    expect(ok.exitCode).toBe(0)
+    expect(ok.output).toContain("out")
+    expect(ok.output).toContain("err")
+
+    const failing = await AgentBenchmark.shell("exit 3")
+    expect(failing.exitCode).toBe(3)
+
+    const slow = await AgentBenchmark.shell("sleep 5", { timeoutMs: 50 })
+    expect(slow.exitCode).not.toBe(0)
+    expect(slow.timedOut).toBe(true)
+  })
+
+  test("relocates verifier sources out of the worktree for the whole run", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    for (const id of ["case-a", "case-b"]) {
+      await Bun.write(path.join(casesRoot, id, "verify", "run.sh"), `echo ${id}\n`)
+      await Bun.write(path.join(casesRoot, id, "setup.sh"), "true\n")
+    }
+    await Bun.write(path.join(casesRoot, "case-plain", "setup.sh"), "true\n")
+
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    try {
+      // Verify directories vanish from the worktree while stashed...
+      expect(await Bun.file(path.join(casesRoot, "case-a", "verify", "run.sh")).exists()).toBe(false)
+      expect(await Bun.file(path.join(stashRoot, "case-a", "verify", "run.sh")).exists()).toBe(true)
+      expect(await Bun.file(path.join(stashRoot, "case-b", "verify", "run.sh")).exists()).toBe(true)
+      // ...non-verifier files stay put.
+      expect(await Bun.file(path.join(casesRoot, "case-a", "setup.sh")).exists()).toBe(true)
+      expect(await Bun.file(path.join(casesRoot, "case-plain", "setup.sh")).exists()).toBe(true)
+    } finally {
+      await relocation.restore()
+    }
+    // Restore puts every verifier back exactly where it was.
+    expect(await Bun.file(path.join(casesRoot, "case-a", "verify", "run.sh")).exists()).toBe(true)
+    expect(await Bun.file(path.join(casesRoot, "case-b", "verify", "run.sh")).exists()).toBe(true)
+  })
+
+  test("restore is idempotent and tolerates a missing stash entry", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    await relocation.restore()
+    // Second restore must be a harmless no-op even though the stash is gone.
+    await relocation.restore()
+    expect(await Bun.file(path.join(casesRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+  })
+
+  test("a new run self-heals a stash left behind by an interrupted run", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    for (const id of ["case-a", "case-b"]) {
+      await Bun.write(path.join(casesRoot, id, "verify", "run.sh"), `echo ${id}\n`)
+      await Bun.write(path.join(casesRoot, id, "setup.sh"), "true\n")
+    }
+
+    // First run gets interrupted: sources are stashed but never restored.
+    const interrupted = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    expect(await Bun.file(path.join(casesRoot, "case-a", "verify", "run.sh")).exists()).toBe(false)
+
+    // The next run must heal before relocating, and end up in a healthy state.
+    const second = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    try {
+      expect(await Bun.file(path.join(stashRoot, "case-a", "verify", "run.sh")).exists()).toBe(true)
+      expect(await Bun.file(path.join(casesRoot, "case-a", "verify", "run.sh")).exists()).toBe(false)
+    } finally {
+      await second.restore()
+      await interrupted.restore()
+    }
+    expect(await Bun.file(path.join(casesRoot, "case-a", "verify", "run.sh")).exists()).toBe(true)
+    expect(await Bun.file(path.join(casesRoot, "case-b", "verify", "run.sh")).exists()).toBe(true)
+  })
+
+  test("restoreStashedVerifiers recovers from the persisted manifest", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
+
+    const first = await AgentBenchmark.relocateVerifierSources(casesRoot)
+    expect(first.stashRoot).toBeTruthy()
+    expect(first.stashRoot).toContain("eval-verifier-stash")
+    expect(await Bun.file(path.join(casesRoot, "solo", "verify", "run.sh")).exists()).toBe(false)
+
+    // Simulates the next CLI invocation after a hard kill.
+    expect(await AgentBenchmark.restoreStashedVerifiers(casesRoot)).toBe(true)
+    expect(await Bun.file(path.join(casesRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+
+    const again = await AgentBenchmark.relocateVerifierSources(casesRoot)
+    await again.restore()
+    expect(await AgentBenchmark.restoreStashedVerifiers(casesRoot)).toBe(false)
+  })
+
+  test("the shipped atomcli-core suite is fully materialized on disk", async () => {
+    const evalsDir = path.join(import.meta.dir, "../../evals")
+    const suite = AgentBenchmark.Suite.parse(await Bun.file(path.join(evalsDir, "atomcli.json")).json())
+    expect(suite.name).toBe("atomcli-core")
+    expect(suite.version).toBe("2")
+    expect(suite.cases.length).toBeGreaterThanOrEqual(10)
+    for (const testCase of suite.cases) {
+      expect(testCase.setupCommand, `${testCase.id} setupCommand`).toBeTruthy()
+      expect(testCase.verifyCommand, `${testCase.id} verifyCommand`).toBeTruthy()
+      expect(testCase.timeoutMs ?? 0).toBeGreaterThan(0)
+      await Bun.file(path.join(evalsDir, "cases", testCase.id, "setup.sh")).exists()
+      const setup = await Bun.file(path.join(evalsDir, "cases", testCase.id, "setup.sh")).exists()
+      const verifier = await Bun.file(path.join(evalsDir, "cases", testCase.id, "verify", "run.sh")).exists()
+      expect(setup, `${testCase.id} setup.sh`).toBe(true)
+      expect(verifier, `${testCase.id} verify/run.sh`).toBe(true)
+    }
   })
 })

@@ -766,6 +766,12 @@ export type Config = {
   }
   plugin?: Array<string>
   snapshot?: boolean
+  memory?: {
+    /**
+     * Run an LLM retrospective at session close and persist what it learns (default: true)
+     */
+    retrospective?: boolean
+  }
   /**
    * Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing
    */
@@ -2884,6 +2890,12 @@ export type ConfigUpdateData = {
     }
     plugin?: Array<string>
     snapshot?: boolean
+    memory?: {
+      /**
+       * Run an LLM retrospective at session close and persist what it learns (default: true)
+       */
+      retrospective?: boolean
+    }
     /**
      * Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing
      */

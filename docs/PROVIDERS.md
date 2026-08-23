@@ -49,7 +49,7 @@ Provider overrides use the singular `provider` object:
   "provider": {
     "openai": {
       "options": {
-        "apiKey": "${OPENAI_API_KEY}",
+        "apiKey": "{env:OPENAI_API_KEY}",
         "baseURL": "https://api.openai.com/v1",
       },
       "whitelist": ["gpt-4.1"],
@@ -58,7 +58,14 @@ Provider overrides use the singular `provider` object:
 }
 ```
 
-`apiKey`, `baseURL`, `timeout`, model overrides, `whitelist`, and `blacklist` are supported provider configuration fields. Environment-variable substitution is supported by the configuration loader. Prefer `atomcli auth login` or environment variables for credentials instead of committing secrets to a project file.
+`apiKey`, `baseURL`, `timeout`, model overrides, `whitelist`, and `blacklist` are supported provider configuration fields.
+
+Two substitution placeholders are available in configuration files:
+
+- `{env:VARIABLE_NAME}` is replaced with the value of that environment variable, or an empty string when unset.
+- `{file:PATH}` is replaced with the contents of the referenced file, resolved relative to the configuration file's directory. This is useful for reading secrets such as API keys from files outside version control.
+
+Prefer `atomcli auth login` or environment variables for credentials instead of committing secrets to a project file.
 
 ## Local models
 

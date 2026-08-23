@@ -8,6 +8,7 @@ initConsoleEncoding()
 import { RunCommand } from "@/interfaces/cli/cmd/run"
 import { GenerateCommand } from "@/interfaces/cli/cmd/generate"
 import { Log } from "@/util/util/log"
+import { RetrospectiveQueue } from "@/core/memory/services/retrospective-queue"
 import { AuthCommand } from "@/interfaces/cli/cmd/auth"
 import { AgentCommand } from "@/interfaces/cli/cmd/agent"
 import { UpgradeCommand } from "@/interfaces/cli/cmd/upgrade"
@@ -210,6 +211,17 @@ try {
   }
   process.exitCode = 1
 } finally {
+  // Best-effort: persist deferred session retrospectives before exiting.
+  // Bounded so a hanging LLM/provider call cannot block process exit.
+  try {
+    if (RetrospectiveQueue.all().length > 0) {
+      const { MemoryLifecycle } = await import("@/core/memory/services/lifecycle")
+      const drain = MemoryLifecycle.flushAll().catch(() => {})
+      await Promise.race([drain, new Promise((resolve) => setTimeout(resolve, 3000))])
+    }
+  } catch {
+    // Shutdown path: never let memory persistence failures mask the exit.
+  }
   // Some subprocesses don't react properly to SIGTERM and similar signals.
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.

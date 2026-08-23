@@ -11,7 +11,22 @@ atomcli skill add <github-url-or-repository-path>
 atomcli skill remove <name>
 ```
 
-Skills are discovered from project `.atomcli/skill/` and `.atomcli/skills/` locations, compatible `.claude/skills/` locations, global `~/.atomcli/skills/`, and bundled installation assets. Project-local skills take part in the active project's configuration and should be committed only when they are part of the project workflow.
+Skills are discovered from these locations:
+
+| Scope   | Location                                 | Notes                          |
+| ------- | ---------------------------------------- | ------------------------------ |
+| Project | `.atomcli/skills/**/SKILL.md`            | Primary project location       |
+| Project | `.atomcli/skill/**/SKILL.md`             | Singular variant, also scanned |
+| Project | `.claude/skills/**/SKILL.md`             | Compatibility fallback         |
+| Global  | `~/.atomcli/skills/**/SKILL.md`          | Available in every project     |
+| Global  | `~/.claude/skills/**/SKILL.md`           | Global compatibility fallback  |
+| Bundled | Installation assets shipped with AtomCLI | Built-in skills                |
+
+Project-local skills take part in the active project's configuration and should be committed only when they are part of the project workflow.
+
+Skill names must be unique across all discovered locations. A duplicate name does not fail discovery, but it logs a warning and one of the definitions wins; avoid relying on scan order by keeping names distinct.
+
+`trigger_words` enable automatic candidate detection: when user input contains any declared word or phrase (case-insensitive), that skill becomes a candidate for injection into the session.
 
 ## Write a skill
 

@@ -6,12 +6,13 @@ AtomCLI composes model instructions from prompt assets and runtime context. The 
 
 ```
 AtomBase/src/core/session/prompt/
-├── core/       shared instructions
-├── provider/   provider-specific instructions
-├── agent/      agent-specific instructions
-├── runtime/    dynamic runtime sections
+├── core/       shared instructions (identity, tools, workflow, communication, git safety, ...)
+├── agent/      per-agent instructions (build, plan, explore, checker, reviewer)
+├── runtime/    conditional reminders (plan mode, build switch, max-steps)
 └── manager.ts  assembly entry point
 ```
+
+`manager.ts` imports the `core/` and `agent/` text assets directly. The `runtime/` texts are conditional reminders injected by `AtomBase/src/core/session/prompt.ts` at specific points, such as the final step or while an agent is in plan mode.
 
 Prompt content can also be affected by project and global instructions, enabled skills, MCP configuration, selected agent, provider, permissions, and current session context.
 

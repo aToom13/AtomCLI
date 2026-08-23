@@ -1,9 +1,12 @@
 # AGENTS.md
 
+Guidance for agentic coding agents working in this monorepo. `AtomBase/` is the main package (the `atomcli` CLI + server + TUI); `libs/` holds workspace packages (SDK, companion); `companion/` is the Flutter mobile app.
+
 ## Must-follow constraints
 
 - **Bun only** — no npm or yarn anywhere. Package manager is pinned to `bun@1.3.10`.
 - **Monorepo root is not the main package.** All primary development happens in `AtomBase/`. Root `bun turbo` delegates to packages; run package-specific commands from within each package dir.
+- Run the app with `bun run --conditions=browser ./src/index.ts` (from `AtomBase/`). The `--conditions=browser` flag is required for TUI and SolidJS imports; missing it causes silent import failures.
 - **SDK codegen is required after any server API change.** After modifying routes in `AtomBase/src/server/`, regenerate the SDK:
   ```sh
   cd AtomBase
@@ -25,34 +28,84 @@
 - Do not push commits or tags, create a release, or publish packages unless the user explicitly authorizes that exact action.
 - When release authorization is explicit, run the documented validation commands and push only the exact version tag. Do not replace its exact-tag push with `git push --tags`. `RELEASE_NOTES.md` must match the package version and contain no emoji.
 
+## Build / lint / test commands
+
+```sh
+# From repo root (all packages):
+bun install --frozen-lockfile   # CI uses this too
+bun turbo typecheck             # typecheck all packages (tsgo)
+bun turbo test                  # test all packages
+
+# From AtomBase/:
+bun run dev                     # run CLI locally (--conditions=browser)
+bun run build                   # cross-platform binary build (wipes dist/)
+bun run typecheck               # tsgo --noEmit (not plain tsc)
+MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test   # full suite
+
+# Single test file:
+MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test test/file/ignore.test.ts
+
+# Single test by name inside a file:
+... bun test test/file/ignore.test.ts -t "match nested and non-nested"
+
+# Provider tests (opt-in via env flags):
+bun run test:providers            # fixture-backed compatibility tests
+ATOMCLI_PROVIDER_LIVE_TEST=1 ...  # live provider audit (needs real keys)
+
+# Formatting (Prettier only — there is no ESLint/Biome config in this repo):
+bunx prettier --write "src/**/*.{ts,tsx}"    # from AtomBase/, same as bun run format
+```
+
+CI (`.github/workflows/ci.yml`) runs: `bun turbo typecheck`, `bun turbo test` (with `ATOMCLI_TEST_HOME` set), verifies `libs/sdk/js/src/v2/gen` is unchanged (`git diff --exit-code`), and ShellChecks the installer.
+
+## Code style guidelines
+
+- **Formatting**: Prettier, `semi: false` (no semicolons), `printWidth: 120`, double quotes. Config lives in root `package.json`; there is no separate linter.
+- **Imports**: Use path aliases everywhere — `@/*` → `AtomBase/src/*`, `@tui/*` → `AtomBase/src/interfaces/cli/cmd/tui/*`. No relative `../../` chains across directory boundaries. Order seen in codebase: external packages first (`zod`, node builtins like `path`/`fs/promises`), then relative siblings, then `@/*` imports.
+- **The `ai` SDK must not be top-level imported** in files built with `--conditions=browser`. Use `import type` for types; use `await import(...)` for runtime. Violating this causes Bun ESM resolution failures silently.
+- **Types**: Zod-first. Define schemas as `export const X = z.object({...})` then `export type X = z.infer<typeof X>`. Types use object-literal style (`type Logger = { ... }`), not `interface` where avoidable. `strict` is off, but do not write loosely-typed code just because you can.
+- **Namespace pattern**: All modules export a named namespace (e.g., `Tool`, `Session`, `Config`, `Provider`, `Agent`). No loose top-level exports.
+- **Naming**: PascalCase namespaces/types/classes, camelCase functions/variables, SCREAMING_SNAKE_CASE module constants (e.g., `MAX_EDIT_OPERATIONS`). Test files mirror source paths under `test/` with a `.test.ts` suffix.
+- **Error handling**: Throw `new Error("message")` directly (dominant pattern, ~300 sites); let it propagate rather than swallowing errors. Log with `Log.create({ service: "name" })` (or `Log.Default`) — never `console.log`. Guard rails use named constants at module top (e.g., byte limits).
+- **DI/singleton**: `Instance.state()` is the per-project cached-state pattern. Use it for any module needing project-scoped initialization. No unbounded module-level mutable state.
+- **Tools**: Register via `Tool.define()` in `AtomBase/src/integrations/tool/`. The wrapper validates Zod schemas and truncates output at 2000 lines / 50 KB automatically. `execute()` returns `{ title, output, metadata }`; only set `metadata.truncated` yourself if your tool truncates internally.
+- **Agents**: Native agents live in the `state` factory of `AtomBase/src/integrations/agent/agent.ts`. User-defined agents come from `.atomcli/agent/*.md` with YAML frontmatter — they extend/override native agents, never replace them.
+- **TUI**: SolidJS on `@opentui/solid` (`jsxImportSource` in tsconfig). Components live under `AtomBase/src/interfaces/cli/cmd/tui/`, imported via the `@tui/*` alias. Never import TUI code outside `--conditions=browser` contexts.
+
+Canonical module shape:
+
+```ts
+import path from "path" // 1. node builtins
+import z from "zod" // 2. external packages
+import { Tool } from "./tool" // 3. relative siblings
+import { File } from "@/services/file" // 4. @/* aliases
+
+const MAX_ITEMS = 100 // SCREAMING_SNAKE_CASE guard constants at top
+
+export namespace Example {
+  export const Info = z.object({ name: z.string() })
+  export type Info = z.infer<typeof Info>
+}
+```
+
+## Testing conventions
+
+- Tests use `bun:test` (`import { test, expect } from "bun:test"`) and live in `AtomBase/test/`, mirroring source paths (`src/services/file/ignore.ts` → `test/file/ignore.test.ts`).
+- Every test file that touches `src/` must import `test/preload.ts` before any `src/` import (see gotchas below).
+- Provider-touching tests require the models fixture env var; never hit real APIs in the default suite.
+
 ## Validation before finishing
 
-From `AtomBase/`:
-
-```sh
-bun run typecheck                                          # uses tsgo
-MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
-```
-
-From root (all packages):
-
-```sh
-bun turbo typecheck
-bun turbo test
-```
+1. From `AtomBase/`: `bun run typecheck`, then the focused single test file for your change.
+2. Before declaring done: full suite (`MODELS_DEV_API_JSON=... bun test`) or root `bun turbo test` for cross-package changes.
+3. If you touched `src/server/` routes: regenerate the SDK and confirm `git diff --exit-code -- libs/sdk/js/src/v2/gen` is clean.
 
 ## Repo-specific conventions
 
-- **Path aliases**: `@/*` → `AtomBase/src/*`, `@tui/*` → `AtomBase/src/interfaces/cli/cmd/tui/*`. Use these everywhere; no relative `../../` chains.
-- **Namespace pattern**: All modules export a named namespace (e.g., `Tool`, `Session`, `Config`, `Provider`, `Agent`). No loose top-level exports.
-- **`ai` SDK must not be top-level imported** in files built with `--conditions=browser`. Use `import type` for types; use `await import(...)` for runtime. Violating this causes Bun ESM resolution failures silently.
-- **Tools** are registered via `Tool.define()` in `AtomBase/src/integrations/tool/`. The wrapper automatically validates Zod schema, truncates output (2000 lines / 50 KB), and sets `metadata.truncated`. Only set `metadata.truncated` yourself if your tool handles truncation internally.
-- **Agents** are defined in `AtomBase/src/integrations/agent/agent.ts` in the `state` factory (native, compiled-in). User-defined agents come from `.atomcli/agent/*.md` files with YAML frontmatter — those extend/override native agents, not replace them.
 - **Config precedence** (highest first): `ATOMCLI_CONFIG_CONTENT` env → project `atomcli.jsonc/json` or `mcp.json` → `ATOMCLI_CONFIG` file → global config → remote well-known.
 - **Model specifier format**: `"providerID/modelID"` string (e.g., `"atomcli/minimax-m2.5-free"`). Split on first `/`.
 - **Server default port**: 4096. Falls back to any available port if 4096 is taken.
-- **`Instance.state()`** is the DI/singleton pattern for per-project cached state. Use it for any module that needs project-scoped initialization. Never use module-level mutable state unless it is explicitly bounded.
-- **CORS**: Only `localhost:*`, `127.0.0.1:*`, `*.atomcli.ai` (https), and the configured whitelist are allowed. Tauri origins are explicitly allowed.
+- **CORS**: Only `localhost:*`, `127.0.0.1:*`, `*.atomcli.ai` (https), configured whitelist, and explicit Tauri origins are allowed.
 
 ## Important locations
 
@@ -62,10 +115,12 @@ bun turbo test
 | `AtomBase/src/integrations/agent/agent.ts`       | Native agent definitions + permission defaults                   |
 | `AtomBase/src/integrations/provider/provider.ts` | Provider registry, custom loaders, model resolution              |
 | `AtomBase/src/core/config/config.ts`             | Config schema, loading order, agent/plugin/command file loading  |
+| `AtomBase/src/core/eval/`                        | Agent eval harness, benchmark runner, verifier stash logic       |
+| `AtomBase/evals/`                                | Benchmark suite definition and per-case fixtures                 |
 | `AtomBase/src/server/server.ts`                  | Hono server, route registration, CORS                            |
 | `AtomBase/script/build.ts`                       | Cross-platform binary build (clears dist/, copies `.atomcli/`)   |
 | `AtomBase/test/preload.ts`                       | Test environment setup (XDG dirs, provider key clearing)         |
-| `AtomBase/test/tool/fixtures/`                   | Test fixtures incl. required `models-api.json`                   |
+| `AtomBase/test/tool/fixtures/models-api.json`    | Required fixture for any provider-touching test run              |
 | `libs/sdk/js/src/v2/gen/`                        | Auto-generated SDK — do not edit manually                        |
 | `libs/companion/`                                | @atomcli/companion — pairing auth, mobile bridge, discovery      |
 | `companion/`                                     | Flutter mobile companion app (Android/iOS)                       |
@@ -78,33 +133,6 @@ bun turbo test
 - **Config schema** (`Config.Info` in `config.ts`) must stay backward-compatible. New fields must be optional with defaults. Never rename or remove existing fields.
 - **`WORKFLOWS` map** in `orchestrate.ts` is bounded to `MAX_WORKFLOWS = 100` with 1-hour TTL cleanup. Do not remove this bound.
 - **Subagent permissions** in `OrchestrateTool` must always deny `todowrite`, `todoread`, and `task` for sub-agents.
-
-## MANDATORY: TaskFlow & Autonomous Goal Loop Usage
-
-**Every multi-step task MUST use TaskFlow (`taskflow`) and follow the Autonomous Goal Loop (`AUTONOMOUS_GOAL_LOOP`).**
-
-### Rules
-
-1. **TaskFlow first, always.** Before starting multi-step work, call `taskflow [action="start", plan=[...]]`.
-2. **Update TaskFlow frequently.** As work proceeds, update step and todo statuses:
-   ```
-   taskflow [action="update", step_id="0", status="running"]
-   taskflow [action="update", step_id="0", todo_id="0", todo_status="completed"]
-   taskflow [action="complete", step_id="0"]
-   ```
-3. **Follow the 3-Layered Iterative State Machine (`AUTONOMOUS_GOAL_LOOP`):**
-   - **Katman 1 (İcra):** Read → Edit → Verify mikro-döngüsü
-   - **Katman 2 (Strateji):** Kilometre taşı yönetimi (Plan → Execute → Evaluate → Adapt)
-   - **Katman 3 (Meta-Biliş):** Olay-tetikli öz-denetim (milestone tamamlandığında, beklenmedik keşifte, plan sapmasında)
-4. **Failure Journal (Başarısızlık Hafızası):** Kaydedilen başarısız yaklaşımları tekrarlamak YASAK. Bağlantılı başarısızlıkları konsolide et.
-5. **Clear on finish.** When ALL work is completed and verified, call `taskflow [action="clear"]`.
-
-### Forbidden Patterns
-
-- ❌ Calling deprecated `todowrite` or `todoread` directly (use `taskflow`)
-- ❌ Calling `taskflow [action="clear"]` before all steps are complete
-- ❌ Repeating a failed strategy without updating Failure Journal
-- ❌ Completing work without independent verification (`checker` audit for 3+ files)
 
 ## Known gotchas
 

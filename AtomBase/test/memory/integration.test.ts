@@ -4,28 +4,18 @@
  * Tests for session memory integration
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test"
+// MUST be the first import: memory services capture Global.Path.root at first
+// construction, which reads ATOMCLI_TEST_HOME. Static imports hoist above
+// everything else, so this module body runs before any src/ module evaluates.
+import "./setup-home"
+
+import { describe, it, expect, spyOn } from "bun:test"
 import { SessionMemoryIntegration } from "@/core/memory/integration/session"
 import { SemanticLearningService } from "@/core/memory/integration/semantic-learning"
 import { getUserProfile } from "@/core/memory/services/user-profile"
 import { getPreferencesService } from "@/core/memory/services/preferences"
-import os from "os"
-import path from "path"
-import fs from "fs/promises"
-
-const testDir = path.join(os.tmpdir(), "atomcli-memory-integration-test")
 
 describe("SessionMemoryIntegration", () => {
-  beforeEach(async () => {
-    // Clean up test directory
-    await fs.rm(testDir, { recursive: true, force: true })
-    await fs.mkdir(testDir, { recursive: true })
-  })
-
-  afterEach(async () => {
-    await fs.rm(testDir, { recursive: true, force: true })
-  })
-
   it("should initialize memory system", async () => {
     await SessionMemoryIntegration.initialize()
 
@@ -70,6 +60,31 @@ describe("SessionMemoryIntegration", () => {
     expect(SessionMemoryIntegration.hasExplicitMemorySignal("From now on, use Bun for this project")).toBe(true)
     expect(SessionMemoryIntegration.hasExplicitMemorySignal("Dosyayı düzelt ve testleri çalıştır")).toBe(false)
     expect(SessionMemoryIntegration.hasExplicitMemorySignal("Bu dosyayı değiştirme")).toBe(false)
+  })
+
+  it("catches durable prohibitions, project conventions and indirect preferences", () => {
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Artık npm kullanma, her yerde bun kullan")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Never commit directly to main")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Bu projede testleri her zaman bun ile çalıştır")).toBe(
+      true,
+    )
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("In this project never use any")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Bana bundan sonra kısa yanıt ver")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Bana türkçe yanıt ver")).toBe(true)
+    // Turkish İ normalizes through the U+0307 strip without breaking matching
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("İstanbul'da yaşıyorum, bunu unutma")).toBe(true)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("npm kullanmadan çalışır mı bu?")).toBe(false)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("stop fonksiyonu nerede")).toBe(false)
+    expect(SessionMemoryIntegration.hasExplicitMemorySignal("Bu klasördeki dosyaları silme")).toBe(false)
+  })
+
+  it("parses JSON payloads from fenced and prose-wrapped LLM output", () => {
+    const parse = SemanticLearningService.parseJsonPayload
+    expect(parse('{"hasInformation": true}')).toEqual({ hasInformation: true })
+    expect(parse('```json\n{"hasInformation": true}\n```')).toEqual({ hasInformation: true })
+    expect(parse('Here you go:\n{"hasInformation": false}\nHope that helps!')).toEqual({ hasInformation: false })
+    expect(parse("no structured content at all")).toBeNull()
+    expect(parse("{broken json")).toBeNull()
   })
 
   it.skip("should learn user name from message", async () => {
@@ -145,10 +160,14 @@ function hello() {
 
     const prefs = getPreferencesService()
     const indentStyle = await prefs.get("code_style", "indent_style")
+    const indentSize = await prefs.get("code_style", "indent_size")
     const quoteStyle = await prefs.get("code_style", "quote_style")
     const semicolons = await prefs.get("code_style", "semicolons")
 
     expect(indentStyle?.value).toBe("space")
+    // Regression: the string starts with "\n"; horizontal-only matching must
+    // report the real 2-space indentation instead of swallowing that newline.
+    expect(indentSize?.value).toBe(2)
     expect(quoteStyle?.value).toBe("double")
     expect(semicolons?.value).toBe(true)
   })

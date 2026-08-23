@@ -23,6 +23,7 @@ import BUILD_SWITCH from "../session/prompt/runtime/build-switch.txt"
 import MAX_STEPS from "../session/prompt/runtime/max-steps.txt"
 import { defer } from "@/util/util/defer"
 import { recall } from "@/integrations/tool/memory"
+import { recallCoreMemories } from "@/core/memory"
 import { SessionMemoryIntegration } from "../memory/integration/session"
 import { MemoryLifecycle } from "../memory/services/lifecycle"
 import { ToolRegistry } from "@/integrations/tool/registry"
@@ -669,16 +670,18 @@ export namespace SessionPrompt {
           .join(" ")
       }
 
-      // Run environment, custom rules, memory recall and skill auto-injection in parallel
-      const [environment, custom, memoryContext, autoSkillContext] = await Promise.all([
+      // Run environment, custom rules, memory recalls and skill auto-injection in parallel
+      const [environment, custom, memoryContext, coreMemoryContext, autoSkillContext] = await Promise.all([
         SystemPrompt.environment(userText, loadedMcpNames),
         SystemPrompt.custom(),
         userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
+        userText ? recallCoreMemories(userText, 3) : Promise.resolve(""),
         userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
       ])
 
       const system = [...environment, ...custom]
       if (memoryContext) system.push(memoryContext)
+      if (coreMemoryContext) system.push(`<core_memory>\n${coreMemoryContext}\n</core_memory>`)
       if (autoSkillContext) system.push(autoSkillContext)
       const turnContext = prepareTurnContext(system, await MessageV2.toModelMessage(sessionMessages), isLastStep)
 
@@ -710,10 +713,10 @@ export namespace SessionPrompt {
     SessionCompaction.prune({ sessionID })
     const completedMessages: MessageV2.WithParts[] = []
     for await (const item of MessageV2.stream({ sessionID, excludePatches: true })) completedMessages.push(item)
-    // Automatic evaluation is local and cheap. Keep the optional LLM
-    // retrospective off the automatic completion path so a user request never
-    // silently spends a second provider request.
-    MemoryLifecycle.schedule(sessionID, completedMessages, { retrospective: false })
+    // Automatic evaluation is local and cheap. The LLM retrospective is
+    // deferred to session close (MemoryLifecycle.flush) so a user request
+    // never silently spends a second provider request mid-turn.
+    MemoryLifecycle.schedule(sessionID, completedMessages)
     for (const item of completedMessages) {
       if (item.info.role === "user") continue
       const queued = state()[sessionID]?.callbacks ?? []
@@ -728,7 +731,9 @@ export namespace SessionPrompt {
   async function lastModel(sessionID: string) {
     for await (const item of MessageV2.stream({ sessionID, excludePatches: true })) {
       if (item.info.role !== "user" || !item.info.model) continue
-      const available = await Provider.getModel(item.info.model.providerID, item.info.model.modelID).catch(() => undefined)
+      const available = await Provider.getModel(item.info.model.providerID, item.info.model.modelID).catch(
+        () => undefined,
+      )
       if (available) return item.info.model
       log.warn("session model is no longer available; selecting a current model", { model: item.info.model })
       break
@@ -1891,10 +1896,7 @@ export namespace SessionPrompt {
     return result
   }
 
-  async function ensureTitle(input: {
-    session: Session.Info
-    history: MessageV2.WithParts[]
-  }) {
+  async function ensureTitle(input: { session: Session.Info; history: MessageV2.WithParts[] }) {
     if (!AgentEval.executionPolicy(input.session.id).allowAuxiliarySummaries) return
     if (input.session.parentID) return
     if (!Session.isDefaultTitle(input.session.title)) return
