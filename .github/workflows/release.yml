@@ -74,7 +74,7 @@ jobs:
           # Embedded skills ship as archives so installers can fetch them
           # alongside the platform binary (the binary itself contains no skills).
           tar -czf release_assets/skills.tar.gz -C .atomcli skills
-          cd .atomcli && zip -qr ../../release_assets/skills.zip skills && cd ../..
+          (cd .atomcli && zip -qr ../release_assets/skills.zip skills)
 
       - name: Generate release checksums
         working-directory: release_assets
