@@ -1,552 +1,277 @@
-/**
- * Code Review Command
- *
- * Automatically reviews GitHub/GitLab PRs for code quality, security, and performance.
- * Adds comments and suggestions directly to PRs.
- *
- * Usage: atomcli review --pr=123
- */
-
-import { cmd } from "./cmd"
-import { Log } from "@/util/util/log"
+import fs from "fs/promises"
+import { ReviewV2 } from "@/core/verification/review-v2"
+import { Session } from "@/core/session"
 import { Agent } from "@/integrations/agent/agent"
 import { Provider } from "@/integrations/provider/provider"
-import { LLM } from "@/core/session/llm"
-import { MessageV2 } from "@/core/session/message-v2"
-import { Identifier } from "@/core/id/id"
-import { Bash } from "@/integrations/tool/bash"
-import { Read } from "@/integrations/tool/read"
+import { SubAgent } from "@/integrations/tool/subagent"
 import { Instance } from "@/services/project/instance"
-import fs from "fs/promises"
+import { Log } from "@/util/util/log"
+import { cmd } from "./cmd"
+
+const DEFAULT_REVIEWERS = 2
+const MAX_PARALLEL_REVIEWERS = 4
 
 export namespace CodeReview {
   const log = Log.create({ service: "code-review" })
 
-  export interface ReviewOptions {
-    pr?: number
-    repo?: string
-    provider?: "github" | "gitlab"
-    diffOnly?: boolean
-  }
-
-  export interface ReviewComment {
-    file: string
-    line: number
-    message: string
-    severity: "info" | "warning" | "error" | "suggestion"
-    category: "quality" | "security" | "performance" | "style" | "documentation"
-    suggestion?: string
-    originalCode?: string
-  }
-
-  export interface ReviewResult {
+  export type ProviderName = "github" | "gitlab"
+  export type ReviewOptions = {
     pr: number
-    summary: string
+    repo: string
+    provider?: ProviderName
+    token?: string
+    reviewerCount?: number
+  }
+  export type ReviewComment = ReviewV2.ValidatedFinding
+  export type ReviewResult = ReviewV2.Report & {
+    pr: number
+    provider: ProviderName
     comments: ReviewComment[]
-    stats: {
-      total: number
-      errors: number
-      warnings: number
-      suggestions: number
-      info: number
-    }
+    stats: Record<"total" | "p0" | "p1" | "p2" | "p3" | "invalid", number>
   }
+  export type ReviewExecutor = (assignment: ReviewV2.DiffChunk, index: number) => Promise<ReviewV2.ReviewerResult>
 
-  /**
-   * Get PR diff from GitHub
-   */
   export async function getGitHubPRDiff(repo: string, pr: number, token?: string): Promise<string> {
-    const url = `https://api.github.com/repos/${repo}/pulls/${pr}`
-
-    const headers: Record<string, string> = {
+    return fetchText(`https://api.github.com/repos/${repo}/pulls/${pr}`, {
       Accept: "application/vnd.github.v3.diff",
-    }
-    if (token) {
-      headers["Authorization"] = `token ${token}`
-    }
-
-    const res = await fetch(url, { headers })
-    const diff = await res.text()
-    return diff
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    })
   }
 
-  /**
-   * Parse diff to extract changed files and hunks
-   */
-  export function parseDiff(diff: string): Array<{
-    file: string
-    additions: number
-    deletions: number
-    hunks: Array<{
-      oldStart: number
-      newStart: number
-      lines: string[]
-    }>
-  }> {
-    const files: ReturnType<typeof parseDiff> = []
-    const lines = diff.split("\n")
-
-    let currentFile: ReturnType<typeof parseDiff>[0] | null = null
-    let currentHunk: ReturnType<typeof parseDiff>[0]["hunks"][0] | null = null
-
-    for (const line of lines) {
-      // New file
-      if (line.startsWith("diff --git")) {
-        if (currentFile) {
-          files.push(currentFile)
-        }
-        currentFile = {
-          file: "",
-          additions: 0,
-          deletions: 0,
-          hunks: [],
-        }
-        currentHunk = null
-      }
-
-      // File path
-      if (line.startsWith("+++ b/")) {
-        if (currentFile) {
-          currentFile.file = line.replace("+++ b/", "")
-        }
-      }
-
-      // Hunk header
-      const hunkMatch = line.match(/^@@ -(\d+),?\d* \+(\d+),?\d* @@/)
-      if (hunkMatch && currentFile) {
-        currentHunk = {
-          oldStart: parseInt(hunkMatch[1]),
-          newStart: parseInt(hunkMatch[2]),
-          lines: [],
-        }
-        currentFile.hunks.push(currentHunk)
-      }
-
-      // Hunk content
-      if (
-        currentHunk &&
-        !line.startsWith("diff") &&
-        !line.startsWith("index") &&
-        !line.startsWith("---") &&
-        !line.startsWith("+++")
-      ) {
-        currentHunk.lines.push(line)
-        if (line.startsWith("+") && !line.startsWith("+++") && currentFile) {
-          currentFile.additions++
-        }
-        if (line.startsWith("-") && !line.startsWith("---") && currentFile) {
-          currentFile.deletions++
-        }
-      }
+  export async function getGitLabMRDiff(repo: string, mr: number, token?: string): Promise<string> {
+    const url = `https://gitlab.com/api/v4/projects/${encodeURIComponent(repo)}/merge_requests/${mr}/changes`
+    const response = await fetch(url, { headers: token ? { "PRIVATE-TOKEN": token } : undefined })
+    if (!response.ok) throw new Error(`GitLab diff request failed (${response.status} ${response.statusText})`)
+    const payload = (await response.json()) as {
+      changes?: Array<{ old_path: string; new_path: string; diff: string; new_file?: boolean; deleted_file?: boolean }>
     }
-
-    if (currentFile) {
-      files.push(currentFile)
-    }
-
-    return files
+    if (!Array.isArray(payload.changes)) throw new Error("GitLab diff response did not contain changes")
+    return payload.changes
+      .map((change) =>
+        [
+          `diff --git a/${change.old_path} b/${change.new_path}`,
+          `--- ${change.new_file ? "/dev/null" : `a/${change.old_path}`}`,
+          `+++ ${change.deleted_file ? "/dev/null" : `b/${change.new_path}`}`,
+          change.diff,
+        ].join("\n"),
+      )
+      .join("\n")
   }
 
-  /**
-   * Generate AI review for a file
-   */
-  export async function reviewFile(
-    file: string,
-    diff: string,
-    hunks: Array<{ oldStart: number; newStart: number; lines: string[] }>,
-  ): Promise<ReviewComment[]> {
-    const agent = await Agent.get("general")
-    if (!agent) throw new Error("General agent not found")
+  export async function reviewDiff(input: {
+    diff: string
+    pr: number
+    provider: ProviderName
+    reviewerCount?: number
+    execute?: ReviewExecutor
+  }): Promise<ReviewResult> {
+    const chunks = ReviewV2.chunkUnifiedDiff(input.diff)
+    const sources = ReviewV2.parseUnifiedDiff(input.diff)
+    const files = [...sources.keys()]
+    if (chunks.length === 0 || files.length === 0) return toResult(emptyReport(), input.pr, input.provider)
 
-    const defaultModel = await Provider.defaultModel()
-    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
-
-    const prompt = `Review this code change for quality, security, and performance issues.
-
-File: ${file}
-
-Diff:
-\`\`\`diff
-${diff}
-\`\`\`
-
-Analyze the changes and provide specific, actionable feedback. For each issue found, specify:
-1. Line number (in the new file)
-2. Severity: error, warning, suggestion, or info
-3. Category: quality, security, performance, style, or documentation
-4. Clear description of the issue
-5. Suggested fix (if applicable)
-
-Return your review as a JSON array of comments:
-[
-  {
-    "line": 42,
-    "severity": "warning",
-    "category": "quality",
-    "message": "This function is too long and should be refactored",
-    "suggestion": "Extract the validation logic into a separate function"
-  }
-]
-
-If no issues found, return an empty array [].`
-
-    const userMessage: MessageV2.User = {
-      id: Identifier.ascending("message"),
-      sessionID: "code-review-session",
-      role: "user",
-      time: { created: Date.now() },
-      agent: "code-review",
-      model: { providerID: model.providerID, modelID: model.id },
-    }
-
-    const abortController = new AbortController()
-
+    const requested = Math.max(1, Math.min(input.reviewerCount ?? DEFAULT_REVIEWERS, MAX_PARALLEL_REVIEWERS))
+    const assignments =
+      chunks.length === 1
+        ? Array.from({ length: requested }, (_, index) => ({
+            ...chunks[0],
+            id: `${chunks[0].id}-reviewer-${index + 1}`,
+          }))
+        : chunks
+    let parent: Session.Info | undefined
     try {
-      const stream = await LLM.stream({
-        agent,
-        user: userMessage,
-        sessionID: "code-review-session",
-        model,
-        system: [
-          "You are an expert code reviewer. Provide constructive, specific feedback. Focus on real issues, not nitpicks.",
-        ],
-        abort: abortController.signal,
-        messages: [{ role: "user", content: prompt }],
-        tools: {},
-      })
-
-      const response = await stream.text
-
-      // Extract JSON from response
-      const jsonMatch = response.match(/\[[\s\S]*\]/)
-      if (jsonMatch) {
-        const comments: ReviewComment[] = JSON.parse(jsonMatch[0])
-        // Add file to each comment
-        return comments.map((c) => ({ ...c, file }))
+      let execute = input.execute
+      if (!execute) {
+        parent = await Session.create({ title: `Review V2 ${input.provider} #${input.pr}` })
+        const agent = await Agent.get("reviewer")
+        if (!agent) throw new Error("Reviewer agent not found")
+        const fallback = await Provider.defaultModel()
+        const model = await Provider.getModel(fallback.providerID, fallback.modelID)
+        execute = async (assignment, index) => {
+          const prompt = ReviewV2.formatPrompt({
+            target: `${input.provider} change #${input.pr}, chunk ${assignment.id}, files: ${assignment.files.join(", ")}`,
+            diff: assignment.content,
+            instructions:
+              "This is a remote review. Do not claim test execution unless the checked-out workspace matches the supplied diff. Review every line in this bounded chunk.",
+          })
+          const result = await SubAgent.spawn({
+            parentSessionID: parent!.id,
+            agent,
+            model: { providerID: model.providerID, modelID: model.id },
+            permissions: SubAgent.buildFromAgent(agent),
+            parts: [{ type: "text", text: prompt }],
+            description: `Review V2 ${assignment.id}`,
+            outputSchema: ReviewV2.OutputSchema,
+            validationMode: "strict",
+          })
+          return { reviewer: `${assignment.id}-${index + 1}`, output: result.structuredOutput }
+        }
       }
-
-      return []
-    } catch (e) {
-      log.error("review generation failed", { file, error: e })
-      return []
+      const results = await runBounded(assignments, requested, execute)
+      return toResult(ReviewV2.aggregate({ results, sources, allowedFiles: files }), input.pr, input.provider)
+    } finally {
+      if (parent) await Session.remove(parent.id).catch(() => undefined)
     }
   }
 
-  /**
-   * Post review comments to GitHub PR
-   */
-  export async function postGitHubReview(
-    repo: string,
-    pr: number,
-    result: ReviewResult,
-    token?: string,
-  ): Promise<void> {
+  export async function review(options: ReviewOptions): Promise<ReviewResult> {
+    const provider = options.provider ?? "github"
+    log.info("starting structured review", { pr: options.pr, repo: options.repo, provider })
+    const diff =
+      provider === "github"
+        ? await getGitHubPRDiff(options.repo, options.pr, options.token)
+        : await getGitLabMRDiff(options.repo, options.pr, options.token)
+    return reviewDiff({ diff, pr: options.pr, provider, reviewerCount: options.reviewerCount })
+  }
+
+  export async function postReview(repo: string, pr: number, result: ReviewResult, token?: string): Promise<void> {
+    if (result.provider === "gitlab") {
+      const url = `https://gitlab.com/api/v4/projects/${encodeURIComponent(repo)}/merge_requests/${pr}/notes`
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { "PRIVATE-TOKEN": token } : {}) },
+        body: JSON.stringify({ body: formatSummary(result) }),
+      })
+      if (!response.ok) throw new Error(`GitLab review post failed (${response.status} ${response.statusText})`)
+      return
+    }
+
     const baseUrl = `https://api.github.com/repos/${repo}/pulls/${pr}`
-
-    // Post review summary as a comment
-    const summaryBody = generateReviewSummary(result)
-
-    const headers: Record<string, string> = {
+    const headers = {
       "Content-Type": "application/json",
+      Accept: "application/vnd.github+json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     }
-    if (token) {
-      headers["Authorization"] = `token ${token}`
-    }
-
-    await fetch(`${baseUrl}/reviews`, {
+    const summary = await fetch(`${baseUrl}/reviews`, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        body: summaryBody,
-        event: result.stats.errors > 0 ? "REQUEST_CHANGES" : "COMMENT",
+        body: formatSummary(result),
+        event: result.verdict === "rejected" ? "REQUEST_CHANGES" : "COMMENT",
       }),
     })
+    if (!summary.ok) throw new Error(`GitHub review post failed (${summary.status} ${summary.statusText})`)
 
-    // Post individual line comments
     for (const comment of result.comments) {
-      if (comment.line > 0) {
-        await postGitHubLineComment(repo, pr, comment, token)
+      const response = await fetch(`${baseUrl}/comments`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          path: comment.file,
+          line: comment.endLine,
+          side: "RIGHT",
+          body: formatFinding(comment),
+        }),
+      })
+      if (!response.ok) {
+        log.warn("GitHub line comment was rejected", {
+          file: comment.file,
+          line: comment.endLine,
+          status: response.status,
+        })
       }
     }
   }
 
-  async function postGitHubLineComment(
-    repo: string,
-    pr: number,
-    comment: ReviewComment,
-    token?: string,
-  ): Promise<void> {
-    const url = `https://api.github.com/repos/${repo}/pulls/${pr}/comments`
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    }
-    if (token) {
-      headers["Authorization"] = `token ${token}`
-    }
-
-    const body = {
-      path: comment.file,
-      line: comment.line,
-      body: `**${comment.severity.toUpperCase()}** (${comment.category}): ${comment.message}${
-        comment.suggestion ? `\n\n**Suggestion:** ${comment.suggestion}` : ""
-      }`,
-    }
-
-    await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    })
-  }
-
-  function generateReviewSummary(result: ReviewResult): string {
-    let summary = `## 🔍 Automated Code Review\n\n`
-    summary += `${result.summary}\n\n`
-    summary += `### Summary\n`
-    summary += `- **Total Comments:** ${result.stats.total}\n`
-    summary += `- **Errors:** ${result.stats.errors}\n`
-    summary += `- **Warnings:** ${result.stats.warnings}\n`
-    summary += `- **Suggestions:** ${result.stats.suggestions}\n`
-    summary += `- **Info:** ${result.stats.info}\n\n`
-    summary += `---\n\n*Review generated by AtomCLI*`
-
-    return summary
-  }
-
-  /**
-   * Run full code review
-   */
-  export async function review(options: ReviewOptions): Promise<ReviewResult> {
-    const { pr, repo, provider = "github" } = options
-
-    if (!pr || !repo) {
-      throw new Error("PR number and repo are required")
-    }
-
-    log.info("starting review", { pr, repo, provider })
-
-    // Get PR diff
-    const diff = await getGitHubPRDiff(repo, pr)
-    const files = parseDiff(diff)
-
-    log.info("parsed diff", { files: files.length })
-
-    // Review each file
-    const allComments: ReviewComment[] = []
-
-    for (const file of files) {
-      // Skip binary files and large diffs
-      if (file.additions + file.deletions > 500) {
-        log.info("skipping large file", { file: file.file })
-        continue
-      }
-
-      const fileDiff = generateFileDiff(file)
-      const comments = await reviewFile(file.file, fileDiff, file.hunks)
-      allComments.push(...comments)
-    }
-
-    // Generate summary
-    const summary = await generateReviewSummaryAI(allComments)
-
-    const result: ReviewResult = {
+  function toResult(report: ReviewV2.Report, pr: number, provider: ProviderName): ReviewResult {
+    return {
+      ...report,
       pr,
-      summary,
-      comments: allComments,
+      provider,
+      comments: report.findings,
       stats: {
-        total: allComments.length,
-        errors: allComments.filter((c) => c.severity === "error").length,
-        warnings: allComments.filter((c) => c.severity === "warning").length,
-        suggestions: allComments.filter((c) => c.severity === "suggestion").length,
-        info: allComments.filter((c) => c.severity === "info").length,
+        total: report.findings.length,
+        p0: report.findings.filter((finding) => finding.severity === "P0").length,
+        p1: report.findings.filter((finding) => finding.severity === "P1").length,
+        p2: report.findings.filter((finding) => finding.severity === "P2").length,
+        p3: report.findings.filter((finding) => finding.severity === "P3").length,
+        invalid: report.rejectedFindings.length,
       },
     }
-
-    return result
   }
 
-  function generateFileDiff(file: ReturnType<typeof parseDiff>[0]): string {
-    let diff = `diff --git a/${file.file} b/${file.file}\n`
-    for (const hunk of file.hunks) {
-      diff += `@@ -${hunk.oldStart} +${hunk.newStart} @@\n`
-      for (const line of hunk.lines) {
-        diff += line + "\n"
+  function emptyReport(): ReviewV2.Report {
+    return {
+      verdict: "passed",
+      summary: "The change contains no reviewable text hunks.",
+      findings: [],
+      rejectedFindings: [],
+      reviewers: [],
+    }
+  }
+
+  function formatSummary(result: ReviewResult) {
+    const lines = [
+      `## AtomCLI Review V2: ${result.verdict.toUpperCase()}`,
+      "",
+      result.summary,
+      "",
+      `Validated findings: ${result.stats.total} (P0 ${result.stats.p0}, P1 ${result.stats.p1}, P2 ${result.stats.p2}, P3 ${result.stats.p3})`,
+      `Rejected invalid findings: ${result.stats.invalid}`,
+    ]
+    if (result.comments.length > 0) lines.push("", ...result.comments.map(formatFinding))
+    return lines.join("\n")
+  }
+
+  function formatFinding(finding: ReviewComment) {
+    return `**${finding.severity}** ${finding.file}:${finding.startLine}-${finding.endLine} — ${finding.title} (confidence ${finding.confidence.toFixed(2)})\n\n${finding.recommendation}`
+  }
+
+  async function fetchText(url: string, headers: Record<string, string>) {
+    const response = await fetch(url, { headers })
+    if (!response.ok) throw new Error(`Review diff request failed (${response.status} ${response.statusText})`)
+    return response.text()
+  }
+
+  async function runBounded<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>) {
+    const results = new Array<R>(items.length)
+    let next = 0
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+      while (true) {
+        const index = next++
+        if (index >= items.length) return
+        try {
+          results[index] = await fn(items[index], index)
+        } catch (error) {
+          results[index] = {
+            reviewer: `reviewer-${index + 1}`,
+            error: error instanceof Error ? error.message : String(error),
+          } as R
+        }
       }
-    }
-    return diff
-  }
-
-  async function generateReviewSummaryAI(comments: ReviewComment[]): Promise<string> {
-    if (comments.length === 0) {
-      return "✅ No issues found! Great job on this PR."
-    }
-
-    const agent = await Agent.get("general")
-    if (!agent) return "Review completed with " + comments.length + " comments."
-
-    const defaultModel = await Provider.defaultModel()
-    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
-
-    const categories = [...new Set(comments.map((c) => c.category))]
-    const severities = [...new Set(comments.map((c) => c.severity))]
-
-    const prompt = `Summarize this code review in 2-3 sentences:
-
-Total comments: ${comments.length}
-Categories: ${categories.join(", ")}
-Severities: ${severities.join(", ")}
-
-Top issues:
-${comments
-  .slice(0, 5)
-  .map((c) => `- ${c.category}: ${c.message}`)
-  .join("\n")}
-
-Provide a brief, constructive summary.`
-
-    const userMessage: MessageV2.User = {
-      id: Identifier.ascending("message"),
-      sessionID: "code-review-session",
-      role: "user",
-      time: { created: Date.now() },
-      agent: "code-review",
-      model: { providerID: model.providerID, modelID: model.id },
-    }
-
-    const abortController = new AbortController()
-
-    try {
-      const stream = await LLM.stream({
-        agent,
-        user: userMessage,
-        sessionID: "code-review-session",
-        model,
-        system: ["You are a helpful code reviewer. Be constructive and encouraging."],
-        abort: abortController.signal,
-        messages: [{ role: "user", content: prompt }],
-        tools: {},
-      })
-
-      return await stream.text
-    } catch (e) {
-      return `Review completed with ${comments.length} comments across ${categories.length} categories.`
-    }
+    })
+    await Promise.all(workers)
+    return results
   }
 }
 
-/**
- * CLI Command Definition
- */
 export const ReviewCommand = cmd({
   command: "review",
-  describe: "Review GitHub/GitLab PRs automatically",
+  describe: "Run a structured review of a GitHub pull request or GitLab merge request",
   builder: (yargs) =>
     yargs
-      .option("pr", {
-        type: "number",
-        alias: "p",
-        describe: "PR number to review",
-        demandOption: true,
-      })
-      .option("repo", {
-        type: "string",
-        alias: "r",
-        describe: "Repository (owner/repo format)",
-        demandOption: true,
-      })
-      .option("provider", {
-        type: "string",
-        choices: ["github", "gitlab"],
-        describe: "Git provider",
-        default: "github",
-      })
-      .option("diff-only", {
-        type: "boolean",
-        alias: "d",
-        describe: "Only show diff analysis without posting",
-        default: false,
-      })
-      .option("token", {
-        type: "string",
-        alias: "t",
-        describe: "GitHub/GitLab access token",
-      })
-      .option("output", {
-        type: "string",
-        alias: "o",
-        describe: "Output file for review results",
-      }),
+      .option("pr", { type: "number", alias: "p", describe: "Pull/merge request number", demandOption: true })
+      .option("repo", { type: "string", alias: "r", describe: "Repository (owner/repo)", demandOption: true })
+      .option("provider", { type: "string", choices: ["github", "gitlab"], default: "github" })
+      .option("diff-only", { type: "boolean", alias: "d", describe: "Do not post the review", default: false })
+      .option("token", { type: "string", alias: "t", describe: "GitHub/GitLab access token" })
+      .option("reviewers", { type: "number", describe: "Maximum parallel reviewers (1-4)", default: DEFAULT_REVIEWERS })
+      .option("output", { type: "string", alias: "o", describe: "Write the structured report to a file" }),
   handler: async (args) => {
-    const log = Log.create({ service: "review-cli" })
-
     await Instance.provide({
       directory: process.cwd(),
       fn: async () => {
-        try {
-          console.log(`🔍 Reviewing PR #${args.pr} in ${args.repo}...\n`)
-
-          const result = await CodeReview.review({
-            pr: args.pr,
-            repo: args.repo,
-            provider: args.provider as "github" | "gitlab",
-            diffOnly: args.diffOnly,
-          })
-
-          // Display results
-          console.log("## Review Summary\n")
-          console.log(result.summary)
-          console.log("\n### Statistics")
-          console.log(`- Total Comments: ${result.stats.total}`)
-          console.log(`- Errors: ${result.stats.errors}`)
-          console.log(`- Warnings: ${result.stats.warnings}`)
-          console.log(`- Suggestions: ${result.stats.suggestions}`)
-          console.log(`- Info: ${result.stats.info}`)
-
-          if (result.comments.length > 0) {
-            console.log("\n### Comments by File\n")
-            const byFile = result.comments.reduce(
-              (acc, c) => {
-                if (!acc[c.file]) acc[c.file] = []
-                acc[c.file].push(c)
-                return acc
-              },
-              {} as Record<string, CodeReview.ReviewComment[]>,
-            )
-
-            for (const [file, comments] of Object.entries(byFile)) {
-              console.log(`\n**${file}**`)
-              for (const comment of comments) {
-                console.log(`  - Line ${comment.line}: [${comment.severity}] ${comment.message}`)
-              }
-            }
-          }
-
-          // Save to file if requested
-          if (args.output) {
-            await fs.writeFile(args.output, JSON.stringify(result, null, 2), "utf-8")
-            console.log(`\n📄 Results saved to: ${args.output}`)
-          }
-
-          // Post to PR if not diff-only
-          if (!args.diffOnly) {
-            console.log("\n📝 Posting review to PR...")
-            await CodeReview.postGitHubReview(args.repo, args.pr, result, args.token)
-            console.log("✅ Review posted successfully!")
-          }
-
-          // Exit with error code if errors found
-          if (result.stats.errors > 0) {
-            console.log(`\n❌ ${result.stats.errors} errors found`)
-            process.exit(1)
-          }
-
-          console.log("\n✅ Code review complete!")
-        } catch (error) {
-          log.error("code review failed", { error })
-          console.error("Error:", error instanceof Error ? error.message : error)
-          process.exit(1)
-        }
+        const result = await CodeReview.review({
+          pr: args.pr,
+          repo: args.repo,
+          provider: args.provider as CodeReview.ProviderName,
+          token: args.token,
+          reviewerCount: args.reviewers,
+        })
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+        if (args.output) await fs.writeFile(args.output, JSON.stringify(result, null, 2), "utf8")
+        if (!args.diffOnly) await CodeReview.postReview(args.repo, args.pr, result, args.token)
+        if (result.verdict !== "passed") process.exitCode = 1
       },
     })
   },

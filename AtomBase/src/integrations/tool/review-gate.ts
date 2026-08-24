@@ -7,6 +7,8 @@ import { selectModel } from "./model-router"
 import { SubAgent } from "./subagent"
 import { escapeXmlText, HarnessState, REVIEW_TOTAL_ATTEMPT_MULTIPLIER } from "@/core/session/harness-state"
 import { ChangeImpact } from "@/core/verification/change-impact"
+import { ReviewV2 } from "@/core/verification/review-v2"
+import { Instance } from "@/services/project/instance"
 
 const log = Log.create({ service: "review-gate" })
 
@@ -35,6 +37,8 @@ export interface ReviewResult {
   skipped: boolean
   /** True when the review could not run due to an infrastructure error. */
   error?: boolean
+  /** Validated structured review report when a review ran. */
+  report?: ReviewV2.Report
 }
 
 /** Cap the original user request injected into the reviewer prompt. */
@@ -91,8 +95,9 @@ export async function buildReviewPrompt(sessionID: string, impact?: ChangeImpact
     `  2. Do the project's tests/typecheck/build pass with raw output?`,
     `  3. Are there out-of-scope or side-effect changes (compare with git diff/status)?`,
     `  4. Security scan: secrets committed, auth/access-control regressions, injection risks?`,
-    `Respond in English. Start with exactly "VERDICT: PASSED" or "VERDICT: REJECTED" on the first line.`,
-    `If REJECTED, list the concrete issues to fix on the following lines.`,
+    `Respond in English using the supplied structured output schema.`,
+    `Every finding must quote exact source text in evidence and use a real 1-based file line range.`,
+    `Use verdict "rejected" only when at least one concrete finding exists; otherwise use "passed" or "inconclusive".`,
   ]
 
   return sections.join("\n")
@@ -199,6 +204,7 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
   const config = await Config.get()
   const enabled = config.review?.enabled !== false
   const maxAttempts = config.review?.max_attempts ?? 3
+  const reviewerCount = config.review?.reviewer_count ?? 2
   const policy = enabled ? (config.review?.policy ?? "adaptive") : "off"
 
   if (!enabled) {
@@ -284,41 +290,67 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
 
     const reviewPrompt = await buildReviewPrompt(sessionID, impact)
     const existingReviewerSession = HarnessState.getReviewerSession(sessionID)
-
-    const reviewResult = await SubAgent.spawn({
-      parentSessionID: sessionID,
-      agent: reviewerAgent,
-      model: reviewerModel,
-      permissions: SubAgent.buildFromAgent(reviewerAgent),
-      parts: [{ type: "text", text: reviewPrompt }],
-      description: "🔍 Reviewing changes before taskflow clear",
-      sessionId: existingReviewerSession,
+    const focuses = [
+      "correctness, regressions, edge cases, and request conformance",
+      "security, permissions, concurrency, and data integrity",
+      "tests, API compatibility, performance, and operational safety",
+      "cross-file integration, error handling, and release risk",
+    ]
+    let primarySessionRecorded = !!existingReviewerSession
+    const settled = await Promise.allSettled(
+      Array.from({ length: reviewerCount }, (_, index) =>
+        SubAgent.spawn({
+          parentSessionID: sessionID,
+          agent: reviewerAgent,
+          model: reviewerModel,
+          permissions: SubAgent.buildFromAgent(reviewerAgent),
+          parts: [
+            {
+              type: "text",
+              text: `${reviewPrompt}\n\nReviewer focus: ${focuses[index]}. Inspect every edited file; do not assume another reviewer will cover it.`,
+            },
+          ],
+          description: `🔍 Review V2 ${index + 1}/${reviewerCount}`,
+          sessionId: index === 0 ? existingReviewerSession : undefined,
+          outputSchema: ReviewV2.OutputSchema,
+          validationMode: "strict",
+          onSession: ({ sessionId }) => {
+            if (!primarySessionRecorded && index === 0) {
+              HarnessState.setReviewerSession(sessionID, sessionId)
+              primarySessionRecorded = true
+            }
+          },
+        }),
+      ),
+    )
+    const reviewerResults: ReviewV2.ReviewerResult[] = settled.map((result, index) =>
+      result.status === "fulfilled"
+        ? { reviewer: `reviewer-${index + 1}`, output: result.value.structuredOutput }
+        : {
+            reviewer: `reviewer-${index + 1}`,
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          },
+    )
+    const workspaceSources = await ReviewV2.loadWorkspaceSources(Instance.directory, editedFiles)
+    const diffSources = ReviewV2.parseUnifiedDiff(diff)
+    const report = ReviewV2.aggregate({
+      results: reviewerResults,
+      sources: ReviewV2.mergeSources(workspaceSources, diffSources),
+      allowedFiles: editedFiles,
     })
 
-    if (!existingReviewerSession) {
-      HarnessState.setReviewerSession(sessionID, reviewResult.sessionId)
-    }
-
-    const reviewText = reviewResult.output.trim()
-    const firstLine = reviewText
-      .split("\n")[0]
-      .replace(/^[#*\s]+/, "")
-      .trim()
-
-    const passed = /^VERDICT:\s*PASSED\b/i.test(firstLine) || /^PASS\b/i.test(firstLine)
-
-    if (passed) {
+    if (report.verdict === "passed") {
       HarnessState.recordReviewVerdict(sessionID, { status: "pass" })
       log.info("review gate: PASS", { sessionID })
-      return { passed: true, exhausted: false, skipped: false }
+      return { passed: true, exhausted: false, skipped: false, report }
     }
 
-    const reason = reviewText.slice(0, 4000) || "Reviewer returned no verdict text"
+    const reason = formatReviewReason(report)
     HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason })
     const attempts = HarnessState.getReviewVerdict(sessionID)?.attempts ?? 1
     const exhausted = attempts >= maxAttempts
-    log.info("review gate: FAIL", { sessionID, attempts, exhausted })
-    return { passed: false, reason, exhausted, skipped: false }
+    log.info("review gate: FAIL", { sessionID, attempts, exhausted, verdict: report.verdict })
+    return { passed: false, reason, exhausted, skipped: false, error: report.verdict === "inconclusive", report }
   } catch (error) {
     // Reviewer infrastructure failure — do not silently pass the gate. Surface
     // the error so the clear output can report "review skipped due to error"
@@ -332,4 +364,15 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
     HarnessState.releaseReview(sessionID)
     return { passed: false, error: true, exhausted: false, skipped: true }
   }
+}
+
+function formatReviewReason(report: ReviewV2.Report) {
+  const findings = report.findings
+    .slice(0, 20)
+    .map(
+      (finding) =>
+        `${finding.severity} ${finding.file}:${finding.startLine}-${finding.endLine} ` +
+        `${finding.title} (confidence ${finding.confidence.toFixed(2)})`,
+    )
+  return [report.summary, ...findings].join("\n").slice(0, 4_000)
 }

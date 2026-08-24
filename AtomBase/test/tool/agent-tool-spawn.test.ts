@@ -5,15 +5,18 @@ import path from "path"
 
 // Mock SubAgent.spawn so AgentTool spawn never hits a real model.
 // The mock must be registered BEFORE agent-tool / orchestrate are imported.
-const spawnMock = mock(async (args: any) => {
+const spawnMock = mock(async (args: any): Promise<any> => {
   const isQA = typeof args.description === "string" && args.description.startsWith("[QA")
   const sessionId = "ses_" + Math.random().toString(36).slice(2, 14)
   await args.onSession?.({ sessionId, isNewSession: true })
   return {
     sessionId,
     isNewSession: true,
-    output: isQA ? "VERDICT: PASSED\nIndependent verification complete." : "Task output: analysis done.",
+    output: isQA ? "Independent verification complete." : "Task output: analysis done.",
     parts: [],
+    structuredOutput: isQA
+      ? { verdict: "passed", summary: "Independent verification complete.", findings: [] }
+      : undefined,
   }
 })
 let statusFallback: ((sessionId: string) => any) | undefined
@@ -82,8 +85,11 @@ beforeEach(() => {
     return {
       sessionId,
       isNewSession: true,
-      output: isQA ? "VERDICT: PASSED\nIndependent verification complete." : "Task output: analysis done.",
+      output: isQA ? "Independent verification complete." : "Task output: analysis done.",
       parts: [],
+      structuredOutput: isQA
+        ? { verdict: "passed", summary: "Independent verification complete.", findings: [] }
+        : undefined,
     }
   })
   statusMock.mockReset()
@@ -299,7 +305,13 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
           const sessionId = `ses_${isQA ? "qa" : "task"}_${Math.random().toString(36).slice(2, 8)}`
           await args.onSession?.({ sessionId, isNewSession: true })
           if (isQA) {
-            return { sessionId, isNewSession: true, output: "VERDICT: PASSED", parts: [] }
+            return {
+              sessionId,
+              isNewSession: true,
+              output: "Independent verification complete.",
+              parts: [],
+              structuredOutput: { verdict: "passed", summary: "Independent verification complete.", findings: [] },
+            }
           }
           workingDirectories.add(args.workingDirectory)
           const file = args.description.includes("left") ? "src/auth-left.ts" : "src/auth-right.ts"
@@ -424,8 +436,9 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
             return {
               sessionId: "ses_qa_unused",
               isNewSession: true,
-              output: "VERDICT: PASSED",
+              output: "Independent verification complete.",
               parts: [],
+              structuredOutput: { verdict: "passed", summary: "Independent verification complete.", findings: [] },
             }
           }
 
@@ -499,13 +512,14 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
           reviewerSpawnCount++
           await args.onSession?.({ sessionId: "ses_deleted_reviewer", isNewSession: true })
           SessionTermination.mark("ses_deleted_reviewer")
-          // A streamed verdict may survive cancellation and resolve normally;
-          // termination must win over that stale PASS.
+          // A streamed result may survive cancellation and resolve normally;
+          // termination must win over that stale result.
           return {
             sessionId: "ses_deleted_reviewer",
             isNewSession: true,
-            output: "VERDICT: PASSED\nPartial verdict before cancellation",
+            output: "Partial result before cancellation",
             parts: [],
+            structuredOutput: { verdict: "passed", summary: "Partial result before cancellation.", findings: [] },
           }
         })
 

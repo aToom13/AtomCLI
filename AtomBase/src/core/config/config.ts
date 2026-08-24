@@ -1217,6 +1217,14 @@ export namespace Config {
             .optional()
             .default(3)
             .describe("Maximum consecutive FAIL verdicts before the review gate escalates to the user"),
+          reviewer_count: z
+            .number()
+            .int()
+            .min(1)
+            .max(4)
+            .optional()
+            .default(2)
+            .describe("Number of independent reviewer agents to run in parallel"),
           policy: z
             .enum(["adaptive", "always", "off"])
             .optional()

@@ -21,8 +21,8 @@ describe("ReviewGate - buildReviewPrompt", () => {
         expect(prompt).toContain("<edited_files>")
         expect(prompt).toContain("src/a.ts")
         expect(prompt).toContain("src/b.ts")
-        expect(prompt).toContain("VERDICT: PASSED")
-        expect(prompt).toContain("VERDICT: REJECTED")
+        expect(prompt).toContain('verdict "rejected"')
+        expect(prompt).toContain('"passed" or "inconclusive"')
         expect(prompt).toContain("git diff")
         expect(prompt).toContain("Security scan")
       },
@@ -37,7 +37,7 @@ describe("ReviewGate - buildReviewPrompt", () => {
         const sessionID = "session-gate-prompt-none"
         const prompt = await buildReviewPrompt(sessionID)
         expect(prompt).toContain("<none>")
-        expect(prompt).toContain("VERDICT: PASSED")
+        expect(prompt).toContain("structured output schema")
       },
     })
   })

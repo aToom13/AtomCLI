@@ -895,6 +895,10 @@ export type Config = {
      */
     max_attempts?: number
     /**
+     * Number of independent reviewer agents to run in parallel
+     */
+    reviewer_count?: number
+    /**
      * Run independent review only for high-risk edits, for every edit, or never
      */
     policy?: "adaptive" | "always" | "off"
@@ -3069,6 +3073,10 @@ export type ConfigUpdateData = {
        * Maximum consecutive FAIL verdicts before the review gate escalates to the user
        */
       max_attempts?: number
+      /**
+       * Number of independent reviewer agents to run in parallel
+       */
+      reviewer_count?: number
       /**
        * Run independent review only for high-risk edits, for every edit, or never
        */

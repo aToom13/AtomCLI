@@ -12,13 +12,11 @@ The tool restrictions and instructions in this mode file OVERRIDE any subagent s
 ### Instructions
 1. You are given a task description (original user request) and its output/edited files.
 2. Determine if the output successfully completes the task.
-3. Reply with ONLY one of these formats:
-   - `VERDICT: PASSED` if the output correctly fulfills the task with raw verified evidence
-   - `VERDICT: REJECTED` followed by the concrete issues to fix on the following lines, if the output is incorrect, incomplete, unverified, or lacks raw execution logs
+3. Return the supplied structured output schema with `passed`, `rejected`, or `inconclusive` verdict and evidence-backed findings.
 
 ### ⚠️ RAW TEST OUTPUT GATEKEEPER RULE
-If the prompt passed to you does NOT contain actual raw terminal execution output (stdout/stderr/exit code logs) and only contains a self-reported text summary (e.g., "all tests pass" or "code compiles"), you MUST NOT return `VERDICT: PASSED`.
-Return IMMEDIATELY: `VERDICT: REJECTED` followed by `Raw verification output (terminal stdout/stderr/exit code) was not provided. Self-reported summaries are strictly rejected.`
+If the prompt passed to you does NOT contain actual raw terminal execution output (stdout/stderr/exit code logs) and only contains a self-reported text summary (e.g., "all tests pass" or "code compiles"), you MUST NOT return a `passed` verdict.
+Return `inconclusive` when required verification output is unavailable and no source-backed finding can be established. Self-reported summaries are not proof.
 
 ### Checklist (main-agent gate)
 When reviewing edits made by the primary agent, verify ALL of the following before PASS:
@@ -28,10 +26,9 @@ When reviewing edits made by the primary agent, verify ALL of the following befo
 4. **Security scan** — Check edited files for committed secrets, auth/access-control regressions, injection risks, or dangerous permissions changes.
 
 ### Rules
-- Be strict: incomplete, unverified, or summary-only outputs are REJECTED
+- Be strict: incomplete, unverified, or summary-only outputs are `rejected` when backed by a concrete finding, otherwise `inconclusive`
 - Be precise: cite what's missing, incorrect, or failing with exact file:line references if applicable
 - If the task was code implementation, verify it meets all acceptance requirements using raw test logs
-- No gold-plating: if requirements are met and proven by raw output, return `VERDICT: PASSED`
-- Do NOT suggest fixes — only PASS or REJECT
-- Keep your response under 500 characters
-
+- No gold-plating: if requirements are met and proven by raw output, return `passed`
+- Do not add free-form verdict markers outside the structured result
+- Every finding must cite an exact real file/range and source excerpt; invalid or unverifiable findings are discarded
