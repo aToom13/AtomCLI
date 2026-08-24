@@ -2,6 +2,7 @@ import z from "zod"
 import fs from "fs/promises"
 import * as path from "path"
 import { Tool } from "./tool"
+import { EditAnchor } from "./edit-anchor"
 import { FileTime } from "@/services/file/time"
 import DESCRIPTION from "./read.txt"
 import { Instance } from "@/services/project/instance"
@@ -12,6 +13,19 @@ const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
 const MAX_BYTES = 50 * 1024
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const MAX_EDIT_ANCHOR_BYTES = 10 * 1024 * 1024
+
+type ReadMetadata = {
+  preview: string
+  truncated: boolean
+  contentHash?: string
+  startAnchor?: string
+  endAnchor?: string
+}
+
+function resultMetadata(metadata: ReadMetadata) {
+  return metadata
+}
 
 /**
  * Validates file path to prevent path traversal attacks
@@ -81,10 +95,10 @@ export const ReadTool = Tool.define("read", {
       return {
         title,
         output: msg,
-        metadata: {
+        metadata: resultMetadata({
           preview: msg,
           truncated: false,
-        },
+        }),
         attachments: [
           {
             id: Identifier.ascending("part"),
@@ -101,16 +115,37 @@ export const ReadTool = Tool.define("read", {
     const isBinary = await isBinaryFile(filepath, file)
     if (isBinary) throw new Error(`Cannot read binary file: ${filepath}`)
 
+    const statBeforeRead = await file.stat()
     const limit = params.limit ?? DEFAULT_READ_LIMIT
     const offset = params.offset ?? 0
     const { raw, totalLines, truncated, truncatedByBytes } = await readTextLines(file, offset, limit, ctx.abort)
+    // Files larger than Edit's own limit cannot be modified through the stale-safe
+    // protocol, so avoid a full extra scan for arbitrarily large read-only files.
+    const contentHash =
+      statBeforeRead.size <= MAX_EDIT_ANCHOR_BYTES ? EditAnchor.contentHash(await file.text()) : undefined
+    const statAfterRead = await file.stat()
+    if (
+      statBeforeRead.size !== statAfterRead.size ||
+      statBeforeRead.mtime.getTime() !== statAfterRead.mtime.getTime()
+    ) {
+      throw new Error(`File changed while it was being read: ${filepath}. Read it again before editing`)
+    }
+
+    const { startAnchor, endAnchor } = EditAnchor.range(offset + 1, raw)
 
     const content = raw.map((line, index) => {
       return `${(index + offset + 1).toString().padStart(5, "0")}| ${line}`
     })
     const preview = raw.slice(0, 20).join("\n")
 
-    let output = "<file>\n"
+    const attributes = [
+      contentHash ? `content_hash="${contentHash}"` : undefined,
+      `start_anchor="${startAnchor}"`,
+      `end_anchor="${endAnchor}"`,
+    ]
+      .filter(Boolean)
+      .join(" ")
+    let output = `<file ${attributes}>\n`
     output += content.join("\n")
 
     const lastReadLine = offset + raw.length
@@ -129,10 +164,13 @@ export const ReadTool = Tool.define("read", {
     return {
       title,
       output,
-      metadata: {
+      metadata: resultMetadata({
         preview,
         truncated,
-      },
+        contentHash,
+        startAnchor,
+        endAnchor,
+      }),
     }
   },
 })

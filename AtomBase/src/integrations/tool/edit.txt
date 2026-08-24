@@ -10,3 +10,5 @@ Usage:
 - Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
 
 Multi-edit: Use `operations` array for multiple edits to the same file in one call. Each operation is applied in sequence on the result of the previous one. Plan edits carefully — earlier edits change the text that later edits search against.
+
+Stale-safe edit: When Read returns `contentHash`, pass it unchanged to Edit. The edit fails with a `Stale edit` error if the file changed. You may also pass Read's `startAnchor` and `endAnchor` together to scope a replacement to that displayed line range; this can safely disambiguate repeated text outside the range. Anchors inside `operations` are evaluated sequentially.

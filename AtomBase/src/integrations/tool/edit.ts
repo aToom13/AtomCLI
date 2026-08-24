@@ -6,6 +6,7 @@
 import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
+import { EditAnchor } from "./edit-anchor"
 import { LSP } from "../lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./edit.txt"
@@ -24,6 +25,13 @@ const MAX_EDIT_TOTAL_BYTES = 20 * 1024 * 1024
 const MAX_EDIT_FILE_BYTES = 10 * 1024 * 1024
 const MAX_DIFF_BYTES = 200 * 1024
 const MAX_EXACT_DIFF_INPUT_BYTES = 512 * 1024
+const CONTENT_HASH_PATTERN = /^sha256:[a-f0-9]{64}$/
+const LINE_ANCHOR_PATTERN = /^L[1-9]\d*:sha256:[a-f0-9]{64}$/
+
+const AnchorFields = {
+  startAnchor: z.string().regex(LINE_ANCHOR_PATTERN).optional().describe("Start anchor returned by the read tool"),
+  endAnchor: z.string().regex(LINE_ANCHOR_PATTERN).optional().describe("End anchor returned by the read tool"),
+}
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -50,12 +58,7 @@ export namespace EditDiff {
     const newBytes = Buffer.byteLength(contentNew)
     if (oldBytes + newBytes <= MAX_EXACT_DIFF_INPUT_BYTES) {
       const raw = trimDiff(
-        createTwoFilesPatch(
-          filePath,
-          filePath,
-          normalizeLineEndings(contentOld),
-          normalizeLineEndings(contentNew),
-        ),
+        createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
       )
       let additions = 0
       let deletions = 0
@@ -95,15 +98,30 @@ export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
   parameters: z.object({
     filePath: z.string().min(1).max(4096).describe("The absolute path to the file to modify"),
-    oldString: z.string().max(MAX_EDIT_CONTENT_BYTES).optional().describe("The text to replace (required unless using operations)"),
-    newString: z.string().max(MAX_EDIT_CONTENT_BYTES).optional().describe("The text to replace it with (required unless using operations)"),
+    oldString: z
+      .string()
+      .max(MAX_EDIT_CONTENT_BYTES)
+      .optional()
+      .describe("The text to replace (required unless using operations)"),
+    newString: z
+      .string()
+      .max(MAX_EDIT_CONTENT_BYTES)
+      .optional()
+      .describe("The text to replace it with (required unless using operations)"),
     replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
+    contentHash: z
+      .string()
+      .regex(CONTENT_HASH_PATTERN)
+      .optional()
+      .describe("Full content hash returned by the read tool; rejects the edit if the file changed"),
+    ...AnchorFields,
     operations: z
       .array(
         z.object({
           oldString: z.string().max(MAX_EDIT_CONTENT_BYTES).describe("The text to replace"),
           newString: z.string().max(MAX_EDIT_CONTENT_BYTES).describe("The text to replace it with"),
           replaceAll: z.boolean().optional().describe("Replace all occurrences (default false)"),
+          ...AnchorFields,
         }),
       )
       .max(MAX_EDIT_OPERATIONS)
@@ -121,7 +139,15 @@ export const EditTool = Tool.define("edit", {
     const ops = params.operations
       ? params.operations
       : params.oldString !== undefined && params.newString !== undefined
-        ? [{ oldString: params.oldString, newString: params.newString, replaceAll: params.replaceAll }]
+        ? [
+            {
+              oldString: params.oldString,
+              newString: params.newString,
+              replaceAll: params.replaceAll,
+              startAnchor: params.startAnchor,
+              endAnchor: params.endAnchor,
+            },
+          ]
         : null
 
     if (!ops || ops.length === 0) {
@@ -141,12 +167,15 @@ export const EditTool = Tool.define("edit", {
       if (op.oldString === op.newString) {
         throw new Error("oldString and newString must be different")
       }
+      if (!!op.startAnchor !== !!op.endAnchor) {
+        throw new Error("startAnchor and endAnchor must be provided together")
+      }
     }
 
     const filePath = path.resolve(Instance.directory, params.filePath)
     await assertExternalDirectory(ctx, filePath)
 
-    return executeEdits(filePath, ops, ctx)
+    return executeEdits(filePath, ops, params.contentHash, ctx)
   },
 })
 
@@ -154,11 +183,14 @@ type EditOperation = {
   oldString: string
   newString: string
   replaceAll?: boolean
+  startAnchor?: string
+  endAnchor?: string
 }
 
 async function executeEdits(
   filePath: string,
   operations: EditOperation[],
+  expectedHash: string | undefined,
   ctx: Tool.Context,
 ) {
   let diff = ""
@@ -173,17 +205,33 @@ async function executeEdits(
       throw new Error(`File ${filePath} exceeds the ${MAX_EDIT_FILE_BYTES} byte edit limit`)
     }
     if (!stats && operations[0].oldString !== "") throw new Error(`File ${filePath} not found`)
-    if (stats && operations[0].oldString !== "") await FileTime.assert(ctx.sessionID, filePath)
 
     contentOld = stats ? await file.text() : ""
+    if (expectedHash) {
+      if (!stats || EditAnchor.contentHash(contentOld) !== expectedHash) {
+        throw new Error(`Stale edit: content changed for ${filePath}. Read the file again before editing`)
+      }
+    }
+    if (stats && operations[0].oldString !== "") {
+      if (!FileTime.get(ctx.sessionID, filePath)) {
+        throw new Error(`You must read the file ${filePath} before overwriting it. Use the Read tool first`)
+      }
+      if (!expectedHash) await FileTime.assert(ctx.sessionID, filePath)
+    }
     contentNew = contentOld
     // Apply every operation in memory before requesting permission or writing.
     // A failed match therefore leaves the original file untouched.
     for (const operation of operations) {
-      contentNew =
-        operation.oldString === ""
-          ? operation.newString
-          : replace(contentNew, operation.oldString, operation.newString, operation.replaceAll)
+      if (operation.oldString === "") {
+        contentNew = operation.newString
+      } else if (operation.startAnchor && operation.endAnchor) {
+        const range = EditAnchor.resolveRange(contentNew, operation.startAnchor, operation.endAnchor)
+        const scoped = contentNew.slice(range.start, range.end)
+        const replaced = replace(scoped, operation.oldString, operation.newString, operation.replaceAll)
+        contentNew = contentNew.slice(0, range.start) + replaced + contentNew.slice(range.end)
+      } else {
+        contentNew = replace(contentNew, operation.oldString, operation.newString, operation.replaceAll)
+      }
       if (Buffer.byteLength(contentNew) > MAX_EDIT_FILE_BYTES) {
         throw new Error(`Edited content exceeds the ${MAX_EDIT_FILE_BYTES} byte limit`)
       }
@@ -200,6 +248,14 @@ async function executeEdits(
         diff,
       },
     })
+
+    const currentStats = await Bun.file(filePath)
+      .stat()
+      .catch((): undefined => undefined)
+    const currentContent = currentStats ? await Bun.file(filePath).text() : ""
+    if (!!currentStats !== !!stats || currentContent !== contentOld) {
+      throw new Error(`Stale edit: content changed for ${filePath} while awaiting permission. No changes were written`)
+    }
 
     await Bun.write(filePath, contentNew)
     await Bus.publish(FileEvent.Edited, {
@@ -219,6 +275,8 @@ async function executeEdits(
       deletions,
       diagnostics: {},
       diffPreview: summary.preview,
+      contentHashBefore: EditAnchor.contentHash(contentOld),
+      contentHashAfter: EditAnchor.contentHash(contentNew),
       ...(operations.length > 1 ? { operations: operations.length } : {}),
     },
   })
@@ -243,6 +301,8 @@ async function executeEdits(
       additions,
       deletions,
       diffPreview: summary.preview,
+      contentHashBefore: EditAnchor.contentHash(contentOld),
+      contentHashAfter: EditAnchor.contentHash(contentNew),
       ...(operations.length > 1 ? { operations: operations.length } : {}),
     },
     title: `${path.relative(Instance.worktree, filePath)}`,

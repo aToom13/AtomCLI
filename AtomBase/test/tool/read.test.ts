@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { ReadTool } from "@/integrations/tool/read"
@@ -222,6 +223,10 @@ describe("tool.read truncation", () => {
         const result = await read.execute({ filePath: path.join(tmp.path, "small.txt") }, ctx)
         expect(result.metadata.truncated).toBe(false)
         expect(result.output).toContain("End of file")
+        expect(result.metadata.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/)
+        expect(result.metadata.startAnchor).toMatch(/^L1:sha256:[a-f0-9]{64}$/)
+        expect(result.metadata.endAnchor).toMatch(/^L1:sha256:[a-f0-9]{64}$/)
+        expect(result.output).toContain(`content_hash="${result.metadata.contentHash}"`)
       },
     })
   })
