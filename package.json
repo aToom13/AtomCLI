@@ -9,7 +9,9 @@
     "dev": "bun run --cwd AtomBase --conditions=browser src/index.ts",
     "build": "bun turbo build",
     "typecheck": "bun turbo typecheck",
-    "test": "bun turbo test"
+    "test": "bun turbo test",
+    "version:sync": "bun run AtomBase/script/sync-version.ts",
+    "version:check": "bun run AtomBase/script/sync-version.ts --check"
   },
   "workspaces": {
     "packages": [

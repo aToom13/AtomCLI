@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Check workspace version alignment
+        run: bun run version:check
+
       - name: Typecheck monorepo
         run: bun turbo typecheck
 

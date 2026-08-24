@@ -70,7 +70,18 @@ The build matrix produces Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and
 
 ### Pre-release repository check
 
-Prepare `AtomBase/package.json` and `RELEASE_NOTES.md`, then run the complete release audit without changing Git or contacting GitHub:
+Use `AtomBase/package.json` as the release source of truth. Keep the versions in `libs/companion/package.json`, `libs/plugin/package.json`, `libs/script/package.json`, `libs/sdk/js/package.json`, and `libs/util/package.json` aligned with it, then update `bun.lock`. The Flutter application under `companion/` has an independent mobile version.
+
+Do not edit those mirrored versions individually. Set and propagate a release version from the repository root:
+
+```sh
+bun run version:sync 3.4.1
+bun run version:check
+```
+
+`version:sync` updates the source manifest, workspace mirrors, lockfile, and release-note heading. `version:check` is read-only and runs in both CI and the release workflow so version drift cannot be published.
+
+Prepare the package manifests, lockfile, and `RELEASE_NOTES.md`, then run the complete release audit without changing Git or contacting GitHub:
 
 ```sh
 cd AtomBase
@@ -87,6 +98,8 @@ git ls-files --others --exclude-standard
 ```
 
 These commands run package and workspace validation, check patch formatting, expose ignored and untracked artifacts, and detect tracked files hidden by ignore rules. Review `RELEASE_NOTES.md` separately and verify that its heading matches `AtomBase/package.json` and contains no emoji.
+
+Before committing, search the repository for the previous AtomCLI version. Matches in third-party dependency versions are not release metadata and must not be changed.
 
 The underlying repository checks are:
 
@@ -107,7 +120,7 @@ git tag -a "v${VERSION}" -m "AtomCLI v${VERSION}"
 git push --atomic origin main "refs/tags/v${VERSION}"
 ```
 
-Do not replace the exact-tag push with `git push --tags`. Confirm that the local and remote tag do not already exist and that `main` is not divergent before publishing. The tag push starts `.github/workflows/release.yml`, which builds and publishes the GitHub release.
+Do not replace the exact-tag push with `git push --tags`. Confirm that the local and remote tag do not already exist, fetch the latest remote state, and verify that local `main` contains `origin/main` before publishing. The tag push starts `.github/workflows/release.yml`, which builds and publishes the GitHub release.
 
 ## Configuration
 

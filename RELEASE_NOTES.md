@@ -1,32 +1,57 @@
-# AtomCLI v3.4.0
+# AtomCLI v3.4.1
 
-AtomCLI v3.4.0 introduces native operating system administration skills, an interactive benchmark evaluation suite with TUI picker support, asynchronous retrospective memory learning, improved installer resilience across platforms, and complete workspace version alignment.
+This reliability-focused release strengthens file editing, language-server refactoring, isolated subagent execution, structured code review, remote operations, and browser workflows.
 
-## Operating System Administration Skills
+## Safe and Deterministic Editing
 
-- Added bundled `linux-admin` skill for service management (systemd, journald), package tooling (apt/dnf/pacman/zypper), firewall/networking, and container inspection.
-- Added bundled `macos-admin` skill for Homebrew package management, launchd service control, defaults configuration, and system diagnostics.
-- Added bundled `windows-admin` skill for PowerShell automation, winget management, Windows service operations, and registry inspection.
+- Added content-hash guards so edits fail safely when a file changes after it was read.
+- Added line-range anchors for disambiguating repeated text without weakening the existing fuzzy matching chain.
+- Made multi-operation edits atomic, with one permission request and no partial write when a later operation fails.
+- Added explicit protection against concurrent changes, oversized inputs, and stale anchor ranges.
+- Added a provider-independent edit reliability benchmark covering guarded edits, ambiguity, stale state, large files, atomic operations, and fallback behavior.
 
-## Evaluation and Benchmark Suite
+## Language Server Refactoring
 
-- Added an interactive terminal benchmark picker (`eval-picker.ts`) for streamlined test case selection and execution.
-- Expanded benchmark test cases (`evals/cases/`) and evaluation configuration (`evals/atomcli.json`).
-- Added robust benchmark test harnesses and automated regression verification (`agent-benchmark.test.ts`).
+- Promoted the LSP tool into the default tool registry and expanded it with diagnostics, type definitions, workspace symbols, formatting, code actions, symbol rename, and file rename support.
+- Added capability negotiation and dynamic capability tracking for language servers.
+- Added transactional workspace edits with URI, range, document-version, and concurrent-change validation.
+- Added rollback behavior for failed multi-file and resource operations.
+- Restricted language-server subprocess environments so ambient credentials are not inherited.
 
-## Memory and Retrospective Learning
+## Typed and Isolated Subagents
 
-- Introduced background retrospective processing queue (`retrospective-queue.ts`) for non-blocking post-session memory distillation and learning.
-- Refined semantic learning and session lifecycle integration to prioritize durable facts while minimizing extraneous model calls.
-- Added isolated memory test harness configuration (`setup-home.ts`) to prevent fixture leakage during test execution.
+- Added strict schema-validated subagent results and runtime capability requirements.
+- Added isolated Git worktrees with bounded patch collection, conflict reporting, cleanup, and recovery behavior.
+- Added live lifecycle events for subagent state, progress, tool activity, completion, failure, and cancellation.
+- Preserved restrictive subagent permissions and added regression coverage for concurrency, isolation, cleanup, and schema failures.
 
-## Core Session and Prompt Engineering
+## Structured Review V2
 
-- Optimized prompt budgeting, synthetic reminder injection, and system instruction constraints.
-- Streamlined session core endpoints and event stream handling for increased stability during long sessions.
+- Replaced free-form verdict parsing with Zod-validated reviewer output.
+- Added bounded parallel reviewers with P0 through P3 severity, confidence, exact evidence, and deterministic overall verdicts.
+- Validated every finding against the actual file path, line range, changed range, and source content before accepting it.
+- Added finding deduplication and rejection of forged, stale, out-of-scope, or otherwise invalid findings.
+- Added safe chunking for large diffs so oversized files are reviewed without silently dropping changes.
+- Unified the review gate, isolated workflow quality checks, and CLI review command around the same validation core.
+- Added GitHub pull request and GitLab merge request support with structured JSON reports.
 
-## Installation and Platform Reliability
+## Tools and Runtime Reliability
 
-- Hardened `install.ps1` architecture detection for legacy Windows PowerShell 5.1 environments.
-- Updated `install.sh` and `install.ps1` for consistent skill packaging and automated environment setup.
-- Synced all workspace packages to version 3.4.0.
+- Added encrypted SSH profiles, host-key verification, bounded remote file operations, retry handling, and explicit approval boundaries.
+- Improved browser target tracking, snapshots, session recovery, compact output, and end-to-end regression coverage.
+- Unified public web and programming-documentation search through web and code modes.
+- Removed the redundant standalone code-search path and specialized finance analyzer from the default tool registry.
+- Improved workflow recovery, task association, subagent visibility, and narrow-terminal behavior in the TUI.
+
+## Release and Compatibility
+
+- Synced all Bun workspace package versions for this release.
+- Preserved backward-compatible configuration defaults for reviewer concurrency and subagent isolation.
+- Preserved the 12-target release matrix for Linux, macOS, and Windows, including musl and baseline x64 builds.
+- Expanded ignore rules so local AtomCLI and Claude configuration, credentials, dependencies, plans, runs, caches, and session state cannot enter release commits.
+
+## Validation
+
+- Workspace typechecking and the complete deterministic Bun test suite pass.
+- Edit reliability, real TypeScript language-server integration, isolated subagent execution, structured output validation, and Review V2 have focused regression coverage.
+- Generated SDK files are synchronized and release metadata matches the exact version tag contract.

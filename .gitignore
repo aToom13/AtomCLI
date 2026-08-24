@@ -44,15 +44,45 @@ refs/
 **/.atomcli/atomcli.json
 **/.atomcli/atomcli.json.bak*
 **/.atomcli/atomcli.jsonc
+**/.atomcli/config.json
+**/.atomcli/config.jsonc
 **/.atomcli/mcp.json
+**/.atomcli/auth.json
+**/.atomcli/credentials.json
 **/.atomcli/package.json
 **/.atomcli/package-lock.json
 **/.atomcli/bun.lock
 **/.atomcli/node_modules/
+**/.atomcli/cache/
 **/.atomcli/plan/
 **/.atomcli/plans/
 **/.atomcli/runs/
 **/.atomcli/reports/
+**/.atomcli/session/
+**/.atomcli/sessions/
+**/.atomcli/storage/
+
+# Repository-local Claude compatibility assets may be tracked under skills/
+# and agents/. Keep machine-specific configuration and runtime state local.
+**/.claude/settings.json
+**/.claude/settings.local.json
+**/.claude/package.json
+**/.claude/package-lock.json
+**/.claude/bun.lock
+**/.claude/node_modules/
+**/.claude/cache/
+**/.claude/debug/
+**/.claude/plan/
+**/.claude/plans/
+**/.claude/projects/
+**/.claude/reports/
+**/.claude/runs/
+**/.claude/session/
+**/.claude/sessions/
+**/.claude/shell-snapshots/
+**/.claude/tasks/
+**/.claude/todos/
+**/.claude/history.jsonl
 
 # Build and release outputs
 dist/

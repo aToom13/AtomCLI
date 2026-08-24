@@ -67,7 +67,25 @@ atomcli mcp list
 atomcli serve
 atomcli acp
 atomcli stats
+atomcli review --help
 ```
+
+## Reliability and code review
+
+AtomCLI guards file edits with content hashes and optional line anchors, so a stale agent action cannot silently overwrite a file that changed after it was read. Multi-operation edits are applied atomically.
+
+The LSP tool supports diagnostics, definitions, references, workspace symbols, formatting, code actions, symbol rename, and file rename. Mutating language-server operations validate every affected file and roll back the workspace edit if an apply step fails.
+
+Subagents can return schema-validated results and run in isolated Git worktrees. Their lifecycle and tool activity are surfaced in the TUI while the parent session retains bounded cleanup and permission controls.
+
+Use the structured review command for a GitHub pull request or GitLab merge request:
+
+```sh
+atomcli review --provider github --repo owner/repository --pr 123 --diff-only
+atomcli review --provider gitlab --repo group/project --pr 123 --reviewers 4 --output review.json --diff-only
+```
+
+The review pipeline validates findings against real changed files and line ranges, deduplicates overlapping findings, and reports P0 through P3 severity with confidence. See the [Review V2 guide](docs/REVIEW.md).
 
 ## Tab completion
 
@@ -102,6 +120,7 @@ Use `atomcli auth login` for credentials. Provider overrides use the `provider` 
 - [Provider and model guide](docs/PROVIDERS.md)
 - [MCP guide](docs/MCP-GUIDE.md)
 - [Skills guide](docs/SKILLS-GUIDE.md)
+- [Review V2 guide](docs/REVIEW.md)
 - [Prompt architecture](docs/prompts.md)
 - [SDK guide](libs/sdk/README.md)
 

@@ -25,6 +25,7 @@ jobs:
 
       - name: Validate release metadata
         run: |
+          bun run version:check
           VERSION="$(bun -e 'console.log(require("./AtomBase/package.json").version)')"
           test "v${VERSION}" = "${GITHUB_REF_NAME}"
           echo "ATOMCLI_VERSION=${VERSION}" >> "${GITHUB_ENV}"
