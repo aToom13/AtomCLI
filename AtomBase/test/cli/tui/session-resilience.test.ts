@@ -80,9 +80,19 @@ describe("TUI session recovery", () => {
     const agents = SessionRecovery.agents(
       "session-parent",
       [
-        { id: "session-parent", title: "Main" },
-        { id: "child-1", parentID: "session-parent", title: "Inspect files (@explore subagent)" },
-        { id: "child-2", parentID: "other", title: "Ignore me (@coder subagent)" },
+        { id: "session-parent", title: "Main", time: { created: 10, updated: 20 } },
+        {
+          id: "child-1",
+          parentID: "session-parent",
+          title: "Inspect files (@explore subagent)",
+          time: { created: 100, updated: 200 },
+        },
+        {
+          id: "child-2",
+          parentID: "other",
+          title: "Ignore me (@coder subagent)",
+          time: { created: 300, updated: 400 },
+        },
       ] as any,
       (sessionID) => (sessionID === "child-1" ? "working" : "idle"),
     )
@@ -94,6 +104,9 @@ describe("TUI session recovery", () => {
         agentType: "explore",
         description: "Inspect files",
         status: "running",
+        startedAt: 100,
+        updatedAt: 200,
+        runtime: "atom-inprocess",
       },
     ])
   })

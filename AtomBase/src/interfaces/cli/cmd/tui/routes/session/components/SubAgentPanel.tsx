@@ -1,4 +1,4 @@
-import { For, Show, createMemo } from "solid-js"
+import { For, Show, createMemo, createSignal, onCleanup } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useRoute } from "@tui/context/route"
 import { useTheme } from "@tui/context/theme"
@@ -8,6 +8,7 @@ import { Focusable } from "@tui/context/spatial"
 import { Identifier } from "@/core/id/id"
 import { useToast } from "@tui/ui/toast"
 import { SubAgentLifecycle } from "@tui/context/subagent-lifecycle"
+import { SessionLayout } from "@tui/routes/session/layout"
 
 /**
  * SubAgentPanel — Dynamic right-side panel
@@ -44,6 +45,9 @@ export function SubAgentPanel(props: Props) {
   const running = createMemo(() => props.agents.filter((a) => a.status === "running").length)
   const waiting = createMemo(() => props.agents.filter((a) => a.status === "waiting").length)
   const failed = createMemo(() => props.agents.filter((a) => a.status === "failed").length)
+  const [now, setNow] = createSignal(Date.now())
+  const timer = setInterval(() => setNow(Date.now()), 1_000)
+  onCleanup(() => clearInterval(timer))
 
   const { navigate } = useRoute()
   const { theme } = useTheme()
@@ -60,7 +64,6 @@ export function SubAgentPanel(props: Props) {
 
   return (
     <box flexDirection="column" width={pw()} flexShrink={0} border={["left"]} borderColor={theme.borderActive}>
-
       {/* ── HEADER ──────────────────────────────────────────────────────────── */}
       <box
         flexDirection="column"
@@ -73,10 +76,14 @@ export function SubAgentPanel(props: Props) {
       >
         {/* Row 1: Title + toggle */}
         <box flexDirection="row" justifyContent="space-between">
-          <text fg={theme.accent}>{"◈ Agents"}</text>
+          <text fg={theme.accent}>{"◈ Agent Hub"}</text>
           <Focusable id="agent-panel-toggle" onPress={() => props.onToggle?.()}>
             {(f: () => boolean) => (
-              <box onMouseUp={() => props.onToggle?.()} backgroundColor={f() ? theme.primary : undefined} paddingLeft={1}>
+              <box
+                onMouseUp={() => props.onToggle?.()}
+                backgroundColor={f() ? theme.primary : undefined}
+                paddingLeft={1}
+              >
                 <text fg={f() ? theme.text : theme.textMuted}>{"[F9]"}</text>
               </box>
             )}
@@ -85,19 +92,22 @@ export function SubAgentPanel(props: Props) {
 
         {/* Row 2: Status — compact: "⟳2 ⏸1", normal+: "⟳ N running │ ⏸ M idle" */}
         <box flexDirection="row" paddingTop={1} gap={1}>
-          <Show when={mode() === "compact"} fallback={
-            <>
-              <text fg={running() > 0 ? theme.success : theme.border}>{"⟳"}</text>
-              <text fg={running() > 0 ? theme.text : theme.textMuted}>{running() + " running"}</text>
-              <text fg={theme.border}>{"│"}</text>
-              <text fg={waiting() > 0 ? theme.warning : theme.border}>{"⏸"}</text>
-              <text fg={waiting() > 0 ? theme.text : theme.textMuted}>{waiting() + " idle"}</text>
-              <Show when={failed() > 0}>
+          <Show
+            when={mode() === "compact"}
+            fallback={
+              <>
+                <text fg={running() > 0 ? theme.success : theme.border}>{"⟳"}</text>
+                <text fg={running() > 0 ? theme.text : theme.textMuted}>{running() + " running"}</text>
                 <text fg={theme.border}>{"│"}</text>
-                <text fg={theme.error}>{failed() + " failed"}</text>
-              </Show>
-            </>
-          }>
+                <text fg={waiting() > 0 ? theme.warning : theme.border}>{"⏸"}</text>
+                <text fg={waiting() > 0 ? theme.text : theme.textMuted}>{waiting() + " idle"}</text>
+                <Show when={failed() > 0}>
+                  <text fg={theme.border}>{"│"}</text>
+                  <text fg={theme.error}>{failed() + " failed"}</text>
+                </Show>
+              </>
+            }
+          >
             <text fg={running() > 0 ? theme.success : theme.textMuted}>{"⟳" + running()}</text>
             <text fg={waiting() > 0 ? theme.warning : theme.textMuted}>{"⏸" + waiting()}</text>
             <text fg={failed() > 0 ? theme.error : theme.textMuted}>{"✖" + failed()}</text>
@@ -136,9 +146,7 @@ export function SubAgentPanel(props: Props) {
       {/* ── AGENT CARDS ────────────────────────────────────────────────────── */}
       <Show when={props.agents.length > 0}>
         <scrollbox flexGrow={1} scrollY scrollX={false} paddingLeft={1} paddingRight={1} paddingTop={1}>
-          <For each={props.agents}>
-            {(agent) => <AgentCard agent={agent} mode={mode()} pw={pw()} />}
-          </For>
+          <For each={props.agents}>{(agent) => <AgentCard agent={agent} mode={mode()} pw={pw()} now={now()} />}</For>
         </scrollbox>
       </Show>
 
@@ -157,6 +165,7 @@ interface CardProps {
   agent: ActiveSubAgent
   mode: DisplayMode
   pw: number
+  now: number
 }
 
 function AgentCard(props: CardProps) {
@@ -174,8 +183,14 @@ function AgentCard(props: CardProps) {
   const messages = createMemo(() => sync.data.message[props.agent.sessionId] ?? [])
   const lastMsg = createMemo(() => messages().findLast((m) => m.role === "assistant"))
   const parts = createMemo(() => (lastMsg() ? (sync.data.part[lastMsg()!.id] ?? []) : []))
-  const lastTool = createMemo(() => parts().findLast((p: any) => p.type === "tool" && p.state?.status === "running") as any)
-  const lastText = createMemo(() => parts().findLast((p: any) => p.type === "text") as any)
+  const lastTool = createMemo(() => parts().findLast((part) => part.type === "tool" && part.state.status === "running"))
+  const lastText = createMemo(() => parts().findLast((part) => part.type === "text"))
+  const runningToolName = createMemo(() => {
+    const part = lastTool()
+    return part?.type === "tool" ? part.tool : undefined
+  })
+  const activity = createMemo(() => props.agent.activities?.at(-1))
+  const elapsed = () => SessionLayout.elapsedLabel(props.agent.startedAt, props.now)
 
   const statusColor = () => (isFailed() ? theme.error : isWaiting() ? theme.warning : theme.success)
   const cardBorder = () => (isFailed() ? theme.error : isWaiting() ? theme.warning : theme.success)
@@ -208,7 +223,12 @@ function AgentCard(props: CardProps) {
         {/* Agent row: clickable */}
         <Focusable id={`open-${props.agent.sessionId}`} onPress={openSession}>
           {(f: () => boolean) => (
-            <box flexDirection="row" justifyContent="space-between" onMouseUp={openSession} backgroundColor={f() ? theme.primary : undefined}>
+            <box
+              flexDirection="row"
+              justifyContent="space-between"
+              onMouseUp={openSession}
+              backgroundColor={f() ? theme.primary : undefined}
+            >
               <box flexDirection="row">
                 <text fg={statusColor()}>{statusIcon() + " "}</text>
                 <text fg={f() ? theme.text : theme.accent}>{props.agent.agentType.slice(0, typeChars())}</text>
@@ -218,10 +238,16 @@ function AgentCard(props: CardProps) {
           )}
         </Focusable>
 
+        <box paddingLeft={2}>
+          <text fg={theme.textMuted}>{elapsed()}</text>
+        </box>
+
         {/* Tool activity — always shown when running */}
-        <Show when={isRunning() && lastTool()}>
+        <Show when={isRunning() && (activity() || lastTool())}>
           <box paddingLeft={2}>
-            <text fg={theme.textMuted}>{String(lastTool()?.name ?? lastTool()?.tool ?? "…").slice(0, toolChars())}</text>
+            <text fg={theme.textMuted}>
+              {String(activity()?.label ?? runningToolName() ?? "…").slice(0, toolChars())}
+            </text>
           </box>
         </Show>
 
@@ -254,11 +280,26 @@ function AgentCard(props: CardProps) {
   // ── NORMAL / WIDE: bordered card ────────────────────────────────────────
   return (
     <box flexDirection="column" border={["top", "left", "right", "bottom"]} borderColor={cardBorder()} marginBottom={1}>
-
       {/* Header: @type + status */}
-      <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} paddingTop={1} backgroundColor={theme.backgroundElement}>
+      <box
+        flexDirection="row"
+        justifyContent="space-between"
+        paddingLeft={1}
+        paddingRight={1}
+        paddingTop={1}
+        backgroundColor={theme.backgroundElement}
+      >
         <text fg={theme.accent}>{"@" + props.agent.agentType.slice(0, typeChars())}</text>
-        <text fg={statusColor()}>{statusIcon() + (props.mode === "wide" ? (isFailed() ? " failed" : isWaiting() ? " idle" : " run") : "")}</text>
+        <text fg={statusColor()}>
+          {statusIcon() + (props.mode === "wide" ? (isFailed() ? " failed" : isWaiting() ? " idle" : " run") : "")}
+        </text>
+      </box>
+
+      <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+        <text fg={theme.textMuted}>{elapsed()}</text>
+        <Show when={props.mode === "wide" && props.agent.runtime}>
+          <text fg={theme.textMuted}>{props.agent.runtime}</text>
+        </Show>
       </box>
 
       {/* Description — wide only */}
@@ -270,16 +311,22 @@ function AgentCard(props: CardProps) {
 
       {/* Activity */}
       <box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
-        <Show when={isRunning() && lastTool()}>
+        <Show when={isRunning() && (activity() || lastTool())}>
           <box flexDirection="row">
-            <text fg={theme.textMuted}>{"🔧 "}</text>
-            <text fg={theme.text}>{String(lastTool()?.name ?? lastTool()?.tool ?? "…").slice(0, toolChars())}</text>
+            <text fg={theme.textMuted}>{activity()?.kind === "command" ? "$ " : "🔧 "}</text>
+            <text fg={theme.text}>{String(activity()?.label ?? runningToolName() ?? "…").slice(0, toolChars())}</text>
           </box>
         </Show>
-        <Show when={isRunning() && !lastTool() && lastText()?.text}>
+        <Show when={isRunning() && !activity() && !lastTool() && lastText()?.type === "text" && lastText()?.text}>
           <text fg={theme.textMuted}>
-            {String(lastText()?.text ?? "").split("\n").find((l) => l.trim())?.slice(0, textChars()) ?? ""}
+            {String(lastText()?.type === "text" ? lastText()?.text : "")
+              .split("\n")
+              .find((line) => line.trim())
+              ?.slice(0, textChars()) ?? ""}
           </text>
+        </Show>
+        <Show when={props.mode === "wide" && activity()?.output}>
+          <text fg={theme.textMuted}>{activity()?.output?.split("\n").at(-1)?.slice(0, textChars())}</text>
         </Show>
         <Show when={isWaiting()}>
           <text fg={theme.warning}>{"Bekliyor…"}</text>

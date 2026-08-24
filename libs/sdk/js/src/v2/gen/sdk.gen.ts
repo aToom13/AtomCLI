@@ -47,7 +47,9 @@ import type {
   EventTuiPromptAppend,
   EventTuiSessionSelect,
   EventTuiSubagentActive,
+  EventTuiSubagentActivity,
   EventTuiSubagentDone,
+  EventTuiSubagentFailed,
   EventTuiSubagentReactivate,
   EventTuiSubagentRemove,
   EventTuiToastShow,
@@ -635,6 +637,23 @@ export class Config extends HeyApiClient {
         processVisibility?: "restricted" | "inherit"
         envAllow?: Array<string>
       }
+      remote?: {
+        /**
+         * Global-only SSH profiles. Project-defined profiles are ignored; use {env:VAR} or {file:path} for secrets.
+         */
+        hosts?: {
+          [key: string]: {
+            host: string
+            port?: number
+            username: string
+            password?: string
+            privateKey?: string
+            passphrase?: string
+            hostKey?: string
+            connectTimeout?: number
+          }
+        }
+      }
       command?: {
         [key: string]: {
           template: string
@@ -806,7 +825,7 @@ export class Config extends HeyApiClient {
         chatMaxRetries?: number
         disable_paste_summary?: boolean
         /**
-         * Enable the batch tool
+         * Deprecated compatibility option; batch is always registered and this value is ignored
          */
         batch_tool?: boolean
         /**
@@ -883,6 +902,7 @@ export class Config extends HeyApiClient {
             { in: "body", key: "tui" },
             { in: "body", key: "server" },
             { in: "body", key: "execution" },
+            { in: "body", key: "remote" },
             { in: "body", key: "command" },
             { in: "body", key: "watcher" },
             { in: "body", key: "plugin" },
@@ -2776,7 +2796,9 @@ export class Tui extends HeyApiClient {
         | EventTuiCodepanelToggle
         | EventTuiCodepanelSave
         | EventTuiSubagentActive
+        | EventTuiSubagentActivity
         | EventTuiSubagentDone
+        | EventTuiSubagentFailed
         | EventTuiSubagentReactivate
         | EventTuiSubagentRemove
     },

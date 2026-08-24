@@ -10,13 +10,21 @@ import { SessionPrompt } from "@/core/session/prompt"
 import { iife } from "@/util/util/iife"
 import { SubAgent } from "./subagent"
 import { WorkflowFS } from "./workflow-fs"
+import { SubAgentIsolation } from "./subagent-isolation"
+import { HarnessState } from "@/core/session/harness-state"
 
 import { Config } from "@/core/config/config"
 import { PermissionNext } from "@/util/permission/next"
+import { Instance } from "@/services/project/instance"
 
 const parameters = z.object({
   action: z.enum(["run", "abort"]).optional().describe("Defaults to run. Set to abort to kill a session_id"),
-  description: z.string().min(1).max(500).optional().describe("A short (3-5 words) description of the task. Required for run."),
+  description: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("A short (3-5 words) description of the task. Required for run."),
   prompt: z.string().min(1).max(100_000).optional().describe("The task for the agent to perform. Required for run."),
   subagent_type: z
     .string()
@@ -170,7 +178,10 @@ export const TaskTool = Tool.define("task", async (ctx) => {
 
       // ─── NON-BLOCKING: Start sub-agent in background, return immediately ───
       const runInBackground = async () => {
+        let isolation: SubAgentIsolation.Workspace | undefined
+        const taskRunId = `task_${session.id}`
         try {
+          if (Instance.project.vcs === "git") isolation = await SubAgentIsolation.create(params.description!)
           const result = await SubAgent.spawn({
             parentSessionID: ctx.sessionID,
             agent,
@@ -180,22 +191,31 @@ export const TaskTool = Tool.define("task", async (ctx) => {
             description: params.description!,
             sessionId: session.id, // Reuse the session we already created
             deniedTools: Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
+            workingDirectory: isolation?.directory,
           })
 
           unsub()
 
+          if (isolation) {
+            const preview = await isolation.preview()
+            if (preview.patch)
+              await WorkflowFS.writeArtifact(taskRunId, params.subagent_type!, "isolation.patch", preview.patch)
+            const applied = await isolation.apply()
+            for (const file of applied.changedFiles) HarnessState.addEditedFile(ctx.sessionID, file)
+          }
+
           // Write results to file — no system_notification, parent LLM stays asleep
-          const taskRunId = `task_${session.id}`
           await WorkflowFS.writeSuccess(taskRunId, params.subagent_type!, params.subagent_type!, result.output)
         } catch (e) {
           unsub()
           // Write failure file — no system_notification
           try {
-            const taskRunId = `task_${session.id}`
             await WorkflowFS.writeFailed(taskRunId, params.subagent_type!, params.subagent_type!, (e as Error).message)
           } catch {
             /* file write failure is non-critical */
           }
+        } finally {
+          await isolation?.dispose()
         }
       }
 

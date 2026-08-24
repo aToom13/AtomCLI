@@ -268,6 +268,9 @@ export namespace SessionRecovery {
           agentType: identity.agentType,
           description: identity.description,
           status: status(session.id) === "working" ? "running" : "waiting",
+          startedAt: session.time.created,
+          updatedAt: session.time.updated,
+          runtime: "atom-inprocess",
         }
       })
   }

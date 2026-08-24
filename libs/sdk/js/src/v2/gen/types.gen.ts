@@ -750,6 +750,26 @@ export type Config = {
     envAllow?: Array<string>
   }
   /**
+   * Remote SSH tool configuration. Credential profiles are read only from the global user config.
+   */
+  remote?: {
+    /**
+     * Global-only SSH profiles. Project-defined profiles are ignored; use {env:VAR} or {file:path} for secrets.
+     */
+    hosts?: {
+      [key: string]: {
+        host: string
+        port?: number
+        username: string
+        password?: string
+        privateKey?: string
+        passphrase?: string
+        hostKey?: string
+        connectTimeout?: number
+      }
+    }
+  }
+  /**
    * Command configuration, see https://atomcli.ai/docs/commands
    */
   command?: {
@@ -980,7 +1000,7 @@ export type Config = {
     chatMaxRetries?: number
     disable_paste_summary?: boolean
     /**
-     * Enable the batch tool
+     * Deprecated compatibility option; batch is always registered and this value is ignored
      */
     batch_tool?: boolean
     /**
@@ -1189,6 +1209,7 @@ export type EventTuiChainAddStep = {
   type: "tui.chain.add_step"
   properties: {
     sessionID?: string
+    stepId?: string
     name: string
     description: string
     todos?: Array<{
@@ -1372,6 +1393,22 @@ export type EventTuiSubagentActive = {
     sessionId: string
     agentType: string
     description: string
+    parentSessionId?: string
+    parentStepId?: string
+    runtime?: string
+    startedAt?: number
+  }
+}
+
+export type EventTuiSubagentActivity = {
+  type: "tui.subagent.activity"
+  properties: {
+    sessionId: string
+    kind: "tool" | "transcript" | "command"
+    label: string
+    status?: "pending" | "running" | "completed" | "error"
+    output?: string
+    time: number
   }
 }
 
@@ -1380,6 +1417,15 @@ export type EventTuiSubagentDone = {
   properties: {
     sessionId: string
     lastOutput?: string
+    completedAt?: number
+  }
+}
+
+export type EventTuiSubagentFailed = {
+  type: "tui.subagent.failed"
+  properties: {
+    sessionId: string
+    error: string
   }
 }
 
@@ -1388,6 +1434,9 @@ export type EventTuiSubagentReactivate = {
   properties: {
     sessionId: string
     description?: string
+    parentSessionId?: string
+    parentStepId?: string
+    startedAt?: number
   }
 }
 
@@ -2028,7 +2077,9 @@ export type Event =
   | EventTuiCodepanelToggle
   | EventTuiCodepanelSave
   | EventTuiSubagentActive
+  | EventTuiSubagentActivity
   | EventTuiSubagentDone
+  | EventTuiSubagentFailed
   | EventTuiSubagentReactivate
   | EventTuiSubagentRemove
   | EventMcpToolsChanged
@@ -2055,10 +2106,10 @@ export type Event =
   | EventFileChanged
   | EventFileCreated
   | EventFileDeleted
-  | EventFileWatcherUpdated
-  | EventVcsBranchUpdated
   | EventSessionStatus
   | EventSessionCompacted
+  | EventFileWatcherUpdated
+  | EventVcsBranchUpdated
   | EventTodoUpdated
 
 export type GlobalEvent = {
@@ -2299,21 +2350,6 @@ export type EventFileDeleted = {
   }
 }
 
-export type EventFileWatcherUpdated = {
-  type: "file.watcher.updated"
-  properties: {
-    file: string
-    event: "add" | "change" | "unlink"
-  }
-}
-
-export type EventVcsBranchUpdated = {
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
-  }
-}
-
 export type SessionStatus =
   | {
       type: "idle"
@@ -2340,6 +2376,21 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
+  }
+}
+
+export type EventFileWatcherUpdated = {
+  type: "file.watcher.updated"
+  properties: {
+    file: string
+    event: "add" | "change" | "unlink"
+  }
+}
+
+export type EventVcsBranchUpdated = {
+  type: "vcs.branch.updated"
+  properties: {
+    branch?: string
   }
 }
 
@@ -2874,6 +2925,26 @@ export type ConfigUpdateData = {
       envAllow?: Array<string>
     }
     /**
+     * Remote SSH tool configuration. Credential profiles are read only from the global user config.
+     */
+    remote?: {
+      /**
+       * Global-only SSH profiles. Project-defined profiles are ignored; use {env:VAR} or {file:path} for secrets.
+       */
+      hosts?: {
+        [key: string]: {
+          host: string
+          port?: number
+          username: string
+          password?: string
+          privateKey?: string
+          passphrase?: string
+          hostKey?: string
+          connectTimeout?: number
+        }
+      }
+    }
+    /**
      * Command configuration, see https://atomcli.ai/docs/commands
      */
     command?: {
@@ -3104,7 +3175,7 @@ export type ConfigUpdateData = {
       chatMaxRetries?: number
       disable_paste_summary?: boolean
       /**
-       * Enable the batch tool
+       * Deprecated compatibility option; batch is always registered and this value is ignored
        */
       batch_tool?: boolean
       /**
@@ -4887,7 +4958,9 @@ export type TuiPublishData = {
     | EventTuiCodepanelToggle
     | EventTuiCodepanelSave
     | EventTuiSubagentActive
+    | EventTuiSubagentActivity
     | EventTuiSubagentDone
+    | EventTuiSubagentFailed
     | EventTuiSubagentReactivate
     | EventTuiSubagentRemove
   path?: never

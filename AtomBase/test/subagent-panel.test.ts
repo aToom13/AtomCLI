@@ -60,6 +60,12 @@ describe("SubAgentPanel", () => {
       expect(SessionLayout.marqueeWindow(value, 12, 999)).toBe("…doğrulaması")
       expect(SessionLayout.marqueeWindow("Kısa görev", 12, 4)).toBe("Kısa görev")
     })
+
+    test("formats live agent runtime without negative elapsed values", () => {
+      expect(SessionLayout.elapsedLabel(1_000, 66_000)).toBe("01:05")
+      expect(SessionLayout.elapsedLabel(1_000, 3_662_000)).toBe("1:01:01")
+      expect(SessionLayout.elapsedLabel(2_000, 1_000)).toBe("00:00")
+    })
   })
 
   describe("responsive panel width", () => {

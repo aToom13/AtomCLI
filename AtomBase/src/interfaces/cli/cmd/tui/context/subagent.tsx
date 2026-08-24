@@ -22,15 +22,34 @@ export interface ActiveSubAgent {
   parentStepId?: string
   /** Latest output/context returned to orchestrator */
   lastOutput?: string
+  runtime?: string
+  startedAt?: number
+  updatedAt?: number
+  activities?: SubAgentActivity[]
+}
+
+export type SubAgentActivity = {
+  kind: "tool" | "transcript" | "command"
+  label: string
+  status?: "pending" | "running" | "completed" | "error"
+  output?: string
+  time: number
 }
 
 export interface SubAgentContextValue {
   agents: Accessor<ActiveSubAgent[]>
   parentSessionId: Accessor<string | undefined>
   addAgent: (agent: Omit<ActiveSubAgent, "status">) => void
-  markWaiting: (sessionId: string, lastOutput?: string) => void
+  markWaiting: (sessionId: string, lastOutput?: string, completedAt?: number) => void
   markFailed: (sessionId: string, error: string) => void
-  reactivate: (sessionId: string, description?: string, parentSessionId?: string, parentStepId?: string) => void
+  reactivate: (
+    sessionId: string,
+    description?: string,
+    parentSessionId?: string,
+    parentStepId?: string,
+    startedAt?: number,
+  ) => void
+  recordActivity: (sessionId: string, activity: SubAgentActivity) => void
   findByType: (agentType: string) => ActiveSubAgent | undefined
   removeAgent: (sessionId: string) => void
   clear: () => void
@@ -58,16 +77,23 @@ export function SubAgentProvider(props: ParentProps) {
       if (existing) {
         return prev.map((a) => (a.sessionId === agent.sessionId ? { ...a, ...agent, status: "running" as const } : a))
       }
-      return [...prev, { ...agent, status: "running" }]
+      return [...prev, { ...agent, status: "running", startedAt: agent.startedAt ?? Date.now(), updatedAt: Date.now() }]
     })
     // Auto-open panel when first agent becomes active
     setPanelVisible(true)
   }
 
-  const markWaiting = (sessionId: string, lastOutput?: string) => {
+  const markWaiting = (sessionId: string, lastOutput?: string, completedAt?: number) => {
     setAgents((prev) =>
       prev.map((a) =>
-        a.sessionId === sessionId ? { ...a, status: "waiting" as const, lastOutput: lastOutput ?? a.lastOutput } : a,
+        a.sessionId === sessionId
+          ? {
+              ...a,
+              status: "waiting" as const,
+              lastOutput: lastOutput ?? a.lastOutput,
+              updatedAt: completedAt ?? Date.now(),
+            }
+          : a,
       ),
     )
   }
@@ -75,12 +101,20 @@ export function SubAgentProvider(props: ParentProps) {
   const markFailed = (sessionId: string, error: string) => {
     setAgents((prev) =>
       prev.map((agent) =>
-        agent.sessionId === sessionId ? { ...agent, status: "failed" as const, lastOutput: error } : agent,
+        agent.sessionId === sessionId
+          ? { ...agent, status: "failed" as const, lastOutput: error, updatedAt: Date.now() }
+          : agent,
       ),
     )
   }
 
-  const reactivate = (sessionId: string, description?: string, parentSessionId?: string, parentStepId?: string) => {
+  const reactivate = (
+    sessionId: string,
+    description?: string,
+    parentSessionId?: string,
+    parentStepId?: string,
+    startedAt?: number,
+  ) => {
     setAgents((prev) =>
       prev.map((a) =>
         a.sessionId === sessionId
@@ -90,8 +124,24 @@ export function SubAgentProvider(props: ParentProps) {
               description: description ?? a.description,
               parentSessionId: parentSessionId ?? a.parentSessionId,
               parentStepId: parentStepId ?? a.parentStepId,
+              startedAt: startedAt ?? Date.now(),
+              updatedAt: Date.now(),
             }
           : a,
+      ),
+    )
+  }
+
+  const recordActivity = (sessionId: string, activity: SubAgentActivity) => {
+    setAgents((prev) =>
+      prev.map((agent) =>
+        agent.sessionId === sessionId
+          ? {
+              ...agent,
+              updatedAt: activity.time,
+              activities: [...(agent.activities ?? []), activity].slice(-20),
+            }
+          : agent,
       ),
     )
   }
@@ -136,6 +186,7 @@ export function SubAgentProvider(props: ParentProps) {
         markWaiting,
         markFailed,
         reactivate,
+        recordActivity,
         findByType,
         removeAgent,
         clear,
@@ -162,6 +213,7 @@ export function useSubAgents(): SubAgentContextValue {
       markWaiting: () => {},
       markFailed: () => {},
       reactivate: () => {},
+      recordActivity: () => {},
       findByType: () => undefined,
       removeAgent: () => {},
       clear: () => {},

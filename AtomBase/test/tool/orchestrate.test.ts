@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test"
+import "../preload"
 import { _internals as orchestrateInternals } from "@/integrations/tool/orchestrate"
 import { _internals as routerInternals } from "@/integrations/tool/model-router"
 import { inferCategory } from "@/integrations/tool/model-router"
@@ -289,6 +290,29 @@ describe("orchestrate - agent collaboration context", () => {
         expect(context).toContain('task="research" relation="upstream"')
         expect(context).toContain("Found &lt;unsafe&gt; facts")
         expect(context).toContain('task="design" relation="direct"')
+    })
+
+    test("passes typed dependency results as escaped JSON without parsing prose", () => {
+        const context = buildDependencyContext(tasks[1], {
+            id: "wf-typed-context",
+            tasks,
+            results: {
+                research: {
+                    status: "completed",
+                    output: "Human prose that must not become the typed payload",
+                    structuredOutput: { decision: "use <safe> & typed", count: 2 },
+                },
+                design: { status: "pending" },
+                build: { status: "pending" },
+            },
+            status: "running",
+            createdAt: Date.now(),
+            sessionMapKeys: [],
+        })
+
+        expect(context).toContain('<dependency_structured_result task="research" relation="direct">')
+        expect(context).toContain('{&quot;decision&quot;:&quot;use &lt;safe&gt; &amp; typed&quot;,&quot;count&quot;:2}')
+        expect(context).not.toContain("Human prose")
     })
 
     test("uses reviewer QA only for high-risk changed work", () => {

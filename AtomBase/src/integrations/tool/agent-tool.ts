@@ -3,16 +3,14 @@ import { Tool } from "./tool"
 import { Agent } from "../agent/agent"
 import { PermissionNext } from "@/util/permission/next"
 import { Session } from "@/core/session"
-import { SessionStatus } from "@/core/session/status"
 import { SessionReuse } from "./session-reuse"
+import { SubAgent } from "./subagent"
 
 const parameters = z.object({
   action: z
-    .enum(["spawn", "workflow", "abort", "status"])
+    .enum(["spawn", "workflow", "abort", "cancel", "wait", "steer", "revive", "status"])
     .default("spawn")
-    .describe(
-      "Action to perform: 'spawn' for a single blocking sub-agent task, 'workflow' for a multi-task DAG, 'abort' to cancel, 'status' to check progress",
-    ),
+    .describe("Action: spawn, workflow, cancel/abort, wait, steer an idle child, revive a child, or status"),
 
   // Parameters for action='spawn' (single sub-agent task, blocking)
   subagent_type: z
@@ -40,6 +38,13 @@ const parameters = z.object({
     .describe(
       "Exact provider/model for action='spawn'; otherwise the agent's configured model or router selection is used",
     ),
+  outputSchema: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe("Optional supported JSON Schema for a validated machine-readable sub-agent result"),
+  validationMode: z.enum(["strict", "permissive"]).optional().default("strict"),
+  owns: z.array(z.string().max(4096)).max(200).optional().describe("Owned file/path prefixes for isolated writes"),
+  isolation: z.enum(["auto", "required"]).optional().default("auto"),
 
   // Parameters for action='workflow' (multi-step DAG)
   workflow_action: z
@@ -60,6 +65,10 @@ const parameters = z.object({
         dependsOn: z.array(z.string().max(100)).max(50).optional(),
         agent: z.string().max(100).optional(),
         model: z.string().max(200).optional(),
+        owns: z.array(z.string().max(4096)).max(200).optional(),
+        outputSchema: z.record(z.string(), z.unknown()).optional(),
+        validationMode: z.enum(["strict", "permissive"]).optional(),
+        isolation: z.enum(["auto", "required"]).optional(),
       }),
     )
     .max(50)
@@ -67,6 +76,7 @@ const parameters = z.object({
     .describe("Task list for action='workflow' plan"),
 
   session_id: z.string().max(200).optional().describe("Session ID to continue (spawn) or abort"),
+  timeoutSeconds: z.number().int().min(1).max(600).optional().default(30).describe("Maximum wait duration"),
 })
 
 /**
@@ -111,8 +121,11 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     "   Blocking with adaptive QA verification. This is the DEFAULT action.",
     "2. action='workflow': Execute a multi-task DAG workflow (workflow_action='plan'|'execute').",
     "   'plan' first, then 'execute' with the returned workflowId.",
-    "3. action='abort': Cancel a running sub-agent session or workflow (specify session_id or workflowId)",
-    "4. action='status': Check workflow or sub-agent status (specify workflowId or session_id)",
+    "3. action='cancel' (or legacy 'abort'): Cancel a running session or workflow.",
+    "4. action='wait': Wait up to timeoutSeconds for a child lifecycle transition.",
+    "5. action='steer': Continue an idle child with new guidance; active in-process turns must be cancelled or awaited first.",
+    "6. action='revive': Continue a completed/failed child session with a new prompt.",
+    "7. action='status': Return runtime status, timestamps, and elapsed time.",
     "",
     "AVAILABLE SUB-AGENT TYPES:",
     agentList,
@@ -165,7 +178,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
         )
       }
 
-      if (params.action === "abort") {
+      if (params.action === "abort" || params.action === "cancel") {
         if (params.workflowId) {
           const orchestrateToolInstance = await orchestrateTool()
           return orchestrateToolInstance.execute({ action: "abort", workflowId: params.workflowId }, ctx)
@@ -183,18 +196,48 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
         }
         if (params.session_id) {
           const session = await ownedChildSession(params.session_id)
-          const status = SessionStatus.get(params.session_id)
-          const retry = status.type === "retry" ? ` (attempt ${status.attempt}: ${status.message})` : ""
+          const status = SubAgent.status(params.session_id)
+          const elapsedMs = Math.max(0, (status.updatedAt || Date.now()) - status.startedAt)
           return {
             title: "Task Status",
-            output: `Session ${params.session_id} is ${status.type}${retry}.\nTitle: ${session.title}`,
-            metadata: { sessionId: params.session_id, status: status.type },
+            output: `Session ${params.session_id} is ${status.status}.\nTitle: ${session.title}\nRuntime: ${status.runtime}\nElapsed: ${elapsedMs}ms`,
+            metadata: { ...status, elapsedMs, capabilities: SubAgent.capabilities(status.runtime) },
           }
         }
         throw new Error("Parameter 'workflowId' or 'session_id' is required for action='status'")
       }
 
-      // ─── action === "spawn": single sub-agent task, BLOCKING with reviewer QA ───
+      if (params.action === "wait") {
+        if (!params.session_id) throw new Error("Parameter 'session_id' is required for action='wait'")
+        const session = await ownedChildSession(params.session_id)
+        const status = await SubAgent.wait(params.session_id, {
+          timeoutMs: params.timeoutSeconds * 1_000,
+          signal: ctx.abort,
+        })
+        const messages = await Session.messages({ sessionID: params.session_id, limit: 20, excludePatches: true })
+        const lastOutput = messages
+          .toReversed()
+          .find((message) => message.info.role === "assistant")
+          ?.parts.filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n\n")
+        return {
+          title: "Task Wait",
+          output: `Session ${params.session_id} is ${status.status}.\nTitle: ${session.title}${lastOutput ? `\n\n${lastOutput}` : ""}`,
+          metadata: status,
+        }
+      }
+
+      if (params.action === "steer" || params.action === "revive") {
+        if (!params.session_id) throw new Error(`Parameter 'session_id' is required for action='${params.action}'`)
+        await ownedChildSession(params.session_id)
+        const status = SubAgent.status(params.session_id)
+        if (params.action === "steer" && status.status === "running") {
+          throw new Error("The atom-inprocess runtime cannot steer an active turn; wait for it or cancel it first")
+        }
+      }
+
+      // ─── spawn / idle steer / revive: single blocking task with reviewer QA ───
       if (!params.subagent_type || !params.prompt || !params.description) {
         throw new Error("subagent_type, prompt, and description are required when starting a task")
       }
@@ -227,6 +270,10 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
               agent: params.subagent_type,
               model: params.model,
               sessionId: params.session_id,
+              owns: params.owns,
+              outputSchema: params.outputSchema,
+              validationMode: params.validationMode,
+              isolation: params.isolation,
             },
           ],
         },

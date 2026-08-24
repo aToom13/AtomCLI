@@ -9,6 +9,8 @@ import type { Agent } from "../agent/agent"
 import { Instance } from "@/services/project/instance"
 import { SubAgentRuntime } from "./subagent-runtime"
 import { HarnessState } from "@/core/session/harness-state"
+import { MessageV2 } from "@/core/session/message-v2"
+import { SubAgentLifecycle } from "./subagent-lifecycle"
 
 /**
  * Shared sub-agent session spawn utility.
@@ -28,6 +30,19 @@ import { HarnessState } from "@/core/session/harness-state"
  * - AGENT_SESSION_MAP management
  */
 export namespace SubAgent {
+  export type LifecycleStatus = SubAgentLifecycle.Status
+
+  export function status(sessionID: string): LifecycleStatus {
+    return SubAgentLifecycle.status(sessionID)
+  }
+
+  export async function wait(
+    sessionID: string,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<LifecycleStatus> {
+    return SubAgentLifecycle.wait(sessionID, options)
+  }
+
   /**
    * Base permission rules that ALL sub-agents must have.
    * These prevent recursive agent spawning and todo manipulation.
@@ -83,7 +98,7 @@ export namespace SubAgent {
     return PermissionNext.merge(agent.permission ?? [], hardDenies, BASE_DENIED_PERMISSIONS)
   }
 
-  export interface SpawnConfig {
+  export type SpawnConfig = {
     /** Parent session ID for hierarchy */
     parentSessionID: string
     /** Resolved agent info */
@@ -91,7 +106,7 @@ export namespace SubAgent {
     /** Model to use for the prompt */
     model: { providerID: string; modelID: string }
     /** Full prompt parts (text, file, etc.) */
-    parts: any[]
+    parts: SessionPrompt.PromptInput["parts"]
     /** Pre-computed permissions for the child session */
     permissions: PermissionNext.Rule[]
     /** Short description for UI display */
@@ -108,9 +123,15 @@ export namespace SubAgent {
     runtime?: string
     /** Capabilities that must be supported before execution starts. */
     require?: Array<keyof Capabilities>
+    /** Optional isolated directory used only while the child prompt executes. */
+    workingDirectory?: string
+    /** Optional JSON schema for a machine-readable final result. */
+    outputSchema?: SubAgentRuntime.OutputSchema
+    /** Strict rejects unknown object keys; permissive accepts them unless the schema forbids them. */
+    validationMode?: SubAgentRuntime.ValidationMode
   }
 
-  export interface SpawnResult {
+  export type SpawnResult = {
     /** The child session ID */
     sessionId: string
     /** Whether a new session was created (vs reused) */
@@ -118,12 +139,14 @@ export namespace SubAgent {
     /** Extracted text from the last text part of the response */
     output: string
     /** Raw response parts from SessionPrompt.prompt() */
-    parts: any[]
+    parts: MessageV2.Part[]
+    /** Validated value when outputSchema was requested. */
+    structuredOutput?: unknown
   }
 
   export type Capabilities = SubAgentRuntime.Capabilities
 
-  export interface RuntimeProvider {
+  export type RuntimeProvider = {
     id: string
     capabilities: Capabilities
     spawn(config: SpawnConfig): Promise<SpawnResult>
@@ -139,12 +162,18 @@ export namespace SubAgent {
           {
             id: "atom-inprocess",
             capabilities: {
-              outputSchema: false,
+              outputSchema: true,
               persona: true,
               toolFilter: true,
               depthLimit: true,
               continuation: true,
               cancellation: true,
+              isolation: true,
+              wait: true,
+              steer: false,
+              revive: true,
+              status: true,
+              liveActivity: true,
             },
             spawn: spawnInProcess,
             cancel: (sessionID) => SessionPrompt.cancel(sessionID),
@@ -174,6 +203,8 @@ export namespace SubAgent {
       throw new Error(`Sub-agent runtime ${runtime} does not support cancellation`)
     }
     await provider.cancel(sessionID)
+    const previous = status(sessionID)
+    SubAgentLifecycle.update({ ...previous, status: "cancelled", updatedAt: Date.now() })
   }
 
   /**
@@ -186,7 +217,10 @@ export namespace SubAgent {
     const runtime = config.runtime ?? "atom-inprocess"
     const provider = runtimes().get(runtime)
     if (!provider) throw new Error(`Unknown sub-agent runtime: ${runtime}`)
-    SubAgentRuntime.negotiate(runtime, provider.capabilities, config.require)
+    const required = new Set(config.require ?? [])
+    if (config.outputSchema) required.add("outputSchema")
+    if (config.workingDirectory) required.add("isolation")
+    SubAgentRuntime.negotiate(runtime, provider.capabilities, [...required])
     return provider.spawn(config)
   }
 
@@ -195,7 +229,7 @@ export namespace SubAgent {
     const parentStepId = HarnessState.getRunningStep(config.parentSessionID)
 
     // Try to reuse existing session
-    let session: any = null
+    let session: Session.Info | null = null
     if (config.sessionId) {
       session = await Session.get(config.sessionId).catch(() => null)
       // Security: only reuse sessions created by this same parent. A caller-controlled
@@ -210,6 +244,7 @@ export namespace SubAgent {
             description: config.description,
             parentSessionId: config.parentSessionID,
             parentStepId,
+            startedAt: Date.now(),
           })
         } catch {
           /* TUI may not be available */
@@ -227,12 +262,15 @@ export namespace SubAgent {
       isNewSession = true
 
       try {
+        const startedAt = Date.now()
         await Bus.publish(TuiEvent.SubAgentActive, {
           sessionId: session.id,
           agentType: config.agent.name,
           description: config.description,
           parentSessionId: config.parentSessionID,
           parentStepId,
+          runtime: config.runtime ?? "atom-inprocess",
+          startedAt,
         })
       } catch {
         /* TUI may not be available */
@@ -244,11 +282,28 @@ export namespace SubAgent {
     // and must not wait until spawn() returns to learn the session ID.
     await config.onSession?.({ sessionId: session.id, isNewSession })
 
+    const startedAt = Date.now()
+    SubAgentLifecycle.update({
+      sessionId: session.id,
+      runtime: config.runtime ?? "atom-inprocess",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+    })
+
     const notifyDone = async (lastOutput: string) => {
+      SubAgentLifecycle.update({
+        sessionId: session.id,
+        runtime: config.runtime ?? "atom-inprocess",
+        status: "waiting",
+        startedAt,
+        updatedAt: Date.now(),
+      })
       try {
         await Bus.publish(TuiEvent.SubAgentDone, {
           sessionId: session.id,
           lastOutput: lastOutput.slice(0, 2000),
+          completedAt: Date.now(),
         })
       } catch {
         /* TUI may not be available */
@@ -256,6 +311,14 @@ export namespace SubAgent {
     }
 
     const notifyFailed = async (error: string) => {
+      SubAgentLifecycle.update({
+        sessionId: session.id,
+        runtime: config.runtime ?? "atom-inprocess",
+        status: "failed",
+        startedAt,
+        updatedAt: Date.now(),
+        error,
+      })
       try {
         await Bus.publish(TuiEvent.SubAgentFailed, {
           sessionId: session.id,
@@ -271,22 +334,59 @@ export namespace SubAgent {
     const messageID = Identifier.ascending("message")
     let result: Awaited<ReturnType<typeof SessionPrompt.prompt>>
     try {
-      result = await SessionPrompt.prompt({
-        messageID,
-        sessionID: session.id,
-        model: {
-          modelID: config.model.modelID,
-          providerID: config.model.providerID,
-        },
-        agent: config.agent.name,
-        tools: {
-          todowrite: false,
-          todoread: false,
-          task: false,
-          ...(config.deniedTools ?? {}),
-        },
-        parts: config.parts,
-      })
+      const executePrompt = async () => {
+        const unsubscribe = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
+          const part = event.properties.part
+          if (part.sessionID !== session.id) return
+          if (part.type === "tool") {
+            const liveOutput =
+              "metadata" in part.state && typeof part.state.metadata?.output === "string"
+                ? part.state.metadata.output
+                : undefined
+            const command = typeof part.state.input.command === "string" ? part.state.input.command : undefined
+            await Bus.publish(TuiEvent.SubAgentActivity, {
+              sessionId: session.id,
+              kind: part.tool === "bash" ? "command" : "tool",
+              label: part.state.status === "completed" ? part.state.title : command || part.tool,
+              status: part.state.status,
+              output: part.state.status === "completed" ? part.state.output.slice(-1_000) : liveOutput?.slice(-1_000),
+              time: Date.now(),
+            }).catch(() => {})
+            return
+          }
+          if (part.type === "text" && part.text.trim()) {
+            await Bus.publish(TuiEvent.SubAgentActivity, {
+              sessionId: session.id,
+              kind: "transcript",
+              label: part.text.trim().slice(-1_000),
+              time: Date.now(),
+            }).catch(() => {})
+          }
+        })
+        try {
+          return await SessionPrompt.prompt({
+            messageID,
+            sessionID: session.id,
+            model: {
+              modelID: config.model.modelID,
+              providerID: config.model.providerID,
+            },
+            agent: config.agent.name,
+            tools: {
+              todowrite: false,
+              todoread: false,
+              task: false,
+              ...(config.deniedTools ?? {}),
+            },
+            parts: config.parts,
+          })
+        } finally {
+          unsubscribe()
+        }
+      }
+      result = config.workingDirectory
+        ? await Instance.provide({ directory: config.workingDirectory, fn: executePrompt })
+        : await executePrompt()
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       await notifyFailed(`Error: ${detail}`)
@@ -303,9 +403,19 @@ export namespace SubAgent {
     // last text fragment.
     const output = result.parts
       .filter((part) => part.type === "text" && "text" in part)
-      .map((part) => String((part as any).text))
+      .map((part) => String(part.text))
       .filter((text) => text.trim().length > 0)
       .join("\n\n")
+
+    let structuredOutput: unknown
+    if (config.outputSchema) {
+      const validation = SubAgentRuntime.validateOutput(output, config.outputSchema, config.validationMode ?? "strict")
+      if ("error" in validation) {
+        await notifyFailed(JSON.stringify(validation.error))
+        throw new SubAgentRuntime.OutputValidationError(validation.error)
+      }
+      structuredOutput = validation.data
+    }
 
     await notifyDone(output)
 
@@ -314,6 +424,7 @@ export namespace SubAgent {
       isNewSession,
       output,
       parts: result.parts,
+      structuredOutput,
     }
   }
 }

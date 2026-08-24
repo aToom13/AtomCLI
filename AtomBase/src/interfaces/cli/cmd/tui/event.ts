@@ -226,6 +226,19 @@ export const TuiEvent = {
       description: z.string(),
       parentSessionId: z.string().optional(),
       parentStepId: z.string().optional(),
+      runtime: z.string().optional(),
+      startedAt: z.number().optional(),
+    }),
+  ),
+  SubAgentActivity: BusEvent.define(
+    "tui.subagent.activity",
+    z.object({
+      sessionId: z.string(),
+      kind: z.enum(["tool", "transcript", "command"]),
+      label: z.string(),
+      status: z.enum(["pending", "running", "completed", "error"]).optional(),
+      output: z.string().optional(),
+      time: z.number(),
     }),
   ),
   SubAgentDone: BusEvent.define(
@@ -233,6 +246,7 @@ export const TuiEvent = {
     z.object({
       sessionId: z.string(),
       lastOutput: z.string().optional(),
+      completedAt: z.number().optional(),
     }),
   ),
   SubAgentFailed: BusEvent.define(
@@ -249,6 +263,7 @@ export const TuiEvent = {
       description: z.string().optional(),
       parentSessionId: z.string().optional(),
       parentStepId: z.string().optional(),
+      startedAt: z.number().optional(),
     }),
   ),
   SubAgentRemove: BusEvent.define(

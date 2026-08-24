@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test"
+import "../preload"
 import { AgentTool } from "@/integrations/tool/agent-tool"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
@@ -89,9 +90,9 @@ describe("AgentTool", () => {
         )
 
         expect(result.title).toBe("Task Status")
-        expect(result.output).toContain("is busy")
+        expect(result.output).toContain("is running")
         expect(result.metadata.sessionId).toBe(child.id)
-        expect(result.metadata.status).toBe("busy")
+        expect(result.metadata.status).toBe("running")
       },
     })
   })

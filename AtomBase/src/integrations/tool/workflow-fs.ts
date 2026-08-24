@@ -124,6 +124,20 @@ export namespace WorkflowFS {
     return filePath
   }
 
+  /** Persist a bounded task artifact such as an isolation patch or structured result. */
+  export async function writeArtifact(
+    workflowId: string,
+    taskId: string,
+    name: string,
+    content: string,
+  ): Promise<string> {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(name)) throw new Error(`Invalid artifact name: ${name}`)
+    const dir = await ensureRunDir(workflowId)
+    const filePath = path.join(dir, `${segment(taskId, "task ID")}_${name}`)
+    await fs.writeFile(filePath, content, "utf-8")
+    return filePath
+  }
+
   /**
    * Check whether a workflow run directory exists on disk.
    */

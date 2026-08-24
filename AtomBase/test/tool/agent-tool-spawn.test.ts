@@ -1,4 +1,7 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test"
+import "../preload"
+import fs from "fs/promises"
+import path from "path"
 
 // Mock SubAgent.spawn so AgentTool spawn never hits a real model.
 // The mock must be registered BEFORE agent-tool / orchestrate are imported.
@@ -13,10 +16,26 @@ const spawnMock = mock(async (args: any) => {
     parts: [],
   }
 })
+let statusFallback: ((sessionId: string) => any) | undefined
+const statusMock = mock(
+  (sessionId: string): any =>
+    statusFallback?.(sessionId) ?? {
+      sessionId,
+      runtime: "atom-inprocess",
+      status: "waiting" as const,
+      startedAt: 100,
+      updatedAt: 200,
+    },
+)
+const waitMock = mock(async (sessionId: string) => statusMock(sessionId))
 
 mock.module("../../src/integrations/tool/subagent", () => ({
   SubAgent: {
     spawn: spawnMock,
+    status: statusMock,
+    wait: waitMock,
+    cancel: async () => {},
+    capabilities: () => ({ wait: true, status: true, revive: true, steer: false }),
     buildFromAgent: (agent: any) => [
       ...(agent.permission ?? []),
       { permission: "todowrite", pattern: "*", action: "deny" },
@@ -38,12 +57,23 @@ const { Storage } = await import("@/core/storage/storage")
 const { Identifier } = await import("@/core/id/id")
 const { Instance } = await import("@/services/project/instance")
 const { SessionTermination } = await import("@/core/session/termination")
+const { SessionStatus } = await import("@/core/session/status")
 const { HarnessState } = await import("@/core/session/harness-state")
 const { Bus } = await import("@/core/bus")
 const { TuiEvent } = await import("@/interfaces/cli/cmd/tui/event")
 const { tmpdir } = await import("../fixture/fixture")
 
 beforeEach(() => {
+  statusFallback = (sessionId) => {
+    const now = Date.now()
+    return {
+      sessionId,
+      runtime: "atom-inprocess",
+      status: SessionStatus.get(sessionId).type === "idle" ? "waiting" : "running",
+      startedAt: now,
+      updatedAt: now,
+    }
+  }
   spawnMock.mockReset()
   spawnMock.mockImplementation(async (args: any) => {
     const isQA = typeof args.description === "string" && args.description.startsWith("[QA")
@@ -56,6 +86,10 @@ beforeEach(() => {
       parts: [],
     }
   })
+  statusMock.mockReset()
+  statusMock.mockImplementation((sessionId: string) => statusFallback!(sessionId))
+  waitMock.mockReset()
+  waitMock.mockImplementation(async (sessionId: string) => statusMock(sessionId))
 })
 
 function mockCtx(sessionID: string, messageID: string) {
@@ -205,6 +239,173 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
         const spawnArgs = spawnMock.mock.calls.map(([args]) => args as any)
         const taskSpawn = spawnArgs.find((a) => a.description && !a.description.startsWith("[QA"))
         expect(taskSpawn?.sessionId).toBe("ses-existing-123")
+      },
+    })
+  })
+
+  test("spawn transports a validated structured result without parsing prose", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const workingDirectories: string[] = []
+        spawnMock.mockImplementation(async (args: any) => {
+          workingDirectories.push(args.workingDirectory)
+          const sessionId = "ses_typed_result"
+          await args.onSession?.({ sessionId, isNewSession: true })
+          return {
+            sessionId,
+            isNewSession: true,
+            output: '<structured_output>{"summary":"done","count":2}</structured_output>',
+            structuredOutput: { summary: "done", count: 2 },
+            parts: [],
+          }
+        })
+
+        const { session, messageID } = await createAssistantMessageContext()
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          {
+            action: "spawn",
+            subagent_type: "explore",
+            prompt: "Return the requested values",
+            description: "Typed result",
+            outputSchema: {
+              type: "object",
+              properties: { summary: { type: "string" }, count: { type: "integer" } },
+              required: ["summary", "count"],
+              additionalProperties: false,
+            },
+          },
+          mockCtx(session.id, messageID),
+        )
+
+        expect(result.metadata?.structuredResults).toEqual({ typed_result: { summary: "done", count: 2 } })
+        expect(result.output).not.toContain("<structured_output>")
+        expect(workingDirectories[0]).not.toBe(tmp.path)
+        expect(await fs.stat(workingDirectories[0]).catch(() => null)).toBeNull()
+      },
+    })
+  })
+
+  test("parallel write-capable tasks merge independent owned paths from isolated worktrees", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const workingDirectories = new Set<string>()
+        spawnMock.mockImplementation(async (args: any) => {
+          const isQA = typeof args.description === "string" && args.description.startsWith("[QA")
+          const sessionId = `ses_${isQA ? "qa" : "task"}_${Math.random().toString(36).slice(2, 8)}`
+          await args.onSession?.({ sessionId, isNewSession: true })
+          if (isQA) {
+            return { sessionId, isNewSession: true, output: "VERDICT: PASSED", parts: [] }
+          }
+          workingDirectories.add(args.workingDirectory)
+          const file = args.description.includes("left") ? "src/auth-left.ts" : "src/auth-right.ts"
+          await fs.mkdir(path.dirname(path.join(args.workingDirectory, file)), { recursive: true })
+          await fs.writeFile(path.join(args.workingDirectory, file), `export const side = "${file}"\n`)
+          return { sessionId, isNewSession: true, output: `Implemented ${file}`, parts: [] }
+        })
+
+        const { session, messageID } = await createAssistantMessageContext()
+        const ctx = mockCtx(session.id, messageID)
+        const instance = await AgentTool.init({})
+        const planned = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [
+              {
+                id: "left",
+                prompt: "Implement the left auth helper",
+                category: "coding",
+                agent: "explore",
+                owns: ["src/auth-left.ts"],
+              },
+              {
+                id: "right",
+                prompt: "Implement the right auth helper",
+                category: "coding",
+                agent: "explore",
+                owns: ["src/auth-right.ts"],
+              },
+            ],
+          },
+          ctx,
+        )
+        const result = await instance.execute(
+          { action: "workflow", workflow_action: "execute", workflowId: planned.metadata?.workflowId },
+          ctx,
+        )
+
+        expect(result.metadata?.status).toBe("completed")
+        expect(workingDirectories.size).toBe(2)
+        expect(await fs.readFile(path.join(tmp.path, "src/auth-left.ts"), "utf8")).toContain("auth-left")
+        expect(await fs.readFile(path.join(tmp.path, "src/auth-right.ts"), "utf8")).toContain("auth-right")
+        for (const directory of workingDirectories) {
+          expect(await fs.stat(directory).catch(() => null)).toBeNull()
+        }
+      },
+    })
+  })
+
+  test("active in-process sessions reject steer with a controlled capability error", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const child = await Session.create({ parentID: session.id, title: "Active child" })
+        statusMock.mockImplementation((sessionId: string) => ({
+          sessionId,
+          runtime: "atom-inprocess",
+          status: "running",
+          startedAt: 100,
+          updatedAt: 200,
+        }))
+        const instance = await AgentTool.init({})
+
+        expect(
+          instance.execute(
+            {
+              action: "steer",
+              session_id: child.id,
+              subagent_type: "explore",
+              prompt: "Change direction",
+              description: "Steer child",
+            },
+            mockCtx(session.id, messageID),
+          ),
+        ).rejects.toThrow("cannot steer an active turn")
+      },
+    })
+  })
+
+  test("revive continues the owned child session instead of creating a replacement", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const child = await Session.create({ parentID: session.id, title: "Revive child" })
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          {
+            action: "revive",
+            session_id: child.id,
+            subagent_type: "explore",
+            prompt: "Continue the previous investigation",
+            description: "Revive investigation",
+          },
+          mockCtx(session.id, messageID),
+        )
+
+        expect(result.metadata?.status).toBe("completed")
+        const taskSpawn = spawnMock.mock.calls
+          .map(([args]) => args as any)
+          .find((args) => !args.description?.startsWith("[QA"))
+        expect(taskSpawn?.sessionId).toBe(child.id)
       },
     })
   })
