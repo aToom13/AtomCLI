@@ -12,6 +12,7 @@
     "test:providers:anonymous": "ATOMCLI_PROVIDER_ANONYMOUS_TEST=1 bun test test/provider/compatibility.test.ts",
     "test:providers:atomcli": "ATOMCLI_PROVIDER_ATOMCLI_TEST=1 bun test test/provider/compatibility.test.ts",
     "test:providers:live": "ATOMCLI_PROVIDER_LIVE_TEST=1 bun test test/provider/compatibility.test.ts",
+    "benchmark:edit": "bun run script/benchmark-edit.ts",
     "build": "bun run script/build.ts",
     "dev": "bun run --conditions=browser ./src/index.ts",
     "format": "bunx prettier --write \"src/**/*.{ts,tsx}\""
