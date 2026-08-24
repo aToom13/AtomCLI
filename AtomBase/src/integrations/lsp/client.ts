@@ -22,6 +22,20 @@ export namespace LSPClient {
 
   export type Diagnostic = VSCodeDiagnostic
 
+  export type Capabilities = {
+    typeDefinitionProvider?: unknown
+    renameProvider?: unknown
+    codeActionProvider?: boolean | { resolveProvider?: boolean }
+    documentFormattingProvider?: unknown
+    diagnosticProvider?: { workspaceDiagnostics?: boolean }
+    workspace?: {
+      fileOperations?: {
+        willRename?: unknown
+      }
+    }
+    [key: string]: unknown
+  }
+
   export const InitializeError = NamedError.create(
     "LSPInitializeError",
     z.object({
@@ -54,6 +68,7 @@ export namespace LSPClient {
     )
 
     const diagnostics = new Map<string, Diagnostic[]>()
+    const dynamicCapabilities = new Map<string, string>()
     connection.onNotification("textDocument/publishDiagnostics", (params) => {
       const filePath = Filesystem.normalizePath(fileURLToPath(params.uri))
       l.info("textDocument/publishDiagnostics", {
@@ -71,8 +86,25 @@ export namespace LSPClient {
       // Return server initialization options
       return [input.server.initialization ?? {}]
     })
-    connection.onRequest("client/registerCapability", async () => {})
-    connection.onRequest("client/unregisterCapability", async () => {})
+    connection.onRequest(
+      "client/registerCapability",
+      async (params: { registrations?: Array<{ id?: string; method?: string }> }) => {
+        for (const registration of params.registrations ?? []) {
+          if (registration.id && registration.method) dynamicCapabilities.set(registration.id, registration.method)
+        }
+      },
+    )
+    connection.onRequest(
+      "client/unregisterCapability",
+      async (params: {
+        unregisterations?: Array<{ id?: string; method?: string }>
+        unregistrations?: Array<{ id?: string; method?: string }>
+      }) => {
+        for (const registration of params.unregisterations ?? params.unregistrations ?? []) {
+          if (registration.id) dynamicCapabilities.delete(registration.id)
+        }
+      },
+    )
     connection.onRequest("workspace/workspaceFolders", async () => [
       {
         name: "workspace",
@@ -82,7 +114,7 @@ export namespace LSPClient {
     connection.listen()
 
     l.info("sending initialize")
-    await withTimeout(
+    const initializeResult = (await withTimeout(
       connection.sendRequest("initialize", {
         rootUri: pathToFileURL(input.root).href,
         processId: input.server.process.pid,
@@ -101,6 +133,17 @@ export namespace LSPClient {
           },
           workspace: {
             configuration: true,
+            workspaceEdit: {
+              documentChanges: true,
+              resourceOperations: ["create", "rename", "delete"],
+              failureHandling: "transactional",
+            },
+            fileOperations: {
+              willRename: true,
+            },
+            diagnostics: {
+              refreshSupport: false,
+            },
             didChangeWatchedFiles: {
               dynamicRegistration: true,
             },
@@ -109,6 +152,36 @@ export namespace LSPClient {
             synchronization: {
               didOpen: true,
               didChange: true,
+            },
+            typeDefinition: {
+              dynamicRegistration: false,
+              linkSupport: true,
+            },
+            rename: {
+              dynamicRegistration: false,
+              prepareSupport: true,
+            },
+            codeAction: {
+              dynamicRegistration: false,
+              codeActionLiteralSupport: {
+                codeActionKind: {
+                  valueSet: [
+                    "",
+                    "quickfix",
+                    "refactor",
+                    "refactor.extract",
+                    "refactor.inline",
+                    "refactor.rewrite",
+                    "source",
+                  ],
+                },
+              },
+              resolveSupport: {
+                properties: ["edit"],
+              },
+            },
+            formatting: {
+              dynamicRegistration: false,
             },
             publishDiagnostics: {
               versionSupport: true,
@@ -125,7 +198,8 @@ export namespace LSPClient {
           cause: err,
         },
       )
-    })
+    })) as { capabilities?: Capabilities }
+    const capabilities = initializeResult?.capabilities ?? {}
 
     await connection.sendNotification("initialized", {})
 
@@ -146,6 +220,32 @@ export namespace LSPClient {
       },
       get connection() {
         return connection
+      },
+      get capabilities() {
+        return capabilities
+      },
+      supports(method: string) {
+        if ([...dynamicCapabilities.values()].includes(method)) return true
+        switch (method) {
+          case "textDocument/typeDefinition":
+            return capabilityEnabled(capabilities.typeDefinitionProvider)
+          case "textDocument/rename":
+            return capabilityEnabled(capabilities.renameProvider)
+          case "textDocument/codeAction":
+            return capabilityEnabled(capabilities.codeActionProvider)
+          case "textDocument/formatting":
+            return capabilityEnabled(capabilities.documentFormattingProvider)
+          case "workspace/willRenameFiles":
+            return capabilityEnabled(capabilities.workspace?.fileOperations?.willRename)
+          case "workspace/diagnostic":
+            return capabilities.diagnosticProvider?.workspaceDiagnostics === true
+          default:
+            return false
+        }
+      },
+      documentVersion(filePath: string) {
+        const absolute = path.isAbsolute(filePath) ? filePath : path.resolve(Instance.directory, filePath)
+        return files[absolute]
       },
       notify: {
         async open(input: { path: string }) {
@@ -251,5 +351,9 @@ export namespace LSPClient {
     l.info("initialized")
 
     return result
+  }
+
+  function capabilityEnabled(capability: unknown) {
+    return capability === true || (typeof capability === "object" && capability !== null)
   }
 }

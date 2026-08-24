@@ -10,12 +10,23 @@ Supported operations:
 - prepareCallHierarchy: Get call hierarchy item at a position (functions/methods)
 - incomingCalls: Find all functions/methods that call the function at a position
 - outgoingCalls: Find all functions/methods called by the function at a position
+- diagnostics: Return current diagnostics for a document
+- typeDefinition: Find the definition of a symbol's type
+- renameSymbol: Rename a symbol with an LSP-provided, validated workspace edit (`newName` required)
+- renameFile: Rename a file and update references through `workspace/willRenameFiles` (`newFilePath` required)
+- codeActions: List code actions for a range, or apply one with `apply: true` and `actionIndex`
+- formatting: Apply document formatting edits (`tabSize` and `insertSpaces` are optional)
+- workspaceDiagnostics: Request workspace diagnostics when the server supports LSP 3.17 diagnostic pull
 
 All operations require `filePath`, which selects the workspace and language server.
 
 Position operations (`goToDefinition`, `findReferences`, `hover`, `goToImplementation`,
 `prepareCallHierarchy`, `incomingCalls`, and `outgoingCalls`) also require `line` and
 `character`, both 1-based as shown in editors.
+
+Mutating operations request normal edit permissions, validate every URI/range/document version,
+recheck files after permission approval, and roll back the whole workspace edit if an apply step fails.
+Command-only code actions are listed but are not executed.
 
 `workspaceSymbol` requires a non-empty `query`. Use a specific identifier or name instead
 of an empty workspace-wide dump.

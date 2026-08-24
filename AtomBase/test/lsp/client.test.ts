@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test, beforeEach } from "bun:test"
 import { LSPClient } from "@/integrations/lsp/client"
 import { LSPServer } from "@/integrations/lsp/server"
@@ -9,14 +10,14 @@ import { createMessageConnection, StreamMessageReader, StreamMessageWriter } fro
 // Minimal in-memory LSP server. Keeping both ends as Node streams exercises the
 // same vscode-jsonrpc transport without depending on Bun child-process pipe
 // behavior, which differs across Bun versions and operating systems.
-function spawnFakeServer() {
+function spawnFakeServer(capabilities: Record<string, unknown> = {}) {
   const clientToServer = new PassThrough()
   const serverToClient = new PassThrough()
   const connection = createMessageConnection(
     new StreamMessageReader(clientToServer),
     new StreamMessageWriter(serverToClient),
   )
-  connection.onRequest("initialize", async () => ({ capabilities: {} }))
+  connection.onRequest("initialize", async () => ({ capabilities }))
   connection.listen()
 
   return {
@@ -32,8 +33,8 @@ function spawnFakeServer() {
         return true
       },
     },
-    request(method: string) {
-      return connection.sendRequest(method, {})
+    request(method: string, params: unknown = {}) {
+      return connection.sendRequest(method, params)
     },
   }
 }
@@ -62,6 +63,23 @@ describe("LSPClient interop", () => {
     await client.shutdown()
   })
 
+  test("retains server capabilities for feature negotiation", async () => {
+    const handle = spawnFakeServer({ renameProvider: true, documentFormattingProvider: true }) as any
+    const client = await Instance.provide({
+      directory: process.cwd(),
+      fn: () =>
+        LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: process.cwd(),
+        }),
+    })
+
+    expect(client.capabilities.renameProvider).toBe(true)
+    expect(client.capabilities.documentFormattingProvider).toBe(true)
+    await client.shutdown()
+  })
+
   test("handles client/registerCapability request", async () => {
     const handle = spawnFakeServer() as any
 
@@ -75,7 +93,12 @@ describe("LSPClient interop", () => {
         }),
     })
 
-    expect(await handle.request("client/registerCapability")).toBeNull()
+    expect(
+      await handle.request("client/registerCapability", {
+        registrations: [{ id: "rename", method: "workspace/willRenameFiles" }],
+      }),
+    ).toBeNull()
+    expect(client.supports("workspace/willRenameFiles")).toBe(true)
 
     await client.shutdown()
   })
@@ -93,7 +116,25 @@ describe("LSPClient interop", () => {
         }),
     })
 
-    expect(await handle.request("client/unregisterCapability")).toBeNull()
+    await handle.request("client/registerCapability", {
+      registrations: [
+        { id: "rename-1", method: "workspace/willRenameFiles" },
+        { id: "rename-2", method: "workspace/willRenameFiles" },
+      ],
+    })
+    expect(client.supports("workspace/willRenameFiles")).toBe(true)
+    expect(
+      await handle.request("client/unregisterCapability", {
+        unregisterations: [{ id: "rename-1", method: "workspace/willRenameFiles" }],
+      }),
+    ).toBeNull()
+    expect(client.supports("workspace/willRenameFiles")).toBe(true)
+    expect(
+      await handle.request("client/unregisterCapability", {
+        unregistrations: [{ id: "rename-2", method: "workspace/willRenameFiles" }],
+      }),
+    ).toBeNull()
+    expect(client.supports("workspace/willRenameFiles")).toBe(false)
 
     await client.shutdown()
   })

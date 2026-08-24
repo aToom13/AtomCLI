@@ -11,6 +11,13 @@ import { LSPProcess } from "@/integrations/lsp/process"
 const spawn = LSPProcess.spawn
 import { Instance } from "@/services/project/instance"
 import { Flag } from "@/interfaces/flag/flag"
+import type {
+  CodeAction,
+  Diagnostic as ProtocolDiagnostic,
+  FormattingOptions,
+  TextEdit,
+  WorkspaceEdit,
+} from "vscode-languageserver-types"
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" })
@@ -277,6 +284,11 @@ export namespace LSP {
     return false
   }
 
+  export async function documentVersion(file: string, serverID: string) {
+    const clients = await getClients(file)
+    return clients.find((client) => client.serverID === serverID)?.documentVersion(file)
+  }
+
   export async function touchFile(input: string, waitForDiagnostics?: boolean) {
     log.info("touching file", { file: input })
     const clients = await getClients(input)
@@ -412,6 +424,103 @@ export namespace LSP {
     ).then((result) => result.flat().filter(Boolean))
   }
 
+  export async function typeDefinition(input: { file: string; line: number; character: number }) {
+    return requestFirst(
+      input.file,
+      "type definition",
+      (client) => client.supports("textDocument/typeDefinition"),
+      (client) =>
+        client.connection.sendRequest("textDocument/typeDefinition", {
+          textDocument: { uri: pathToFileURL(input.file).href },
+          position: { line: input.line, character: input.character },
+        }),
+    ).then((result) => (Array.isArray(result.value) ? result.value : result.value ? [result.value] : []))
+  }
+
+  export async function renameSymbol(input: { file: string; line: number; character: number; newName: string }) {
+    return requestFirst<WorkspaceEdit | null>(
+      input.file,
+      "symbol rename",
+      (client) => client.supports("textDocument/rename"),
+      (client) =>
+        client.connection.sendRequest("textDocument/rename", {
+          textDocument: { uri: pathToFileURL(input.file).href },
+          position: { line: input.line, character: input.character },
+          newName: input.newName,
+        }),
+    )
+  }
+
+  export async function willRenameFiles(input: { file: string; destination: string }) {
+    return requestFirst<WorkspaceEdit | null>(
+      input.file,
+      "workspace/willRenameFiles",
+      (client) => client.supports("workspace/willRenameFiles"),
+      (client) =>
+        client.connection.sendRequest("workspace/willRenameFiles", {
+          files: [{ oldUri: pathToFileURL(input.file).href, newUri: pathToFileURL(input.destination).href }],
+        }),
+    )
+  }
+
+  export async function codeActions(input: {
+    file: string
+    range: LSP.Range
+    diagnostics: ProtocolDiagnostic[]
+    only?: string[]
+  }) {
+    return requestFirst<Array<CodeAction | { title: string; command: string; arguments?: unknown[] }> | null>(
+      input.file,
+      "code actions",
+      (client) => client.supports("textDocument/codeAction"),
+      (client) =>
+        client.connection.sendRequest("textDocument/codeAction", {
+          textDocument: { uri: pathToFileURL(input.file).href },
+          range: input.range,
+          context: {
+            diagnostics: input.diagnostics,
+            ...(input.only?.length ? { only: input.only } : {}),
+          },
+        }),
+    ).then((result) => ({ ...result, value: result.value ?? [] }))
+  }
+
+  export async function resolveCodeAction(input: { file: string; serverID: string; action: CodeAction }) {
+    const clients = await getClients(input.file)
+    const client = clients.find((item) => item.serverID === input.serverID)
+    if (!client) throw new Error(`LSP server ${input.serverID} is no longer available`)
+    const provider = client.capabilities.codeActionProvider
+    if (typeof provider !== "object" || !provider.resolveProvider) {
+      throw new Error(`LSP server ${input.serverID} does not support code action resolve`)
+    }
+    return client.connection.sendRequest("codeAction/resolve", input.action) as Promise<CodeAction>
+  }
+
+  export async function formatting(input: { file: string; options: FormattingOptions }) {
+    return requestFirst<TextEdit[] | null>(
+      input.file,
+      "document formatting",
+      (client) => client.supports("textDocument/formatting"),
+      (client) =>
+        client.connection.sendRequest("textDocument/formatting", {
+          textDocument: { uri: pathToFileURL(input.file).href },
+          options: input.options,
+        }),
+    ).then((result) => ({ ...result, value: result.value ?? [] }))
+  }
+
+  export async function workspaceDiagnostics(file: string) {
+    return requestFirst(
+      file,
+      "workspace diagnostics",
+      (client) => client.supports("workspace/diagnostic"),
+      (client) =>
+        client.connection.sendRequest("workspace/diagnostic", {
+          previousResultIds: [],
+        }),
+    )
+  }
+
   export async function prepareCallHierarchy(input: { file: string; line: number; character: number }) {
     return run(input.file, (client) =>
       client.connection
@@ -457,6 +566,30 @@ export namespace LSP {
       log.warn("LSP request failed", { serverID: clients[index]?.serverID, error: result.reason })
       return []
     })
+  }
+
+  async function requestFirst<T>(
+    file: string,
+    feature: string,
+    supports: (client: LSPClient.Info) => boolean,
+    request: (client: LSPClient.Info) => Promise<T>,
+  ): Promise<{ serverID: string; value: T }> {
+    const clients = await getClients(file)
+    const supported = clients.filter(supports)
+    if (supported.length === 0) {
+      throw new Error(`No LSP server for ${path.basename(file)} supports ${feature}`)
+    }
+    const failures: unknown[] = []
+    for (const client of supported) {
+      try {
+        return { serverID: client.serverID, value: await request(client) }
+      } catch (error) {
+        failures.push(error)
+        log.warn("LSP feature request failed", { serverID: client.serverID, feature, error })
+      }
+    }
+    const detail = failures[0] instanceof Error ? `: ${failures[0].message}` : ""
+    throw new Error(`All LSP servers failed to provide ${feature}${detail}`, { cause: failures[0] })
   }
 
   async function run<T>(file: string, input: (client: LSPClient.Info) => Promise<T>): Promise<T[]> {
