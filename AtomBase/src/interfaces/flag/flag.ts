@@ -37,7 +37,6 @@ export namespace Flag {
   export const ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX = number("ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
   export const ATOMCLI_EXPERIMENTAL_OXFMT = ATOMCLI_EXPERIMENTAL || truthy("ATOMCLI_EXPERIMENTAL_OXFMT")
   export const ATOMCLI_EXPERIMENTAL_LSP_TY = truthy("ATOMCLI_EXPERIMENTAL_LSP_TY")
-  export const ATOMCLI_EXPERIMENTAL_LSP_TOOL = ATOMCLI_EXPERIMENTAL || truthy("ATOMCLI_EXPERIMENTAL_LSP_TOOL")
 
   // YOLO mode — full autonomous permissions (except window_control which always requires permission)
   // Activated by: ATOMCLI_YOLO env, ATOMCLI_AUTONOMOUS env (--yolo/--autonomous CLI flag), or enableYolo()

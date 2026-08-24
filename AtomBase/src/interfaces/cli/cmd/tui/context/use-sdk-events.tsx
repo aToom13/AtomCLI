@@ -119,6 +119,7 @@ export function useSDKEventHandlers() {
     sdk.event.on(TuiEvent.ChainAddStep.type, (evt) => {
         const p = evt.properties as any
         chainCtx.addStep(p.name, p.description, p.todos, {
+            stepId: p.stepId,
             sessionId: p.sessionId,
             agentType: p.agentType,
             dependsOn: p.dependsOn,
@@ -194,10 +195,11 @@ export function useSDKEventHandlers() {
 
     // Sub-agent panel events
     sdk.event.on(TuiEvent.SubAgentActive.type, (evt) => {
-        const { sessionId, agentType, description } = evt.properties as any
-        // Get current session as parent for back-navigation
-        const parentId = route.data.type === "session" ? route.data.sessionID : undefined
-        subAgentCtx.addAgent({ sessionId, agentType, description, parentSessionId: parentId })
+        const { sessionId, agentType, description, parentSessionId, parentStepId } = evt.properties as any
+        // Prefer the backend-provided parent. Falling back to the route keeps
+        // older event producers compatible while avoiding cross-session leaks.
+        const parentId = parentSessionId ?? (route.data.type === "session" ? route.data.sessionID : undefined)
+        subAgentCtx.addAgent({ sessionId, agentType, description, parentSessionId: parentId, parentStepId })
         // Pre-sync the child session so messages appear in SubAgentPanel
         sync.session.sync(sessionId).catch(() => { })
     })
@@ -207,9 +209,14 @@ export function useSDKEventHandlers() {
         subAgentCtx.markWaiting(sessionId, lastOutput)
     })
 
+    sdk.event.on(TuiEvent.SubAgentFailed.type, (evt) => {
+        const { sessionId, error } = evt.properties as any
+        subAgentCtx.markFailed(sessionId, error)
+    })
+
     sdk.event.on(TuiEvent.SubAgentReactivate.type, (evt) => {
-        const { sessionId, description } = evt.properties as any
-        subAgentCtx.reactivate(sessionId, description)
+        const { sessionId, description, parentSessionId, parentStepId } = evt.properties as any
+        subAgentCtx.reactivate(sessionId, description, parentSessionId, parentStepId)
     })
 
     sdk.event.on(TuiEvent.SubAgentRemove.type, (evt) => {

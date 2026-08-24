@@ -17,15 +17,16 @@ import { Instance } from "@/services/project/instance"
 import { State } from "@/services/project/state"
 import { LSPServer } from "@/integrations/lsp/server"
 import { BunProc } from "@/util/bun"
-import { Installation } from "@/services/installation"
 import { ConfigMarkdown } from "./markdown"
 import { existsSync } from "fs"
 import { Crypto } from "@/util/util/crypto"
 import { BusEvent } from "../bus/bus-event"
 import { Bus } from "@/core/bus"
+import { Lock } from "@/util/util/lock"
 
 export namespace Config {
   const log = Log.create({ service: "config" })
+  const PLUGIN_COMPAT_PACKAGE = "@atomcli/plugin@npm:@opencode-ai/plugin@1.14.50"
 
   // Config update event for notifying listeners when config changes
   export const Event = {
@@ -260,9 +261,10 @@ export namespace Config {
         }
       }
 
-      const exists = existsSync(path.join(dir, "node_modules"))
-      const installing = installDependencies(dir)
-      if (!exists) await installing
+      const dependenciesReady =
+        existsSync(path.join(dir, "node_modules")) &&
+        existsSync(path.join(dir, "node_modules", "@atomcli", "plugin", "package.json"))
+      if (!dependenciesReady) await installDependencies(dir)
 
       result.command = mergeDeep(result.command ?? {}, await loadCommand(dir))
       result.agent = mergeDeep(result.agent, await loadAgent(dir))
@@ -277,6 +279,21 @@ export namespace Config {
       const inline = Info.parse(JSON.parse(Flag.ATOMCLI_CONFIG_CONTENT))
       result = mergeConfigConcatArrays(result, inline)
       log.debug("loaded custom config from ATOMCLI_CONFIG_CONTENT")
+    }
+
+    // Remote credentials are a global-user concern. Project, directory,
+    // well-known, and inline config layers may enable the tool but must not add
+    // or override connection profiles.
+    const globalRemoteHosts = (await global()).remote?.hosts ?? {}
+    const mergedRemoteHosts = result.remote?.hosts ?? {}
+    const ignoredRemoteHosts = Object.keys(mergedRemoteHosts).filter(
+      (name) => JSON.stringify(mergedRemoteHosts[name]) !== JSON.stringify(globalRemoteHosts[name]),
+    )
+    if (ignoredRemoteHosts.length > 0) {
+      log.warn("ignoring non-global remote host profiles", { profiles: ignoredRemoteHosts })
+    }
+    if (result.remote || Object.keys(globalRemoteHosts).length > 0) {
+      result.remote = { ...result.remote, hosts: globalRemoteHosts }
     }
 
     // Migrate deprecated mode field to agent field
@@ -342,26 +359,34 @@ export namespace Config {
   export const state = isTestMode() ? loadConfigState : Instance.state(loadConfigState)
 
   export async function installDependencies(dir: string) {
-    const pkg = path.join(dir, "package.json")
+    const resolvedDir = path.resolve(dir)
+    using _ = await Lock.write(`config-install:${resolvedDir}`)
+
+    // Another concurrent config load may have completed installation while
+    // this caller waited for the lock.
+    const compatPackage = path.join(resolvedDir, "node_modules", "@atomcli", "plugin", "package.json")
+    if (existsSync(compatPackage)) return
+
+    const pkg = path.join(resolvedDir, "package.json")
 
     if (!(await Bun.file(pkg).exists())) {
       await Bun.write(pkg, "{}")
     }
 
-    const gitignore = path.join(dir, ".gitignore")
+    const gitignore = path.join(resolvedDir, ".gitignore")
     const hasGitIgnore = await Bun.file(gitignore).exists()
     if (!hasGitIgnore) await Bun.write(gitignore, ["node_modules", "package.json", "bun.lock", ".gitignore"].join("\n"))
 
-    await BunProc.run(
-      ["add", "@atomcli/plugin@" + (Installation.isLocal() ? "latest" : Installation.VERSION), "--exact"],
-      {
-        cwd: dir,
-      },
-    ).catch(() => {})
+    // @atomcli/plugin is not published independently. Install the compatible
+    // OpenCode plugin SDK under AtomCLI's package name so local TypeScript
+    // plugins resolve their existing imports without a registry 404.
+    await BunProc.run(["add", PLUGIN_COMPAT_PACKAGE, "--exact"], { cwd: resolvedDir }).catch((error) => {
+      log.warn("failed to install plugin SDK compatibility package", { dir: resolvedDir, error })
+    })
 
     // Install any additional dependencies defined in the package.json
     // This allows local plugins and custom tools to use external packages
-    await BunProc.run(["install"], { cwd: dir }).catch(() => {})
+    await BunProc.run(["install"], { cwd: resolvedDir }).catch(() => {})
   }
 
   const COMMAND_GLOB = new Bun.Glob("{command,commands}/**/*.md")
@@ -664,7 +689,9 @@ export namespace Config {
           question: PermissionAction.optional(),
           webfetch: PermissionAction.optional(),
           websearch: PermissionAction.optional(),
-          codesearch: PermissionAction.optional(),
+          codesearch: PermissionAction.optional().describe(
+            "Deprecated compatibility key; code search now uses the websearch permission",
+          ),
           lsp: PermissionRule.optional(),
           doom_loop: PermissionAction.optional(),
           chainupdate: PermissionAction.optional().describe(
@@ -1013,6 +1040,26 @@ export namespace Config {
     })
   export type Provider = z.infer<typeof Provider>
 
+  export const RemoteHost = z
+    .object({
+      host: z.string().min(1).max(253),
+      port: z.number().int().min(1).max(65535).optional().default(22),
+      username: z.string().min(1).max(255),
+      password: z.string().optional(),
+      privateKey: z.string().optional(),
+      passphrase: z.string().optional(),
+      hostKey: z
+        .string()
+        .regex(/^SHA256:[A-Za-z0-9+/]+={0,2}$/, "Expected an OpenSSH SHA-256 host fingerprint")
+        .optional(),
+      connectTimeout: z.number().int().min(1).max(120_000).optional().default(15_000),
+    })
+    .strict()
+    .refine((value) => Boolean(value.password || value.privateKey), {
+      message: "Configure either password or privateKey authentication",
+    })
+  export type RemoteHost = z.infer<typeof RemoteHost>
+
   export const Info = z
     .object({
       $schema: z.string().optional().describe("JSON schema reference for configuration validation"),
@@ -1033,6 +1080,19 @@ export namespace Config {
         .strict()
         .optional()
         .describe("OS process isolation policy for model-executed commands"),
+      remote: z
+        .object({
+          hosts: z
+            .record(z.string().min(1).max(100), RemoteHost)
+            .optional()
+            .default({})
+            .describe(
+              "Global-only SSH profiles. Project-defined profiles are ignored; use {env:VAR} or {file:path} for secrets.",
+            ),
+        })
+        .strict()
+        .optional()
+        .describe("Remote SSH tool configuration. Credential profiles are read only from the global user config."),
       command: z
         .record(z.string(), Command)
         .optional()
@@ -1281,7 +1341,10 @@ export namespace Config {
             .optional(),
           chatMaxRetries: z.number().optional().describe("Number of retries for chat completions on failure"),
           disable_paste_summary: z.boolean().optional(),
-          batch_tool: z.boolean().optional().describe("Enable the batch tool"),
+          batch_tool: z
+            .boolean()
+            .optional()
+            .describe("Deprecated compatibility option; batch is always registered and this value is ignored"),
           openTelemetry: z
             .boolean()
             .optional()
@@ -1552,6 +1615,14 @@ export namespace Config {
 
   export async function get() {
     return state().then((x) => x.config)
+  }
+
+  /**
+   * SSH credentials deliberately bypass the merged project config. A cloned
+   * repository may enable the tool, but it cannot add or override a host.
+   */
+  export async function remoteHosts() {
+    return (await global()).remote?.hosts ?? {}
   }
 
   export async function update(config: Partial<Info>) {

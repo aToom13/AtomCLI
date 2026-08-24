@@ -622,6 +622,9 @@ EOF
                     info "Arch-based system detected — Playwright install-deps is apt-only, skipping."
                     info "If the browser fails to launch, install system libraries via pacman:"
                     info "  sudo pacman -S --needed nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3 gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence"
+                elif [ "$(detect_distro)" = "fedora" ]; then
+                    info "Fedora/RHEL-based system detected. If Chromium reports missing libraries, run:"
+                    info "  sudo dnf install alsa-lib atk at-spi2-atk cups-libs gtk3 libdrm libX11 libXcomposite libXdamage libXext libXfixes libXrandr libxcb libxkbcommon mesa-libgbm nss pango"
                 fi
             else
                 warn "Could not install Playwright package"

@@ -8,7 +8,7 @@ import { createContext, useContext, createSignal, type ParentProps, type Accesso
  * this context to render active agent cards.
  *
  * Agent lifecycle:
- *   running → waiting (task done, awaiting new orders) → running (re-tasked) → ...
+ *   running → waiting/failed → running (re-tasked) → ...
  *   Only removed when orchestrator explicitly closes them.
  */
 
@@ -16,8 +16,10 @@ export interface ActiveSubAgent {
   sessionId: string
   agentType: string
   description: string
-  status: "running" | "waiting"
+  status: "running" | "waiting" | "failed"
   parentSessionId?: string
+  /** Parent taskflow step active when this agent started. */
+  parentStepId?: string
   /** Latest output/context returned to orchestrator */
   lastOutput?: string
 }
@@ -27,7 +29,8 @@ export interface SubAgentContextValue {
   parentSessionId: Accessor<string | undefined>
   addAgent: (agent: Omit<ActiveSubAgent, "status">) => void
   markWaiting: (sessionId: string, lastOutput?: string) => void
-  reactivate: (sessionId: string, description?: string) => void
+  markFailed: (sessionId: string, error: string) => void
+  reactivate: (sessionId: string, description?: string, parentSessionId?: string, parentStepId?: string) => void
   findByType: (agentType: string) => ActiveSubAgent | undefined
   removeAgent: (sessionId: string) => void
   clear: () => void
@@ -53,9 +56,7 @@ export function SubAgentProvider(props: ParentProps) {
       // If agent with same sessionId exists, reactivate it
       const existing = prev.find((a) => a.sessionId === agent.sessionId)
       if (existing) {
-        return prev.map((a) =>
-          a.sessionId === agent.sessionId ? { ...a, status: "running" as const, description: agent.description } : a,
-        )
+        return prev.map((a) => (a.sessionId === agent.sessionId ? { ...a, ...agent, status: "running" as const } : a))
       }
       return [...prev, { ...agent, status: "running" }]
     })
@@ -71,16 +72,32 @@ export function SubAgentProvider(props: ParentProps) {
     )
   }
 
-  const reactivate = (sessionId: string, description?: string) => {
+  const markFailed = (sessionId: string, error: string) => {
+    setAgents((prev) =>
+      prev.map((agent) =>
+        agent.sessionId === sessionId ? { ...agent, status: "failed" as const, lastOutput: error } : agent,
+      ),
+    )
+  }
+
+  const reactivate = (sessionId: string, description?: string, parentSessionId?: string, parentStepId?: string) => {
     setAgents((prev) =>
       prev.map((a) =>
-        a.sessionId === sessionId ? { ...a, status: "running" as const, description: description ?? a.description } : a,
+        a.sessionId === sessionId
+          ? {
+              ...a,
+              status: "running" as const,
+              description: description ?? a.description,
+              parentSessionId: parentSessionId ?? a.parentSessionId,
+              parentStepId: parentStepId ?? a.parentStepId,
+            }
+          : a,
       ),
     )
   }
 
   const findByType = (agentType: string) => {
-    return agents().find((a) => a.agentType === agentType && (a.status === "waiting" || a.status === "running"))
+    return agents().find((a) => a.agentType === agentType)
   }
 
   const removeAgent = (sessionId: string) => {
@@ -117,6 +134,7 @@ export function SubAgentProvider(props: ParentProps) {
         parentSessionId,
         addAgent,
         markWaiting,
+        markFailed,
         reactivate,
         findByType,
         removeAgent,
@@ -142,6 +160,7 @@ export function useSubAgents(): SubAgentContextValue {
       parentSessionId: () => undefined,
       addAgent: () => {},
       markWaiting: () => {},
+      markFailed: () => {},
       reactivate: () => {},
       findByType: () => undefined,
       removeAgent: () => {},
@@ -153,4 +172,28 @@ export function useSubAgents(): SubAgentContextValue {
     }
   }
   return ctx
+}
+
+/**
+ * Return running sub-agents associated with a taskflow step.
+ *
+ * New lifecycle events carry an exact parentStepId. The current-step fallback
+ * keeps recovered/legacy sessions useful without showing an agent beneath the
+ * wrong non-current step.
+ */
+export function runningAgentsForStep(
+  agents: ActiveSubAgent[],
+  stepId: string,
+  isCurrent: boolean,
+  parentSessionId?: string,
+): ActiveSubAgent[] {
+  const running = agents.filter(
+    (agent) =>
+      agent.status === "running" &&
+      (!parentSessionId || !agent.parentSessionId || agent.parentSessionId === parentSessionId),
+  )
+  const exact = running.filter((agent) => agent.parentStepId === stepId)
+  if (exact.length > 0) return exact
+  if (!isCurrent) return []
+  return running.filter((agent) => !agent.parentStepId)
 }

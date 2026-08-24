@@ -18,17 +18,48 @@ const operations = [
   "incomingCalls",
   "outgoingCalls",
 ] as const
-const MAX_RESULTS = 100
+const DEFAULT_MAX_RESULTS = 25
+const MAX_RESULTS = 200
+
+const positionOperations = new Set<(typeof operations)[number]>([
+  "goToDefinition",
+  "findReferences",
+  "hover",
+  "goToImplementation",
+  "prepareCallHierarchy",
+  "incomingCalls",
+  "outgoingCalls",
+])
 
 export const LspTool = Tool.define("lsp", {
   description: DESCRIPTION,
   parameters: z.object({
     operation: z.enum(operations).describe("The LSP operation to perform"),
     filePath: z.string().min(1).max(4096).describe("The absolute or relative path to the file"),
-    line: z.number().int().min(1).describe("The line number (1-based, as shown in editors)"),
-    character: z.number().int().min(1).describe("The character offset (1-based, as shown in editors)"),
+    line: z.number().int().min(1).optional().describe("The 1-based line number; required for position operations"),
+    character: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("The 1-based character offset; required for position operations"),
+    query: z.string().min(1).max(200).optional().describe("Search query; required for workspaceSymbol"),
+    maxResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_RESULTS)
+      .default(DEFAULT_MAX_RESULTS)
+      .describe(`Maximum results to return (default: ${DEFAULT_MAX_RESULTS}, maximum: ${MAX_RESULTS})`),
   }),
   execute: async (args, ctx) => {
+    if (args.operation === "workspaceSymbol" && !args.query?.trim()) {
+      throw new Error("query is required for workspaceSymbol")
+    }
+    if (positionOperations.has(args.operation) && (args.line === undefined || args.character === undefined)) {
+      throw new Error(`line and character are required for ${args.operation}`)
+    }
+
     const file = path.isAbsolute(args.filePath) ? args.filePath : path.join(Instance.directory, args.filePath)
     await assertExternalDirectory(ctx, file)
 
@@ -41,12 +72,13 @@ export const LspTool = Tool.define("lsp", {
     const uri = pathToFileURL(file).href
     const position = {
       file,
-      line: args.line - 1,
-      character: args.character - 1,
+      line: (args.line ?? 1) - 1,
+      character: (args.character ?? 1) - 1,
     }
 
     const relPath = path.relative(Instance.worktree, file)
-    const title = `${args.operation} ${relPath}:${args.line}:${args.character}`
+    const location = args.line === undefined ? relPath : `${relPath}:${args.line}:${args.character}`
+    const title = `${args.operation} ${location}`
 
     const exists = await Bun.file(file).exists()
     if (!exists) {
@@ -58,7 +90,10 @@ export const LspTool = Tool.define("lsp", {
       throw new Error("No LSP server available for this file type.")
     }
 
-    await LSP.touchFile(file, true)
+    // didOpen/didChange is ordered before the following request on the same
+    // LSP connection. Waiting for publishDiagnostics adds up to three seconds
+    // and is unnecessary for read-only code-intelligence operations.
+    await LSP.touchFile(file)
 
     const result: unknown[] = await (async () => {
       switch (args.operation) {
@@ -71,7 +106,7 @@ export const LspTool = Tool.define("lsp", {
         case "documentSymbol":
           return LSP.documentSymbol(uri)
         case "workspaceSymbol":
-          return LSP.workspaceSymbol("")
+          return LSP.workspaceSymbol(args.query!.trim())
         case "goToImplementation":
           return LSP.implementation(position)
         case "prepareCallHierarchy":
@@ -83,16 +118,23 @@ export const LspTool = Tool.define("lsp", {
       }
     })()
 
-    const limited = result.slice(0, MAX_RESULTS)
+    const limited = result.slice(0, args.maxResults)
+    const omitted = Math.max(0, result.length - limited.length)
     const output = (() => {
       if (result.length === 0) return `No results found for ${args.operation}`
-      const suffix = result.length > MAX_RESULTS ? `\n\n... ${result.length - MAX_RESULTS} more results omitted` : ""
+      const suffix = omitted > 0 ? `\n\n... ${omitted} more results omitted; increase maxResults to return more` : ""
       return JSON.stringify(limited, null, 2) + suffix
     })()
 
     return {
       title,
-      metadata: { results: result.length, limited: result.length > MAX_RESULTS },
+      metadata: {
+        results: result.length,
+        returned: limited.length,
+        omitted,
+        limited: omitted > 0,
+        query: args.operation === "workspaceSymbol" ? args.query!.trim() : undefined,
+      },
       output,
     }
   },

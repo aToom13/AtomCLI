@@ -5,16 +5,7 @@ import { ToolRuntime } from "./runtime"
 
 const MAX_CALLS = 10
 const MAX_CONCURRENCY = 4
-const SAFE_TOOLS = new Set([
-  "read",
-  "find",
-  "grep",
-  "webfetch",
-  "websearch",
-  "codesearch",
-  "finance_analyze",
-  "system_health",
-])
+const SAFE_TOOLS = new Set(["read", "find", "grep", "webfetch", "websearch", "lsp", "system_health"])
 
 const parameters = z.object({
   tool_calls: z

@@ -55,13 +55,18 @@ export const TuiEvent = {
     "tui.chain.add_step",
     z.object({
       sessionID: z.string().optional(),
+      stepId: z.string().optional(),
       name: z.string(),
       description: z.string(),
-      todos: z.array(z.object({
-        id: z.string(),
-        content: z.string(),
-        status: z.enum(["pending", "in_progress", "complete", "failed"]),
-      })).optional(),
+      todos: z
+        .array(
+          z.object({
+            id: z.string(),
+            content: z.string(),
+            status: z.enum(["pending", "in_progress", "complete", "failed"]),
+          }),
+        )
+        .optional(),
       sessionId: z.string().optional(),
       agentType: z.string().optional(),
       dependsOn: z.array(z.string()).optional(),
@@ -72,9 +77,19 @@ export const TuiEvent = {
     z.object({
       sessionID: z.string().optional(),
       status: z.enum([
-        "pending", "running", "coding", "searching_web", "searching_code",
-        "reading_file", "writing_file", "running_command", "analyzing",
-        "thinking", "complete", "failed", "retrying"
+        "pending",
+        "running",
+        "coding",
+        "searching_web",
+        "searching_code",
+        "reading_file",
+        "writing_file",
+        "running_command",
+        "analyzing",
+        "thinking",
+        "complete",
+        "failed",
+        "retrying",
       ]),
       tool: z.string().optional(),
     }),
@@ -97,11 +112,13 @@ export const TuiEvent = {
     "tui.chain.set_todos",
     z.object({
       sessionID: z.string().optional(),
-      todos: z.array(z.object({
-        id: z.string(),
-        content: z.string(),
-        status: z.enum(["pending", "in_progress", "complete", "failed"]),
-      })),
+      todos: z.array(
+        z.object({
+          id: z.string(),
+          content: z.string(),
+          status: z.enum(["pending", "in_progress", "complete", "failed"]),
+        }),
+      ),
     }),
   ),
   ChainTodoDone: BusEvent.define(
@@ -111,9 +128,12 @@ export const TuiEvent = {
       todoIndex: z.number(),
     }),
   ),
-  ChainClear: BusEvent.define("tui.chain.clear", z.object({
-    sessionID: z.string().optional(),
-  })),
+  ChainClear: BusEvent.define(
+    "tui.chain.clear",
+    z.object({
+      sessionID: z.string().optional(),
+    }),
+  ),
   // Sub-plan: creates a nested plan under the current step when issues arise
   ChainSubPlanStart: BusEvent.define(
     "tui.chain.subplan.start",
@@ -121,10 +141,12 @@ export const TuiEvent = {
       sessionID: z.string().optional(),
       stepIndex: z.number().describe("Index of the parent step this sub-plan belongs to"),
       reason: z.string().describe("Why a sub-plan is needed"),
-      steps: z.array(z.object({
-        name: z.string(),
-        description: z.string(),
-      })),
+      steps: z.array(
+        z.object({
+          name: z.string(),
+          description: z.string(),
+        }),
+      ),
     }),
   ),
   ChainSubPlanEnd: BusEvent.define(
@@ -142,9 +164,19 @@ export const TuiEvent = {
       sessionID: z.string().optional(),
       stepIndex: z.number(),
       status: z.enum([
-        "pending", "running", "coding", "searching_web", "searching_code",
-        "reading_file", "writing_file", "running_command", "analyzing",
-        "thinking", "complete", "failed", "retrying"
+        "pending",
+        "running",
+        "coding",
+        "searching_web",
+        "searching_code",
+        "reading_file",
+        "writing_file",
+        "running_command",
+        "analyzing",
+        "thinking",
+        "complete",
+        "failed",
+        "retrying",
       ]),
     }),
   ),
@@ -157,10 +189,12 @@ export const TuiEvent = {
       path: z.string(),
       content: z.string().optional(),
       language: z.string().optional(),
-      highlight: z.object({
-        startLine: z.number(),
-        endLine: z.number(),
-      }).optional(),
+      highlight: z
+        .object({
+          startLine: z.number(),
+          endLine: z.number(),
+        })
+        .optional(),
     }),
   ),
   FileTreeClose: BusEvent.define(
@@ -190,6 +224,8 @@ export const TuiEvent = {
       sessionId: z.string(),
       agentType: z.string(),
       description: z.string(),
+      parentSessionId: z.string().optional(),
+      parentStepId: z.string().optional(),
     }),
   ),
   SubAgentDone: BusEvent.define(
@@ -199,11 +235,20 @@ export const TuiEvent = {
       lastOutput: z.string().optional(),
     }),
   ),
+  SubAgentFailed: BusEvent.define(
+    "tui.subagent.failed",
+    z.object({
+      sessionId: z.string(),
+      error: z.string(),
+    }),
+  ),
   SubAgentReactivate: BusEvent.define(
     "tui.subagent.reactivate",
     z.object({
       sessionId: z.string(),
       description: z.string().optional(),
+      parentSessionId: z.string().optional(),
+      parentStepId: z.string().optional(),
     }),
   ),
   SubAgentRemove: BusEvent.define(
@@ -213,5 +258,3 @@ export const TuiEvent = {
     }),
   ),
 }
-
-

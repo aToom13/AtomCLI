@@ -60,6 +60,7 @@ export namespace Log {
   export async function init(options: Options) {
     if (options.level) level = options.level
     isTuiMode = options.tui ?? false
+    await fs.mkdir(Global.Path.log, { recursive: true })
     cleanup(Global.Path.log)
     if (options.print) {
       // In TUI mode, suppress stderr output to avoid terminal corruption
@@ -67,6 +68,11 @@ export namespace Log {
         write = () => 0
         // Override console methods to prevent terminal corruption
         overrideConsole()
+      } else {
+        // Tests and embedded callers may reinitialize logging after a previous
+        // file-backed init. Restore stderr instead of retaining the stale file
+        // writer from the earlier initialization.
+        write = (msg: any) => process.stderr.write(msg)
       }
       return
     }
@@ -75,7 +81,7 @@ export namespace Log {
       options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
     )
     const logfile = Bun.file(logpath)
-    await fs.truncate(logpath).catch(() => { })
+    await fs.truncate(logpath).catch(() => {})
     const writer = logfile.writer()
     write = async (msg: any) => {
       const num = writer.write(msg)
@@ -90,17 +96,19 @@ export namespace Log {
 
   function overrideConsole() {
     const formatArgs = (...args: any[]) => {
-      return args.map(arg => {
-        if (arg instanceof Error) return formatError(arg)
-        if (typeof arg === "object") {
-          try {
-            return JSON.stringify(arg)
-          } catch {
-            return String(arg)
+      return args
+        .map((arg) => {
+          if (arg instanceof Error) return formatError(arg)
+          if (typeof arg === "object") {
+            try {
+              return JSON.stringify(arg)
+            } catch {
+              return String(arg)
+            }
           }
-        }
-        return String(arg)
-      }).join(" ")
+          return String(arg)
+        })
+        .join(" ")
     }
 
     console.log = (...args: any[]) => {
@@ -128,7 +136,7 @@ export namespace Log {
     if (files.length <= 5) return
 
     const filesToDelete = files.slice(0, -10)
-    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => { })))
+    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
   }
 
   function formatError(error: Error, depth = 0): string {

@@ -1,0 +1,17 @@
+Use SSH to save remote-server profiles, connect to them, run commands, and manage remote files. When the user provides a hostname/IP, port, username, and password/private key, call profile_add directly. Never search for, read, or edit AtomCLI config files to create a profile. After profile_add succeeds, the profile is immediately available to exec and filesystem actions in the same session.
+
+Hosts are referenced by profile name. Profiles created by this tool are encrypted in AtomCLI's user data store. Existing profiles from the user's global AtomCLI config remain supported. Never expose credentials in output. Unknown host keys require explicit approval, while configured SHA-256 fingerprints are verified strictly.
+
+Actions:
+- profile_list: list configured profile names and endpoints without revealing credentials
+- profile_add: securely save or replace a profile from hostname, username, and password/privateKey; host is an optional profile alias and defaults to username
+- profile_remove: remove a profile previously created by this tool
+- exec: run one command through the remote account's default shell
+- read: read a bounded UTF-8 text file
+- write: replace a bounded UTF-8 text file
+- list: list directory entries with type, size, and modification time
+- stat: inspect a path
+- mkdir: create a directory, recursively by default
+- remove: remove a file or directory; recursive directory removal must be explicit
+
+An "Always" approval grants use of the SSH tool as a whole, so do not request a new approval for every command or path. Transient handshake failures are retried automatically. If needed, connectTimeout can override the handshake timeout on exec and filesystem actions. If an exec action reports an unknown profile and the user supplied connection details, repair it with profile_add; do not inspect the filesystem. Prefer one focused exec command per call. Use read/write only for text; binary upload/download and persistent tunnels are not supported.

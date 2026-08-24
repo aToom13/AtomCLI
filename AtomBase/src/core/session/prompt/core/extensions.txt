@@ -29,8 +29,7 @@ MCP servers appear in `<mcp_servers>` block in your context. Tools are namespace
 
 **Use MCP tools when they benefit the task:**
 - User preference → `memory_store`
-- Complex decision → `sequential-thinking_analyze`
-- Multi-step planning → `sequential-thinking_create_plan`
+- Complex decision or multi-step planning → `sequential_thinking`
 </mcp_system>
 
 ---

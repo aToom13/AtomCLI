@@ -21,13 +21,14 @@ export namespace SessionLayout {
 
   export function chainExpandedHeight(terminalHeight: number, contentRows: number) {
     const density = verticalMode(terminalHeight)
-    const cap =
-      density === "normal"
-        ? Math.max(7, Math.min(20, Math.floor(terminalHeight * 0.45)))
-        : Math.max(2, Math.min(8, Math.floor(terminalHeight * 0.28)))
     // Normal mode has one row of padding on both sides; every mode also
     // consumes one row for the expanded panel's bottom border.
     const chromeRows = density === "normal" ? 3 : 1
+    // A task plan should inform, not cover the conversation. Five rows are
+    // enough to keep the current task plus two neighbours on either side;
+    // very short terminals reduce that window further.
+    const viewportCap = density === "tight" ? Math.max(2, Math.min(3, Math.floor(terminalHeight * 0.2))) : 5
+    const cap = viewportCap + chromeRows
     const minimum = density === "normal" ? Math.min(7, cap) : Math.min(2, cap)
     return clamp(contentRows + chromeRows, minimum, cap)
   }
@@ -39,6 +40,34 @@ export namespace SessionLayout {
 
   export function chainNeedsScrollbar(terminalHeight: number, expandedHeight: number, contentRows: number) {
     return contentRows > chainListViewportRows(terminalHeight, expandedHeight)
+  }
+
+  /** Center the active task inside a bounded scroll viewport when possible. */
+  export function chainCenteredScrollOffset(stepRows: number[], currentStep: number, viewportRows: number) {
+    if (stepRows.length === 0 || currentStep < 0) return 0
+    const safeIndex = Math.min(currentStep, stepRows.length - 1)
+    const rowOffset = stepRows.slice(0, safeIndex).reduce((sum, rows) => sum + Math.max(1, rows), 0)
+    const totalRows = stepRows.reduce((sum, rows) => sum + Math.max(1, rows), 0)
+    const centered = rowOffset - Math.floor((Math.max(1, viewportRows) - 1) / 2)
+    return clamp(centered, 0, Math.max(0, totalRows - Math.max(1, viewportRows)))
+  }
+
+  /**
+   * Render one fixed-width frame of a terminal marquee. The edge ellipses
+   * communicate that more text is available without changing the row width.
+   */
+  export function marqueeWindow(value: string, width: number, offset: number) {
+    const characters = Array.from(value)
+    const safeWidth = Math.max(1, Math.floor(width))
+    if (characters.length <= safeWidth) return value
+    if (safeWidth === 1) return "…"
+
+    const maxOffset = Math.max(0, characters.length - (safeWidth - 1))
+    const safeOffset = clamp(Math.floor(offset), 0, maxOffset)
+    if (safeOffset === 0) return `${characters.slice(0, safeWidth - 1).join("")}…`
+    if (safeOffset === maxOffset) return `…${characters.slice(-(safeWidth - 1)).join("")}`
+    if (safeWidth === 2) return "……"
+    return `…${characters.slice(safeOffset, safeOffset + safeWidth - 2).join("")}…`
   }
 
   /** ScrollBox applies flexDirection to its root, where the scrollbar lives. */

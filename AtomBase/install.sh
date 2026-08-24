@@ -3,7 +3,7 @@
 echo "🚀 Installing dependencies..."
 bun install
 
-echo "🌍 Installing Playwright browsers (Firefox & Chromium)..."
-bunx playwright install firefox chromium
+echo "🌍 Installing Playwright Chromium..."
+bunx playwright install chromium
 
 echo "✅ Setup complete! You can now run 'bun run dev'."

@@ -25,7 +25,9 @@ export namespace SessionRecovery {
       return {
         id: String(item?.id ?? `todo-${index}`),
         content: String(item?.content ?? ""),
-        status: (["pending", "in_progress", "complete", "failed"].includes(status) ? status : "pending") as StepTodo["status"],
+        status: (["pending", "in_progress", "complete", "failed"].includes(status)
+          ? status
+          : "pending") as StepTodo["status"],
       }
     })
   }
@@ -60,20 +62,23 @@ export namespace SessionRecovery {
 
   function singleAgentStart(input: ToolInput, running: boolean): AgentChain | null {
     if (typeof input.description !== "string" || !input.description.trim()) return null
-    const id = input.description
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 40) || "task"
+    const id =
+      input.description
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 40) || "task"
     return {
-      steps: [{
-        id,
-        name: input.description,
-        description: typeof input.prompt === "string" ? input.prompt : input.description,
-        status: running ? "running" : "pending",
-        retryCount: 0,
-        agentType: typeof input.subagent_type === "string" ? input.subagent_type : "agent",
-      }],
+      steps: [
+        {
+          id,
+          name: input.description,
+          description: typeof input.prompt === "string" ? input.prompt : input.description,
+          status: running ? "running" : "pending",
+          retryCount: 0,
+          agentType: typeof input.subagent_type === "string" ? input.subagent_type : "agent",
+        },
+      ],
       currentStep: 0,
       status: running ? "executing" : "planning",
       mode: "safe",
@@ -112,13 +117,28 @@ export namespace SessionRecovery {
     if (input.todo_id !== undefined || input.todo_status !== undefined) {
       const todoIndex = Number(input.todo_id ?? 0)
       if (step.todos?.[todoIndex]) {
-        const status = input.todo_status === "completed" ? "complete" : input.todo_status === "cancelled" ? "failed" : input.todo_status
-        step.todos[todoIndex].status = (["pending", "in_progress", "complete", "failed"].includes(status) ? status : "complete") as StepTodo["status"]
+        const status =
+          input.todo_status === "completed"
+            ? "complete"
+            : input.todo_status === "cancelled"
+              ? "failed"
+              : input.todo_status
+        step.todos[todoIndex].status = (
+          ["pending", "in_progress", "complete", "failed"].includes(status) ? status : "complete"
+        ) as StepTodo["status"]
       }
     }
 
     if (input.action === "update" && input.status) {
-      step.status = (input.status === "completed" ? "complete" : input.status === "failed" ? "failed" : "running") as StepStatus
+      step.status = (
+        input.status === "completed"
+          ? "complete"
+          : input.status === "failed"
+            ? "failed"
+            : input.status === "pending"
+              ? "pending"
+              : "running"
+      ) as StepStatus
     }
     if (input.action === "complete") {
       step.status = "complete"
@@ -142,7 +162,10 @@ export namespace SessionRecovery {
     const output = part.state.output ?? ""
     const statuses = new Map<string, StepStatus>()
     for (const match of output.matchAll(/^###\s+(✅|❌|⏭️|🔄|⏳)\s+([^\s(]+)/gm)) {
-      statuses.set(match[2], ({ "✅": "complete", "❌": "failed", "⏭️": "failed", "🔄": "running", "⏳": "pending" } as const)[match[1]])
+      statuses.set(
+        match[2],
+        ({ "✅": "complete", "❌": "failed", "⏭️": "failed", "🔄": "running", "⏳": "pending" } as const)[match[1]],
+      )
     }
     const steps = chain.steps.map((step) => ({ ...step, status: statuses.get(step.id) ?? step.status }))
     const failed = steps.some((step) => step.status === "failed")
@@ -185,11 +208,17 @@ export namespace SessionRecovery {
 
   export function chain(parts: Part[]): AgentChain | null {
     let recovered: AgentChain | null = null
+    let parentTaskflowActive = false
     for (const part of parts) {
       if (part.type !== "tool") continue
       const input = toolInput(part)
       const succeeded = completedSuccessfully(part)
+      if (part.tool === "taskflow" && succeeded) {
+        if (input.action === "start") parentTaskflowActive = true
+        if (input.action === "clear") parentTaskflowActive = false
+      }
       if (part.tool === "agent") {
+        if (parentTaskflowActive) continue
         if (part.state.status === "completed" && !succeeded) {
           const start = input.action === "spawn" ? singleAgentStart(input, true) : recovered
           recovered = markFailed(start, part.state.output)
@@ -211,7 +240,7 @@ export namespace SessionRecovery {
         continue
       }
       if (part.tool === "taskflow") recovered = replayTaskflow(recovered, input)
-      if (part.tool === "orchestrate") recovered = replayOrchestrate(recovered, part, input)
+      if (part.tool === "orchestrate" && !parentTaskflowActive) recovered = replayOrchestrate(recovered, part, input)
     }
     return recovered
   }

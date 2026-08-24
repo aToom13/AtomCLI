@@ -43,6 +43,11 @@ export namespace LSPClient {
     const l = log.clone().tag("serverID", input.serverID)
     l.info("starting client")
 
+    input.server.process.stderr?.on("data", (chunk: Buffer | string) => {
+      const message = String(chunk).trim()
+      if (message) l.warn("server stderr", { message: message.slice(0, 10_000) })
+    })
+
     const connection = createMessageConnection(
       new StreamMessageReader(input.server.process.stdout as any),
       new StreamMessageWriter(input.server.process.stdin as any),
@@ -55,9 +60,7 @@ export namespace LSPClient {
         path: filePath,
         count: params.diagnostics.length,
       })
-      const exists = diagnostics.has(filePath)
       diagnostics.set(filePath, params.diagnostics)
-      if (!exists && input.serverID === "typescript") return
       Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
     })
     connection.onRequest("window/workDoneProgress/create", (params) => {

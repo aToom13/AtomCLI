@@ -39,6 +39,8 @@ const { Identifier } = await import("@/core/id/id")
 const { Instance } = await import("@/services/project/instance")
 const { SessionTermination } = await import("@/core/session/termination")
 const { HarnessState } = await import("@/core/session/harness-state")
+const { Bus } = await import("@/core/bus")
+const { TuiEvent } = await import("@/interfaces/cli/cmd/tui/event")
 const { tmpdir } = await import("../fixture/fixture")
 
 beforeEach(() => {
@@ -142,6 +144,43 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
     })
   })
 
+  test("spawn preserves an existing parent taskflow and does not publish chain clears", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        HarnessState.startPlan(session.id, [
+          { id: "inspect", name: "Inspect" },
+          { id: "fix", name: "Fix" },
+        ])
+        let clearEvents = 0
+        const unsubscribe = Bus.subscribe(TuiEvent.ChainClear, (event) => {
+          if (event.properties.sessionID === session.id) clearEvents++
+        })
+
+        try {
+          const instance = await AgentTool.init({})
+          const result = await instance.execute(
+            {
+              action: "spawn",
+              subagent_type: "explore",
+              prompt: "Inspect the codebase structure",
+              description: "Inspect codebase",
+            },
+            mockCtx(session.id, messageID),
+          )
+
+          expect(result.metadata?.status).toBe("completed")
+          expect(HarnessState.getSteps(session.id).map((step) => step.name)).toEqual(["Inspect", "Fix"])
+          expect(clearEvents).toBe(0)
+        } finally {
+          unsubscribe()
+        }
+      },
+    })
+  })
+
   test("spawn passes session_id through to the workflow task for session continuation", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -220,6 +259,17 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
         expect(reviewerSpawnCount).toBe(0)
         expect(result.metadata?.status).toBe("failed")
         expect(result.output).toContain("1 failed")
+
+        const repeated = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "execute",
+            workflowId: result.metadata?.workflowId,
+          },
+          mockCtx(session.id, messageID),
+        )
+        expect(repeated.metadata?.status).toBe("failed")
+        expect(repeated.metadata?.error).toBe(true)
       },
     })
   })

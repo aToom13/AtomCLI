@@ -12,6 +12,7 @@ import {
   Orchestrate,
   Question,
   Read,
+  Ssh,
   Task,
   TodoWrite,
   WebFetch,
@@ -58,6 +59,9 @@ export function ToolPart(props: { last: boolean; part: ToolPartType; message: As
       <Switch>
         <Match when={props.part.tool === "bash"}>
           <Bash {...toolprops} />
+        </Match>
+        <Match when={props.part.tool === "ssh"}>
+          <Ssh {...toolprops} />
         </Match>
         <Match when={props.part.tool === "find"}>
           <Find {...toolprops} />

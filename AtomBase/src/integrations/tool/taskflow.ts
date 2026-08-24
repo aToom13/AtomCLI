@@ -19,7 +19,10 @@ const TaskFlowStepSchema = z.object({
   id: z.string().max(100).optional(),
   name: z.string().min(1).max(200),
   status: z.enum(["pending", "running", "completed", "failed"]).optional(),
-  todos: z.array(z.union([z.string().max(1000), TaskFlowTodoSchema])).max(100).optional(),
+  todos: z
+    .array(z.union([z.string().max(1000), TaskFlowTodoSchema]))
+    .max(100)
+    .optional(),
 })
 
 const parameters = z.object({
@@ -99,6 +102,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
             })
 
             await Bus.publish(TuiEvent.ChainAddStep, {
+              stepId: step.id ?? String(idx),
               name: step.name,
               description: step.name,
               todos,
@@ -125,12 +129,25 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
         if (params.status) {
           const mappedStatus =
-            params.status === "completed" ? "complete" : params.status === "failed" ? "failed" : "running"
+            params.status === "completed"
+              ? "complete"
+              : params.status === "failed"
+                ? "failed"
+                : params.status === "pending"
+                  ? "pending"
+                  : "running"
 
-          // Enforce state machine transition when setting to "running"
-          if (params.status === "running" && params.step_id !== undefined) {
+          // Keep HarnessState and the TUI in lockstep. Previously update with
+          // status="completed" only changed the UI and falsely reported
+          // success while HarnessState still considered the step running.
+          const transitionStepId = params.step_id ?? HarnessState.getRunningStep(ctx.sessionID)
+          if (params.status !== "pending" && transitionStepId !== undefined) {
             try {
-              HarnessState.transitionStep(ctx.sessionID, params.step_id, "running")
+              HarnessState.transitionStep(
+                ctx.sessionID,
+                transitionStepId,
+                params.status === "completed" ? "completed" : params.status === "failed" ? "failed" : "running",
+              )
             } catch (err) {
               return {
                 title: "Taskflow state machine violation",
@@ -141,19 +158,25 @@ export const TaskFlowTool = Tool.define("taskflow", {
           }
 
           if (params.step_id !== undefined) {
-            const stepIdx = parseInt(params.step_id, 10)
-            if (!isNaN(stepIdx)) {
+            const trackedIndex = HarnessState.getSteps(ctx.sessionID).findIndex((step) => step.id === params.step_id)
+            const parsedIndex = parseInt(params.step_id, 10)
+            const stepIdx = trackedIndex >= 0 ? trackedIndex : parsedIndex
+            if (!isNaN(stepIdx) && stepIdx >= 0) {
               await Bus.publish(TuiEvent.ChainParallelUpdate, {
                 stepIndex: stepIdx,
                 status: mappedStatus as any,
                 sessionID: ctx.sessionID,
               })
             }
-          } else {
-            await Bus.publish(TuiEvent.ChainUpdateStep, {
-              status: mappedStatus as any,
+          } else if (params.status === "completed") {
+            await Bus.publish(TuiEvent.ChainCompleteStep, { output: params.output, sessionID: ctx.sessionID })
+          } else if (params.status === "failed") {
+            await Bus.publish(TuiEvent.ChainFailStep, {
+              error: params.output ?? "Taskflow step failed",
               sessionID: ctx.sessionID,
             })
+          } else {
+            await Bus.publish(TuiEvent.ChainUpdateStep, { status: mappedStatus as any, sessionID: ctx.sessionID })
           }
         }
 

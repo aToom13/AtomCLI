@@ -18,7 +18,7 @@ export namespace PermissionNext {
   // edit/write/task/todowrite/todoread are exempt so sub-agent deny rules
   // (e.g. the reviewer's read-only baseline) stay effective under YOLO — the
   // ruleset is still evaluated for these instead of being blindly auto-allowed.
-  const YOLO_EXEMPT_PERMISSIONS = ["window_control", "edit", "write", "task", "todowrite", "todoread"]
+  const YOLO_EXEMPT_PERMISSIONS = ["window_control", "edit", "write", "ssh", "task", "todowrite", "todoread"]
 
   export const Action = z.enum(["allow", "deny", "ask"]).meta({
     ref: "PermissionAction",
@@ -113,6 +113,24 @@ export namespace PermissionNext {
       }
     } catch (error) {
       log.warn("failed to load persisted permissions, starting fresh", { projectID, error })
+    }
+
+    // SSH approvals used to persist command/path-specific patterns. The SSH
+    // tool now treats "always" as approval for the whole tool, so preserve the
+    // user's earlier choice instead of prompting again after the upgrade.
+    const hasLegacySshApproval = stored.some(
+      (rule) => rule.permission === "ssh" && rule.action === "allow" && rule.pattern !== "*",
+    )
+    const hasWholeSshApproval = stored.some(
+      (rule) => rule.permission === "ssh" && rule.action === "allow" && rule.pattern === "*",
+    )
+    if (hasLegacySshApproval && !hasWholeSshApproval) {
+      stored.push({ permission: "ssh", pattern: "*", action: "allow" })
+      try {
+        await Storage.write(["permission", projectID], stored)
+      } catch (error) {
+        log.warn("failed to persist upgraded SSH permission", { projectID, error })
+      }
     }
 
     const pending: Record<

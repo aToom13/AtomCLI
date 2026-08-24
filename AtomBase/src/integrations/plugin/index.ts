@@ -14,7 +14,7 @@ import { AntigravityAuthPlugin } from "./antigravity"
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
 
-  const BUILTIN = ["atomcli-copilot-auth@0.0.11", "atomcli-anthropic-auth@0.0.8"]
+  export const BUILTIN = ["opencode-copilot-auth@0.0.12", "@ex-machina/opencode-anthropic-auth@1.8.1"]
 
   // Built-in plugins (exclude Antigravity if disabled via flag)
   const INTERNAL_PLUGINS: PluginInstance[] = Flag.ATOMCLI_DISABLE_ANTIGRAVITY
@@ -59,7 +59,10 @@ export namespace Plugin {
         const version = lastAtIndex > 0 ? plugin.substring(lastAtIndex + 1) : "latest"
         const builtin = BUILTIN.some((x) => x.startsWith(pkg + "@"))
         plugin = await BunProc.install(pkg, version).catch((err) => {
-          if (builtin) return ""
+          if (builtin) {
+            log.warn("failed to install builtin plugin", { pkg, version, error: err })
+            return ""
+          }
           throw err
         })
         if (!plugin) continue
@@ -70,6 +73,7 @@ export namespace Plugin {
       // Object.entries(mod) would return both entries pointing to the same function reference.
       const seen = new Set<PluginInstance>()
       for (const [_name, fn] of Object.entries<PluginInstance>(mod)) {
+        if (typeof fn !== "function") continue
         if (seen.has(fn)) continue
         seen.add(fn)
         const init = await fn(input)

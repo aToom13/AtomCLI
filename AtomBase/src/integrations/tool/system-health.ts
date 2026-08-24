@@ -156,9 +156,7 @@ function parseWindowsProcesses(output: string): ProcessInfo[] {
     .filter(Boolean)
     .slice(0, 15)
     .map((line) => {
-      const columns = Array.from(line.matchAll(/"((?:[^"]|"")*)"(?:,|$)/g), (match) =>
-        match[1].replaceAll('""', '"'),
-      )
+      const columns = Array.from(line.matchAll(/"((?:[^"]|"")*)"(?:,|$)/g), (match) => match[1].replaceAll('""', '"'))
       return {
         pid: columns[1] ?? "?",
         user: "-",
@@ -171,9 +169,7 @@ function parseWindowsProcesses(output: string): ProcessInfo[] {
 
 async function processes(signal: AbortSignal) {
   const command =
-    process.platform === "win32"
-      ? ["tasklist", "/FO", "CSV", "/NH"]
-      : ["ps", "-axo", "pid=,user=,%cpu=,%mem=,command="]
+    process.platform === "win32" ? ["tasklist", "/FO", "CSV", "/NH"] : ["ps", "-axo", "pid=,user=,%cpu=,%mem=,command="]
   const result = await runCommand(command, signal)
   if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `${command[0]} exited with ${result.exitCode}`)
   return process.platform === "win32" ? parseWindowsProcesses(result.stdout) : parseUnixProcesses(result.stdout)
@@ -258,6 +254,7 @@ export const SystemHealthTool = Tool.define<typeof parameters, SystemHealthMetad
           metadata: { count: items.length, platform: process.platform },
         }
       } catch (error) {
+        if (ctx.abort.aborted) throw ctx.abort.reason
         return {
           title: "System Processes",
           output: `Process information is unavailable: ${error instanceof Error ? error.message : String(error)}`,

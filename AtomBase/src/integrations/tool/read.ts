@@ -2,7 +2,6 @@ import z from "zod"
 import fs from "fs/promises"
 import * as path from "path"
 import { Tool } from "./tool"
-import { LSP } from "../lsp"
 import { FileTime } from "@/services/file/time"
 import DESCRIPTION from "./read.txt"
 import { Instance } from "@/services/project/instance"
@@ -28,7 +27,13 @@ export const ReadTool = Tool.define("read", {
   parameters: z.object({
     filePath: z.string().min(1).max(4096).describe("The path to the file to read"),
     offset: z.coerce.number().int().min(0).describe("The line number to start reading from (0-based)").optional(),
-    limit: z.coerce.number().int().min(1).max(DEFAULT_READ_LIMIT).describe("The number of lines to read (defaults to 2000)").optional(),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(DEFAULT_READ_LIMIT)
+      .describe("The number of lines to read (defaults to 2000)")
+      .optional(),
   }),
   async execute(params, ctx) {
     const filepath = validateFilePath(params.filePath)
@@ -119,8 +124,6 @@ export const ReadTool = Tool.define("read", {
     }
     output += "\n</file>"
 
-    // just warms the lsp client
-    LSP.touchFile(filepath, false)
     FileTime.read(ctx.sessionID, filepath)
 
     return {
@@ -223,7 +226,8 @@ async function readTextLines(file: Bun.BunFile, offset: number, limit: number, s
     }
 
     if (pending.endsWith("\r")) pending = pending.slice(0, -1)
-    const line = pendingTruncated || pending.length > MAX_LINE_LENGTH ? `${pending.slice(0, MAX_LINE_LENGTH)}...` : pending
+    const line =
+      pendingTruncated || pending.length > MAX_LINE_LENGTH ? `${pending.slice(0, MAX_LINE_LENGTH)}...` : pending
     const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
     if (bytes + size > MAX_BYTES) {
       truncated = true

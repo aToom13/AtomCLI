@@ -13,6 +13,9 @@ export const QuestionTool = Tool.define("question", {
   }),
   async execute(params, ctx) {
     for (const question of params.questions) {
+      if ((question.type ?? "select") === "select" && !question.options?.length) {
+        throw new Error("Select questions require at least one option")
+      }
       if (question.question.length > 2_000 || (question.placeholder?.length ?? 0) > 2_000) {
         throw new Error("Question and placeholder text must be at most 2000 characters")
       }

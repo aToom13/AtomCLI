@@ -436,6 +436,31 @@ test("ask - resolves immediately when action is allow", async () => {
   })
 })
 
+test("ask - upgrades a legacy SSH always approval to the whole tool", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const key = ["permission", Instance.project.id]
+      await Storage.write(key, [
+        { permission: "ssh", pattern: "bandit:exec:ls *", action: "allow" },
+      ] satisfies PermissionNext.Ruleset)
+
+      await PermissionNext.ask({
+        sessionID: "session_ssh_upgrade",
+        permission: "ssh",
+        patterns: ["other:write:/tmp/value"],
+        metadata: {},
+        always: ["*"],
+        ruleset: [{ permission: "ssh", pattern: "*", action: "ask" }],
+      })
+
+      const stored = await Storage.read<PermissionNext.Ruleset>(key)
+      expect(stored).toContainEqual({ permission: "ssh", pattern: "*", action: "allow" })
+    },
+  })
+})
+
 test("ask - throws RejectedError when action is deny", async () => {
   await using tmp = await tmpdir({ git: true })
   await Instance.provide({

@@ -70,6 +70,7 @@ test("build agent has correct default properties", async () => {
       expect(build?.native).toBe(true)
       expect(evalPerm(build, "edit")).toBe("allow")
       expect(evalPerm(build, "bash")).toBe("allow")
+      expect(evalPerm(build, "ssh")).toBe("ask")
     },
   })
 })
@@ -548,23 +549,14 @@ const EXPLORE_ALLOWED_TOOLS = [
   "find",
   "grep",
   "bash",
+  "lsp",
   "webfetch",
   "websearch",
-  "codesearch",
   "skill",
   "memory",
   "taskflow",
 ]
-const EXPLORE_DENIED_TOOLS = [
-  "edit",
-  "write",
-  "todowrite",
-  "todoread",
-  "batch",
-  "agent",
-  "browser",
-  "system_health",
-]
+const EXPLORE_DENIED_TOOLS = ["edit", "write", "todowrite", "todoread", "batch", "agent", "browser", "system_health"]
 
 describe("explore agent tool filtering", () => {
   test("ToolRegistry.tools() returns only allowlisted tools for explore agent", async () => {
@@ -634,7 +626,6 @@ describe("explore agent tool filtering", () => {
         expect(disabled.has("bash")).toBe(false)
         expect(disabled.has("webfetch")).toBe(false)
         expect(disabled.has("websearch")).toBe(false)
-        expect(disabled.has("codesearch")).toBe(false)
       },
     })
   })
@@ -648,7 +639,7 @@ describe("explore agent tool filtering", () => {
         expect(explore).toBeDefined()
 
         // Verify each allowed tool evaluates to "allow"
-        for (const tool of ["read", "grep", "bash", "webfetch", "websearch", "codesearch"]) {
+        for (const tool of ["read", "grep", "bash", "lsp", "webfetch", "websearch"]) {
           expect(evalPerm(explore, tool)).toBe("allow")
         }
 

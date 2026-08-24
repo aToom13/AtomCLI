@@ -150,7 +150,16 @@ for (const item of targets) {
       ATOMCLI_CHANNEL: `'${Script.channel}'`,
       ATOMCLI_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
-    external: ["electron", "chromium-bidi", "playwright", "playwright-core", "@playwright/browser-chromium"],
+    external: [
+      "electron",
+      "chromium-bidi",
+      "playwright",
+      "playwright-core",
+      "@playwright/browser-chromium",
+      // ssh2 uses this optional native accelerator when available and falls
+      // back to JavaScript crypto when it is absent from standalone binaries.
+      "cpu-features",
+    ],
   })
 
   await $`rm -rf ./dist/${name}/bin/tui`

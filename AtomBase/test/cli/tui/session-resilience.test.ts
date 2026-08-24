@@ -126,6 +126,32 @@ describe("TUI session recovery", () => {
     expect(chain?.steps).toHaveLength(1)
     expect(chain?.steps[0].name).toBe("Audit")
   })
+
+  test("does not replace a parent taskflow with a later agent spawn", () => {
+    const chain = SessionRecovery.chain([
+      tool("taskflow", {
+        action: "start",
+        plan: [
+          { id: "inspect", name: "Inspect" },
+          { id: "fix", name: "Fix" },
+        ],
+      }),
+      tool(
+        "agent",
+        {
+          action: "spawn",
+          subagent_type: "explore",
+          description: "Inspect orchestration",
+          prompt: "Inspect the agent tool",
+        },
+        "### ✅ inspect_orchestration (@explore) [analysis]",
+        { status: "completed" },
+      ),
+    ])
+
+    expect(chain?.steps.map((step) => step.name)).toEqual(["Inspect", "Fix"])
+    expect(chain?.steps).toHaveLength(2)
+  })
 })
 
 describe("Files search", () => {

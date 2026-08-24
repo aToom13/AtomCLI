@@ -2,6 +2,8 @@ import { describe, test, expect } from "bun:test"
 import { AgentTool } from "@/integrations/tool/agent-tool"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
+import { Session } from "@/core/session"
+import { SessionStatus } from "@/core/session/status"
 
 describe("AgentTool", () => {
   const dummyCtx = {
@@ -74,17 +76,22 @@ describe("AgentTool", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        const parent = await Session.create({})
+        const child = await Session.create({ parentID: parent.id, title: "Inspect files (@explore subagent)" })
+        SessionStatus.set(child.id, { type: "busy" })
         const instance = await AgentTool.init({})
         const result = await instance.execute(
           {
             action: "status",
-            session_id: "test-session-123",
+            session_id: child.id,
           },
-          dummyCtx,
+          { ...dummyCtx, sessionID: parent.id },
         )
 
         expect(result.title).toBe("Task Status")
-        expect(result.metadata.sessionId).toBe("test-session-123")
+        expect(result.output).toContain("is busy")
+        expect(result.metadata.sessionId).toBe(child.id)
+        expect(result.metadata.status).toBe("busy")
       },
     })
   })
@@ -102,7 +109,7 @@ describe("AgentTool", () => {
     })
   })
 
-  test("action='abort' with workflowId delegates to OrchestrateTool abort", async () => {
+  test("action='abort' reports a missing workflow instead of a false success", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
@@ -116,7 +123,8 @@ describe("AgentTool", () => {
           dummyCtx,
         )
 
-        expect(result.output).toContain("Aborted/Removed 0 tasks/sessions")
+        expect(result.metadata.error).toBe(true)
+        expect(result.output).toContain('Workflow "non-existent-wf-id" not found')
       },
     })
   })
@@ -186,22 +194,69 @@ describe("AgentTool", () => {
     })
   })
 
-  test("action='abort' with session_id delegates to TaskTool abort", async () => {
+  test("action='abort' with session_id validates ownership before delegating", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const parent = await Session.create({})
+        const child = await Session.create({ parentID: parent.id })
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          {
+            action: "abort",
+            session_id: child.id,
+          },
+          { ...dummyCtx, sessionID: parent.id },
+        )
+
+        expect(result.title).toBe("Abort Successful")
+        expect(result.output).toContain(child.id)
+      },
+    })
+  })
+
+  test("status rejects an unrelated session", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const parent = await Session.create({})
+        const otherParent = await Session.create({})
+        const foreignChild = await Session.create({ parentID: otherParent.id })
+        const instance = await AgentTool.init({})
+
+        expect(
+          instance.execute({ action: "status", session_id: foreignChild.id }, { ...dummyCtx, sessionID: parent.id }),
+        ).rejects.toThrow("is not a child of the current session")
+      },
+    })
+  })
+
+  test("workflow status rejects a workflow owned by another parent session", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
         const instance = await AgentTool.init({})
-        const result = await instance.execute(
+        const owner = await Session.create({})
+        const stranger = await Session.create({})
+        const planned = await instance.execute(
           {
-            action: "abort",
-            session_id: "test-session-456",
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [{ id: "inspect", prompt: "Inspect orchestration", agent: "explore" }],
           },
-          dummyCtx,
+          { ...dummyCtx, sessionID: owner.id, extra: { bypassAgentCheck: true } },
         )
 
-        expect(result.title).toBe("Abort Successful")
-        expect(result.output).toContain("test-session-456")
+        const result = await instance.execute(
+          { action: "status", workflowId: planned.metadata.workflowId },
+          { ...dummyCtx, sessionID: stranger.id },
+        )
+
+        expect(result.metadata.error).toBe(true)
+        expect(result.output).toContain("does not belong to the current session")
       },
     })
   })

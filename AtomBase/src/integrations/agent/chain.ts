@@ -129,6 +129,19 @@ export const ChainStatusIcons: Record<ChainStatus, string> = {
   failed: "❌",
 }
 
+const ACTIVE_STEP_STATUSES = new Set<StepStatus>([
+  "running",
+  "coding",
+  "searching_web",
+  "searching_code",
+  "reading_file",
+  "writing_file",
+  "running_command",
+  "analyzing",
+  "thinking",
+  "retrying",
+])
+
 export namespace Chain {
   /**
    * Create a new empty chain
@@ -145,14 +158,17 @@ export namespace Chain {
   /**
    * Add a step to the chain
    */
-  export function addStep(chain: AgentChain, step: Omit<ChainStep, "id" | "status" | "retryCount">): AgentChain {
+  export function addStep(
+    chain: AgentChain,
+    step: Omit<ChainStep, "id" | "status" | "retryCount"> & { id?: string },
+  ): AgentChain {
     return {
       ...chain,
       steps: [
         ...chain.steps,
         {
           ...step,
-          id: crypto.randomUUID(),
+          id: step.id ?? crypto.randomUUID(),
           status: "pending",
           retryCount: 0,
         },
@@ -173,6 +189,25 @@ export namespace Chain {
       }
     }
     return { ...chain, steps }
+  }
+
+  /** Update any step while keeping the active pointer and aggregate status synchronized. */
+  export function updateStepAtIndex(chain: AgentChain, stepIndex: number, status: StepStatus): AgentChain {
+    const steps = [...chain.steps]
+    if (!steps[stepIndex]) return chain
+    steps[stepIndex] = { ...steps[stepIndex], status }
+
+    const activelyRunning = steps.findIndex((step) => ACTIVE_STEP_STATUSES.has(step.status))
+    const nextPending = steps.findIndex((step) => step.status === "pending")
+    const currentStep = activelyRunning >= 0 ? activelyRunning : nextPending >= 0 ? nextPending : stepIndex
+    const failed = steps.some((step) => step.status === "failed")
+    const complete = steps.every((step) => step.status === "complete")
+    return {
+      ...chain,
+      steps,
+      currentStep,
+      status: failed ? "failed" : complete ? "complete" : "executing",
+    }
   }
 
   /**

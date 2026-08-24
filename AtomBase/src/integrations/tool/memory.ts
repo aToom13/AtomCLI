@@ -64,7 +64,10 @@ async function saveAll(entries: MemoryEntry[]): Promise<void> {
  */
 const ALIAS_GROUPS: Array<{ keys: RegExp; tags: string[] }> = [
   // Kimlik / İnsan
-  { keys: /username|kullanıcı\s*adı|kullanici\s*adi|user\s*name|\bkişi\b|\bisim\b|\badım\b|\badın\b/i, tags: ["user", "identity", "person"] },
+  {
+    keys: /username|kullanıcı\s*adı|kullanici\s*adi|user\s*name|\bkişi\b|\bisim\b|\badım\b|\badın\b/i,
+    tags: ["user", "identity", "person"],
+  },
   { keys: /password|şifre|sifre|parola|credentials?/i, tags: ["auth", "credential", "security"] },
   { keys: /email|e-?mail|eposta|e-?posta/i, tags: ["contact", "email"] },
   { keys: /telefon|phone|numara|number/i, tags: ["contact", "phone"] },
@@ -151,7 +154,10 @@ function extractTags(content: string, userTags: string[]): string[] {
  * Dönen dizideki herhangi bir token eşleşmesi yeterli (OR semantiği).
  */
 function expandQuery(query: string): string[] {
-  const tokens = query.toLowerCase().split(/[\s,;]+/).filter(Boolean)
+  const tokens = query
+    .toLowerCase()
+    .split(/[\s,;]+/)
+    .filter(Boolean)
   const expanded = new Set<string>(tokens)
 
   for (const group of ALIAS_GROUPS) {
@@ -184,9 +190,7 @@ function score(entry: MemoryEntry, queryTokens: string[]): number {
     //   t.includes(token): "typescript" tag contains "type" query → valid
     //   token.includes(t): "typescript" query contains "ts" tag → only if tag >= 4 chars
     //                      prevents "blockchain".includes("ai") false positive
-    const partialMatch = tagsLower.some(
-      (t) => t.includes(token) || (t.length >= 4 && token.includes(t)),
-    )
+    const partialMatch = tagsLower.some((t) => t.includes(token) || (t.length >= 4 && token.includes(t)))
     if (partialMatch) s += 2
 
     // Content match
@@ -217,7 +221,9 @@ async function runMigrationIfNeeded(log: ReturnType<typeof Log.create>): Promise
   try {
     await fs.access(migrationFlagFile)
     return
-  } catch { /* not migrated yet */ }
+  } catch {
+    /* not migrated yet */
+  }
 
   log.info("running memory migration from learn/* → memory.jsonl")
   const entries: MemoryEntry[] = []
@@ -304,26 +310,32 @@ async function runMigrationIfNeeded(log: ReturnType<typeof Log.create>): Promise
 export const MemoryTool = Tool.define("memory", {
   description:
     "Persistent memory across sessions. Save facts, preferences, solutions — recall them later with natural language search. Replaces brain (remember/recall) and learn (record_*/find_knowledge).",
-  parameters: z.object({
-    action: z
-      .enum(["save", "search", "list"])
-      .describe(
-        "save: store a fact/note/solution. search: find stored memories by natural language query. list: show recent memories.",
-      ),
-    content: z
-      .string()
-      .max(65_536, "Memory content must be at most 64 KiB")
-      .optional()
-      .describe("Required for save. The text to remember — free-form, any language."),
-    tags: z
-      .array(z.string().min(1).max(100))
-      .max(50)
-      .optional()
-      .describe("Optional extra tags for save. System auto-generates tags from content."),
-    query: z.string().max(10_000).optional().describe("Required for search. Natural language query."),
-    limit: z.number().int().min(1).max(50).default(5).describe("Max results to return (default 5)."),
-    tag: z.string().max(100).optional().describe("Optional tag filter for list action."),
-  }),
+  parameters: z.discriminatedUnion("action", [
+    z.object({
+      action: z.literal("save"),
+      content: z.string().trim().min(1).max(65_536, "Memory content must be at most 64 KiB"),
+      tags: z.array(z.string().min(1).max(100)).max(50).optional(),
+      limit: z.number().int().min(1).max(50).default(5),
+      query: z.never().optional(),
+      tag: z.never().optional(),
+    }),
+    z.object({
+      action: z.literal("search"),
+      query: z.string().trim().min(1).max(10_000),
+      limit: z.number().int().min(1).max(50).default(5),
+      content: z.never().optional(),
+      tags: z.never().optional(),
+      tag: z.never().optional(),
+    }),
+    z.object({
+      action: z.literal("list"),
+      limit: z.number().int().min(1).max(50).default(5),
+      tag: z.string().max(100).optional(),
+      content: z.never().optional(),
+      tags: z.never().optional(),
+      query: z.never().optional(),
+    }),
+  ]),
 
   async execute(params, ctx): Promise<{ title: string; output: string; metadata: Record<string, any> }> {
     const log = Log.create({ service: "tool.memory", sessionID: ctx.sessionID })
@@ -333,10 +345,6 @@ export const MemoryTool = Tool.define("memory", {
 
     // ── SAVE ──────────────────────────────────────────────────────────────
     if (params.action === "save") {
-      if (!params.content?.trim()) {
-        return { title: "Error", output: "content is required for save", metadata: { error: true } }
-      }
-
       const tags = extractTags(params.content, params.tags ?? [])
       const entry: MemoryEntry = {
         id: ulid(),
@@ -360,10 +368,6 @@ export const MemoryTool = Tool.define("memory", {
 
     // ── SEARCH ────────────────────────────────────────────────────────────
     if (params.action === "search") {
-      if (!params.query?.trim()) {
-        return { title: "Error", output: "query is required for search", metadata: { error: true } }
-      }
-
       const entries = await loadAll()
       if (entries.length === 0) {
         return {
@@ -414,9 +418,7 @@ export const MemoryTool = Tool.define("memory", {
         }
       }
 
-      let filtered = [...entries].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      )
+      let filtered = [...entries].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
       if (params.tag) {
         const filterTag = params.tag.toLowerCase()
@@ -459,10 +461,7 @@ export const MemoryTool = Tool.define("memory", {
  * Recall relevant memories for a user query — injected into system prompt.
  * Returns an XML-wrapped string ready for prompt insertion, or "" if no matches.
  */
-export async function recall(
-  query: string,
-  _context?: { technology?: string; sessionID?: string },
-): Promise<string> {
+export async function recall(query: string, _context?: { technology?: string; sessionID?: string }): Promise<string> {
   const entries = await loadAll()
   if (entries.length === 0) return ""
 

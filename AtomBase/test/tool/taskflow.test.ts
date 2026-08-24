@@ -1,7 +1,9 @@
+import "../preload"
 import { describe, test, expect } from "bun:test"
 import { TaskFlowTool } from "@/integrations/tool/taskflow"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
+import { HarnessState } from "@/core/session/harness-state"
 
 describe("TaskFlowTool", () => {
   const dummyCtx = {
@@ -80,6 +82,37 @@ describe("TaskFlowTool", () => {
 
         const clearResult = await instance.execute({ action: "clear" }, dummyCtx)
         expect(clearResult.title).toContain("cleared")
+      },
+    })
+  })
+
+  test("action='update' keeps completed state synchronized with HarnessState", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = `ses_taskflow_sync_${crypto.randomUUID()}`
+        const ctx = { ...dummyCtx, sessionID }
+        const instance = await TaskFlowTool.init({})
+
+        await instance.execute(
+          {
+            action: "start",
+            plan: [
+              { id: "spawn-test", name: "Agent spawn test" },
+              { id: "status-test", name: "Agent status test" },
+            ],
+          },
+          ctx,
+        )
+        await instance.execute({ action: "update", step_id: "spawn-test", status: "running" }, ctx)
+        const completed = await instance.execute({ action: "update", step_id: "spawn-test", status: "completed" }, ctx)
+        const next = await instance.execute({ action: "update", step_id: "status-test", status: "running" }, ctx)
+
+        expect(completed.metadata.status).toBe("completed")
+        expect(HarnessState.getSteps(sessionID).map((step) => step.status)).toEqual(["completed", "running"])
+        expect(next.metadata.status).toBe("running")
+        HarnessState.reset(sessionID)
       },
     })
   })

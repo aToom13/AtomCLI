@@ -169,6 +169,22 @@ describe("provider catalog contracts", () => {
     expect(unsupported).toEqual([])
   })
 
+  test("builtin auth alternatives are pinned and expose their provider hooks", async () => {
+    expect(Plugin.BUILTIN).toEqual(["opencode-copilot-auth@0.0.12", "@ex-machina/opencode-anthropic-auth@1.8.1"])
+
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const authProviders = new Set(
+          (await Plugin.list()).flatMap((plugin) => (plugin.auth ? [plugin.auth.provider] : [])),
+        )
+        expect(authProviders).toContain("github-copilot")
+        expect(authProviders).toContain("anthropic")
+      },
+    })
+  })
+
   test("auth login exposes every catalog and plugin-auth provider", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -226,7 +242,6 @@ describe("provider catalog contracts", () => {
       },
     })
   })
-
 })
 
 describe("provider SDK compatibility", () => {

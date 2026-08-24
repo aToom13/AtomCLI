@@ -1,11 +1,6 @@
-- Search the web using Exa AI - performs real-time web searches and can scrape content from specific URLs
-- Provides up-to-date information for current events and recent data
-- Supports configurable result counts and returns the content from the most relevant websites
-- Use this tool for accessing information beyond knowledge cutoff
-- Searches are performed automatically within a single API call
-
-Usage notes:
-  - Supports live crawling modes: 'fallback' (backup if cached unavailable) or 'preferred' (prioritize live crawling)
-  - Search types: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
-  - Configurable context length for optimal LLM integration
-  - Domain filtering and advanced search options available
+- Search the public web and programming documentation through one tool.
+- Use mode="web" for current events, products, general discovery, and fresh facts.
+- Use mode="code" for libraries, SDKs, APIs, framework documentation, and code examples.
+- Code mode uses Exa's dedicated code-context endpoint and accepts a 1000-12000 token budget.
+- Web mode uses Exa when enabled for the active provider and otherwise falls back to DuckDuckGo.
+- Prefer focused queries that include the library name, version, API, and intended behavior.

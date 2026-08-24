@@ -27,7 +27,7 @@ function reviewerLikeAgent(): Agent.Info {
     read: { "*": "allow" },
     grep: "allow",
     glob: "allow",
-    codesearch: "allow",
+    websearch: "allow",
     bash: {
       "*": "allow",
       "curl *": "deny",

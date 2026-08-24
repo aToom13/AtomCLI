@@ -13,7 +13,7 @@ The tool restrictions and instructions in this mode file OVERRIDE any subagent s
 
 ```
 ✅ ALLOWED TOOLS:
-- Read, Find, Grep, LSP, CodeSearch, WebSearch, WebFetch, TaskFlow
+- Read, Find, Grep, LSP, WebSearch (including code mode), WebFetch, TaskFlow
 
 ❌ DISALLOWED TOOLS (STRICTLY PROHIBITED):
 - Edit (file modification)

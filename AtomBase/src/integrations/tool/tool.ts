@@ -29,7 +29,7 @@ export namespace Tool {
       description: string
       parameters: Parameters
       execute(
-        args: z.infer<Parameters>,
+        args: z.input<Parameters>,
         ctx: Context,
       ): Promise<{
         title: string
@@ -41,7 +41,23 @@ export namespace Tool {
     }>
   }
 
-  export type InferParameters<T extends Info> = T extends Info<infer P> ? z.infer<P> : never
+  type Definition<Parameters extends z.ZodType, M extends Metadata> = {
+    description: string
+    parameters: Parameters
+    execute(
+      args: z.output<Parameters>,
+      ctx: Context,
+    ): Promise<{
+      title: string
+      metadata: M
+      output: string
+      attachments?: MessageV2.FilePart[]
+    }>
+    formatValidationError?(error: z.ZodError): string
+  }
+
+  // UI renderers consume the normalized shape after validation/defaults.
+  export type InferParameters<T extends Info> = T extends Info<infer P> ? z.output<P> : never
   export type InferMetadata<T extends Info> = T extends Info<any, infer M> ? M : never
 
   /**
@@ -61,7 +77,9 @@ export namespace Tool {
 
   export function define<Parameters extends z.ZodType, Result extends Metadata>(
     id: string,
-    init: Info<Parameters, Result>["init"] | Awaited<ReturnType<Info<Parameters, Result>["init"]>>,
+    init:
+      | ((ctx?: InitContext) => Promise<Definition<Parameters, Result>> | Definition<Parameters, Result>)
+      | Definition<Parameters, Result>,
   ): Info<Parameters, Result> {
     return {
       id,
@@ -74,32 +92,35 @@ export namespace Tool {
           ? toolInfo.formatValidationError
           : (err: z.ZodError) => defaultFormatValidationError(id, err)
 
-        toolInfo.execute = async (args, ctx) => {
-          try {
-            toolInfo.parameters.parse(args)
-          } catch (error) {
-            if (error instanceof z.ZodError) {
-              throw new Error(formatError(error), { cause: error })
+        return {
+          ...toolInfo,
+          execute: async (args, ctx) => {
+            let parsed: z.output<Parameters>
+            try {
+              parsed = toolInfo.parameters.parse(args)
+            } catch (error) {
+              if (error instanceof z.ZodError) {
+                throw new Error(formatError(error), { cause: error })
+              }
+              throw new Error(`The ${id} tool encountered an unexpected error: ${error}`, { cause: error })
             }
-            throw new Error(`The ${id} tool encountered an unexpected error: ${error}`, { cause: error })
-          }
-          const result = await execute(args, ctx)
-          // skip truncation for tools that handle it themselves
-          if (result.metadata.truncated !== undefined) {
-            return result
-          }
-          const truncated = await Truncate.output(result.output, {}, initCtx?.agent)
-          return {
-            ...result,
-            output: truncated.content,
-            metadata: {
-              ...result.metadata,
-              truncated: truncated.truncated,
-              ...(truncated.truncated && { outputPath: truncated.outputPath }),
-            },
-          }
+            const result = await execute(parsed, ctx)
+            // skip truncation for tools that handle it themselves
+            if (result.metadata.truncated !== undefined) {
+              return result
+            }
+            const truncated = await Truncate.output(result.output, {}, initCtx?.agent)
+            return {
+              ...result,
+              output: truncated.content,
+              metadata: {
+                ...result.metadata,
+                truncated: truncated.truncated,
+                ...(truncated.truncated && { outputPath: truncated.outputPath }),
+              },
+            }
+          },
         }
-        return toolInfo
       },
     }
   }

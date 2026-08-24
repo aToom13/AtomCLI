@@ -578,6 +578,21 @@ export namespace MCP {
     return abortable(client.listTools(), signal)
   }
 
+  function mcpToolKey(clientName: string, toolName: string) {
+    const sanitizedClientName = clientName.replace(/[^a-zA-Z0-9_-]/g, "_")
+    const sanitizedToolName = toolName.replace(/[^a-zA-Z0-9_-]/g, "_")
+
+    // The official sequential-thinking server exposes one tool named
+    // `sequentialthinking`. Repeating both names produces the awkward
+    // `sequential-thinking_sequentialthinking`; AtomCLI already treats
+    // `sequential_thinking` as the canonical reasoning-tool identifier.
+    if (sanitizedClientName === "sequential-thinking" && sanitizedToolName === "sequentialthinking") {
+      return "sequential_thinking"
+    }
+
+    return `${sanitizedClientName}_${sanitizedToolName}`
+  }
+
   export async function tools(signal?: AbortSignal, loadedClients?: Set<string>) {
     const s = await abortable(state(), signal)
     const result: Record<string, Tool> = {}
@@ -615,9 +630,7 @@ export namespace MCP {
 
       const clientTools: Record<string, Tool> = {}
       for (const mcpTool of toolsResult.tools) {
-        const sanitizedClientName = clientName.replace(/[^a-zA-Z0-9_-]/g, "_")
-        const sanitizedToolName = mcpTool.name.replace(/[^a-zA-Z0-9_-]/g, "_")
-        clientTools[sanitizedClientName + "_" + sanitizedToolName] = await convertMcpTool(mcpTool, client)
+        clientTools[mcpToolKey(clientName, mcpTool.name)] = await convertMcpTool(mcpTool, client)
       }
       toolsCache.set(clientName, clientTools)
       if (Object.keys(clientTools).length > 0) loadedClients?.add(clientName)
@@ -629,6 +642,7 @@ export namespace MCP {
   export const _internals = {
     abortable,
     listClientTools,
+    mcpToolKey,
   }
 
   export async function prompts() {

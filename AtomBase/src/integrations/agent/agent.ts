@@ -50,6 +50,7 @@ export namespace Agent {
     const defaults = PermissionNext.fromConfig({
       "*": "allow",
       doom_loop: "ask",
+      ssh: "ask",
       external_directory: {
         "*": "ask",
         [Truncate.DIR]: "allow",
@@ -143,7 +144,8 @@ export namespace Agent {
             // Allow read-only code exploration
             grep: "allow",
             glob: "allow",
-            codesearch: "allow",
+            lsp: "allow",
+            websearch: "allow",
             // Allow test execution and API calls for independent verification.
             // Deny-pattern overlay: block common exfil/download primitives so a
             // reviewer consuming untrusted repo content (harness logs, pasted
@@ -337,9 +339,9 @@ export namespace Agent {
             glob: "allow",
             list: "allow",
             bash: "allow",
+            lsp: "allow",
             webfetch: "allow",
             websearch: "allow",
-            codesearch: "allow",
             read: "allow",
             external_directory: {
               [Truncate.DIR]: "allow",

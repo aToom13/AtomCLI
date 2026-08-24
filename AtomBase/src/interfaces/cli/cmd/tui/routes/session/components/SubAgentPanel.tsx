@@ -43,6 +43,7 @@ export function SubAgentPanel(props: Props) {
   const mode = createMemo(() => getDisplayMode(pw()))
   const running = createMemo(() => props.agents.filter((a) => a.status === "running").length)
   const waiting = createMemo(() => props.agents.filter((a) => a.status === "waiting").length)
+  const failed = createMemo(() => props.agents.filter((a) => a.status === "failed").length)
 
   const { navigate } = useRoute()
   const { theme } = useTheme()
@@ -91,10 +92,15 @@ export function SubAgentPanel(props: Props) {
               <text fg={theme.border}>{"│"}</text>
               <text fg={waiting() > 0 ? theme.warning : theme.border}>{"⏸"}</text>
               <text fg={waiting() > 0 ? theme.text : theme.textMuted}>{waiting() + " idle"}</text>
+              <Show when={failed() > 0}>
+                <text fg={theme.border}>{"│"}</text>
+                <text fg={theme.error}>{failed() + " failed"}</text>
+              </Show>
             </>
           }>
             <text fg={running() > 0 ? theme.success : theme.textMuted}>{"⟳" + running()}</text>
             <text fg={waiting() > 0 ? theme.warning : theme.textMuted}>{"⏸" + waiting()}</text>
+            <text fg={failed() > 0 ? theme.error : theme.textMuted}>{"✖" + failed()}</text>
           </Show>
         </box>
 
@@ -163,6 +169,7 @@ function AgentCard(props: CardProps) {
 
   const isWaiting = () => props.agent.status === "waiting"
   const isRunning = () => props.agent.status === "running"
+  const isFailed = () => props.agent.status === "failed"
 
   const messages = createMemo(() => sync.data.message[props.agent.sessionId] ?? [])
   const lastMsg = createMemo(() => messages().findLast((m) => m.role === "assistant"))
@@ -170,9 +177,9 @@ function AgentCard(props: CardProps) {
   const lastTool = createMemo(() => parts().findLast((p: any) => p.type === "tool" && p.state?.status === "running") as any)
   const lastText = createMemo(() => parts().findLast((p: any) => p.type === "text") as any)
 
-  const statusColor = () => (isWaiting() ? theme.warning : theme.success)
-  const cardBorder = () => (isWaiting() ? theme.warning : theme.success)
-  const statusIcon = () => (isWaiting() ? "⏸" : "⟳")
+  const statusColor = () => (isFailed() ? theme.error : isWaiting() ? theme.warning : theme.success)
+  const cardBorder = () => (isFailed() ? theme.error : isWaiting() ? theme.warning : theme.success)
+  const statusIcon = () => (isFailed() ? "✖" : isWaiting() ? "⏸" : "⟳")
 
   // Inner width: pw − border(2) − padding(2)
   const inner = () => Math.max(6, props.pw - 4)
@@ -224,6 +231,11 @@ function AgentCard(props: CardProps) {
             <text fg={theme.warning}>{"bekliyor…"}</text>
           </box>
         </Show>
+        <Show when={isFailed()}>
+          <box paddingLeft={2}>
+            <text fg={theme.error}>{"başarısız"}</text>
+          </box>
+        </Show>
 
         {/* Kill on separate row */}
         <box paddingLeft={2}>
@@ -246,7 +258,7 @@ function AgentCard(props: CardProps) {
       {/* Header: @type + status */}
       <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} paddingTop={1} backgroundColor={theme.backgroundElement}>
         <text fg={theme.accent}>{"@" + props.agent.agentType.slice(0, typeChars())}</text>
-        <text fg={statusColor()}>{statusIcon() + (props.mode === "wide" ? (isWaiting() ? " idle" : " run") : "")}</text>
+        <text fg={statusColor()}>{statusIcon() + (props.mode === "wide" ? (isFailed() ? " failed" : isWaiting() ? " idle" : " run") : "")}</text>
       </box>
 
       {/* Description — wide only */}
@@ -271,6 +283,9 @@ function AgentCard(props: CardProps) {
         </Show>
         <Show when={isWaiting()}>
           <text fg={theme.warning}>{"Bekliyor…"}</text>
+        </Show>
+        <Show when={isFailed()}>
+          <text fg={theme.error}>{props.agent.lastOutput?.slice(0, textChars()) || "Başarısız"}</text>
         </Show>
       </box>
 

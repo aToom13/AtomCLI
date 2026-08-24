@@ -8,6 +8,7 @@ import { SessionReuse } from "./session-reuse"
 import type { Agent } from "../agent/agent"
 import { Instance } from "@/services/project/instance"
 import { SubAgentRuntime } from "./subagent-runtime"
+import { HarnessState } from "@/core/session/harness-state"
 
 /**
  * Shared sub-agent session spawn utility.
@@ -191,6 +192,7 @@ export namespace SubAgent {
 
   async function spawnInProcess(config: SpawnConfig): Promise<SpawnResult> {
     let isNewSession = false
+    const parentStepId = HarnessState.getRunningStep(config.parentSessionID)
 
     // Try to reuse existing session
     let session: any = null
@@ -206,6 +208,8 @@ export namespace SubAgent {
           await Bus.publish(TuiEvent.SubAgentReactivate, {
             sessionId: session.id,
             description: config.description,
+            parentSessionId: config.parentSessionID,
+            parentStepId,
           })
         } catch {
           /* TUI may not be available */
@@ -227,6 +231,8 @@ export namespace SubAgent {
           sessionId: session.id,
           agentType: config.agent.name,
           description: config.description,
+          parentSessionId: config.parentSessionID,
+          parentStepId,
         })
       } catch {
         /* TUI may not be available */
@@ -238,42 +244,70 @@ export namespace SubAgent {
     // and must not wait until spawn() returns to learn the session ID.
     await config.onSession?.({ sessionId: session.id, isNewSession })
 
-    // Execute the prompt
+    const notifyDone = async (lastOutput: string) => {
+      try {
+        await Bus.publish(TuiEvent.SubAgentDone, {
+          sessionId: session.id,
+          lastOutput: lastOutput.slice(0, 2000),
+        })
+      } catch {
+        /* TUI may not be available */
+      }
+    }
+
+    const notifyFailed = async (error: string) => {
+      try {
+        await Bus.publish(TuiEvent.SubAgentFailed, {
+          sessionId: session.id,
+          error: error.slice(0, 2000),
+        })
+      } catch {
+        /* TUI may not be available */
+      }
+    }
+
+    // Execute the prompt. A rejected prompt must also close the active state;
+    // otherwise the sub-agent card remains stuck on "running" forever.
     const messageID = Identifier.ascending("message")
-    const result = await SessionPrompt.prompt({
-      messageID,
-      sessionID: session.id,
-      model: {
-        modelID: config.model.modelID,
-        providerID: config.model.providerID,
-      },
-      agent: config.agent.name,
-      tools: {
-        todowrite: false,
-        todoread: false,
-        task: false,
-        ...(config.deniedTools ?? {}),
-      },
-      parts: config.parts,
-    })
+    let result: Awaited<ReturnType<typeof SessionPrompt.prompt>>
+    try {
+      result = await SessionPrompt.prompt({
+        messageID,
+        sessionID: session.id,
+        model: {
+          modelID: config.model.modelID,
+          providerID: config.model.providerID,
+        },
+        agent: config.agent.name,
+        tools: {
+          todowrite: false,
+          todoread: false,
+          task: false,
+          ...(config.deniedTools ?? {}),
+        },
+        parts: config.parts,
+      })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await notifyFailed(`Error: ${detail}`)
+      throw error
+    }
 
     if (result.info.role === "assistant" && result.info.error) {
       const detail = "message" in result.info.error ? result.info.error.message : "Sub-agent prompt failed"
+      await notifyFailed(`Error: ${result.info.error.name}: ${detail}`)
       throw new Error(`${result.info.error.name}: ${detail}`)
     }
 
-    const lastText = result.parts.findLast((x) => x.type === "text")
-    const output = lastText && "text" in lastText ? (lastText as any).text : ""
+    // Preserve multi-part final answers instead of silently returning only the
+    // last text fragment.
+    const output = result.parts
+      .filter((part) => part.type === "text" && "text" in part)
+      .map((part) => String((part as any).text))
+      .filter((text) => text.trim().length > 0)
+      .join("\n\n")
 
-    // Notify TUI that sub-agent finished
-    try {
-      await Bus.publish(TuiEvent.SubAgentDone, {
-        sessionId: session.id,
-        lastOutput: output.slice(0, 2000),
-      })
-    } catch {
-      /* TUI may not be available */
-    }
+    await notifyDone(output)
 
     return {
       sessionId: session.id,

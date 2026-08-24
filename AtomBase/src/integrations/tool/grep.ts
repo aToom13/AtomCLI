@@ -141,7 +141,11 @@ export const GrepTool = Tool.define("grep", {
   description: DESCRIPTION,
   parameters: z.object({
     pattern: z.string().min(1).max(MAX_PATTERN_LENGTH).describe("The regex pattern to search for in file contents"),
-    path: z.string().max(4096).optional().describe("The directory to search in. Defaults to the current working directory."),
+    path: z
+      .string()
+      .max(4096)
+      .optional()
+      .describe("The directory to search in. Defaults to the current working directory."),
     include: z.string().max(1_000).optional().describe('File pattern to include (for example, "*.ts")'),
     count: z.boolean().optional().describe("Return bounded per-file match counts instead of matching lines"),
   }),
@@ -170,7 +174,7 @@ export const GrepTool = Tool.define("grep", {
       return {
         title: params.pattern,
         metadata: { matches: 0, truncated: false },
-        output: params.count ? "No matches found" : "No files found",
+        output: "No matches found",
       }
     }
     if (result.exitCode !== 0 && !result.truncated) throw new Error(`ripgrep failed: ${result.stderr}`)
@@ -201,7 +205,7 @@ export const GrepTool = Tool.define("grep", {
       return [{ path: filePath, lineNumber, text: text.join("|") }]
     })
     if (matches.length === 0) {
-      return { title: params.pattern, metadata: { matches: 0, truncated: false }, output: "No files found" }
+      return { title: params.pattern, metadata: { matches: 0, truncated: false }, output: "No matches found" }
     }
 
     const output = [`Found ${matches.length} matches`]

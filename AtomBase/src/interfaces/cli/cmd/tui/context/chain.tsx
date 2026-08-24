@@ -23,7 +23,7 @@ export interface ChainContextValue {
 
     // Session-scoped chain operations (sessionID optional for backwards compat)
     startChain: (mode?: "safe" | "autonomous", sessionID?: string) => void
-    addStep: (name: string, description: string, todos?: StepTodo[], extra?: { sessionId?: string; agentType?: string; dependsOn?: string[]; sessionID?: string }) => void
+    addStep: (name: string, description: string, todos?: StepTodo[], extra?: { stepId?: string; sessionId?: string; agentType?: string; dependsOn?: string[]; sessionID?: string }) => void
     updateStepStatus: (status: string, tool?: string, sessionID?: string) => void
     completeStep: (output?: string, sessionID?: string) => void
     failStep: (error: string, sessionID?: string) => void
@@ -70,10 +70,11 @@ export function ChainProvider(props: ParentProps) {
         setChains((prev) => ({ ...prev, [k]: Chain.create(mode) }))
     }
 
-    const addStep = (name: string, description: string, todos?: StepTodo[], extra?: { sessionId?: string; agentType?: string; dependsOn?: string[]; sessionID?: string }) => {
+    const addStep = (name: string, description: string, todos?: StepTodo[], extra?: { stepId?: string; sessionId?: string; agentType?: string; dependsOn?: string[]; sessionID?: string }) => {
         const k = key(extra?.sessionID)
         updateChainForSession(k, (current) =>
             Chain.addStep(current, {
+                id: extra?.stepId,
                 name,
                 description,
                 todos,
@@ -170,16 +171,7 @@ export function ChainProvider(props: ParentProps) {
     }
 
     const updateStepByIndex = (stepIndex: number, status: string, sessionID?: string) => {
-        updateChainForSession(key(sessionID), (current) => {
-            const updatedSteps = [...current.steps]
-            if (updatedSteps[stepIndex]) {
-                updatedSteps[stepIndex] = {
-                    ...updatedSteps[stepIndex],
-                    status: status as any,
-                }
-            }
-            return { ...current, steps: updatedSteps }
-        })
+        updateChainForSession(key(sessionID), (current) => Chain.updateStepAtIndex(current, stepIndex, status as any))
     }
 
     const clearChain = (sessionID?: string) => {

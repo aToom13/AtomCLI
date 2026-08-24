@@ -88,11 +88,17 @@ interface TaskNode {
 
 interface WorkflowState {
   id: string
+  /** Parent session that created this workflow. Missing only on legacy checkpoints. */
+  parentSessionID?: string
   tasks: TaskNode[]
   results: Record<string, TaskResult>
   status: "planned" | "running" | "resumable" | "completed" | "failed"
   createdAt: number
   sessionMapKeys: string[] // F24: track keys for O(1) cleanup
+  /** True only when this workflow created the parent session's chain UI. */
+  ownsTaskflowUI?: boolean
+  /** Workflow-level failure not attributable to one task. */
+  error?: string
 }
 
 interface TaskResult {
@@ -119,6 +125,9 @@ const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 // Track agent-type to session-id mapping for session reuse across workflow runs
 // Key: "parentSessionId:agentType:taskId" → sessionId
 const AGENT_SESSION_MAP: Map<string, string> = new Map()
+// The same deterministic key may be reused by a newer workflow. Ownership
+// prevents cleanup of an older workflow from deleting the newer mapping.
+const AGENT_SESSION_OWNER: Map<string, string> = new Map()
 
 // Cleanup completed/failed workflows older than 1 hour to prevent memory leaks
 const WORKFLOW_TTL_MS = 60 * 60 * 1000
@@ -126,30 +135,15 @@ const WORKFLOW_TTL_MS = 60 * 60 * 1000
 /**
  * Purge all AGENT_SESSION_MAP entries that belong to a workflow.
  *
- * Fast path: sessionMapKeys was populated during execution — O(k) deletes.
- * Fallback:  workflow was evicted before any task ran (sessionMapKeys is empty).
- *            In that case we scan the map for keys whose task-id segment matches
- *            one of this workflow's task ids.  The key format is
- *            "parentSessionId:agentType:taskId", so we split on ":" and check
- *            the third segment.  This keeps the scan bounded to the size of
- *            AGENT_SESSION_MAP × workflow.tasks, not the whole key space.
+ * A key can be reused by a newer workflow, so deletion is conditional on the
+ * workflow still owning it. A workflow with no tracked keys never registered
+ * a session and therefore has nothing to purge.
  */
 function purgeSessionMapForWorkflow(wf: WorkflowState): void {
-  if (wf.sessionMapKeys.length > 0) {
-    // Fast path: we already know the exact keys
-    for (const key of wf.sessionMapKeys) {
-      AGENT_SESSION_MAP.delete(key)
-    }
-    return
-  }
-  // Fallback: scan for zombie entries (workflow cancelled before execution)
-  const taskIds = new Set(wf.tasks.map((t) => t.id))
-  for (const key of AGENT_SESSION_MAP.keys()) {
-    // key = "parentSessionId:agentType:taskId"
-    const taskId = key.split(":")[2]
-    if (taskId !== undefined && taskIds.has(taskId)) {
-      AGENT_SESSION_MAP.delete(key)
-    }
+  for (const key of wf.sessionMapKeys) {
+    if (AGENT_SESSION_OWNER.get(key) !== wf.id) continue
+    AGENT_SESSION_MAP.delete(key)
+    AGENT_SESSION_OWNER.delete(key)
   }
 }
 
@@ -364,6 +358,10 @@ function formatWorkflowOutput(workflow: WorkflowState): string {
     ``,
   ]
 
+  if (workflow.error) {
+    parts.push(`**Workflow Error:** ${workflow.error}`, ``)
+  }
+
   for (const task of workflow.tasks) {
     const r = workflow.results[task.id]
     const statusEmoji =
@@ -535,33 +533,42 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         const workflowId = `wf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
         const workflow: WorkflowState = {
           id: workflowId,
+          parentSessionID: ctx.sessionID,
           tasks,
           results: Object.fromEntries(tasks.map((t) => [t.id, { status: "pending" as const }])),
           status: "planned",
           createdAt: Date.now(),
           sessionMapKeys: [], // F24: populated during execution
+          // A workflow must never replace a taskflow explicitly owned by the
+          // parent agent. The sub-agent panel already exposes workflow agents.
+          ownsTaskflowUI: !HarnessState.hasActivePlan(ctx.sessionID),
         }
         WORKFLOWS.set(workflowId, workflow)
         await checkpoint(workflow)
         cleanupOldWorkflows()
 
-        // Publish Chain UI events for real-time progress tracking
-        try {
-          await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-          await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
-          for (const task of tasks) {
-            const deps = task.dependsOn.length > 0 ? ` (needs: ${task.dependsOn.join(", ")})` : ""
-            await Bus.publish(TuiEvent.ChainAddStep, {
-              name: `${task.id}`,
-              description: `@${task.agent} [${task.category}]${deps}: ${task.prompt.slice(0, 80)}`,
-              agentType: task.agent,
-              dependsOn: task.dependsOn.length > 0 ? task.dependsOn : undefined,
-              sessionID: ctx.sessionID,
-            })
+        // Publish Chain UI events only when no parent-owned taskflow exists.
+        // AgentTool uses this planner internally for single spawns; clearing
+        // here used to erase the user's task list on every agent creation.
+        if (workflow.ownsTaskflowUI) {
+          try {
+            await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+            await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
+            for (const task of tasks) {
+              const deps = task.dependsOn.length > 0 ? ` (needs: ${task.dependsOn.join(", ")})` : ""
+              await Bus.publish(TuiEvent.ChainAddStep, {
+                stepId: task.id,
+                name: `${task.id}`,
+                description: `@${task.agent} [${task.category}]${deps}: ${task.prompt.slice(0, 80)}`,
+                agentType: task.agent,
+                dependsOn: task.dependsOn.length > 0 ? task.dependsOn : undefined,
+                sessionID: ctx.sessionID,
+              })
+            }
+            await Bus.publish(TuiEvent.ChainUpdateStep, { status: "pending", sessionID: ctx.sessionID })
+          } catch {
+            /* TUI may not be active */
           }
-          await Bus.publish(TuiEvent.ChainUpdateStep, { status: "pending", sessionID: ctx.sessionID })
-        } catch {
-          /* TUI may not be active */
         }
 
         // Build execution layers (groups of parallelizable tasks)
@@ -642,6 +649,25 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             metadata: { error: true },
           }
         }
+        if (workflow.parentSessionID && workflow.parentSessionID !== ctx.sessionID) {
+          return {
+            title: "Error",
+            output: `Workflow "${params.workflowId}" does not belong to the current session`,
+            metadata: { error: true },
+          }
+        }
+
+        if (workflow.status === "completed" || workflow.status === "failed") {
+          return {
+            title: `Workflow Already ${workflow.status === "completed" ? "Completed" : "Failed"}`,
+            output: formatWorkflowOutput(workflow),
+            metadata: {
+              error: workflow.status === "failed",
+              workflowId: workflow.id,
+              status: workflow.status,
+            },
+          }
+        }
 
         if (workflow.status === "running") {
           // ESC/interrupt recovery: reset interrupted workflow so it can be re-executed.
@@ -661,7 +687,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         }
 
         workflow.status = "running"
+        workflow.error = undefined
         await checkpoint(workflow)
+        // A taskflow may have been started after planning but before execute.
+        // In that case relinquish UI ownership rather than overwriting it.
+        const ownsTaskflowUI = workflow.ownsTaskflowUI === true && !HarnessState.hasActivePlan(ctx.sessionID)
         // Track index of current task in Chain for parallel_update
         const taskIndexMap: Record<string, number> = {}
         workflow.tasks.forEach((t, i) => {
@@ -751,11 +781,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 // Update Chain UI: mark this task as running
                 const stepIdx = taskIndexMap[task.id]
                 try {
-                  await Bus.publish(TuiEvent.ChainParallelUpdate, {
-                    stepIndex: stepIdx,
-                    status: "running",
-                    sessionID: ctx.sessionID,
-                  })
+                  if (ownsTaskflowUI) {
+                    await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                      stepIndex: stepIdx,
+                      status: "running",
+                      sessionID: ctx.sessionID,
+                    })
+                  }
                 } catch {
                   /* TUI may not be active */
                 }
@@ -782,6 +814,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 let reviewerSessionId: string | undefined
                 const dismissedSessionIds = new Set<string>()
                 const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
+                const rememberSession = (sessionId: string) => {
+                  AGENT_SESSION_MAP.set(sessionKey, sessionId)
+                  AGENT_SESSION_OWNER.set(sessionKey, workflow.id)
+                  if (!workflow.sessionMapKeys.includes(sessionKey)) workflow.sessionMapKeys.push(sessionKey)
+                }
 
                 const completeTask = async (
                   spawnResult: { sessionId: string; output: string },
@@ -802,11 +839,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                   await WorkflowFS.writeSuccess(params.workflowId!, task.id, task.agent, spawnResult.output)
                   try {
-                    await Bus.publish(TuiEvent.ChainParallelUpdate, {
-                      stepIndex: stepIdx,
-                      status: "complete",
-                      sessionID: ctx.sessionID,
-                    })
+                    if (ownsTaskflowUI) {
+                      await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                        stepIndex: stepIdx,
+                        status: "complete",
+                        sessionID: ctx.sessionID,
+                      })
+                    }
                   } catch {
                     /* TUI may not be active */
                   }
@@ -892,20 +931,16 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       deniedTools: Object.fromEntries(
                         (config.experimental?.primary_tools ?? []).map((t) => [t, false]),
                       ),
-                      onSession: ({ sessionId, isNewSession }) => {
+                      onSession: ({ sessionId }) => {
                         result.sessionId = sessionId
-                        if (isNewSession) {
-                          AGENT_SESSION_MAP.set(sessionKey, sessionId)
-                          if (!workflow.sessionMapKeys.includes(sessionKey)) {
-                            workflow.sessionMapKeys.push(sessionKey)
-                          }
-                        }
+                        rememberSession(sessionId)
                       },
                     })
 
                     // Keep compatibility with alternate spawn implementations that do
                     // not invoke onSession (for example, external test integrations).
                     result.sessionId = spawnResult.sessionId
+                    rememberSession(spawnResult.sessionId)
                     if (captureTerminations(dismissedSessionIds, result.sessionId)) {
                       throw new Error("Sub-agent was closed and deleted by the user")
                     }
@@ -1033,7 +1068,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     const reviewerWasDismissed = reviewerSessionId ? dismissedSessionIds.has(reviewerSessionId) : false
                     const wasDismissed = mainWasDismissed || reviewerWasDismissed
                     if (wasDismissed) {
-                      AGENT_SESSION_MAP.delete(sessionKey)
+                      if (AGENT_SESSION_OWNER.get(sessionKey) === workflow.id) {
+                        AGENT_SESSION_MAP.delete(sessionKey)
+                        AGENT_SESSION_OWNER.delete(sessionKey)
+                      }
                       if (reviewerWasDismissed) HarnessState.clearQASession(ctx.sessionID, task.id)
                       lastError = "Sub-agent was closed and deleted by the user"
                       log.info("task stopped after sub-agent deletion", {
@@ -1100,11 +1138,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                   // Update Chain UI: mark step as failed
                   try {
-                    await Bus.publish(TuiEvent.ChainParallelUpdate, {
-                      stepIndex: stepIdx,
-                      status: "failed",
-                      sessionID: ctx.sessionID,
-                    })
+                    if (ownsTaskflowUI) {
+                      await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                        stepIndex: stepIdx,
+                        status: "failed",
+                        sessionID: ctx.sessionID,
+                      })
+                    }
                   } catch {
                     /* TUI may not be active */
                   }
@@ -1121,15 +1161,25 @@ export const OrchestrateTool = Tool.define("orchestrate", {
               await Promise.all(promises)
             }
 
-            // Determine overall status
-            workflow.status = failedTasks.length > 0 ? "failed" : "completed"
+            // Determine overall status from persisted results, not just tasks
+            // touched by this invocation. Preserve an abort that raced with
+            // the blocking execute loop.
+            if (workflow.status === "running") {
+              const results = Object.values(workflow.results)
+              if (results.some((result) => result.status === "failed")) workflow.status = "failed"
+              else if (results.some((result) => result.status === "pending" || result.status === "running")) {
+                workflow.status = "resumable"
+              } else workflow.status = "completed"
+            }
             await checkpoint(workflow)
 
             // Clear Chain UI on finish
-            try {
-              await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-            } catch {
-              /* TUI may not be active */
+            if (ownsTaskflowUI) {
+              try {
+                await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+              } catch {
+                /* TUI may not be active */
+              }
             }
 
             // Cleanup old workflows to prevent memory leaks
@@ -1147,6 +1197,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             log.error("workflow execution failed", { error: errorMsg })
             // Ensure the workflow is marked as failed so status() shows it
             workflow.status = "failed"
+            workflow.error = errorMsg
             await checkpoint(workflow)
           }
         }
@@ -1159,8 +1210,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         try {
           await runWorkflow()
         } catch (err) {
-          log.error("blocking: workflow execution failed", { error: (err as Error).message })
+          const errorMsg = (err as Error).message
+          log.error("blocking: workflow execution failed", { error: errorMsg })
           workflow.status = "failed"
+          workflow.error = errorMsg
           await checkpoint(workflow)
         } finally {
           // ── Harness: always release orchestrator lock, even on error
@@ -1209,6 +1262,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           return {
             title: "Error",
             output: `Workflow "${params.workflowId}" not found`,
+            metadata: { error: true },
+          }
+        }
+        if (workflow.parentSessionID && workflow.parentSessionID !== ctx.sessionID) {
+          return {
+            title: "Error",
+            output: `Workflow "${params.workflowId}" does not belong to the current session`,
             metadata: { error: true },
           }
         }
@@ -1274,10 +1334,23 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         // Abort workflow and its tasks
         if (params.workflowId) {
           const workflow = await findWorkflow(params.workflowId)
-          if (workflow) {
-            if (workflow.status === "running") {
-              workflow.status = "failed"
+          if (!workflow) {
+            return {
+              title: "Error",
+              output: `Workflow "${params.workflowId}" not found`,
+              metadata: { error: true },
             }
+          }
+          if (workflow.parentSessionID && workflow.parentSessionID !== ctx.sessionID) {
+            return {
+              title: "Error",
+              output: `Workflow "${params.workflowId}" does not belong to the current session`,
+              metadata: { error: true },
+            }
+          }
+          if (workflow.status === "planned" || workflow.status === "running" || workflow.status === "resumable") {
+            workflow.status = "failed"
+            workflow.error = "Aborted by orchestrator"
             // Always try to remove UI elements even if not running
             for (const task of workflow.tasks) {
               const r = workflow.results[task.id]
@@ -1306,6 +1379,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
               }
             }
             await checkpoint(workflow)
+            if (workflow.ownsTaskflowUI && !HarnessState.hasActivePlan(ctx.sessionID)) {
+              try {
+                await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+              } catch {
+                /* TUI may not be active */
+              }
+            }
           }
         }
 

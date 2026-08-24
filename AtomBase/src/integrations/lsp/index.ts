@@ -111,17 +111,18 @@ export namespace LSP {
           ...existing,
           id: name,
           root: existing?.root ?? (async () => Instance.directory),
-          extensions: 'extensions' in item ? (item.extensions ?? existing?.extensions ?? []) : (existing?.extensions ?? []),
+          extensions:
+            "extensions" in item ? (item.extensions ?? existing?.extensions ?? []) : (existing?.extensions ?? []),
           spawn: async (root) => {
             return {
-              process: spawn('command' in item ? item.command[0] : "", 'command' in item ? item.command.slice(1) : [], {
+              process: spawn("command" in item ? item.command[0] : "", "command" in item ? item.command.slice(1) : [], {
                 cwd: root,
                 env: {
                   ...process.env,
-                  ...('env' in item ? item.env : {}),
+                  ...("env" in item ? item.env : {}),
                 },
               }),
-              initialization: 'initialization' in item ? item.initialization : undefined,
+              initialization: "initialization" in item ? item.initialization : undefined,
             }
           },
         }
@@ -303,19 +304,17 @@ export namespace LSP {
   }
 
   export async function hover(input: { file: string; line: number; character: number }) {
-    return run(input.file, (client) => {
-      return client.connection
-        .sendRequest("textDocument/hover", {
-          textDocument: {
-            uri: pathToFileURL(input.file).href,
-          },
-          position: {
-            line: input.line,
-            character: input.character,
-          },
-        })
-        .catch(() => null)
-    })
+    return run(input.file, (client) =>
+      client.connection.sendRequest("textDocument/hover", {
+        textDocument: {
+          uri: pathToFileURL(input.file).href,
+        },
+        position: {
+          line: input.line,
+          character: input.character,
+        },
+      }),
+    )
   }
 
   enum SymbolKind {
@@ -373,13 +372,11 @@ export namespace LSP {
   export async function documentSymbol(uri: string) {
     const file = new URL(uri).pathname
     return run(file, (client) =>
-      client.connection
-        .sendRequest("textDocument/documentSymbol", {
-          textDocument: {
-            uri,
-          },
-        })
-        .catch(() => []),
+      client.connection.sendRequest("textDocument/documentSymbol", {
+        textDocument: {
+          uri,
+        },
+      }),
     )
       .then((result) => result.flat() as (LSP.DocumentSymbol | LSP.Symbol)[])
       .then((result) => result.filter(Boolean))
@@ -387,24 +384,20 @@ export namespace LSP {
 
   export async function definition(input: { file: string; line: number; character: number }) {
     return run(input.file, (client) =>
-      client.connection
-        .sendRequest("textDocument/definition", {
-          textDocument: { uri: pathToFileURL(input.file).href },
-          position: { line: input.line, character: input.character },
-        })
-        .catch(() => null),
+      client.connection.sendRequest("textDocument/definition", {
+        textDocument: { uri: pathToFileURL(input.file).href },
+        position: { line: input.line, character: input.character },
+      }),
     ).then((result) => result.flat().filter(Boolean))
   }
 
   export async function references(input: { file: string; line: number; character: number }) {
     return run(input.file, (client) =>
-      client.connection
-        .sendRequest("textDocument/references", {
-          textDocument: { uri: pathToFileURL(input.file).href },
-          position: { line: input.line, character: input.character },
-          context: { includeDeclaration: true },
-        })
-        .catch(() => []),
+      client.connection.sendRequest("textDocument/references", {
+        textDocument: { uri: pathToFileURL(input.file).href },
+        position: { line: input.line, character: input.character },
+        context: { includeDeclaration: true },
+      }),
     ).then((result) => result.flat().filter(Boolean))
   }
 
@@ -458,14 +451,27 @@ export namespace LSP {
 
   async function runAll<T>(input: (client: LSPClient.Info) => Promise<T>): Promise<T[]> {
     const clients = await state().then((x) => x.clients)
-    const tasks = clients.map((x) => input(x))
-    return Promise.all(tasks)
+    const results = await Promise.allSettled(clients.map((client) => Promise.resolve().then(() => input(client))))
+    return results.flatMap((result, index) => {
+      if (result.status === "fulfilled") return [result.value]
+      log.warn("LSP request failed", { serverID: clients[index]?.serverID, error: result.reason })
+      return []
+    })
   }
 
   async function run<T>(file: string, input: (client: LSPClient.Info) => Promise<T>): Promise<T[]> {
     const clients = await getClients(file)
-    const tasks = clients.map((x) => input(x))
-    return Promise.all(tasks)
+    const results = await Promise.allSettled(clients.map((client) => Promise.resolve().then(() => input(client))))
+    const fulfilled = results.flatMap((result, index) => {
+      if (result.status === "fulfilled") return [result.value]
+      log.warn("LSP request failed", { serverID: clients[index]?.serverID, file, error: result.reason })
+      return []
+    })
+    if (clients.length > 0 && fulfilled.length === 0) {
+      const failure = results.find((result) => result.status === "rejected")
+      if (failure?.status === "rejected") throw failure.reason
+    }
+    return fulfilled
   }
 
   export namespace Diagnostic {

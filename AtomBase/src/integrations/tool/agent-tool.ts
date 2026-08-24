@@ -2,6 +2,9 @@ import z from "zod"
 import { Tool } from "./tool"
 import { Agent } from "../agent/agent"
 import { PermissionNext } from "@/util/permission/next"
+import { Session } from "@/core/session"
+import { SessionStatus } from "@/core/session/status"
+import { SessionReuse } from "./session-reuse"
 
 const parameters = z.object({
   action: z
@@ -13,22 +16,41 @@ const parameters = z.object({
 
   // Parameters for action='spawn' (single sub-agent task, blocking)
   subagent_type: z
-    .string().min(1).max(100)
+    .string()
+    .min(1)
+    .max(100)
     .optional()
     .describe("The specialized agent type to use (e.g., 'explore', 'coder', 'checker') for action='spawn'"),
-  prompt: z.string().min(1).max(100_000).optional().describe("The task prompt for the agent to perform (for action='spawn')"),
-  description: z.string().min(1).max(500).optional().describe("A short (3-5 words) description of the task (for action='spawn')"),
-  model: z
-    .string().max(200)
+  prompt: z
+    .string()
+    .min(1)
+    .max(100_000)
     .optional()
-    .describe("Exact provider/model for action='spawn'; otherwise the agent's configured model or router selection is used"),
+    .describe("The task prompt for the agent to perform (for action='spawn')"),
+  description: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("A short (3-5 words) description of the task (for action='spawn')"),
+  model: z
+    .string()
+    .max(200)
+    .optional()
+    .describe(
+      "Exact provider/model for action='spawn'; otherwise the agent's configured model or router selection is used",
+    ),
 
   // Parameters for action='workflow' (multi-step DAG)
   workflow_action: z
     .enum(["plan", "execute", "status", "abort"])
     .optional()
     .describe("Sub-action for workflow: 'plan', 'execute', 'status', or 'abort'"),
-  workflowId: z.string().max(200).optional().describe("Workflow ID returned from action='workflow' with workflow_action='plan'"),
+  workflowId: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("Workflow ID returned from action='workflow' with workflow_action='plan'"),
   tasks: z
     .array(
       z.object({
@@ -62,8 +84,7 @@ const safeTaskId = (s: string) =>
 export const AgentTool = Tool.define("agent", async (ctx) => {
   let taskToolPromise: ReturnType<(typeof import("./task"))["TaskTool"]["init"]> | undefined
   let orchestrateToolPromise: ReturnType<(typeof import("./orchestrate"))["OrchestrateTool"]["init"]> | undefined
-  const taskTool = () =>
-    (taskToolPromise ??= import("./task").then((mod) => mod.TaskTool.init(ctx)))
+  const taskTool = () => (taskToolPromise ??= import("./task").then((mod) => mod.TaskTool.init(ctx)))
   const orchestrateTool = () =>
     (orchestrateToolPromise ??= import("./orchestrate").then((mod) => mod.OrchestrateTool.init(ctx)))
 
@@ -101,6 +122,15 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     description,
     parameters,
     async execute(params: z.infer<typeof parameters>, ctx) {
+      const ownedChildSession = async (sessionID: string) => {
+        const session = await Session.get(sessionID).catch(() => null)
+        if (!session) throw new Error(`Sub-agent session "${sessionID}" not found`)
+        if (!SessionReuse.isAllowed(session, ctx.sessionID)) {
+          throw new Error(`Session "${sessionID}" is not a child of the current session`)
+        }
+        return session
+      }
+
       if (params.action === "workflow") {
         const orchestrateToolInstance = await orchestrateTool()
         const wfAction = params.workflow_action || (params.tasks ? "plan" : "execute")
@@ -140,6 +170,8 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
           const orchestrateToolInstance = await orchestrateTool()
           return orchestrateToolInstance.execute({ action: "abort", workflowId: params.workflowId }, ctx)
         }
+        if (!params.session_id) throw new Error("Parameter 'session_id' or 'workflowId' is required for action='abort'")
+        await ownedChildSession(params.session_id)
         const taskToolInstance = await taskTool()
         return taskToolInstance.execute({ action: "abort", session_id: params.session_id }, ctx)
       }
@@ -150,10 +182,13 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
           return orchestrateToolInstance.execute({ action: "status", workflowId: params.workflowId }, ctx)
         }
         if (params.session_id) {
+          const session = await ownedChildSession(params.session_id)
+          const status = SessionStatus.get(params.session_id)
+          const retry = status.type === "retry" ? ` (attempt ${status.attempt}: ${status.message})` : ""
           return {
             title: "Task Status",
-            output: `Session ${params.session_id} status requested. Check active task status via session manager.`,
-            metadata: { sessionId: params.session_id },
+            output: `Session ${params.session_id} is ${status.type}${retry}.\nTitle: ${session.title}`,
+            metadata: { sessionId: params.session_id, status: status.type },
           }
         }
         throw new Error("Parameter 'workflowId' or 'session_id' is required for action='status'")
