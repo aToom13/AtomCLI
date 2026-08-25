@@ -2112,6 +2112,8 @@ export type Event =
   | EventFileDeleted
   | EventSessionStatus
   | EventSessionCompacted
+  | EventCompanionArtifactShared
+  | EventCompanionPreviewUpdated
   | EventFileWatcherUpdated
   | EventVcsBranchUpdated
   | EventTodoUpdated
@@ -2380,6 +2382,41 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
+  }
+}
+
+export type EventCompanionArtifactShared = {
+  type: "companion.artifact.shared"
+  properties: {
+    id: string
+    kind: "file" | "image"
+    direction: "pc_to_mobile" | "mobile_to_pc"
+    sourceDevice: string
+    title: string
+    name: string
+    mime: string
+    size: number
+    createdAt: number
+    sessionID?: string
+    downloadPath: string
+  }
+}
+
+export type EventCompanionPreviewUpdated = {
+  type: "companion.preview.updated"
+  properties: {
+    id: string
+    title: string
+    command: string
+    port: number
+    status: "starting" | "running" | "stopped" | "failed"
+    endpoints: Array<string>
+    logTail: string
+    createdAt: number
+    sourceDevice: string
+    directory: string
+    sessionID?: string
+    exitCode?: number
   }
 }
 

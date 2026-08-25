@@ -753,8 +753,28 @@ export namespace Provider {
     return model.cost.input === 0 && model.cost.output === 0
   }
 
+  type InputModality = "image" | "pdf" | "audio" | "video"
+
+  function requiredInputModalities(parts: { type?: string; mime?: string }[]): Set<InputModality> {
+    const required = new Set<InputModality>()
+    for (const part of parts) {
+      if (part.type !== "file" || !part.mime) continue
+      if (part.mime.startsWith("image/")) required.add("image")
+      else if (part.mime === "application/pdf") required.add("pdf")
+      else if (part.mime.startsWith("audio/")) required.add("audio")
+      else if (part.mime.startsWith("video/")) required.add("video")
+    }
+    return required
+  }
+
+  function supportsInputModalities(model: Model, required: Set<InputModality>): boolean {
+    return Array.from(required).every((modality) => model.capabilities.input[modality])
+  }
+
   export const _internals = {
     isPublicAtomCLIModel,
+    requiredInputModalities,
+    supportsInputModalities,
     requestModel(provider: Info, fallback: Model, body: unknown) {
       if (!body || typeof body !== "object") return fallback
       const modelID = (body as { model?: unknown }).model
@@ -845,6 +865,16 @@ export namespace Provider {
               output: Math.max(...allModels.map((m) => m.limit?.output ?? 8192)),
             },
             variants: {},
+            capabilities: {
+              ...templateModel.capabilities,
+              input: {
+                ...templateModel.capabilities.input,
+                image: allModels.some((model) => model.capabilities.input.image),
+                pdf: allModels.some((model) => model.capabilities.input.pdf),
+                audio: allModels.some((model) => model.capabilities.input.audio),
+                video: allModels.some((model) => model.capabilities.input.video),
+              },
+            },
           }
         }
       }
@@ -1389,13 +1419,14 @@ export namespace Provider {
     // Returns the REAL model entry so the entire pipeline uses correct metadata
     if (providerID === "atomcli" && (modelID === "atomcli-auto" || modelID === "atomcli-free")) {
       const isAuto = modelID === "atomcli-auto"
-      const freeModels = Object.entries(provider.models).filter(
+      const availableFreeModels = Object.entries(provider.models).filter(
         ([id, m]) =>
           id !== "atomcli-auto" && id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0,
       )
 
       let activeSession: any = context?.session
       let promptText = context?.prompt ?? ""
+      let requiredModalities = new Set<InputModality>()
       try {
         const { Session } = await import("@/core/session")
         if (!activeSession) {
@@ -1409,6 +1440,7 @@ export namespace Provider {
           const messages = await Session.messages({ sessionID: activeSession.id, limit: 20, excludePatches: true })
           const lastUser = [...messages].reverse().find((m) => m.info.role === "user")
           if (lastUser) {
+            requiredModalities = requiredInputModalities(lastUser.parts)
             promptText = lastUser.parts
               .filter((p: any) => p.type === "text" && !p.synthetic)
               .map((p: any) => p.text)
@@ -1417,6 +1449,22 @@ export namespace Provider {
         }
       } catch (err) {
         log.warn("failed to resolve active session", { error: (err as Error).message })
+      }
+
+      const modalityModels = availableFreeModels.filter(([, model]) =>
+        supportsInputModalities(model, requiredModalities),
+      )
+      if (requiredModalities.size > 0 && modalityModels.length === 0) {
+        throw new Error(
+          `No free AtomCLI model supports the required input modalities: ${Array.from(requiredModalities).join(", ")}`,
+        )
+      }
+      const freeModels = requiredModalities.size > 0 ? modalityModels : availableFreeModels
+      if (requiredModalities.size > 0) {
+        log.info("atomcli-auto constrained by input modalities", {
+          required: Array.from(requiredModalities).join(","),
+          candidates: modalityModels.length,
+        })
       }
 
       const {

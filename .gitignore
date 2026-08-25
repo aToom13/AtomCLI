@@ -54,6 +54,7 @@ refs/
 **/.atomcli/bun.lock
 **/.atomcli/node_modules/
 **/.atomcli/cache/
+**/.atomcli/inbox/
 **/.atomcli/plan/
 **/.atomcli/plans/
 **/.atomcli/runs/

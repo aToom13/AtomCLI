@@ -449,10 +449,11 @@ export namespace SessionPrompt {
             } satisfies MessageV2.ToolPart)
           },
           async ask(req) {
+            const latestSession = await Session.get(sessionID)
             await PermissionNext.ask({
               ...req,
               sessionID: sessionID,
-              ruleset: PermissionNext.merge(taskAgent.permission, session.permission ?? []),
+              ruleset: PermissionNext.merge(taskAgent.permission, latestSession.permission ?? []),
             })
           },
         }
@@ -792,11 +793,12 @@ export namespace SessionPrompt {
         }
       },
       async ask(req) {
+        const latestSession = await Session.get(input.session.id)
         await PermissionNext.ask({
           ...req,
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: PermissionNext.merge(input.agent.permission, input.session.permission ?? []),
+          ruleset: PermissionNext.merge(input.agent.permission, latestSession.permission ?? []),
         })
       },
     })

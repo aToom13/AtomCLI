@@ -27,6 +27,8 @@ import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
 import { AgentTool } from "./agent-tool"
 import { TaskFlowTool } from "./taskflow"
+import { CompanionSendTool } from "./companion-send"
+import { CompanionPreviewTool } from "./companion-preview"
 
 const LazyLspTool: Tool.Info = {
   id: "lsp",
@@ -115,6 +117,8 @@ export namespace ToolRegistry {
       MemoryTool,
       BrowserTool,
       SystemHealthTool,
+      CompanionSendTool,
+      CompanionPreviewTool,
       LazyLspTool,
 
       BatchTool,

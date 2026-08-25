@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 /// Result of a pairing attempt.
@@ -33,11 +34,21 @@ class PairingService {
       if (response.statusCode == 200) {
         return const PairingResult.ok();
       } else {
-        final body = jsonDecode(response.body) as Map<String, dynamic>;
-        return PairingResult.fail(body['error'] as String? ?? 'Unknown error');
+        try {
+          final body = jsonDecode(response.body) as Map<String, dynamic>;
+          return PairingResult.fail(
+            body['error'] as String? ?? 'AtomCLI rejected the pairing request',
+          );
+        } catch (_) {
+          return PairingResult.fail(
+            'AtomCLI returned HTTP ${response.statusCode}',
+          );
+        }
       }
-    } catch (e) {
-      return PairingResult.fail('Network error: $e');
+    } catch (_) {
+      return PairingResult.fail(
+        'Could not reach AtomCLI. Check Tailscale or local Wi-Fi and try again.',
+      );
     }
   }
 }

@@ -29,6 +29,20 @@ test("AtomCLI public catalog excludes deprecated and paid models", () => {
   ).toBe(false)
 })
 
+test("AtomCLI Auto limits routing candidates to attachment-capable models", () => {
+  const required = Provider._internals.requiredInputModalities([
+    { type: "text" },
+    { type: "file", mime: "image/png" },
+    { type: "file", mime: "application/pdf" },
+  ])
+  const model = (image: boolean, pdf: boolean) =>
+    ({ capabilities: { input: { image, pdf, audio: false, video: false } } }) as Provider.Model
+
+  expect(Array.from(required).sort()).toEqual(["image", "pdf"])
+  expect(Provider._internals.supportsInputModalities(model(true, true), required)).toBe(true)
+  expect(Provider._internals.supportsInputModalities(model(true, false), required)).toBe(false)
+})
+
 test("models.dev reasoning declarations replace guessed thinking variants", () => {
   const provider = Provider.fromModelsDevProvider({
     id: "atomcli",

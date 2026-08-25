@@ -1,137 +1,16 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+
 import '../models.dart';
 import '../providers/app_providers.dart';
-import '../services/websocket_service.dart';
-import 'home_screen.dart' show chatJumpToSessionProvider;
-
-// ---------------------------------------------------------------------------
-// Design tokens
-// ---------------------------------------------------------------------------
-
-const _kBg = Color(0xFF0A0D13);
-const _kSurface = Color(0xFF111720);
-const _kCard = Color(0xFF161D28);
-const _kBorder = Color(0xFF1E2A3A);
-const _kAccent = Color(0xFF4F9EFF);
-const _kGreen = Color(0xFF3FB950);
-const _kRed = Color(0xFFFF6B6B);
-const _kOrange = Color(0xFFFFA657);
-const _kPurple = Color(0xFFA371F7);
-const _kTextPrimary = Color(0xFFE6EDF3);
-const _kTextSecondary = Color(0xFF8B949E);
-const _kTextMuted = Color(0xFF484F58);
-
-// ---------------------------------------------------------------------------
-// Rich message models for display
-// ---------------------------------------------------------------------------
-
-class ChatMessage {
-  final String id;
-  final String sessionId;
-  final String role;
-  final List<ChatPart> parts;
-  final DateTime time;
-
-  ChatMessage({
-    required this.id,
-    required this.sessionId,
-    required this.role,
-    required this.parts,
-    required this.time,
-  });
-
-  factory ChatMessage.fromJson(Map<String, dynamic> json) {
-    final rawParts = json['parts'] as List? ?? [];
-    return ChatMessage(
-      id: json['id'] as String,
-      sessionId: json['sessionID'] as String? ?? '',
-      role: json['role'] as String? ?? 'system',
-      parts: rawParts
-          .map((p) => ChatPart.fromJson(p as Map<String, dynamic>))
-          .where((p) => p.type != 'unknown')
-          .toList(),
-      time: () {
-        final t = json['time'];
-        if (t is Map) {
-          final ts = t['created'] as int? ?? t['updated'] as int? ?? 0;
-          return DateTime.fromMillisecondsSinceEpoch(ts);
-        }
-        return DateTime.now();
-      }(),
-    );
-  }
-
-  String get text =>
-      parts.where((p) => p.type == 'text').map((p) => p.text ?? '').join('');
-
-  static ChatMessage fromLogEntry(LogEntry e) => ChatMessage(
-    id: e.id,
-    sessionId: e.sessionId,
-    role: e.role,
-    parts: [ChatPart(type: 'text', text: e.message)],
-    time: e.timestamp,
-  );
-}
-
-class ChatPart {
-  final String? id;
-  final String type;
-  final String? text;
-  final String? toolName;
-  final String? toolStatus;
-  final Map<String, dynamic>? toolInput;
-  final String? toolOutput;
-  final String? toolError;
-
-  ChatPart({
-    this.id,
-    required this.type,
-    this.text,
-    this.toolName,
-    this.toolStatus,
-    this.toolInput,
-    this.toolOutput,
-    this.toolError,
-  });
-
-  factory ChatPart.fromJson(Map<String, dynamic> json) {
-    final type = json['type'] as String? ?? 'unknown';
-    final state = json['state'] as Map<String, dynamic>?;
-    return ChatPart(
-      id: json['id'] as String?,
-      type: type,
-      text: json['text'] as String?,
-      toolName: json['tool'] as String?,
-      toolStatus: state?['status'] as String?,
-      toolInput: state?['input'] as Map<String, dynamic>?,
-      toolOutput: state?['output'] as String?,
-      toolError: state?['error'] as String?,
-    );
-  }
-
-  ChatPart applyDelta(ChatPart incoming, String? delta) {
-    if (type != incoming.type) return incoming;
-    if (type == 'text' && delta != null) {
-      return ChatPart(id: id, type: type, text: (text ?? '') + delta);
-    }
-    return incoming;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-final _sessionMessagesProvider =
-    StateProvider.family<List<ChatMessage>, String>((ref, sessionId) => []);
-
-// ---------------------------------------------------------------------------
-// Screen
-// ---------------------------------------------------------------------------
+import '../theme/app_theme.dart';
+import '../services/companion_preferences.dart';
+import '../services/transfer_service.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -141,941 +20,935 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
-  String? _selectedSessionId;
-  final TextEditingController _msgController = TextEditingController();
-  final FocusNode _inputFocus = FocusNode();
-  final ScrollController _scrollController = ScrollController();
-  bool _isLoadingMessages = false;
-  bool _isCreatingNewSession = false;
-  bool _isSending = false;
-  String? _selectedModel;
-  String? _selectedAgent;
-  bool _defaultModelInitialized = false;
-  bool _autoSelectScheduled = false;
-  int _loadToken = 0; // incremented on each session change to invalidate stale responses
+  final _messageController = TextEditingController();
+  final _scrollController = ScrollController();
+  bool _sending = false;
+  bool _creating = false;
+  bool _uploading = false;
+  double? _uploadProgress;
+  final List<CompanionArtifact> _pendingAttachments = [];
+  String? _attachmentSessionId;
 
   @override
   void dispose() {
-    _msgController.dispose();
-    _inputFocus.dispose();
+    _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
-  void _scrollToBottom({bool animated = true}) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      if (animated) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-      } else {
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-      }
-    });
-  }
-
-  void _loadMessages(String sessionId) {
-    final ws = ref.read(wsServiceProvider);
-    if (ws == null) {
-      setState(() => _isLoadingMessages = false);
-      return;
-    }
-    // Capture token at call time — if session changes before response arrives,
-    // the messages_result handler will see a different token and discard stale data.
-    final myToken = _loadToken;
-    setState(() => _isLoadingMessages = true);
-    ws.getMessages(sessionId: sessionId);
-    // 8s fallback in case messages_result never arrives (e.g. network error)
-    Future.delayed(const Duration(seconds: 8), () {
-      if (mounted && _loadToken == myToken) {
-        setState(() => _isLoadingMessages = false);
-      }
-    });
-  }
-
-  void _onSessionChanged(String? sessionId) {
-    if (sessionId == null) return;
-    // Invalidate any in-flight getMessages from a previous session
-    _loadToken++;
-    setState(() {
-      _selectedSessionId = sessionId;
-      _isLoadingMessages = false; // will be set true inside _loadMessages
-    });
-    ref.read(_sessionMessagesProvider(sessionId).notifier).state = [];
-    _loadMessages(sessionId);
-    Future.delayed(const Duration(milliseconds: 200), _scrollToBottom);
-  }
-
-  void _sendMessage() {
-    final text = _msgController.text.trim();
-    if (text.isEmpty || _isSending) return;
-
-    HapticFeedback.lightImpact();
-
-    final ws = ref.read(wsServiceProvider);
-    if (ws == null) return;
-
-    if (_selectedSessionId == null) {
-      _createNewSession(text: text);
-      _msgController.clear();
-      return;
-    }
-
-    setState(() => _isSending = true);
-
-    ws.sendChatMessage(
-      sessionId: _selectedSessionId!,
-      text: text,
-      model: _selectedModel,
-      agent: _selectedAgent,
-    );
-
-    final msg = ChatMessage(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      sessionId: _selectedSessionId!,
-      role: 'user',
-      parts: [ChatPart(type: 'text', text: text)],
-      time: DateTime.now(),
-    );
-    ref
-        .read(_sessionMessagesProvider(_selectedSessionId!).notifier)
-        .update((list) => [...list, msg]);
-
-    _msgController.clear();
-    _scrollToBottom();
-
-    // Keep send disabled for 2s to prevent double-tap. The guard is long enough
-    // to cover network RTT but short enough to not feel sluggish.
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _isSending = false);
-    });
-  }
-
-  void _createNewSession({String? text}) {
-    if (text == null) {
-      setState(() {
-        _selectedSessionId = null;
-        _isLoadingMessages = true;
-        _isCreatingNewSession = true;
-      });
-    }
-
-    final ws = ref.read(wsServiceProvider);
-    if (ws == null) return;
-
-    ws.createSession(
-      text: text,
-      model: _selectedModel,
-      agent: _selectedAgent,
-    );
-  }
-
-  void _showAgentPicker() {
-    final agents = ref.read(agentsListProvider);
-    _showPickerSheet(
-      title: 'Select Agent',
-      accentColor: _kPurple,
-      items: agents
-          .map(
-            (a) => _PickerItem(
-              id: a.name,
-              title: a.name,
-              subtitle: a.description ?? 'No description',
-              isSelected:
-                  a.name == _selectedAgent ||
-                  (_selectedAgent == null && a.name == 'agent'),
-            ),
-          )
-          .toList(),
-      emptyMessage: 'No agents available',
-      onSelect: (id) => setState(() => _selectedAgent = id),
-    );
-  }
-
-  void _showModelPicker() {
-    final allModels = ref.read(modelsListProvider);
-    final defaultModel = ref.read(defaultModelProvider);
-    _showPickerSheet(
-      title: 'Select Model',
-      accentColor: _kAccent,
-      items: allModels
-          .map(
-            (m) => _PickerItem(
-              id: m.id,
-              title: m.name,
-              subtitle: m.providerName,
-              isSelected: m.id == (_selectedModel ?? defaultModel),
-            ),
-          )
-          .toList(),
-      emptyMessage: 'No models available',
-      onSelect: (id) => setState(() => _selectedModel = id),
-      searchable: true,
-    );
-  }
-
-  void _showPickerSheet({
-    required String title,
-    required Color accentColor,
-    required List<_PickerItem> items,
-    required String emptyMessage,
-    required void Function(String) onSelect,
-    bool searchable = false,
-  }) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: _kCard,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => _PickerSheet(
-        title: title,
-        accentColor: accentColor,
-        items: items,
-        emptyMessage: emptyMessage,
-        onSelect: onSelect,
-        searchable: searchable,
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final sessionInfos = ref.watch(sessionListProvider);
+    final sessions = ref.watch(sessionListProvider);
+    final conversation = ref.watch(conversationProvider);
+    final connection = ref.watch(connectionStateProvider);
+    final messages = conversation.messagesFor(conversation.selectedSessionId);
+    final selectedSession = _findSession(
+      sessions,
+      conversation.selectedSessionId,
+    );
+    final loading =
+        conversation.selectedSessionId != null &&
+        conversation.loadingSessionIds.contains(conversation.selectedSessionId);
 
-    // Initialize default model on first load (issue 3 fix)
-    if (!_defaultModelInitialized) {
-      final defaultModel = ref.watch(defaultModelProvider);
-      if (defaultModel != null && _selectedModel == null) {
-        _defaultModelInitialized = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() => _selectedModel = defaultModel);
+    ref.listen<String?>(chatJumpToSessionProvider, (_, sessionId) {
+      if (sessionId == null) return;
+      ref.read(conversationProvider.notifier).selectSession(sessionId);
+      ref.read(chatJumpToSessionProvider.notifier).state = null;
+    });
+    ref.listen<int>(newSessionRequestProvider, (previous, next) {
+      if (previous != null && next > previous) _createSession();
+    });
+    ref.listen<ConversationState>(conversationProvider, (previous, next) {
+      final sessionId = next.selectedSessionId;
+      if (sessionId == null) return;
+      final before = previous?.messagesFor(sessionId).length ?? 0;
+      if (next.messagesFor(sessionId).length != before) _scrollToEnd();
+    });
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Sessions'),
+        actions: [
+          IconButton(
+            key: const Key('session-history-button'),
+            tooltip: 'Session history',
+            onPressed: () => _showSessions(sessions),
+            icon: Badge(
+              isLabelVisible: sessions.isNotEmpty,
+              smallSize: 7,
+              backgroundColor: AppPalette.amber,
+              child: const Icon(Icons.history_rounded),
+            ),
+          ),
+          IconButton(
+            key: const Key('new-session-button'),
+            tooltip: 'New session',
+            onPressed: _creating || connection != WsConnectionState.connected
+                ? null
+                : _createSession,
+            icon: _creating
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.add_comment_outlined),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _SessionHeader(
+            session: selectedSession,
+            sessionCount: sessions.length,
+            connected: connection == WsConnectionState.connected,
+            onTap: () => _showSessions(sessions),
+            onRefresh: conversation.selectedSessionId == null
+                ? null
+                : () => ref
+                      .read(conversationProvider.notifier)
+                      .selectSession(
+                        conversation.selectedSessionId!,
+                        reload: true,
+                      ),
+            onStop: selectedSession?.isActive == true
+                ? () => _stopSession(selectedSession!)
+                : null,
+          ),
+          const _WorkflowStrip(),
+          Expanded(
+            child: loading && messages.isEmpty
+                ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+                : messages.isEmpty
+                ? _EmptyConversation(
+                    hasSession: conversation.selectedSessionId != null,
+                    onCreate: _creating ? null : _createSession,
+                    onHistory: () => _showSessions(sessions),
+                  )
+                : ListView.builder(
+                    key: ValueKey(conversation.selectedSessionId),
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(13, 10, 13, 20),
+                    itemCount: messages.length,
+                    itemBuilder: (_, index) => _MessageCard(
+                      key: ValueKey(messages[index].id),
+                      message: messages[index],
+                    ),
+                  ),
+          ),
+          _Composer(
+            controller: _messageController,
+            sending: _sending,
+            uploading: _uploading,
+            uploadProgress: _uploading ? _uploadProgress : null,
+            attachments: _pendingAttachments,
+            onRemoveAttachment: (artifact) {
+              setState(() {
+                _pendingAttachments.removeWhere(
+                  (candidate) => candidate.id == artifact.id,
+                );
+                if (_pendingAttachments.isEmpty) _attachmentSessionId = null;
+              });
+            },
+            connected: connection == WsConnectionState.connected,
+            onSend: _send,
+            onAttach: _showAttachmentPicker,
+            onModel: _showModels,
+            onAgent: _showAgents,
+            onVariant: _showVariants,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showSessions(List<SessionInfo> sessions) async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppPalette.panel,
+      builder: (_) => _SessionPicker(
+        sessions: sessions,
+        selectedId: ref.read(conversationProvider).selectedSessionId,
+      ),
+    );
+    if (selected != null) {
+      await ref.read(conversationProvider.notifier).selectSession(selected);
+    }
+  }
+
+  Future<void> _showModels() async {
+    var models = ref.read(modelsListProvider);
+    if (models.isEmpty) {
+      ref.read(wsServiceProvider)?.getModels();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      models = ref.read(modelsListProvider);
+    }
+    if (!mounted) return;
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppPalette.panel,
+      builder: (_) => _ModelPicker(
+        models: models,
+        selectedId: ref.read(conversationProvider).selectedModelId,
+      ),
+    );
+    if (selected != null) {
+      ref.read(conversationProvider.notifier).setModel(selected);
+      HapticFeedback.selectionClick();
+    }
+  }
+
+  Future<void> _showVariants() async {
+    final conversation = ref.read(conversationProvider);
+    final model = ref
+        .read(modelsListProvider)
+        .where((item) => item.id == conversation.selectedModelId)
+        .firstOrNull;
+    if (model == null || model.variants.isEmpty) {
+      _showError('This model does not expose configurable thinking levels.');
+      return;
+    }
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppPalette.panel,
+      builder: (_) => _VariantPicker(
+        variants: model.variants,
+        selected: conversation.selectedVariant,
+      ),
+    );
+    if (!mounted || selected == null) return;
+    ref
+        .read(conversationProvider.notifier)
+        .setVariant(selected == '__default__' ? null : selected);
+  }
+
+  Future<void> _showAgents() async {
+    final agents = ref.read(agentsListProvider);
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppPalette.panel,
+      builder: (_) => _AgentPicker(
+        agents: agents,
+        selectedName: ref.read(conversationProvider).selectedAgentName,
+      ),
+    );
+    if (selected != null) {
+      ref.read(conversationProvider.notifier).setAgent(selected);
+      HapticFeedback.selectionClick();
+    }
+  }
+
+  Future<void> _createSession() async {
+    final ws = ref.read(wsServiceProvider);
+    if (ws == null || !ws.isConnected) {
+      _showError('AtomCLI is offline.');
+      return;
+    }
+    final selection = ref.read(conversationProvider);
+    if (_pendingAttachments.isNotEmpty) {
+      _showError(
+        'Send or remove the staged attachments before creating a new session.',
+      );
+      return;
+    }
+    final directory = await _chooseNewSessionDirectory(
+      selection.selectedDirectory ?? ref.read(currentDirectoryProvider),
+    );
+    if (directory == null || !mounted) return;
+    setState(() => _creating = true);
+    try {
+      await ws.createSession(
+        model: selection.selectedModelId,
+        agent: selection.selectedAgentName,
+        variant: selection.selectedVariant,
+        directory: directory,
+      );
+    } catch (error) {
+      _showError(_errorText(error));
+    } finally {
+      if (mounted) setState(() => _creating = false);
+    }
+  }
+
+  Future<void> _send() async {
+    final text = _messageController.text.trim();
+    if ((text.isEmpty && _pendingAttachments.isEmpty) ||
+        _sending ||
+        _uploading) {
+      return;
+    }
+    final ws = ref.read(wsServiceProvider);
+    if (ws == null || !ws.isConnected) {
+      _showError('AtomCLI is offline. Your message was not sent.');
+      return;
+    }
+    final selection = ref.read(conversationProvider);
+    if (_pendingAttachments.isNotEmpty &&
+        selection.selectedSessionId != _attachmentSessionId) {
+      _showError(
+        'These attachments belong to another session. Remove them or return to that session.',
+      );
+      return;
+    }
+    var directory = selection.selectedDirectory;
+    if (selection.selectedSessionId == null) {
+      directory = await _chooseNewSessionDirectory(
+        directory ?? ref.read(currentDirectoryProvider),
+      );
+      if (directory == null || !mounted) return;
+    }
+    setState(() => _sending = true);
+    try {
+      final attachments = List<CompanionArtifact>.from(_pendingAttachments);
+      final sessionId = selection.selectedSessionId;
+      if (sessionId == null) {
+        await ws.createSession(
+          text: text.isEmpty ? 'Review the attached file(s).' : text,
+          model: selection.selectedModelId,
+          agent: selection.selectedAgentName,
+          variant: selection.selectedVariant,
+          directory: directory,
+        );
+      } else {
+        await ws.sendChatMessage(
+          sessionId: sessionId,
+          text: text.isEmpty ? 'Review the attached file(s).' : text,
+          model: selection.selectedModelId,
+          agent: selection.selectedAgentName,
+          variant: selection.selectedVariant,
+          directory: selection.selectedDirectory,
+          attachments: attachments.map((artifact) => artifact.id).toList(),
+        );
+      }
+      _messageController.clear();
+      if (mounted) {
+        setState(() {
+          _pendingAttachments.removeWhere(
+            (candidate) =>
+                attachments.any((attachment) => attachment.id == candidate.id),
+          );
+          if (_pendingAttachments.isEmpty) _attachmentSessionId = null;
+        });
+      }
+      _scrollToEnd();
+    } catch (error) {
+      _showError(_errorText(error));
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _showAttachmentPicker() async {
+    final imageOnly = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: AppPalette.panel,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const _SheetHandle(),
+              const SizedBox(height: 12),
+              ListTile(
+                leading: const Icon(
+                  Icons.image_outlined,
+                  color: AppPalette.primary,
+                ),
+                title: const Text('Photo or image'),
+                subtitle: const Text('Attach an image from this phone'),
+                onTap: () => Navigator.pop(sheetContext, true),
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.attach_file_rounded,
+                  color: AppPalette.amber,
+                ),
+                title: const Text('Any file'),
+                subtitle: const Text(
+                  'Upload a document, archive or source file',
+                ),
+                onTap: () => Navigator.pop(sheetContext, false),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (imageOnly == null || !mounted) return;
+    await _uploadAttachment(imageOnly: imageOnly);
+  }
+
+  Future<void> _uploadAttachment({required bool imageOnly}) async {
+    final socket = ref.read(wsServiceProvider);
+    final conversation = ref.read(conversationProvider);
+    final sessionId = conversation.selectedSessionId;
+    if (socket == null || !socket.isConnected) {
+      _showError('AtomCLI is offline.');
+      return;
+    }
+    if (sessionId == null) {
+      _showError('Create or select a session before attaching a file.');
+      return;
+    }
+    if (_uploading || _pendingAttachments.length >= 10) {
+      _showError('You can stage up to 10 attachments at a time.');
+      return;
+    }
+    if (_pendingAttachments.isNotEmpty && sessionId != _attachmentSessionId) {
+      _showError(
+        'The staged attachments belong to another session. Remove them first.',
+      );
+      return;
+    }
+    setState(() {
+      _uploading = true;
+      _uploadProgress = 0;
+    });
+    try {
+      final artifacts = await TransferService.pickAndUpload(
+        socket: socket,
+        sessionId: sessionId,
+        directory: conversation.selectedDirectory,
+        imageOnly: imageOnly,
+        model: conversation.selectedModelId,
+        agent: conversation.selectedAgentName,
+        variant: conversation.selectedVariant,
+        maxFiles: 10 - _pendingAttachments.length,
+        onUploaded: (artifact) {
+          if (!mounted) return;
+          setState(() {
+            _attachmentSessionId = sessionId;
+            _pendingAttachments.add(artifact);
+          });
+        },
+        onProgress: (transferred, total) {
+          if (!mounted) return;
+          setState(() {
+            _uploadProgress = total > 0 ? transferred / total : null;
+          });
+        },
+      );
+      if (artifacts.isNotEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              artifacts.length == 1
+                  ? '${artifacts.single.name} is ready with your draft'
+                  : '${artifacts.length} attachments are ready with your draft',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      _showError(_errorText(error));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _uploading = false;
+          _uploadProgress = null;
         });
       }
     }
+  }
 
-    // #12: Auto-select first session only once, guard against repeated scheduling
-    if (_selectedSessionId == null &&
-        sessionInfos.isNotEmpty &&
-        !_isCreatingNewSession &&
-        !_autoSelectScheduled) {
-      _autoSelectScheduled = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _selectedSessionId == null) {
-          _onSessionChanged(sessionInfos.first.id);
-        }
-        _autoSelectScheduled = false;
-      });
-    }
-
-    final sessionMessages = _selectedSessionId != null
-        ? ref.watch(_sessionMessagesProvider(_selectedSessionId!))
-        : <ChatMessage>[];
-
-    final hasValidSelection = sessionInfos.any(
-      (s) => s.id == _selectedSessionId,
-    );
-
-    // Listen to backend events
-    ref.listen<AsyncValue<BackendEvent>>(backendEventStreamProvider, (_, next) {
-      next.whenData((event) {
-        if (event.type == 'messages_result') {
-          final sid = event.payload['session_id'] as String?;
-          if (sid != _selectedSessionId) return; // stale result for wrong session
-          // Check load token — if user switched session since request was sent, discard
-          // (We can't attach token to server response, so we just check current session matches)
-          final rawMsgs = event.payload['messages'] as List? ?? [];
-          final msgs = rawMsgs
-              .map((m) => ChatMessage.fromJson(m as Map<String, dynamic>))
-              .where((m) => m.parts.isNotEmpty || m.role == 'user')
-              .toList();
-          if (mounted) {
-            ref.read(_sessionMessagesProvider(sid!).notifier).state = msgs;
-            setState(() => _isLoadingMessages = false);
-            _scrollToBottom();
-          }
-        }
-
-        if (event.type == 'message_part') {
-          if (_selectedSessionId == null) return;
-          final part = event.payload['part'] as Map<String, dynamic>?;
-          if (part == null) return;
-          final partSessionId = part['sessionID'] as String?;
-          if (partSessionId != _selectedSessionId) return;
-
-          final messageId = part['messageID'] as String?;
-          final partId = part['id'] as String?;
-          final newPart = ChatPart.fromJson(part);
-          final delta = event.payload['delta'] as String?;
-
-          final sid = _selectedSessionId!;
-          final current = ref.read(_sessionMessagesProvider(sid));
-          final existingIdx = current.indexWhere((m) => m.id == messageId);
-
-          if (existingIdx >= 0) {
-            final msg = current[existingIdx];
-            final existingPartIdx = partId != null
-                ? msg.parts.indexWhere((p) => p.id == partId)
-                : msg.parts.indexWhere((p) => p.type == newPart.type);
-            List<ChatPart> newParts;
-            if (existingPartIdx >= 0) {
-              newParts = [...msg.parts];
-              final ep = newParts[existingPartIdx];
-              if (delta != null && newPart.type == 'text') {
-                newParts[existingPartIdx] = ChatPart(
-                  id: ep.id,
-                  type: ep.type,
-                  text: (ep.text ?? '') + delta,
-                );
-              } else {
-                newParts[existingPartIdx] = newPart;
-              }
-            } else {
-              newParts = [...msg.parts, newPart];
-            }
-            final updated = [...current];
-            updated[existingIdx] = ChatMessage(
-              id: msg.id,
-              sessionId: msg.sessionId,
-              role: msg.role,
-              parts: newParts,
-              time: msg.time,
-            );
-            ref.read(_sessionMessagesProvider(sid).notifier).state = updated;
-          } else if (messageId != null) {
-            final newMsg = ChatMessage(
-              id: messageId,
-              sessionId: sid,
-              role: 'assistant',
-              parts: [newPart],
-              time: DateTime.now(),
-            );
-            ref
-                .read(_sessionMessagesProvider(sid).notifier)
-                .update((list) => [...list, newMsg]);
-          }
-          _scrollToBottom();
-        }
-
-        // #4: Handle message_updated — update role/info of an existing message
-        if (event.type == 'message_updated') {
-          if (_selectedSessionId == null) return;
-          final info = event.payload['info'] as Map<String, dynamic>?;
-          if (info == null) return;
-          final messageId = info['id'] as String?;
-          if (messageId == null) return;
-          final sid = _selectedSessionId!;
-          final current = ref.read(_sessionMessagesProvider(sid));
-          final idx = current.indexWhere((m) => m.id == messageId);
-          if (idx >= 0 && mounted) {
-            // Re-load messages to get the updated state
-            _loadMessages(sid);
-          }
-        }
-
-        if (event.type == 'session_created') {
-          final newSid = event.payload['session_id'] as String?;
-          if (newSid != null && mounted) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              _onSessionChanged(newSid);
-              setState(() => _isCreatingNewSession = false);
-            });
-          }
-        }
-
-        // Issue 1 fix: Show error snackbar when prompt fails
-        if (event.type == 'prompt_error') {
-          final errMsg =
-              event.payload['message'] as String? ??
-              'Server error — check your model configuration.';
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
+  Future<String?> _chooseNewSessionDirectory(String? initial) async {
+    var selected = initial;
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppPalette.panel,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _SheetHandle(),
+                const SizedBox(height: 18),
+                Text(
+                  'New session',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Choose the machine folder AtomCLI should work in.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 18),
+                Material(
+                  color: AppPalette.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  child: ListTile(
+                    leading: const Icon(
+                      Icons.folder_open_rounded,
+                      color: AppPalette.amber,
+                    ),
+                    title: Text(
+                      selected?.split('/').lastOrNull ?? 'Choose a folder',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      selected ?? 'Browse the directory tree on your machine',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () async {
+                      final result = await _showDirectoryPicker(selected);
+                      if (result != null) {
+                        setSheetState(() => selected = result);
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
                   children: [
-                    const Icon(
-                      Icons.error_outline_rounded,
-                      color: Colors.white,
-                      size: 18,
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        child: const Text('Cancel'),
+                      ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Text(
-                        errMsg,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                        ),
+                      child: FilledButton.icon(
+                        onPressed: selected == null
+                            ? null
+                            : () {
+                                ref
+                                    .read(conversationProvider.notifier)
+                                    .setDirectory(selected!);
+                                Navigator.pop(sheetContext, selected);
+                              },
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Create session'),
                       ),
                     ),
                   ],
                 ),
-                backgroundColor: _kRed,
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                margin: const EdgeInsets.all(12),
-                duration: const Duration(seconds: 5),
-              ),
-            );
-            setState(() => _isSending = false);
-          }
-        }
-      });
-    });
-
-    // Cross-tab navigation: when Workflow sub-agent card is tapped, jump to its session
-    ref.listen<String?>(chatJumpToSessionProvider, (_, sessionId) {
-      if (sessionId != null && mounted) {
-        _onSessionChanged(sessionId);
-        // Clear after consuming
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          ref.read(chatJumpToSessionProvider.notifier).state = null;
-        });
-      }
-    });
-
-    // Resolve display info for selected model / agent
-    final allModels = ref.watch(modelsListProvider);
-    final defaultModel = ref.watch(defaultModelProvider);
-    final effectiveModel = _selectedModel ?? defaultModel;
-    final modelLabel = effectiveModel != null
-        ? (allModels
-              .firstWhere(
-                (m) => m.id == effectiveModel,
-                orElse: () => ModelInfo(
-                  id: effectiveModel,
-                  name: effectiveModel.split('/').last,
-                  providerName: '',
-                ),
-              )
-              .name)
-        : 'Auto';
-
-    return Scaffold(
-      backgroundColor: _kBg,
-      appBar: AppBar(
-        backgroundColor: _kSurface,
-        elevation: 0,
-        titleSpacing: 0,
-        title: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              dropdownColor: _kCard,
-              isExpanded: true,
-              hint: const Text(
-                'No active session',
-                style: TextStyle(color: _kTextMuted, fontSize: 14),
-              ),
-              value: hasValidSelection ? _selectedSessionId : null,
-              items: sessionInfos.map((s) {
-                final label = s.title
-                    .replaceAll('New session - ', '')
-                    .replaceAll('Child session - ', '')
-                    .trim();
-                return DropdownMenuItem(
-                  value: s.id,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        label.isEmpty ? s.id.substring(0, 20) : label,
-                        style: const TextStyle(
-                          color: _kTextPrimary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text(
-                        s.formattedDate,
-                        style: const TextStyle(
-                          color: _kTextMuted,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
-              onChanged: _onSessionChanged,
-              icon: const Icon(Icons.expand_more, color: _kTextMuted, size: 18),
-            ),
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add_comment_rounded),
-            color: _kAccent,
-            tooltip: 'New Session',
-            onPressed: _createNewSession,
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(height: 1, color: _kBorder),
-        ),
-      ),
-      body: Column(
-        children: [
-          // Chain/DAG panel (collapsible, shown when workflow is active)
-          _ChainPanel(),
-
-          // Message list
-          Expanded(
-            child: _isLoadingMessages
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 32,
-                          height: 32,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: _kAccent,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Loading messages…',
-                          style: TextStyle(color: _kTextMuted, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  )
-                : sessionMessages.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 64,
-                          height: 64,
-                          decoration: BoxDecoration(
-                            color: _kCard,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: _kBorder),
-                          ),
-                          child: const Icon(
-                            Icons.chat_bubble_outline_rounded,
-                            color: _kTextMuted,
-                            size: 26,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          _selectedSessionId == null
-                              ? 'Select or create a session'
-                              : 'No messages yet',
-                          style: const TextStyle(
-                            color: _kTextSecondary,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        if (_selectedSessionId != null) ...[
-                          const SizedBox(height: 6),
-                          const Text(
-                            'Send a message below to start',
-                            style: TextStyle(color: _kTextMuted, fontSize: 12),
-                          ),
-                        ],
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 12,
-                    ),
-                    itemCount: sessionMessages.length,
-                    itemBuilder: (context, index) {
-                      final msg = sessionMessages[index];
-                      return _MessageBubble(message: msg);
-                    },
-                  ),
-          ),
-
-          // Bottom input bar
-          Container(
-            decoration: BoxDecoration(
-              color: _kSurface,
-              border: const Border(top: BorderSide(color: _kBorder)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.3),
-                  blurRadius: 12,
-                  offset: const Offset(0, -4),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Model / agent selector row
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                  child: Row(
-                    children: [
-                      _SelectorChip(
-                        icon: Icons.psychology_rounded,
-                        label: modelLabel,
-                        color: _kAccent,
-                        onTap: _showModelPicker,
-                      ),
-                      const SizedBox(width: 6),
-                      _SelectorChip(
-                        icon: Icons.people_outline,
-                        label: _selectedAgent ?? 'Agent',
-                        color: _kPurple,
-                        onTap: _showAgentPicker,
-                      ),
-                    ],
-                  ),
-                ),
-                // Input row
-                Padding(
-                  padding: EdgeInsets.only(
-                    left: 12,
-                    right: 8,
-                    top: 8,
-                    bottom: MediaQuery.of(context).viewInsets.bottom + 10,
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: _kCard,
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: _kBorder),
-                          ),
-                          child: TextField(
-                            controller: _msgController,
-                            focusNode: _inputFocus,
-                            style: const TextStyle(
-                              color: _kTextPrimary,
-                              fontSize: 14,
-                              height: 1.4,
-                            ),
-                            maxLines: 5,
-                            minLines: 1,
-                            textInputAction: TextInputAction.newline,
-                            decoration: const InputDecoration(
-                              hintText: 'Message the agent…',
-                              hintStyle: TextStyle(
-                                color: _kTextMuted,
-                                fontSize: 14,
-                              ),
-                              border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 10,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      // Send button
-                      GestureDetector(
-                        onTap: _isSending ? null : _sendMessage,
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: _isSending ? _kTextMuted : _kAccent,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: _isSending
-                                ? null
-                                : [
-                                    BoxShadow(
-                                      color: _kAccent.withValues(alpha: 0.35),
-                                      blurRadius: 12,
-                                      spreadRadius: 0,
-                                    ),
-                                  ],
-                          ),
-                          child: Icon(
-                            _isSending
-                                ? Icons.hourglass_top_rounded
-                                : Icons.arrow_upward_rounded,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
-}
 
-// ---------------------------------------------------------------------------
-// Chain / DAG panel (collapsible, shown in chat when workflow is active)
-// ---------------------------------------------------------------------------
-
-class _ChainPanel extends ConsumerStatefulWidget {
-  const _ChainPanel();
-
-  @override
-  ConsumerState<_ChainPanel> createState() => _ChainPanelState();
-}
-
-class _ChainPanelState extends ConsumerState<_ChainPanel>
-    with SingleTickerProviderStateMixin {
-  bool _expanded = true;
-  late final AnimationController _anim;
-  late final Animation<double> _arrow;
-
-  @override
-  void initState() {
-    super.initState();
-    _anim = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 220),
-      value: 1.0,
+  Future<String?> _showDirectoryPicker(String? initial) {
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppPalette.panel,
+      builder: (_) => _DirectoryPicker(initialPath: initial),
     );
-    _arrow = CurvedAnimation(parent: _anim, curve: Curves.easeOut);
   }
 
-  @override
-  void dispose() {
-    _anim.dispose();
-    super.dispose();
-  }
-
-  void _toggle() {
-    setState(() => _expanded = !_expanded);
-    if (_expanded) {
-      _anim.forward();
-    } else {
-      _anim.reverse();
+  Future<void> _stopSession(SessionInfo session) async {
+    try {
+      await ref
+          .read(wsServiceProvider)
+          ?.abortSession(sessionId: session.id, directory: session.directory);
+      ref.read(sessionListProvider.notifier).updateStatus(session.id, 'idle');
+    } catch (error) {
+      _showError(_errorText(error));
     }
   }
 
+  void _scrollToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _SessionHeader extends StatelessWidget {
+  final SessionInfo? session;
+  final int sessionCount;
+  final bool connected;
+  final VoidCallback onTap;
+  final VoidCallback? onRefresh;
+  final VoidCallback? onStop;
+
+  const _SessionHeader({
+    required this.session,
+    required this.sessionCount,
+    required this.connected,
+    required this.onTap,
+    required this.onRefresh,
+    required this.onStop,
+  });
+
   @override
   Widget build(BuildContext context) {
-    final dagSteps = ref.watch(dagProvider);
-    if (dagSteps.isEmpty) return const SizedBox.shrink();
-
-    final running = dagSteps.where((s) => s.status == 'running').length;
-    final complete = dagSteps.where((s) => s.status == 'complete').length;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: _kSurface,
-        border: const Border(
-          bottom: BorderSide(color: _kBorder),
-          top: BorderSide(color: _kBorder),
+    return Material(
+      color: AppPalette.surface,
+      child: InkWell(
+        key: const Key('active-session-header'),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 11, 8, 11),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                connected ? Icons.forum_rounded : Icons.cloud_off_outlined,
+                color: connected ? AppPalette.mint : AppPalette.textMuted,
+                size: 20,
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      session == null
+                          ? 'No active session'
+                          : _sessionTitle(session!),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    Text(
+                      session == null
+                          ? '$sessionCount saved sessions'
+                          : '${session!.formattedDate}  ·  tap for history',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              if (onStop != null)
+                IconButton.filledTonal(
+                  key: const Key('stop-session-button'),
+                  tooltip: 'Stop running agent',
+                  onPressed: onStop,
+                  icon: const Icon(
+                    Icons.stop_rounded,
+                    color: AppPalette.danger,
+                    size: 19,
+                  ),
+                )
+              else if (onRefresh != null)
+                IconButton(
+                  tooltip: 'Reload messages',
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh_rounded, size: 19),
+                ),
+              const Icon(
+                Icons.unfold_more_rounded,
+                color: AppPalette.textMuted,
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _WorkflowStrip extends ConsumerWidget {
+  const _WorkflowStrip();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final directory = ref.watch(
+      conversationProvider.select((state) => state.selectedDirectory),
+    );
+    final allSteps = ref.watch(dagProvider);
+    final steps = directory == null
+        ? allSteps
+        : allSteps.where((step) => step.directory == directory).toList();
+    if (steps.isEmpty) return const SizedBox.shrink();
+    final complete = steps.where((step) => step.status == 'complete').length;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+      decoration: const BoxDecoration(
+        color: AppPalette.panel,
+        border: Border(
+          top: BorderSide(color: AppPalette.stroke),
+          bottom: BorderSide(color: AppPalette.stroke),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.account_tree_outlined,
+            color: AppPalette.mint,
+            size: 17,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Workflow  $complete/${steps.length}',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+          ),
+          SizedBox(
+            width: 88,
+            child: LinearProgressIndicator(
+              value: complete / steps.length,
+              minHeight: 4,
+              borderRadius: BorderRadius.circular(2),
+              color: AppPalette.mint,
+              backgroundColor: AppPalette.stroke,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyConversation extends StatelessWidget {
+  final bool hasSession;
+  final VoidCallback? onCreate;
+  final VoidCallback onHistory;
+
+  const _EmptyConversation({
+    required this.hasSession,
+    required this.onCreate,
+    required this.onHistory,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.chat_bubble_outline_rounded,
+              color: AppPalette.primary,
+              size: 42,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              hasSession
+                  ? 'This session has no messages'
+                  : 'Choose a session or start a new one',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 7),
+            Text(
+              hasSession
+                  ? 'Send a message below to begin.'
+                  : 'Your full AtomCLI session history is available here.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            if (!hasSession) ...[
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  OutlinedButton(
+                    onPressed: onHistory,
+                    child: const Text('Open history'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton(
+                    onPressed: onCreate,
+                    child: const Text('New session'),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Composer extends ConsumerWidget {
+  final TextEditingController controller;
+  final bool sending;
+  final bool uploading;
+  final double? uploadProgress;
+  final List<CompanionArtifact> attachments;
+  final ValueChanged<CompanionArtifact> onRemoveAttachment;
+  final bool connected;
+  final VoidCallback onSend;
+  final VoidCallback onAttach;
+  final VoidCallback onModel;
+  final VoidCallback onAgent;
+  final VoidCallback onVariant;
+
+  const _Composer({
+    required this.controller,
+    required this.sending,
+    required this.uploading,
+    required this.uploadProgress,
+    required this.attachments,
+    required this.onRemoveAttachment,
+    required this.connected,
+    required this.onSend,
+    required this.onAttach,
+    required this.onModel,
+    required this.onAgent,
+    required this.onVariant,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final conversation = ref.watch(conversationProvider);
+    final models = ref.watch(modelsListProvider);
+    ModelInfo? model;
+    for (final candidate in models) {
+      if (candidate.id == conversation.selectedModelId) model = candidate;
+    }
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+        12,
+        9,
+        12,
+        MediaQuery.viewInsetsOf(context).bottom + 10,
+      ),
+      decoration: const BoxDecoration(
+        color: AppPalette.surface,
+        border: Border(top: BorderSide(color: AppPalette.stroke)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Header row
-          InkWell(
-            onTap: _toggle,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.account_tree, size: 13, color: _kAccent),
-                  const SizedBox(width: 6),
-                  const Text(
-                    'WORKFLOW',
-                    style: TextStyle(
-                      color: _kAccent,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 1.1,
-                    ),
+          if (uploadProgress != null) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: LinearProgressIndicator(
+                    value: uploadProgress,
+                    minHeight: 3,
+                    borderRadius: BorderRadius.circular(3),
                   ),
-                  const SizedBox(width: 8),
-                  if (running > 0)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _kOrange.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: _kOrange.withValues(alpha: 0.3),
-                        ),
-                      ),
-                      child: Text(
-                        '$running running',
-                        style: const TextStyle(
-                          color: _kOrange,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  if (running > 0) const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _kCard,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: _kBorder),
-                    ),
-                    child: Text(
-                      '$complete/${dagSteps.length}',
-                      style: const TextStyle(
-                        color: _kTextSecondary,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const Spacer(),
-                  RotationTransition(
-                    turns: Tween<double>(begin: 0.5, end: 0.0).animate(_arrow),
-                    child: const Icon(
-                      Icons.keyboard_arrow_up,
-                      size: 16,
-                      color: _kTextMuted,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '${(uploadProgress! * 100).clamp(0, 100).round()}%',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
             ),
-          ),
-
-          // Steps list (collapses)
-          SizeTransition(
-            sizeFactor: _arrow,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 200),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-                child: Column(
-                  children: dagSteps.map((step) {
-                    final isRunning = step.status == 'running';
-                    final statusColor = switch (step.status) {
-                      'complete' => _kGreen,
-                      'failed' => _kRed,
-                      'running' => _kOrange,
-                      _ => _kTextMuted,
-                    };
-                    final icon = switch (step.status) {
-                      'complete' => Icons.check_circle_rounded,
-                      'failed' => Icons.cancel_rounded,
-                      'running' => Icons.radio_button_checked,
-                      _ => Icons.radio_button_unchecked,
-                    };
-
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(icon, size: 12, color: statusColor),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  step.name,
-                                  style: TextStyle(
-                                    color: isRunning
-                                        ? _kTextPrimary
-                                        : _kTextSecondary,
-                                    fontSize: 12,
-                                    fontWeight: isRunning
-                                        ? FontWeight.w600
-                                        : FontWeight.normal,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              if (isRunning)
-                                Container(
-                                  width: 6,
-                                  height: 6,
-                                  decoration: BoxDecoration(
-                                    color: _kOrange,
-                                    shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: _kOrange.withValues(alpha: 0.6),
-                                        blurRadius: 6,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if (step.todos.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 18, top: 3),
-                              child: Column(
-                                children: step.todos.map((todo) {
-                                  final isDone = todo.status == 'complete';
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 2),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          isDone
-                                              ? Icons.check_box_rounded
-                                              : Icons
-                                                    .check_box_outline_blank_rounded,
-                                          size: 11,
-                                          color: isDone ? _kGreen : _kTextMuted,
-                                        ),
-                                        const SizedBox(width: 5),
-                                        Expanded(
-                                          child: Text(
-                                            todo.content,
-                                            style: TextStyle(
-                                              color: isDone
-                                                  ? _kTextMuted
-                                                  : _kTextSecondary,
-                                              fontSize: 11,
-                                              decoration: isDone
-                                                  ? TextDecoration.lineThrough
-                                                  : null,
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
-                              ),
-                            ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
+            const SizedBox(height: 9),
+          ],
+          if (attachments.isNotEmpty) ...[
+            SizedBox(
+              height: 58,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: attachments.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (_, index) => _DraftAttachment(
+                  artifact: attachments[index],
+                  onRemove: () => onRemoveAttachment(attachments[index]),
                 ),
               ),
             ),
+            const SizedBox(height: 9),
+          ],
+          Container(
+            height: 42,
+            decoration: BoxDecoration(
+              color: AppPalette.panel,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppPalette.stroke),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _RuntimeButton(
+                    key: const Key('model-selector'),
+                    icon: Icons.memory_rounded,
+                    label: model?.name ?? 'Select model',
+                    accent: AppPalette.primary,
+                    onTap: onModel,
+                  ),
+                ),
+                const VerticalDivider(width: 1),
+                _RuntimeButton(
+                  key: const Key('variant-selector'),
+                  icon: Icons.psychology_alt_outlined,
+                  label:
+                      conversation.selectedVariant?.toUpperCase() ?? 'DEFAULT',
+                  accent: AppPalette.amber,
+                  onTap: onVariant,
+                ),
+                const VerticalDivider(width: 1),
+                _RuntimeButton(
+                  key: const Key('agent-selector'),
+                  icon: Icons.smart_toy_outlined,
+                  label: conversation.selectedAgentName ?? 'Agent',
+                  accent: AppPalette.mint,
+                  onTap: onAgent,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 9),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              IconButton(
+                tooltip: 'Attach file',
+                onPressed: connected && !sending && !uploading
+                    ? onAttach
+                    : null,
+                icon: const Icon(Icons.add_circle_outline_rounded),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: TextField(
+                  key: const Key('message-input'),
+                  controller: controller,
+                  enabled: connected && !sending,
+                  minLines: 1,
+                  maxLines: 5,
+                  textCapitalization: TextCapitalization.sentences,
+                  decoration: InputDecoration(
+                    hintText: connected
+                        ? 'Message AtomCLI'
+                        : 'Waiting for AtomCLI',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                key: const Key('send-message-button'),
+                tooltip: 'Send',
+                onPressed: connected && !sending && !uploading ? onSend : null,
+                icon: sending
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppPalette.background,
+                        ),
+                      )
+                    : const Icon(Icons.arrow_upward_rounded),
+              ),
+            ],
           ),
         ],
       ),
@@ -1083,399 +956,1127 @@ class _ChainPanelState extends ConsumerState<_ChainPanel>
   }
 }
 
-// ---------------------------------------------------------------------------
-// Selector chip (model/agent)
-// ---------------------------------------------------------------------------
+class _DraftAttachment extends ConsumerWidget {
+  final CompanionArtifact artifact;
+  final VoidCallback onRemove;
 
-class _SelectorChip extends StatelessWidget {
+  const _DraftAttachment({required this.artifact, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final socket = ref.watch(wsServiceProvider);
+    Uri? thumbnail;
+    if (artifact.kind == 'image' && socket != null) {
+      try {
+        thumbnail = socket.httpUriForPath(artifact.downloadPath);
+      } catch (_) {}
+    }
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 210),
+      padding: const EdgeInsets.fromLTRB(6, 6, 4, 6),
+      decoration: BoxDecoration(
+        color: AppPalette.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppPalette.stroke),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox.square(
+              dimension: 42,
+              child: thumbnail == null
+                  ? const ColoredBox(
+                      color: AppPalette.surface,
+                      child: Icon(Icons.insert_drive_file_outlined, size: 20),
+                    )
+                  : Image.network(
+                      thumbnail.toString(),
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const ColoredBox(
+                        color: AppPalette.surface,
+                        child: Icon(Icons.broken_image_outlined, size: 20),
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  artifact.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+                Text(
+                  _attachmentBytes(artifact.size),
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Remove attachment',
+            visualDensity: VisualDensity.compact,
+            onPressed: onRemove,
+            icon: const Icon(Icons.close_rounded, size: 17),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _attachmentBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+class _RuntimeButton extends StatelessWidget {
   final IconData icon;
   final String label;
-  final Color color;
+  final Color accent;
   final VoidCallback onTap;
-  const _SelectorChip({
+
+  const _RuntimeButton({
+    super.key,
     required this.icon,
     required this.label,
-    required this.color,
+    required this.accent,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withValues(alpha: 0.2)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: color, size: 12),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Row(
+            children: [
+              Icon(icon, color: accent, size: 16),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 150),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(width: 2),
-            Icon(Icons.keyboard_arrow_down, color: color, size: 13),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Picker sheet
-// ---------------------------------------------------------------------------
+class _SessionPicker extends StatefulWidget {
+  final List<SessionInfo> sessions;
+  final String? selectedId;
 
-class _PickerItem {
-  final String id;
-  final String title;
-  final String subtitle;
-  final bool isSelected;
-  const _PickerItem({
-    required this.id,
-    required this.title,
-    required this.subtitle,
-    required this.isSelected,
-  });
-}
-
-class _PickerSheet extends StatefulWidget {
-  final String title;
-  final Color accentColor;
-  final List<_PickerItem> items;
-  final String emptyMessage;
-  final void Function(String) onSelect;
-  final bool searchable;
-
-  const _PickerSheet({
-    required this.title,
-    required this.accentColor,
-    required this.items,
-    required this.emptyMessage,
-    required this.onSelect,
-    this.searchable = false,
-  });
+  const _SessionPicker({required this.sessions, required this.selectedId});
 
   @override
-  State<_PickerSheet> createState() => _PickerSheetState();
+  State<_SessionPicker> createState() => _SessionPickerState();
 }
 
-class _PickerSheetState extends State<_PickerSheet> {
+class _SessionPickerState extends State<_SessionPicker> {
   String _query = '';
 
   @override
   Widget build(BuildContext context) {
-    final filtered = _query.isEmpty
-        ? widget.items
-        : widget.items
-              .where(
-                (i) =>
-                    i.title.toLowerCase().contains(_query.toLowerCase()) ||
-                    i.subtitle.toLowerCase().contains(_query.toLowerCase()),
-              )
-              .toList();
+    final query = _query.toLowerCase();
+    final sessions = widget.sessions
+        .where(
+          (session) =>
+              query.isEmpty ||
+              session.title.toLowerCase().contains(query) ||
+              session.id.toLowerCase().contains(query),
+        )
+        .toList();
+    return _PickerFrame(
+      title: 'Session history',
+      count: widget.sessions.length,
+      searchHint: 'Search sessions',
+      onSearch: (value) => setState(() => _query = value),
+      child: sessions.isEmpty
+          ? const _PickerEmpty('No matching sessions')
+          : ListView.separated(
+              itemCount: sessions.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (_, index) {
+                final session = sessions[index];
+                final selected = session.id == widget.selectedId;
+                return ListTile(
+                  selected: selected,
+                  selectedColor: AppPalette.primary,
+                  leading: Icon(
+                    session.isActive
+                        ? Icons.motion_photos_on_rounded
+                        : selected
+                        ? Icons.forum_rounded
+                        : Icons.forum_outlined,
+                    color: session.isActive ? AppPalette.mint : null,
+                  ),
+                  title: Text(
+                    _sessionTitle(session),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${session.formattedDate}  ·  ${session.directory.split('/').last}\n${session.directory}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: session.isActive
+                      ? const Text(
+                          'RUNNING',
+                          style: TextStyle(color: AppPalette.mint, fontSize: 9),
+                        )
+                      : selected
+                      ? const Icon(Icons.check_rounded)
+                      : null,
+                  onTap: () => Navigator.pop(context, session.id),
+                );
+              },
+            ),
+    );
+  }
+}
 
-    return DraggableScrollableSheet(
-      initialChildSize: 0.55,
-      minChildSize: 0.35,
-      maxChildSize: 0.9,
-      expand: false,
-      builder: (_, controller) => Column(
-        children: [
-          // Handle
-          const SizedBox(height: 10),
-          Center(
-            child: Container(
-              width: 36,
+class _ModelPicker extends StatefulWidget {
+  final List<ModelInfo> models;
+  final String? selectedId;
+
+  const _ModelPicker({required this.models, required this.selectedId});
+
+  @override
+  State<_ModelPicker> createState() => _ModelPickerState();
+}
+
+class _ModelPickerState extends State<_ModelPicker> {
+  String _query = '';
+  bool _freeOnly = false;
+  bool _reasoningOnly = false;
+  bool _favoritesOnly = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.toLowerCase();
+    final preferences = CompanionPreferences.instance;
+    final filtered = widget.models
+        .where(
+          (model) =>
+              (!_freeOnly || model.free) &&
+              (!_reasoningOnly || model.reasoning) &&
+              (!_favoritesOnly ||
+                  preferences.favoriteModels.contains(model.id)) &&
+              (query.isEmpty ||
+                  model.name.toLowerCase().contains(query) ||
+                  model.id.toLowerCase().contains(query) ||
+                  model.providerName.toLowerCase().contains(query) ||
+                  (model.family?.toLowerCase().contains(query) ?? false)),
+        )
+        .toList();
+    final sections = _modelSections(filtered, preferences);
+    return _PickerFrame(
+      title: 'Models',
+      count: widget.models.length,
+      searchHint: 'Search model, provider or family',
+      onSearch: (value) => setState(() => _query = value),
+      filters: [
+        FilterChip(
+          selected: _freeOnly,
+          onSelected: (value) => setState(() => _freeOnly = value),
+          avatar: const Icon(Icons.savings_outlined, size: 15),
+          label: const Text('Free'),
+        ),
+        FilterChip(
+          selected: _reasoningOnly,
+          onSelected: (value) => setState(() => _reasoningOnly = value),
+          avatar: const Icon(Icons.psychology_alt_outlined, size: 15),
+          label: const Text('Reasoning'),
+        ),
+        FilterChip(
+          selected: _favoritesOnly,
+          onSelected: (value) => setState(() => _favoritesOnly = value),
+          avatar: const Icon(Icons.star_outline_rounded, size: 15),
+          label: const Text('Favorites'),
+        ),
+      ],
+      child: filtered.isEmpty
+          ? const _PickerEmpty('No connected models were returned by AtomCLI')
+          : ListView(
+              padding: const EdgeInsets.only(bottom: 24),
+              children: [
+                for (final section in sections) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 7),
+                    child: Text(
+                      section.$1.toUpperCase(),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: section.$1 == 'AtomCLI'
+                            ? AppPalette.primary
+                            : AppPalette.textMuted,
+                      ),
+                    ),
+                  ),
+                  for (final model in section.$2)
+                    _ModelRow(
+                      model: model,
+                      selected: model.id == widget.selectedId,
+                      favorite: preferences.favoriteModels.contains(model.id),
+                      onFavorite: () {
+                        preferences.toggleFavorite(model.id);
+                        setState(() {});
+                      },
+                      onTap: () => Navigator.pop(context, model.id),
+                    ),
+                ],
+              ],
+            ),
+    );
+  }
+
+  List<(String, List<ModelInfo>)> _modelSections(
+    List<ModelInfo> models,
+    CompanionPreferences preferences,
+  ) {
+    final byId = {for (final model in models) model.id: model};
+    final used = <String>{};
+    List<ModelInfo> take(Iterable<String> ids) => ids
+        .map((id) => byId[id])
+        .whereType<ModelInfo>()
+        .where((model) => used.add(model.id))
+        .toList();
+
+    final result = <(String, List<ModelInfo>)>[];
+    final recent = take(preferences.recentModels);
+    if (recent.isNotEmpty) result.add(('Recent', recent));
+    final favorites = take(preferences.favoriteModels);
+    if (favorites.isNotEmpty) result.add(('Favorites', favorites));
+
+    final providers = <String, List<ModelInfo>>{};
+    for (final model in models.where((model) => used.add(model.id))) {
+      providers.putIfAbsent(model.providerName, () => []).add(model);
+    }
+    final names = providers.keys.toList()
+      ..sort((a, b) {
+        if (providers[a]!.first.providerId == 'atomcli') return -1;
+        if (providers[b]!.first.providerId == 'atomcli') return 1;
+        return a.compareTo(b);
+      });
+    for (final name in names) {
+      final items = providers[name]!
+        ..sort((a, b) {
+          if (a.free != b.free) return a.free ? -1 : 1;
+          return a.name.compareTo(b.name);
+        });
+      result.add((
+        providers[name]!.first.providerId == 'atomcli' ? 'AtomCLI' : name,
+        items,
+      ));
+    }
+    return result;
+  }
+}
+
+class _ModelRow extends StatelessWidget {
+  final ModelInfo model;
+  final bool selected;
+  final bool favorite;
+  final VoidCallback onFavorite;
+  final VoidCallback onTap;
+
+  const _ModelRow({
+    required this.model,
+    required this.selected,
+    required this.favorite,
+    required this.onFavorite,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? AppPalette.primarySoft : Colors.transparent,
+      child: InkWell(
+        key: ValueKey('model-${model.id}'),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(17, 11, 8, 11),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: model.providerId == 'atomcli'
+                      ? AppPalette.primarySoft
+                      : AppPalette.surface,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppPalette.stroke),
+                ),
+                child: Icon(
+                  model.reasoning
+                      ? Icons.psychology_alt_rounded
+                      : Icons.memory_rounded,
+                  color: selected
+                      ? AppPalette.primary
+                      : AppPalette.textSecondary,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      model.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 3),
+                    Wrap(
+                      spacing: 7,
+                      children: [
+                        Text(
+                          model.id,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (model.free)
+                          const Text(
+                            'FREE',
+                            style: TextStyle(
+                              color: AppPalette.mint,
+                              fontSize: 9,
+                            ),
+                          ),
+                        if (model.reasoning)
+                          const Text(
+                            'THINK',
+                            style: TextStyle(
+                              color: AppPalette.amber,
+                              fontSize: 9,
+                            ),
+                          ),
+                        if (model.contextLimit > 0)
+                          Text(
+                            _tokens(model.contextLimit),
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: favorite ? 'Remove favorite' : 'Add favorite',
+                onPressed: onFavorite,
+                icon: Icon(
+                  favorite ? Icons.star_rounded : Icons.star_outline_rounded,
+                  color: favorite ? AppPalette.amber : AppPalette.textMuted,
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_rounded, color: AppPalette.primary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VariantPicker extends StatelessWidget {
+  final List<String> variants;
+  final String? selected;
+
+  const _VariantPicker({required this.variants, required this.selected});
+
+  @override
+  Widget build(BuildContext context) {
+    final levels = ['__default__', ...variants];
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SheetHandle(),
+            const SizedBox(height: 18),
+            Text(
+              'Thinking effort',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 5),
+            Text(
+              'Only levels supported by the selected model are shown.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 13),
+            for (final level in levels)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  (level == '__default__' && selected == null) ||
+                          level == selected
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                  color: AppPalette.amber,
+                ),
+                title: Text(
+                  level == '__default__'
+                      ? 'Model default'
+                      : level.toUpperCase(),
+                ),
+                subtitle: level == '__default__'
+                    ? const Text('Use the provider model default')
+                    : null,
+                onTap: () => Navigator.pop(context, level),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DirectoryPicker extends ConsumerStatefulWidget {
+  final String? initialPath;
+
+  const _DirectoryPicker({this.initialPath});
+
+  @override
+  ConsumerState<_DirectoryPicker> createState() => _DirectoryPickerState();
+}
+
+class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
+  DirectoryListing? _listing;
+  String? _error;
+  bool _loading = true;
+  bool _showHidden = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load(widget.initialPath);
+  }
+
+  Future<void> _load(String? path) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final ws = ref.read(wsServiceProvider);
+      if (ws == null) throw StateError('AtomCLI is offline');
+      final listing = await ws.listDirectories(path: path);
+      if (!mounted) return;
+      setState(() => _listing = listing);
+    } catch (error) {
+      if (path != null) {
+        try {
+          final ws = ref.read(wsServiceProvider);
+          if (ws == null) throw StateError('AtomCLI is offline');
+          final fallback = await ws.listDirectories();
+          if (mounted) setState(() => _listing = fallback);
+        } catch (fallbackError) {
+          if (mounted) setState(() => _error = _errorText(fallbackError));
+        }
+      } else if (mounted) {
+        setState(() => _error = _errorText(error));
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final listing = _listing;
+    final directories =
+        listing?.directories
+            .where((entry) => _showHidden || !entry.hidden)
+            .toList() ??
+        const <DirectoryEntry>[];
+    return SafeArea(
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.9,
+        child: Column(
+          children: [
+            const SizedBox(height: 10),
+            const _SheetHandle(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 8, 5),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Parent folder',
+                    onPressed: listing?.parent == null || _loading
+                        ? null
+                        : () => _load(listing!.parent),
+                    icon: const Icon(Icons.arrow_upward_rounded),
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Working directory',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        Text(
+                          listing?.path ??
+                              widget.initialPath ??
+                              'Loading machine folders',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(fontFamily: 'monospace'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: _showHidden
+                        ? 'Hide hidden folders'
+                        : 'Show hidden folders',
+                    onPressed: () => setState(() => _showHidden = !_showHidden),
+                    icon: Icon(
+                      _showHidden
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            if (listing != null && listing.roots.isNotEmpty)
+              SizedBox(
+                height: 46,
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 4,
+                  ),
+                  scrollDirection: Axis.horizontal,
+                  itemCount: listing.roots.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 7),
+                  itemBuilder: (_, index) {
+                    final root = listing.roots[index];
+                    return ActionChip(
+                      avatar: const Icon(Icons.workspaces_outline, size: 15),
+                      label: Text(root.name),
+                      onPressed: () => _load(root.path),
+                    );
+                  },
+                ),
+              ),
+            const Divider(height: 1),
+            Expanded(
+              child: _loading && listing == null
+                  ? const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : _error != null
+                  ? _PickerEmpty(_error!)
+                  : directories.isEmpty
+                  ? const _PickerEmpty('This folder has no child folders')
+                  : ListView.separated(
+                      itemCount: directories.length,
+                      separatorBuilder: (_, _) =>
+                          const Divider(height: 1, indent: 58),
+                      itemBuilder: (_, index) {
+                        final entry = directories[index];
+                        return ListTile(
+                          leading: Icon(
+                            entry.hidden
+                                ? Icons.folder_off_outlined
+                                : Icons.folder_outlined,
+                            color: entry.hidden
+                                ? AppPalette.textMuted
+                                : AppPalette.amber,
+                          ),
+                          title: Text(entry.name),
+                          subtitle: Text(
+                            entry.path,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => _load(entry.path),
+                        );
+                      },
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(14),
+              child: FilledButton.icon(
+                onPressed: listing == null
+                    ? null
+                    : () => Navigator.pop(context, listing.path),
+                icon: const Icon(Icons.check_rounded),
+                label: const Text('Use this folder'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SheetHandle extends StatelessWidget {
+  const _SheetHandle();
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Container(
+      width: 40,
+      height: 4,
+      decoration: BoxDecoration(
+        color: AppPalette.strokeStrong,
+        borderRadius: BorderRadius.circular(2),
+      ),
+    ),
+  );
+}
+
+class _AgentPicker extends StatelessWidget {
+  final List<AgentInfo> agents;
+  final String? selectedName;
+
+  const _AgentPicker({required this.agents, required this.selectedName});
+
+  @override
+  Widget build(BuildContext context) {
+    return _PickerFrame(
+      title: 'Agent',
+      count: agents.length,
+      child: agents.isEmpty
+          ? const _PickerEmpty('No primary agents were returned by AtomCLI')
+          : ListView.separated(
+              itemCount: agents.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (_, index) {
+                final agent = agents[index];
+                final selected = agent.name == selectedName;
+                return ListTile(
+                  key: ValueKey('agent-${agent.name}'),
+                  selected: selected,
+                  selectedColor: AppPalette.mint,
+                  leading: Icon(
+                    selected
+                        ? Icons.smart_toy_rounded
+                        : Icons.smart_toy_outlined,
+                  ),
+                  title: Text(agent.name),
+                  subtitle: Text(agent.description ?? agent.mode),
+                  onTap: () => Navigator.pop(context, agent.name),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _PickerFrame extends StatelessWidget {
+  final String title;
+  final int count;
+  final Widget child;
+  final String? searchHint;
+  final ValueChanged<String>? onSearch;
+  final List<Widget> filters;
+
+  const _PickerFrame({
+    required this.title,
+    required this.count,
+    required this.child,
+    this.searchHint,
+    this.onSearch,
+    this.filters = const [],
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.78,
+        child: Column(
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: _kBorder,
+                color: AppPalette.strokeStrong,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-          ),
-          const SizedBox(height: 14),
-          // Title
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18),
-            child: Row(
-              children: [
-                Text(
-                  widget.title,
-                  style: TextStyle(
-                    color: widget.accentColor,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$title  $count',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            if (onSearch != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                child: TextField(
+                  key: Key('${title.toLowerCase()}-search'),
+                  onChanged: onSearch,
+                  decoration: InputDecoration(
+                    hintText: searchHint,
+                    prefixIcon: const Icon(Icons.search_rounded),
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-          if (widget.searchable)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              child: TextField(
-                style: const TextStyle(color: _kTextPrimary, fontSize: 13),
-                autofocus: false,
-                decoration: InputDecoration(
-                  hintText: 'Search…',
-                  hintStyle: const TextStyle(color: _kTextMuted),
-                  prefixIcon: const Icon(
-                    Icons.search,
-                    color: _kTextMuted,
-                    size: 18,
-                  ),
-                  filled: true,
-                  fillColor: _kSurface,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: _kBorder),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: _kBorder),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide(color: widget.accentColor),
-                  ),
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              ),
+            if (filters.isNotEmpty)
+              SizedBox(
+                height: 47,
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+                  scrollDirection: Axis.horizontal,
+                  itemCount: filters.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 7),
+                  itemBuilder: (_, index) => filters[index],
                 ),
-                onChanged: (val) => setState(() => _query = val),
               ),
-            ),
-          const Divider(color: _kBorder, height: 1),
-          if (filtered.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                widget.emptyMessage,
-                style: const TextStyle(color: _kTextMuted, fontSize: 13),
-              ),
-            )
-          else
-            Expanded(
-              child: ListView.builder(
-                controller: controller,
-                itemCount: filtered.length,
-                itemBuilder: (_, index) {
-                  final item = filtered[index];
-                  return ListTile(
-                    dense: true,
-                    leading: Container(
-                      width: 20,
-                      height: 20,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: item.isSelected
-                            ? widget.accentColor
-                            : Colors.transparent,
-                        border: Border.all(
-                          color: item.isSelected
-                              ? widget.accentColor
-                              : _kBorder,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: item.isSelected
-                          ? const Icon(
-                              Icons.check,
-                              size: 12,
-                              color: Colors.white,
-                            )
-                          : null,
-                    ),
-                    title: Text(
-                      item.title,
-                      style: TextStyle(
-                        color: item.isSelected
-                            ? widget.accentColor
-                            : _kTextPrimary,
-                        fontSize: 13,
-                        fontWeight: item.isSelected
-                            ? FontWeight.w700
-                            : FontWeight.normal,
-                      ),
-                    ),
-                    subtitle: Text(
-                      item.subtitle,
-                      style: const TextStyle(color: _kTextMuted, fontSize: 11),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onTap: () {
-                      widget.onSelect(item.id);
-                      Navigator.pop(context);
-                    },
-                  );
-                },
-              ),
-            ),
-        ],
+            const Divider(height: 1),
+            Expanded(child: child),
+          ],
+        ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Message Bubble
-// ---------------------------------------------------------------------------
+class _PickerEmpty extends StatelessWidget {
+  final String text;
 
-class _MessageBubble extends StatelessWidget {
-  final ChatMessage message;
-  const _MessageBubble({required this.message});
+  const _PickerEmpty(this.text);
 
   @override
   Widget build(BuildContext context) {
-    final msg = message;
-    final isUser = msg.role == 'user';
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      ),
+    );
+  }
+}
 
-    final textParts = msg.parts.where((p) => p.type == 'text').toList();
-    final reasoningParts = msg.parts
-        .where((p) => p.type == 'reasoning')
+class _MessageCard extends StatelessWidget {
+  final ConversationMessage message;
+
+  const _MessageCard({super.key, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final user = message.role == 'user';
+    final visibleParts = message.parts
+        .where(
+          (part) =>
+              part.type == 'tool' ||
+              part.type == 'file' ||
+              part.text.trim().isNotEmpty,
+        )
         .toList();
-    final toolParts = msg.parts.where((p) => p.type == 'tool').toList();
-
-    final timeStr = DateFormat('HH:mm').format(msg.time);
-
+    if (visibleParts.isEmpty) return const SizedBox.shrink();
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 13),
       child: Column(
-        crossAxisAlignment: isUser
+        crossAxisAlignment: user
             ? CrossAxisAlignment.end
             : CrossAxisAlignment.start,
         children: [
-          // Time + role header
           Padding(
-            padding: EdgeInsets.only(
-              bottom: 5,
-              left: isUser ? 0 : 4,
-              right: isUser ? 4 : 0,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (!isUser) ...[
-                  Container(
-                    width: 16,
-                    height: 16,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [_kAccent, _kPurple],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Icon(
-                      Icons.smart_toy,
-                      color: Colors.white,
-                      size: 10,
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                ],
-                Text(
-                  isUser
-                      ? 'You'
-                      : msg.role == 'system'
-                      ? 'System'
-                      : 'Agent',
-                  style: TextStyle(
-                    color: isUser ? _kAccent : _kGreen,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(width: 5),
-                Text(
-                  timeStr,
-                  style: const TextStyle(color: _kTextMuted, fontSize: 10),
-                ),
-              ],
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            child: Text(
+              '${user ? 'You' : 'AtomCLI'}  ${DateFormat('HH:mm').format(message.time)}',
+              style: TextStyle(
+                color: user ? AppPalette.primary : AppPalette.mint,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
-
-          // Reasoning
-          if (reasoningParts.isNotEmpty)
-            _ReasoningBlock(
-              text: reasoningParts.map((p) => p.text ?? '').join(''),
-            ),
-
-          // Tool calls
-          if (toolParts.isNotEmpty)
-            ...toolParts.map((p) => _ToolBlock(part: p)),
-
-          // Text bubble
-          if (textParts.isNotEmpty)
-            Container(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.82,
-              ),
-              decoration: BoxDecoration(
-                gradient: isUser
-                    ? const LinearGradient(
-                        colors: [Color(0xFF1A3A6B), Color(0xFF142E5A)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      )
-                    : null,
-                color: isUser ? null : _kCard,
-                borderRadius: BorderRadius.circular(14).copyWith(
-                  bottomRight: isUser ? Radius.zero : const Radius.circular(14),
-                  topLeft: !isUser ? Radius.zero : const Radius.circular(14),
+          for (final part in visibleParts)
+            if (part.type == 'tool')
+              _ToolPart(part: part)
+            else if (part.type == 'file')
+              _FilePart(part: part)
+            else if (part.type == 'reasoning')
+              _ReasoningPart(text: part.text)
+            else
+              Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.sizeOf(context).width * 0.88,
                 ),
-                border: Border.all(
-                  color: isUser ? _kAccent.withValues(alpha: 0.3) : _kBorder,
+                margin: const EdgeInsets.only(bottom: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 11,
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.2),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                decoration: BoxDecoration(
+                  color: user ? AppPalette.primarySoft : AppPalette.panel,
+                  border: Border.all(
+                    color: user
+                        ? AppPalette.primary.withValues(alpha: 0.35)
+                        : AppPalette.stroke,
                   ),
-                ],
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              child: MarkdownBody(
-                data: textParts.map((p) => p.text ?? '').join(''),
-                selectable: true,
-                styleSheet: MarkdownStyleSheet(
-                  p: const TextStyle(
-                    color: _kTextPrimary,
-                    fontSize: 14,
-                    height: 1.5,
-                  ),
-                  code: const TextStyle(
-                    backgroundColor: Color(0xFF0D1117),
-                    color: _kAccent,
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: const Color(0xFF0D1117),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: _kBorder),
-                  ),
-                  blockquoteDecoration: BoxDecoration(
-                    color: _kSurface,
-                    border: const Border(
-                      left: BorderSide(color: _kAccent, width: 3),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: MarkdownBody(
+                  data: part.text,
+                  selectable: true,
+                  styleSheet: MarkdownStyleSheet(
+                    p: const TextStyle(
+                      color: AppPalette.text,
+                      fontSize: 14,
+                      height: 1.45,
                     ),
-                    borderRadius: BorderRadius.circular(4),
+                    code: const TextStyle(
+                      color: AppPalette.primary,
+                      backgroundColor: AppPalette.background,
+                      fontFamily: 'monospace',
+                    ),
+                    codeblockDecoration: BoxDecoration(
+                      color: AppPalette.background,
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: AppPalette.stroke),
+                    ),
                   ),
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FilePart extends ConsumerWidget {
+  final ConversationPart part;
+
+  const _FilePart({required this.part});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final image = part.mime?.startsWith('image/') == true;
+    final socket = ref.watch(wsServiceProvider);
+    final artifact = ref
+        .watch(artifactsProvider)
+        .where(
+          (item) =>
+              item.name == part.filename &&
+              (item.sessionId == null || item.sessionId == part.sessionId),
+        )
+        .firstOrNull;
+    Uri? imageUri;
+    if (image && socket != null && artifact != null) {
+      try {
+        imageUri = socket.httpUriForPath(artifact.downloadPath);
+      } catch (_) {}
+    }
+    return Container(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * 0.88,
+      ),
+      margin: const EdgeInsets.only(bottom: 5),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppPalette.panel,
+        border: Border.all(color: AppPalette.stroke),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (imageUri != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.network(
+                imageUri.toString(),
+                width: double.infinity,
+                height: 160,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: AppPalette.primarySoft,
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: Icon(
+                  image
+                      ? Icons.image_outlined
+                      : Icons.insert_drive_file_outlined,
+                  color: AppPalette.primary,
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      part.filename ?? 'Attachment',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      part.mime ?? 'File attached to this session',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolPart extends StatelessWidget {
+  final ConversationPart part;
+
+  const _ToolPart({required this.part});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = part.toolState ?? const <String, dynamic>{};
+    final status = state['status'] as String? ?? 'pending';
+    final input = state['input'];
+    final output = state['output'];
+    final error = state['error'];
+    final title = state['title'] as String?;
+    final command = input is Map ? input['command']?.toString() : null;
+    final detail = [
+      if (input != null) 'INPUT\n${_prettyValue(input)}',
+      if (output != null && output.toString().isNotEmpty)
+        'OUTPUT\n${_prettyValue(output)}',
+      if (error != null && error.toString().isNotEmpty)
+        'ERROR\n${_prettyValue(error)}',
+    ].join('\n\n');
+    final color = switch (status) {
+      'completed' => AppPalette.mint,
+      'error' => AppPalette.danger,
+      _ => AppPalette.amber,
+    };
+    return Container(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * 0.9,
+      ),
+      margin: const EdgeInsets.only(bottom: 5),
+      decoration: BoxDecoration(
+        color: AppPalette.surface,
+        border: Border.all(color: AppPalette.stroke),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 13),
+        leading: Icon(
+          status == 'completed'
+              ? Icons.check_circle_outline
+              : status == 'error'
+              ? Icons.error_outline_rounded
+              : Icons.terminal_rounded,
+          color: color,
+          size: 18,
+        ),
+        title: Text(
+          title ?? part.tool ?? 'tool',
+          style: Theme.of(context).textTheme.labelLarge,
+        ),
+        subtitle: command == null
+            ? null
+            : Text(
+                command,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+              ),
+        trailing: Text(
+          status.toUpperCase(),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),
+        ),
+        children: [
+          if (detail.isEmpty)
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text('No command details were returned.'),
+            )
+          else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: AppPalette.background,
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: AppPalette.stroke),
+              ),
+              child: SelectableText(
+                detail,
+                style: const TextStyle(
+                  color: AppPalette.textSecondary,
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  height: 1.45,
                 ),
               ),
             ),
@@ -1485,203 +2086,78 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Reasoning block
-// ---------------------------------------------------------------------------
-
-class _ReasoningBlock extends StatefulWidget {
-  final String text;
-  const _ReasoningBlock({required this.text});
-
-  @override
-  State<_ReasoningBlock> createState() => _ReasoningBlockState();
-}
-
-class _ReasoningBlockState extends State<_ReasoningBlock> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => setState(() => _expanded = !_expanded),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: _kPurple.withValues(alpha: 0.06),
-          border: Border.all(color: _kPurple.withValues(alpha: 0.2)),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.psychology_outlined,
-                  size: 13,
-                  color: _kPurple,
-                ),
-                const SizedBox(width: 5),
-                const Text(
-                  'Reasoning',
-                  style: TextStyle(
-                    color: _kPurple,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const Spacer(),
-                Icon(
-                  _expanded
-                      ? Icons.keyboard_arrow_up
-                      : Icons.keyboard_arrow_down,
-                  size: 14,
-                  color: _kTextMuted,
-                ),
-              ],
-            ),
-            if (_expanded) ...[
-              const SizedBox(height: 7),
-              Text(
-                widget.text,
-                style: const TextStyle(
-                  color: _kTextSecondary,
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic,
-                  height: 1.5,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
+String _prettyValue(Object value) {
+  if (value is String) return value;
+  try {
+    return const JsonEncoder.withIndent('  ').convert(value);
+  } catch (_) {
+    return value.toString();
   }
 }
 
-// ---------------------------------------------------------------------------
-// Tool block
-// ---------------------------------------------------------------------------
-
-class _ToolBlock extends StatefulWidget {
-  final ChatPart part;
-  const _ToolBlock({required this.part});
-
-  @override
-  State<_ToolBlock> createState() => _ToolBlockState();
-}
-
-class _ToolBlockState extends State<_ToolBlock> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = widget.part;
-    final status = p.toolStatus ?? 'pending';
-    final (statusColor, statusIcon) = switch (status) {
-      'completed' => (_kGreen, Icons.check_circle_outline_rounded),
-      'error' => (_kRed, Icons.error_outline_rounded),
-      'running' => (_kOrange, Icons.sync_rounded),
-      _ => (_kTextMuted, Icons.pending_outlined),
-    };
-
-    return GestureDetector(
-      onTap: () => setState(() => _expanded = !_expanded),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-        decoration: BoxDecoration(
-          color: _kCard,
-          border: Border.all(color: statusColor.withValues(alpha: 0.25)),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(statusIcon, size: 14, color: statusColor),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    p.toolName ?? 'tool',
-                    style: const TextStyle(
-                      color: Color(0xFF79C0FF),
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                      fontWeight: FontWeight.w500,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Icon(
-                  _expanded
-                      ? Icons.keyboard_arrow_up
-                      : Icons.keyboard_arrow_down,
-                  size: 14,
-                  color: _kTextMuted,
-                ),
-              ],
-            ),
-            if (_expanded) ...[
-              const SizedBox(height: 8),
-              if (p.toolInput != null && p.toolInput!.isNotEmpty)
-                _CodeBlock(
-                  text: p.toolInput!.entries
-                      .take(5)
-                      .map((e) => '${e.key}: ${e.value}')
-                      .join('\n'),
-                  color: _kTextSecondary,
-                ),
-              if (p.toolOutput != null && p.toolOutput!.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                _CodeBlock(
-                  text: p.toolOutput!.length > 500
-                      ? '${p.toolOutput!.substring(0, 500)}…'
-                      : p.toolOutput!,
-                  color: _kGreen,
-                ),
-              ],
-              if (p.toolError != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  p.toolError!,
-                  style: const TextStyle(color: _kRed, fontSize: 11),
-                ),
-              ],
-            ],
-          ],
-        ),
-      ),
-    );
+String _tokens(int value) {
+  if (value >= 1000000) {
+    return '${(value / 1000000).toStringAsFixed(value % 1000000 == 0 ? 0 : 1)}M';
   }
+  if (value >= 1000) {
+    return '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}K';
+  }
+  return '$value';
 }
 
-class _CodeBlock extends StatelessWidget {
+class _ReasoningPart extends StatelessWidget {
   final String text;
-  final Color color;
-  const _CodeBlock({required this.text, required this.color});
+
+  const _ReasoningPart({required this.text});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: _kBg,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: _kBorder),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * 0.9,
       ),
-      child: SelectableText(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontFamily: 'monospace',
-          height: 1.4,
+      margin: const EdgeInsets.only(bottom: 5),
+      decoration: BoxDecoration(
+        color: AppPalette.surface,
+        border: Border.all(color: AppPalette.stroke),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ExpansionTile(
+        dense: true,
+        leading: const Icon(
+          Icons.psychology_outlined,
+          color: AppPalette.textMuted,
+          size: 18,
         ),
+        title: const Text('Reasoning', style: TextStyle(fontSize: 12)),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            child: Text(text, style: Theme.of(context).textTheme.bodySmall),
+          ),
+        ],
       ),
     );
   }
 }
+
+SessionInfo? _findSession(List<SessionInfo> sessions, String? id) {
+  if (id == null) return null;
+  for (final session in sessions) {
+    if (session.id == id) return session;
+  }
+  return null;
+}
+
+String _sessionTitle(SessionInfo session) {
+  final title = session.title
+      .replaceFirst('New session - ', '')
+      .replaceFirst('Child session - ', '')
+      .trim();
+  return title.isEmpty ? session.id : title;
+}
+
+String _errorText(Object error) => error.toString().replaceFirst(
+  RegExp(r'^(Bad state|TimeoutException):\s*'),
+  '',
+);

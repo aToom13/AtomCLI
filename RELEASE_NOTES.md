@@ -1,57 +1,58 @@
-# AtomCLI v3.4.1
+# AtomCLI v3.4.2-beta
 
-This reliability-focused release strengthens file editing, language-server refactoring, isolated subagent execution, structured code review, remote operations, and browser workflows.
+This is an early developer preview of the redesigned Android Companion. It is intended for development devices and trusted local networks. Interfaces and wire behavior may still change before a stable release.
 
-## Safe and Deterministic Editing
+## Android Companion Developer Preview
 
-- Added content-hash guards so edits fail safely when a file changes after it was read.
-- Added line-range anchors for disambiguating repeated text without weakening the existing fuzzy matching chain.
-- Made multi-operation edits atomic, with one permission request and no partial write when a later operation fails.
-- Added explicit protection against concurrent changes, oversized inputs, and stale anchor ranges.
-- Added a provider-independent edit reliability benchmark covering guarded edits, ambiguity, stale state, large files, atomic operations, and fallback behavior.
+- Rebuilt the mobile experience around Deck, Sessions, Inbox, and Link instead of decorative placeholder screens.
+- Added live session history, streamed assistant text, reasoning state, tool state, sub-agent activity, task progress, and session status.
+- Added searchable recent sessions, working-directory selection from a folder tree, and continuation of existing AtomCLI conversations from Android.
+- Added model selection with recent and favorite ordering, provider grouping, free-text filtering, capability filters, reasoning variants, and persistence of the last used model, variant, agent, and directory.
+- Added expandable tool details so command input, output, errors, and completion state can be inspected from the phone.
+- Added session abort controls and explicit Android-origin context in prompts sent from the phone.
 
-## Language Server Refactoring
+## Remote Approvals
 
-- Promoted the LSP tool into the default tool registry and expanded it with diagnostics, type definitions, workspace symbols, formatting, code actions, symbol rename, and file rename support.
-- Added capability negotiation and dynamic capability tracking for language servers.
-- Added transactional workspace edits with URI, range, document-version, and concurrent-change validation.
-- Added rollback behavior for failed multi-file and resource operations.
-- Restricted language-server subprocess environments so ambient credentials are not inherited.
+- Added a mobile inbox for permission requests and structured questions.
+- Added Allow once, Always allow, and confirmed Full autonomous decisions from Android.
+- Kept Always allow aligned with the reviewed permission pattern rather than granting an unrelated broader rule.
+- Added mutex handling so a request accepted on one client cannot be resolved again by another client or the TUI.
+- Added high-priority Android notifications while the app is hidden and a pending approval or question is waiting.
 
-## Typed and Isolated Subagents
+## File Transfer and Previews
 
-- Added strict schema-validated subagent results and runtime capability requirements.
-- Added isolated Git worktrees with bounded patch collection, conflict reporting, cleanup, and recovery behavior.
-- Added live lifecycle events for subagent state, progress, tool activity, completion, failure, and cancellation.
-- Preserved restrictive subagent permissions and added regression coverage for concurrency, isolation, cleanup, and schema failures.
+- Added PC-to-phone sharing through the `companion_send` tool, including image previews, download, open, and Android share actions.
+- Added phone-to-session uploads for images and arbitrary files, with multi-file staging, removable attachments, upload progress, and model-compatibility fallback messaging.
+- Added `companion_preview` for managed development servers, discoverable LAN and Tailscale URLs, captured logs, browser launch, and remote stop controls.
+- Added machine-grouped received items in Deck, persistent empty states, bounded transfer history, and 24-hour artifact retention.
+- Added transfer notifications for shared artifacts and preview activity where Android permits them.
 
-## Structured Review V2
+## Connectivity and Reliability
 
-- Replaced free-form verdict parsing with Zod-validated reviewer output.
-- Added bounded parallel reviewers with P0 through P3 severity, confidence, exact evidence, and deterministic overall verdicts.
-- Validated every finding against the actual file path, line range, changed range, and source content before accepting it.
-- Added finding deduplication and rejection of forged, stale, out-of-scope, or otherwise invalid findings.
-- Added safe chunking for large diffs so oversized files are reviewed without silently dropping changes.
-- Unified the review gate, isolated workflow quality checks, and CLI review command around the same validation core.
-- Added GitHub pull request and GitLab merge request support with structured JSON reports.
+- Added QR pairing with an Ed25519 device identity, signed and sequenced mutations, replay rejection, and secure local credential storage.
+- Added automatic endpoint selection that prefers private LAN addresses and falls back to Tailscale routes.
+- Added foreground/background WebSocket ownership handoff backed by an Android foreground service.
+- Added restart-safe bridge epochs so event replay works after AtomCLI exits and starts again.
+- Fixed companion listener fallback behavior when the requested port is unavailable.
+- Reduced false upload failures by using direct HTTP transfer semantics with bounded connection timeouts.
 
-## Tools and Runtime Reliability
+## Security Boundaries
 
-- Added encrypted SSH profiles, host-key verification, bounded remote file operations, retry handling, and explicit approval boundaries.
-- Improved browser target tracking, snapshots, session recovery, compact output, and end-to-end regression coverage.
-- Unified public web and programming-documentation search through web and code modes.
-- Removed the redundant standalone code-search path and specialized finance analyzer from the default tool registry.
-- Improved workflow recovery, task association, subagent visibility, and narrow-terminal behavior in the TUI.
+- Stored uploaded files inside the selected project workspace and validated resolved paths before writing.
+- Bounded upload sizes, artifact counts, preview counts, log tails, ticket lifetimes, and artifact retention.
+- Used unguessable artifact tokens and authenticated WebSocket mutations for companion actions.
+- Required normal read, bash, external-directory, and preview permissions before AtomCLI accesses or executes user content.
+- Documented that plain local-network traffic is intended only for a trusted development LAN and that Tailscale is preferred across untrusted networks.
 
-## Release and Compatibility
+## Platform Scope
 
-- Synced all Bun workspace package versions for this release.
-- Preserved backward-compatible configuration defaults for reviewer concurrency and subagent isolation.
-- Preserved the 12-target release matrix for Linux, macOS, and Windows, including musl and baseline x64 builds.
-- Expanded ignore rules so local AtomCLI and Claude configuration, credentials, dependencies, plans, runs, caches, and session state cannot enter release commits.
+- Android is the current companion delivery target; iOS remains out of scope for this preview.
+- Synced AtomCLI workspace versions and the Flutter application version through one release-version command.
+- The `-beta` suffix is prerelease metadata, so `v3.4.2-beta` publishes as a GitHub prerelease.
 
 ## Validation
 
-- Workspace typechecking and the complete deterministic Bun test suite pass.
-- Edit reliability, real TypeScript language-server integration, isolated subagent execution, structured output validation, and Review V2 have focused regression coverage.
-- Generated SDK files are synchronized and release metadata matches the exact version tag contract.
+- AtomBase and workspace typechecks passed.
+- Deterministic Bun test suites and focused companion security, transfer, bridge, permission, and Flutter widget tests passed.
+- Flutter analysis and tests passed.
+- Release metadata was checked against the exact `v3.4.2-beta` tag contract.

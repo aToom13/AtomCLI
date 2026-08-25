@@ -5,6 +5,7 @@ import path from "path"
 const ROOT = path.resolve(import.meta.dir, "../..")
 const SOURCE_PATH = "AtomBase/package.json"
 const RELEASE_NOTES_PATH = "RELEASE_NOTES.md"
+const MOBILE_PUBSPEC_PATH = "companion/pubspec.yaml"
 const WORKSPACE_PATHS = [
   "libs/companion/package.json",
   "libs/plugin/package.json",
@@ -57,6 +58,13 @@ if (!check) {
   lines[0] = "# AtomCLI v" + version
   await Bun.write(notesFile, lines.join("\n"))
 
+  const mobileFile = Bun.file(path.join(ROOT, MOBILE_PUBSPEC_PATH))
+  const mobile = await mobileFile.text()
+  await Bun.write(
+    mobileFile,
+    mobile.replace(/^version:\s*.*$/m, `version: ${version}+${flutterBuildNumber(version)}`),
+  )
+
   const install = Bun.spawn(["bun", "install", "--lockfile-only", "--ignore-scripts"], {
     cwd: ROOT,
     stdin: "inherit",
@@ -87,6 +95,12 @@ async function verify(expected: string) {
     failures.push(RELEASE_NOTES_PATH + ': heading must be "# AtomCLI v' + expected + '"')
   }
 
+  const mobile = await Bun.file(path.join(ROOT, MOBILE_PUBSPEC_PATH)).text()
+  const expectedMobile = `version: ${expected}+${flutterBuildNumber(expected)}`
+  if (!mobile.split(/\r?\n/).includes(expectedMobile)) {
+    failures.push(`${MOBILE_PUBSPEC_PATH}: expected ${expectedMobile}`)
+  }
+
   const lock = await Bun.file(path.join(ROOT, "bun.lock")).text()
   for (const workspace of LOCK_WORKSPACES) {
     const escaped = escapeRegExp(workspace)
@@ -97,6 +111,11 @@ async function verify(expected: string) {
   if (failures.length > 0) {
     throw new Error("Version synchronization failed:\n- " + failures.join("\n- "))
   }
+}
+
+function flutterBuildNumber(version: string) {
+  const [major, minor, patch] = version.split("-")[0].split(".").map(Number)
+  return major * 10_000 + minor * 100 + patch
 }
 
 async function readPackage(file: string) {

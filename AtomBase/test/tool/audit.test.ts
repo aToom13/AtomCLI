@@ -38,6 +38,8 @@ describe("active tool audit", () => {
             "bash",
             "batch",
             "browser",
+            "companion_preview",
+            "companion_send",
             "edit",
             "find",
             "grep",

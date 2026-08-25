@@ -1,42 +1,49 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'screens/qr_scan_screen.dart';
-import 'screens/home_screen.dart';
-import 'screens/permissions_screen.dart';
-import 'screens/chat_screen.dart';
-import 'services/auth_service.dart';
-import 'services/notification_service.dart';
+
 import 'providers/app_providers.dart';
+import 'screens/chat_screen.dart';
+import 'screens/link_screen.dart';
+import 'screens/overview_screen.dart';
+import 'screens/permissions_screen.dart';
+import 'screens/qr_scan_screen.dart';
+import 'services/auth_service.dart';
+import 'services/background_connection_service.dart';
+import 'services/companion_preferences.dart';
+import 'services/notification_service.dart';
+import 'theme/app_theme.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Color(0xFF0A0D13),
+      systemNavigationBarColor: AppPalette.surface,
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-
   await NotificationService.instance.init();
   final alreadyPaired = await AuthService.instance.tryLoadExisting();
-
-  runApp(ProviderScope(child: AtomCLICompanionApp(startPaired: alreadyPaired)));
+  await CompanionPreferences.instance.load();
+  await BackgroundConnectionService.configure(startNow: false);
+  runApp(ProviderScope(child: AtomCLIApp(startPaired: alreadyPaired)));
 }
 
-class AtomCLICompanionApp extends StatelessWidget {
+class AtomCLIApp extends StatelessWidget {
   final bool startPaired;
-  const AtomCLICompanionApp({super.key, required this.startPaired});
+
+  const AtomCLIApp({super.key, required this.startPaired});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AtomCLI Companion',
+      title: 'AtomCLI',
       debugShowCheckedModeBanner: false,
-      theme: _buildTheme(),
+      theme: AppTheme.dark,
       initialRoute: startPaired ? '/home' : '/scan',
       routes: {
         '/scan': (_) => const QrScanScreen(),
@@ -44,101 +51,8 @@ class AtomCLICompanionApp extends StatelessWidget {
       },
     );
   }
-
-  ThemeData _buildTheme() {
-    const bg = Color(0xFF0A0D13);
-    const surface = Color(0xFF111720);
-    const card = Color(0xFF161D28);
-    const border = Color(0xFF1E2A3A);
-    const accent = Color(0xFF4F9EFF);
-    const accentGreen = Color(0xFF3FB950);
-    const accentRed = Color(0xFFFF6B6B);
-    const textPrimary = Color(0xFFE6EDF3);
-    const textSecondary = Color(0xFF8B949E);
-
-    return ThemeData(
-      colorScheme: ColorScheme(
-        brightness: Brightness.dark,
-        primary: accent,
-        onPrimary: Colors.white,
-        secondary: accentGreen,
-        onSecondary: Colors.white,
-        error: accentRed,
-        onError: Colors.white,
-        surface: surface,
-        onSurface: textPrimary,
-        surfaceTint: accent.withValues(alpha: 0.05),
-      ),
-      useMaterial3: true,
-      scaffoldBackgroundColor: bg,
-      cardColor: card,
-      dividerColor: border,
-      textTheme: const TextTheme(
-        bodyLarge: TextStyle(color: textPrimary, fontSize: 14, height: 1.5),
-        bodyMedium: TextStyle(color: textSecondary, fontSize: 13, height: 1.4),
-        bodySmall: TextStyle(color: textSecondary, fontSize: 11),
-        titleLarge: TextStyle(
-          color: textPrimary,
-          fontSize: 18,
-          fontWeight: FontWeight.w700,
-          letterSpacing: -0.3,
-        ),
-        titleMedium: TextStyle(
-          color: textPrimary,
-          fontSize: 15,
-          fontWeight: FontWeight.w600,
-        ),
-        labelSmall: TextStyle(color: textSecondary, fontSize: 11),
-      ),
-      appBarTheme: const AppBarTheme(
-        backgroundColor: surface,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        surfaceTintColor: Colors.transparent,
-        iconTheme: IconThemeData(color: textPrimary),
-        titleTextStyle: TextStyle(
-          color: textPrimary,
-          fontSize: 16,
-          fontWeight: FontWeight.w700,
-        ),
-        systemOverlayStyle: SystemUiOverlayStyle(
-          statusBarColor: Colors.transparent,
-          statusBarIconBrightness: Brightness.light,
-        ),
-      ),
-      navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: surface,
-        elevation: 0,
-        indicatorColor: accent.withValues(alpha: 0.15),
-        labelTextStyle: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return const TextStyle(
-              color: accent,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-            );
-          }
-          return const TextStyle(color: textSecondary, fontSize: 11);
-        }),
-        iconTheme: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return const IconThemeData(color: accent, size: 22);
-          }
-          return const IconThemeData(color: textSecondary, size: 22);
-        }),
-      ),
-      bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: card,
-        surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-      ),
-    );
-  }
 }
 
-/// Main shell with bottom navigation: Workflow + Chat + Permissions.
 class MainShell extends ConsumerStatefulWidget {
   const MainShell({super.key});
 
@@ -146,72 +60,152 @@ class MainShell extends ConsumerStatefulWidget {
   ConsumerState<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends ConsumerState<MainShell> {
-  int _index = 0;
-  bool _dispatching = false;
+class _MainShellState extends ConsumerState<MainShell>
+    with WidgetsBindingObserver {
+  bool _inBackground = false;
+  Timer? _inactiveTimer;
+  Future<void>? _foregroundInFlight;
+  Future<void>? _backgroundInFlight;
+  static const _screens = [
+    OverviewScreen(),
+    ChatScreen(),
+    PermissionsScreen(),
+    LinkScreen(),
+  ];
 
-  static const _screens = [HomeScreen(), ChatScreen(), PermissionsScreen()];
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    Future.microtask(_enterForeground);
+  }
+
+  @override
+  void dispose() {
+    _inactiveTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _inactiveTimer?.cancel();
+      _inBackground = false;
+      unawaited(_enterForeground());
+      return;
+    }
+    if (state == AppLifecycleState.inactive) {
+      _inactiveTimer?.cancel();
+      _inactiveTimer = Timer(
+        const Duration(milliseconds: 900),
+        _enterBackground,
+      );
+      return;
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _enterBackground();
+    }
+  }
+
+  Future<void> _enterForeground() {
+    final inFlight = _foregroundInFlight;
+    if (inFlight != null) return inFlight;
+    final operation = () async {
+      await _backgroundInFlight;
+      await BackgroundConnectionService.pauseForForeground();
+      if (!mounted) return;
+      final socket = ref.read(wsServiceProvider);
+      if (socket != null && !socket.isConnected) {
+        await socket.ensureConnected();
+      }
+    }();
+    _foregroundInFlight = operation;
+    return operation.whenComplete(() {
+      if (identical(_foregroundInFlight, operation)) {
+        _foregroundInFlight = null;
+      }
+    });
+  }
+
+  void _enterBackground() {
+    if (_inBackground) return;
+    _inBackground = true;
+    final socket = ref.read(wsServiceProvider);
+    final operation = () async {
+      try {
+        await socket?.suspend();
+        // `detached` may dispose the Flutter widget before the WebSocket close
+        // handshake finishes. The already-running Android service still must
+        // take ownership so notifications continue after the UI is gone.
+        if (!_inBackground) return;
+        await BackgroundConnectionService.resumeForBackground();
+      } catch (_) {
+        // Lifecycle handoff will be retried on the next state transition.
+      }
+    }();
+    _backgroundInFlight = operation;
+    unawaited(
+      operation.whenComplete(() {
+        if (identical(_backgroundInFlight, operation)) {
+          _backgroundInFlight = null;
+        }
+      }),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    // Wire up event dispatch once per widget lifetime
-    if (!_dispatching) {
-      _dispatching = true;
-      dispatchBackendEvents(ref);
-    }
-    final permCount = ref.watch(permissionsProvider).length;
-    final questCount = ref.watch(questionsProvider).length;
-    final totalActionCount = permCount + questCount;
+    ref.watch(backendSyncProvider);
+    final selected = ref.watch(shellTabProvider);
+    final actionCount =
+        ref.watch(permissionsProvider).length +
+        ref.watch(questionsProvider).length;
 
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF111720),
-          border: const Border(top: BorderSide(color: Color(0xFF1E2A3A))),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.4),
-              blurRadius: 16,
-              offset: const Offset(0, -4),
+      body: IndexedStack(index: selected, children: _screens),
+      bottomNavigationBar: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: AppPalette.stroke)),
+        ),
+        child: NavigationBar(
+          selectedIndex: selected,
+          onDestinationSelected: (index) {
+            HapticFeedback.selectionClick();
+            ref.read(shellTabProvider.notifier).state = index;
+          },
+          destinations: [
+            const NavigationDestination(
+              icon: Icon(Icons.space_dashboard_outlined),
+              selectedIcon: Icon(Icons.space_dashboard_rounded),
+              label: 'Deck',
+            ),
+            const NavigationDestination(
+              icon: Icon(Icons.forum_outlined),
+              selectedIcon: Icon(Icons.forum_rounded),
+              label: 'Sessions',
+            ),
+            NavigationDestination(
+              icon: Badge(
+                isLabelVisible: actionCount > 0,
+                label: Text('$actionCount'),
+                child: const Icon(Icons.inbox_outlined),
+              ),
+              selectedIcon: Badge(
+                isLabelVisible: actionCount > 0,
+                label: Text('$actionCount'),
+                child: const Icon(Icons.inbox_rounded),
+              ),
+              label: 'Inbox',
+            ),
+            const NavigationDestination(
+              icon: Icon(Icons.hub_outlined),
+              selectedIcon: Icon(Icons.hub_rounded),
+              label: 'Link',
             ),
           ],
-        ),
-        child: SafeArea(
-          child: NavigationBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            selectedIndex: _index,
-            onDestinationSelected: (i) {
-              HapticFeedback.selectionClick();
-              setState(() => _index = i);
-            },
-            destinations: [
-              const NavigationDestination(
-                icon: Icon(Icons.account_tree_outlined),
-                selectedIcon: Icon(Icons.account_tree),
-                label: 'Workflow',
-              ),
-              const NavigationDestination(
-                icon: Icon(Icons.chat_bubble_outline),
-                selectedIcon: Icon(Icons.chat_bubble),
-                label: 'Chat',
-              ),
-              NavigationDestination(
-                icon: Badge(
-                  isLabelVisible: totalActionCount > 0,
-                  label: Text('$totalActionCount'),
-                  child: const Icon(Icons.shield_outlined),
-                ),
-                selectedIcon: Badge(
-                  isLabelVisible: totalActionCount > 0,
-                  label: Text('$totalActionCount'),
-                  child: const Icon(Icons.shield),
-                ),
-                label: 'Permissions',
-              ),
-            ],
-          ),
         ),
       ),
     );

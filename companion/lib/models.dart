@@ -13,11 +13,36 @@ class PairingPayload {
   });
 
   factory PairingPayload.fromJson(Map<String, dynamic> json) {
+    final version = json['v'];
+    final rawEndpoints = json['endpoints'];
+    final token = json['pairing_token'];
+    final pairUrl = json['http_pair'];
+    if (version is! int ||
+        rawEndpoints is! List ||
+        token is! String ||
+        pairUrl is! String) {
+      throw const FormatException('Pairing code is missing required fields');
+    }
+    final endpoints = rawEndpoints.whereType<String>().where((value) {
+      final uri = Uri.tryParse(value);
+      return uri != null &&
+          (uri.scheme == 'ws' || uri.scheme == 'wss') &&
+          uri.host.isNotEmpty;
+    }).toList();
+    final pairUri = Uri.tryParse(pairUrl);
+    if (endpoints.isEmpty) {
+      throw const FormatException('Pairing code contains no reachable address');
+    }
+    if (pairUri == null ||
+        (pairUri.scheme != 'http' && pairUri.scheme != 'https') ||
+        pairUri.host.isEmpty) {
+      throw const FormatException('Pairing address is invalid');
+    }
     return PairingPayload(
-      v: json['v'] as int,
-      endpoints: List<String>.from(json['endpoints'] as List),
-      pairingToken: json['pairing_token'] as String,
-      httpPair: json['http_pair'] as String,
+      v: version,
+      endpoints: endpoints,
+      pairingToken: token,
+      httpPair: pairUrl,
     );
   }
 }
@@ -28,6 +53,8 @@ class PendingPermission {
   final String sessionId;
   final String permission;
   final List<String> patterns;
+  final List<String> always;
+  final String? directory;
   final Map<String, dynamic> metadata;
 
   const PendingPermission({
@@ -35,6 +62,8 @@ class PendingPermission {
     required this.sessionId,
     required this.permission,
     required this.patterns,
+    this.always = const [],
+    this.directory,
     required this.metadata,
   });
 
@@ -44,6 +73,8 @@ class PendingPermission {
       sessionId: json['sessionID'] as String? ?? '',
       permission: json['permission'] as String,
       patterns: List<String>.from(json['patterns'] as List? ?? []),
+      always: List<String>.from(json['always'] as List? ?? []),
+      directory: json['directory'] as String?,
       metadata: Map<String, dynamic>.from(json['metadata'] as Map? ?? {}),
     );
   }
@@ -79,6 +110,7 @@ class DagStep {
   final String description;
   final String
   status; // pending | running | complete | failed | <tool-specific>
+  final String? directory;
   final String? sessionId;
   final String? agentType;
   final List<String> dependsOn;
@@ -88,6 +120,7 @@ class DagStep {
     required this.name,
     required this.description,
     required this.status,
+    this.directory,
     this.sessionId,
     this.agentType,
     this.dependsOn = const [],
@@ -100,6 +133,7 @@ class DagStep {
       name: json['name'] as String,
       description: json['description'] as String,
       status: json['status'] as String? ?? 'pending',
+      directory: json['directory'] as String?,
       sessionId: json['sessionID'] as String?,
       agentType: json['agentType'] as String?,
       dependsOn: List<String>.from(json['dependsOn'] as List? ?? []),
@@ -114,6 +148,7 @@ class DagStep {
       name: name,
       description: description,
       status: status ?? this.status,
+      directory: directory,
       sessionId: sessionId,
       agentType: agentType,
       dependsOn: dependsOn,
@@ -157,20 +192,80 @@ class SessionInfo {
   final String id;
   final String title;
   final int updated;
+  final String directory;
+  final String status;
 
-  SessionInfo({required this.id, required this.title, required this.updated});
+  SessionInfo({
+    required this.id,
+    required this.title,
+    required this.updated,
+    this.directory = '',
+    this.status = 'idle',
+  });
 
   factory SessionInfo.fromJson(Map<String, dynamic> json) {
     return SessionInfo(
       id: json['id'] as String,
       title: json['title'] as String,
       updated: json['updated'] as int,
+      directory: json['directory'] as String? ?? '',
+      status: json['status'] as String? ?? 'idle',
     );
   }
 
   String get formattedDate {
     final dt = DateTime.fromMillisecondsSinceEpoch(updated);
     return "${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
+  }
+
+  bool get isActive => status == 'busy' || status == 'retry';
+}
+
+class DirectoryEntry {
+  final String name;
+  final String path;
+  final bool hidden;
+
+  const DirectoryEntry({
+    required this.name,
+    required this.path,
+    this.hidden = false,
+  });
+
+  factory DirectoryEntry.fromJson(Map<String, dynamic> json) => DirectoryEntry(
+    name: json['name'] as String? ?? '',
+    path: json['path'] as String? ?? '',
+    hidden: json['hidden'] as bool? ?? false,
+  );
+}
+
+class DirectoryListing {
+  final String path;
+  final String home;
+  final String? parent;
+  final List<DirectoryEntry> roots;
+  final List<DirectoryEntry> directories;
+
+  const DirectoryListing({
+    required this.path,
+    required this.home,
+    this.parent,
+    this.roots = const [],
+    this.directories = const [],
+  });
+
+  factory DirectoryListing.fromJson(Map<String, dynamic> json) {
+    List<DirectoryEntry> entries(String key) => (json[key] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => DirectoryEntry.fromJson(Map<String, dynamic>.from(item)))
+        .toList();
+    return DirectoryListing(
+      path: json['path'] as String? ?? '',
+      home: json['home'] as String? ?? '',
+      parent: json['parent'] as String?,
+      roots: entries('roots'),
+      directories: entries('directories'),
+    );
   }
 }
 
@@ -269,11 +364,13 @@ class QuestionInfo {
 class PendingQuestion {
   final String reqId;
   final String sessionId;
+  final String? directory;
   final List<QuestionInfo> questions;
 
   const PendingQuestion({
     required this.reqId,
     required this.sessionId,
+    this.directory,
     required this.questions,
   });
 
@@ -283,9 +380,238 @@ class PendingQuestion {
       reqId: json['req_id'] as String? ?? '',
       sessionId:
           json['sessionID'] as String? ?? json['sessionId'] as String? ?? '',
+      directory: json['directory'] as String?,
       questions: rawQuestions
           .map((q) => QuestionInfo.fromJson(q as Map<String, dynamic>))
           .toList(),
+    );
+  }
+}
+
+class CompanionArtifact {
+  final String id;
+  final String kind;
+  final String direction;
+  final String sourceDevice;
+  final String title;
+  final String name;
+  final String mime;
+  final int size;
+  final DateTime createdAt;
+  final String? sessionId;
+  final String downloadPath;
+
+  const CompanionArtifact({
+    required this.id,
+    required this.kind,
+    required this.direction,
+    required this.sourceDevice,
+    required this.title,
+    required this.name,
+    required this.mime,
+    required this.size,
+    required this.createdAt,
+    this.sessionId,
+    required this.downloadPath,
+  });
+
+  factory CompanionArtifact.fromJson(Map<String, dynamic> json) =>
+      CompanionArtifact(
+        id: json['id'] as String? ?? '',
+        kind: json['kind'] as String? ?? 'file',
+        direction: json['direction'] as String? ?? 'pc_to_mobile',
+        sourceDevice: json['sourceDevice'] as String? ?? 'AtomCLI machine',
+        title: json['title'] as String? ?? json['name'] as String? ?? 'File',
+        name: json['name'] as String? ?? 'file',
+        mime: json['mime'] as String? ?? 'application/octet-stream',
+        size: json['size'] as int? ?? 0,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+          json['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+        ),
+        sessionId: json['sessionID'] as String?,
+        downloadPath: json['downloadPath'] as String? ?? '',
+      );
+}
+
+class CompanionPreview {
+  final String id;
+  final String title;
+  final String command;
+  final int port;
+  final String status;
+  final List<String> endpoints;
+  final String logTail;
+  final DateTime createdAt;
+  final String sourceDevice;
+  final String directory;
+  final String? sessionId;
+  final int? exitCode;
+
+  const CompanionPreview({
+    required this.id,
+    required this.title,
+    required this.command,
+    required this.port,
+    required this.status,
+    required this.endpoints,
+    required this.logTail,
+    required this.createdAt,
+    required this.sourceDevice,
+    required this.directory,
+    this.sessionId,
+    this.exitCode,
+  });
+
+  factory CompanionPreview.fromJson(Map<String, dynamic> json) =>
+      CompanionPreview(
+        id: json['id'] as String? ?? '',
+        title: json['title'] as String? ?? 'Project preview',
+        command: json['command'] as String? ?? '',
+        port: json['port'] as int? ?? 0,
+        status: json['status'] as String? ?? 'starting',
+        endpoints: (json['endpoints'] as List? ?? const [])
+            .whereType<String>()
+            .toList(),
+        logTail: json['logTail'] as String? ?? '',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+          json['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+        ),
+        sourceDevice: json['sourceDevice'] as String? ?? 'AtomCLI machine',
+        directory: json['directory'] as String? ?? '',
+        sessionId: json['sessionID'] as String?,
+        exitCode: json['exitCode'] as int?,
+      );
+}
+
+class ConversationPart {
+  final String id;
+  final String messageId;
+  final String sessionId;
+  final String type;
+  final String text;
+  final String? tool;
+  final Map<String, dynamic>? toolState;
+  final String? mime;
+  final String? filename;
+  final String? url;
+
+  const ConversationPart({
+    required this.id,
+    required this.messageId,
+    required this.sessionId,
+    required this.type,
+    this.text = '',
+    this.tool,
+    this.toolState,
+    this.mime,
+    this.filename,
+    this.url,
+  });
+
+  factory ConversationPart.fromJson(Map<String, dynamic> json) {
+    return ConversationPart(
+      id: json['id'] as String? ?? '',
+      messageId: json['messageID'] as String? ?? '',
+      sessionId: json['sessionID'] as String? ?? '',
+      type: json['type'] as String? ?? 'unknown',
+      text: json['text'] as String? ?? '',
+      tool: json['tool'] as String?,
+      toolState: json['state'] is Map
+          ? Map<String, dynamic>.from(json['state'] as Map)
+          : null,
+      mime: json['mime'] as String?,
+      filename: json['filename'] as String?,
+      url: json['url'] as String?,
+    );
+  }
+
+  ConversationPart merge(ConversationPart incoming, String? delta) {
+    if (delta != null && incoming.type == 'text') {
+      return ConversationPart(
+        id: incoming.id.isEmpty ? id : incoming.id,
+        messageId: incoming.messageId.isEmpty ? messageId : incoming.messageId,
+        sessionId: incoming.sessionId.isEmpty ? sessionId : incoming.sessionId,
+        type: incoming.type,
+        text: text + delta,
+        tool: incoming.tool ?? tool,
+        toolState: incoming.toolState ?? toolState,
+        mime: incoming.mime ?? mime,
+        filename: incoming.filename ?? filename,
+        url: incoming.url ?? url,
+      );
+    }
+    return incoming;
+  }
+}
+
+class ConversationMessage {
+  final String id;
+  final String sessionId;
+  final String role;
+  final DateTime time;
+  final List<ConversationPart> parts;
+  final String? modelId;
+  final String? agent;
+  final String? variant;
+
+  const ConversationMessage({
+    required this.id,
+    required this.sessionId,
+    required this.role,
+    required this.time,
+    this.parts = const [],
+    this.modelId,
+    this.agent,
+    this.variant,
+  });
+
+  factory ConversationMessage.fromJson(Map<String, dynamic> json) {
+    final rawTime = json['time'];
+    final created = rawTime is Map
+        ? (rawTime['created'] as int? ?? rawTime['updated'] as int?)
+        : null;
+    final rawParts = json['parts'] as List? ?? const [];
+    return ConversationMessage(
+      id: json['id'] as String? ?? '',
+      sessionId: json['sessionID'] as String? ?? '',
+      role: json['role'] as String? ?? 'assistant',
+      time: created == null
+          ? DateTime.now()
+          : DateTime.fromMillisecondsSinceEpoch(created),
+      parts: rawParts
+          .whereType<Map>()
+          .map(
+            (part) =>
+                ConversationPart.fromJson(Map<String, dynamic>.from(part)),
+          )
+          .where(
+            (part) =>
+                const {'text', 'reasoning', 'tool', 'file'}.contains(part.type),
+          )
+          .toList(),
+      modelId: json['model'] as String?,
+      agent: json['agent'] as String?,
+      variant: json['variant'] as String?,
+    );
+  }
+
+  ConversationMessage copyWith({
+    String? role,
+    DateTime? time,
+    List<ConversationPart>? parts,
+    String? modelId,
+    String? agent,
+    String? variant,
+  }) {
+    return ConversationMessage(
+      id: id,
+      sessionId: sessionId,
+      role: role ?? this.role,
+      time: time ?? this.time,
+      parts: parts ?? this.parts,
+      modelId: modelId ?? this.modelId,
+      agent: agent ?? this.agent,
+      variant: variant ?? this.variant,
     );
   }
 }

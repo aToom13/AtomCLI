@@ -242,6 +242,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                 reply: "reject",
                 requestID: props.request.id,
               })
+              return
             }
             sdk.client.permission.reply({
               reply: "once",

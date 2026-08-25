@@ -1,10 +1,11 @@
-import 'package:flutter/material.dart' hide ConnectionState;
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../models.dart';
 import '../providers/app_providers.dart';
+import '../theme/app_theme.dart';
+import '../widgets/control_widgets.dart';
 
-/// Dedicated action-center screen for pending permission requests.
-/// Displayed as a bottom sheet or full route from the home screen.
 class PermissionsScreen extends ConsumerWidget {
   const PermissionsScreen({super.key});
 
@@ -12,808 +13,638 @@ class PermissionsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final permissions = ref.watch(permissionsProvider);
     final questions = ref.watch(questionsProvider);
-    final totalCount = permissions.length + questions.length;
+    final connection = ref.watch(connectionStateProvider);
+    final total = permissions.length + questions.length;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1117),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF161B22),
-        elevation: 0,
-        title: Row(
-          children: [
-            const Icon(Icons.security, color: Color(0xFFFF7B72), size: 18),
-            const SizedBox(width: 8),
-            Text(
-              'Actions${totalCount == 0 ? '' : ' ($totalCount)'}',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
+        title: const Text('Inbox'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Center(child: ConnectionBadge(state: connection)),
+          ),
+        ],
       ),
-      body: totalCount == 0
-          ? const _EmptyPermissions()
+      body: total == 0
+          ? const _EmptyInbox()
           : ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 32),
               children: [
-                // Questions section
-                if (questions.isNotEmpty) ...[
-                  const _SectionHeader(icon: Icons.help_outline, label: 'Questions', color: Color(0xFF79C0FF)),
-                  const SizedBox(height: 8),
-                  for (final q in questions)
-                    _QuestionCard(
-                      key: ValueKey('q_${q.reqId}'),
-                      question: q,
-                      onReject: () => _rejectQuestion(ref, q),
-                    ),
-                  const SizedBox(height: 16),
-                ],
-                // Permissions section
-                if (permissions.isNotEmpty) ...[
-                  const _SectionHeader(icon: Icons.shield_outlined, label: 'Permissions', color: Color(0xFFFF7B72)),
-                  const SizedBox(height: 8),
-                  for (final perm in permissions)
-                    _SwipeablePermissionCard(
-                      key: ValueKey(perm.reqId),
-                      permission: perm,
-                      onAllow: () => _resolve(ref, context, perm, 'allow'),
-                      onDeny: () => _resolve(ref, context, perm, 'deny'),
-                      onIntervene: () => _showInterveneModal(context, ref, perm),
-                    ),
-                ],
-              ],
-            ),
-    );
-  }
-
-  void _resolve(
-    WidgetRef ref,
-    BuildContext context,
-    PendingPermission perm,
-    String resolution, {
-    String? interventionParams,
-  }) {
-    final ws = ref.read(wsServiceProvider);
-    if (ws == null) return;
-    ws.resolvePermission(
-      reqId: perm.reqId,
-      resolution: resolution,
-      interventionParams: interventionParams,
-    );
-    ref.read(permissionsProvider.notifier).remove(perm.reqId);
-  }
-
-  Future<void> _showInterveneModal(
-    BuildContext context,
-    WidgetRef ref,
-    PendingPermission perm,
-  ) async {
-    final controller = TextEditingController(
-      text: perm.metadata['default_params'] as String? ?? '',
-    );
-    final result = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF161B22),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) =>
-          _InterveneModal(permission: perm, controller: controller),
-    );
-    if (result != null && context.mounted) {
-      _resolve(ref, context, perm, 'intervene', interventionParams: result);
-    }
-  }
-
-  void _rejectQuestion(WidgetRef ref, PendingQuestion q) {
-    final ws = ref.read(wsServiceProvider);
-    if (ws == null) return;
-    ws.rejectQuestion(
-      id: q.reqId,
-    );
-    ref.read(questionsProvider.notifier).remove(q.reqId);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Section header
-// ---------------------------------------------------------------------------
-
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-
-  const _SectionHeader({required this.icon, required this.label, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, color: color, size: 16),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.5,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Empty state
-// ---------------------------------------------------------------------------
-
-class _EmptyPermissions extends StatelessWidget {
-  const _EmptyPermissions();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.verified_user_rounded, color: Color(0xFF3FB950), size: 56),
-          SizedBox(height: 16),
-          Text(
-            'No pending actions',
-            style: TextStyle(color: Colors.white70, fontSize: 16),
-          ),
-          SizedBox(height: 8),
-          Text(
-            'Permission requests & questions will appear here',
-            style: TextStyle(color: Colors.white38, fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Swipeable permission card
-// ---------------------------------------------------------------------------
-
-class _SwipeablePermissionCard extends StatelessWidget {
-  final PendingPermission permission;
-  final VoidCallback onAllow;
-  final VoidCallback onDeny;
-  final VoidCallback onIntervene;
-
-  const _SwipeablePermissionCard({
-    super.key,
-    required this.permission,
-    required this.onAllow,
-    required this.onDeny,
-    required this.onIntervene,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Dismissible(
-      key: ValueKey(permission.reqId),
-      direction: DismissDirection.horizontal,
-      background: _swipeHint(
-        alignment: Alignment.centerLeft,
-        color: const Color(0xFF238636),
-        icon: Icons.check,
-        label: 'Allow',
-      ),
-      secondaryBackground: _swipeHint(
-        alignment: Alignment.centerRight,
-        color: const Color(0xFFDA3633),
-        icon: Icons.close,
-        label: 'Deny',
-      ),
-      confirmDismiss: (dir) async {
-        if (dir == DismissDirection.startToEnd) {
-          onAllow();
-          return true;
-        } else {
-          onDeny();
-          return true;
-        }
-      },
-      child: Card(
-        color: const Color(0xFF161B22),
-        margin: const EdgeInsets.only(bottom: 10),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(
-            color: const Color(0xFFFF7B72).withValues(alpha: 0.4),
-            width: 1,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header row
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFF7B72).withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(
-                        color: const Color(0xFFFF7B72).withValues(alpha: 0.4),
-                      ),
-                    ),
-                    child: Text(
-                      permission.permission,
-                      style: const TextStyle(
-                        color: Color(0xFFFF7B72),
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  const Spacer(),
-                  if (permission.sessionId.isNotEmpty)
-                    Text(
-                      permission.sessionId.length > 10
-                          ? '…${permission.sessionId.substring(permission.sessionId.length - 6)}'
-                          : permission.sessionId,
-                      style: const TextStyle(
-                        color: Colors.white24,
-                        fontSize: 10,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                ],
-              ),
-              // Patterns
-              if (permission.patterns.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 4,
-                  runSpacing: 4,
-                  children: permission.patterns
-                      .take(6)
-                      .map(
-                        (p) => Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF21262D),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            p,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.white60,
-                              fontFamily: 'monospace',
-                            ),
-                          ),
-                        ),
-                      )
-                      .toList(),
+                Text(
+                  '$total decision${total == 1 ? '' : 's'} waiting',
+                  style: Theme.of(context).textTheme.headlineSmall,
                 ),
-              ],
-              const SizedBox(height: 12),
-              // Action buttons
-              Row(
-                children: [
-                  _ActionButton(
-                    label: 'Allow',
-                    icon: Icons.check_circle_outline,
-                    color: const Color(0xFF238636),
-                    onTap: onAllow,
-                  ),
-                  const SizedBox(width: 6),
-                  _ActionButton(
-                    label: 'Deny',
-                    icon: Icons.cancel_outlined,
-                    color: const Color(0xFFDA3633),
-                    onTap: onDeny,
-                  ),
-                  const SizedBox(width: 6),
-                  _ActionButton(
-                    label: 'Intervene',
-                    icon: Icons.edit_outlined,
-                    color: const Color(0xFFFFA657),
-                    onTap: onIntervene,
-                    flex: 2,
-                  ),
+                const SizedBox(height: 6),
+                Text(
+                  'Nothing is removed until AtomCLI confirms your action.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                if (permissions.isNotEmpty) ...[
+                  const SizedBox(height: 26),
+                  const SectionLabel('Permission requests'),
+                  const SizedBox(height: 10),
+                  for (final permission in permissions) ...[
+                    _PermissionCard(
+                      key: ValueKey(permission.reqId),
+                      permission: permission,
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                 ],
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'Swipe → Allow  |  Swipe ← Deny',
-                style: TextStyle(color: Colors.white24, fontSize: 10),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _swipeHint({
-    required AlignmentGeometry alignment,
-    required Color color,
-    required IconData icon,
-    required String label,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      alignment: alignment,
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: Colors.white, size: 24),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
+                if (questions.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  const SectionLabel('Questions'),
+                  const SizedBox(height: 10),
+                  for (final question in questions) ...[
+                    _QuestionCard(
+                      key: ValueKey(question.reqId),
+                      request: question,
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                ],
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Action button
-// ---------------------------------------------------------------------------
-
-class _ActionButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final Color color;
-  final VoidCallback onTap;
-  final int flex;
-
-  const _ActionButton({
-    required this.label,
-    required this.icon,
-    required this.color,
-    required this.onTap,
-    this.flex = 1,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      flex: flex,
-      child: TextButton.icon(
-        style: TextButton.styleFrom(
-          foregroundColor: color,
-          backgroundColor: color.withValues(alpha: 0.1),
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(6),
-            side: BorderSide(color: color.withValues(alpha: 0.3)),
-          ),
-        ),
-        onPressed: onTap,
-        icon: Icon(icon, size: 15),
-        label: Text(label, style: const TextStyle(fontSize: 12)),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Intervene modal
-// ---------------------------------------------------------------------------
-
-class _InterveneModal extends StatelessWidget {
+class _PermissionCard extends ConsumerStatefulWidget {
   final PendingPermission permission;
-  final TextEditingController controller;
 
-  const _InterveneModal({required this.permission, required this.controller});
+  const _PermissionCard({super.key, required this.permission});
+
+  @override
+  ConsumerState<_PermissionCard> createState() => _PermissionCardState();
+}
+
+class _PermissionCardState extends ConsumerState<_PermissionCard> {
+  String? _pendingAction;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-      ),
+    final permission = widget.permission;
+    final busy = _pendingAction != null;
+    return ControlPanel(
+      borderColor: AppPalette.amber.withValues(alpha: 0.36),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Handle bar
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'Intervene',
-            style: TextStyle(
-              color: Color(0xFFFFA657),
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Modify the operation parameters before allowing. '
-            'The result will be ED25519-signed with your device key.',
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF21262D),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              permission.permission,
-              style: const TextStyle(
-                color: Color(0xFFFFA657),
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: controller,
-            maxLines: 4,
-            style: const TextStyle(
-              color: Colors.white,
-              fontFamily: 'monospace',
-              fontSize: 13,
-            ),
-            decoration: InputDecoration(
-              hintText: 'Enter modified parameters (JSON or plain text)…',
-              hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
-              filled: true,
-              fillColor: const Color(0xFF21262D),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Color(0xFF30363D)),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Color(0xFFFFA657)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
           Row(
             children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: TextButton.styleFrom(foregroundColor: Colors.white54),
-                  child: const Text('Cancel'),
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: AppPalette.amber.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.shield_outlined,
+                  color: AppPalette.amber,
+                  size: 20,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                flex: 2,
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFFFA657),
-                    foregroundColor: Colors.black,
-                  ),
-                  onPressed: () {
-                    final params = controller.text.trim();
-                    Navigator.pop(context, params.isEmpty ? null : params);
-                  },
-                  icon: const Icon(Icons.send_rounded, size: 16),
-                  label: const Text(
-                    'Sign & Send',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      permission.permission,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    if (permission.sessionId.isNotEmpty)
+                      Text(
+                        _shortSession(permission.sessionId),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const Text(
+                'REVIEW',
+                style: TextStyle(
+                  color: AppPalette.amber,
+                  fontFamily: 'monospace',
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ],
           ),
+          if (permission.patterns.isNotEmpty) ...[
+            const SizedBox(height: 15),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: permission.patterns
+                  .map(
+                    (pattern) => Container(
+                      constraints: const BoxConstraints(maxWidth: 290),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppPalette.surface,
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(color: AppPalette.stroke),
+                      ),
+                      child: Text(
+                        pattern,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppPalette.textSecondary,
+                          fontFamily: 'monospace',
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: busy ? null : () => _resolve('deny'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppPalette.danger,
+                    side: BorderSide(
+                      color: AppPalette.danger.withValues(alpha: 0.45),
+                    ),
+                    minimumSize: const Size.fromHeight(46),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                  ),
+                  icon: _pendingAction == 'deny'
+                      ? const _ButtonProgress()
+                      : const Icon(Icons.close_rounded, size: 18),
+                  label: const Text('Deny'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: busy ? null : () => _resolve('allow'),
+                  icon: _pendingAction == 'allow'
+                      ? const _ButtonProgress(dark: true)
+                      : const Icon(Icons.check_rounded, size: 18),
+                  label: const Text('Allow once'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: busy ? null : () => _resolve('allow_always'),
+                  icon: _pendingAction == 'allow_always'
+                      ? const _ButtonProgress()
+                      : const Icon(Icons.verified_user_outlined, size: 17),
+                  label: const Text('Always allow'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: busy ? null : _confirmAutonomous,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppPalette.amber,
+                  ),
+                  icon: _pendingAction == 'autonomous'
+                      ? const _ButtonProgress()
+                      : const Icon(Icons.bolt_rounded, size: 17),
+                  label: const Text('Full autonomous'),
+                ),
+              ),
+            ],
+          ),
+          if (permission.always.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Always allow applies to: ${permission.always.join(', ')}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
         ],
       ),
     );
   }
+
+  Future<void> _resolve(String resolution) async {
+    final ws = ref.read(wsServiceProvider);
+    if (ws == null || !ws.isConnected) {
+      _showError('AtomCLI is offline. The permission remains pending.');
+      return;
+    }
+    setState(() => _pendingAction = resolution);
+    try {
+      await ws.resolvePermission(
+        reqId: widget.permission.reqId,
+        resolution: resolution,
+        directory: widget.permission.directory,
+      );
+      ref.read(permissionsProvider.notifier).remove(widget.permission.reqId);
+    } catch (error) {
+      if (mounted) _showError(_cleanError(error));
+    } finally {
+      if (mounted) setState(() => _pendingAction = null);
+    }
+  }
+
+  Future<void> _confirmAutonomous() async {
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: AppPalette.panel,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Enable full autonomous mode?',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'AtomCLI will allow subsequent tools in this session without asking again. Explicit agent safety denials remain enforced.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Enable'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (confirmed == true) await _resolve('autonomous');
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Question card — renders question(s) with type-appropriate input
-// ---------------------------------------------------------------------------
-
 class _QuestionCard extends ConsumerStatefulWidget {
-  final PendingQuestion question;
-  final VoidCallback onReject;
+  final PendingQuestion request;
 
-  const _QuestionCard({
-    super.key,
-    required this.question,
-    required this.onReject,
-  });
+  const _QuestionCard({super.key, required this.request});
 
   @override
   ConsumerState<_QuestionCard> createState() => _QuestionCardState();
 }
 
 class _QuestionCardState extends ConsumerState<_QuestionCard> {
-  // For each question, store the user's answer(s)
-  late List<List<String>> _answers;
-  late List<TextEditingController> _textControllers;
+  late final List<List<String>> _answers;
+  late final List<TextEditingController> _controllers;
+  bool _submitting = false;
+  bool _rejecting = false;
 
   @override
   void initState() {
     super.initState();
-    _answers = List.generate(widget.question.questions.length, (_) => []);
-    _textControllers = List.generate(
-      widget.question.questions.length,
-      (i) => TextEditingController(),
+    _answers = List.generate(widget.request.questions.length, (_) => []);
+    _controllers = List.generate(
+      widget.request.questions.length,
+      (_) => TextEditingController(),
     );
   }
 
   @override
   void dispose() {
-    for (final c in _textControllers) {
-      c.dispose();
+    for (final controller in _controllers) {
+      controller.dispose();
     }
     super.dispose();
   }
 
-  void _submit() {
-    // Build final answers from controllers/selections
-    final finalAnswers = <List<String>>[];
-    for (int i = 0; i < widget.question.questions.length; i++) {
-      final qi = widget.question.questions[i];
-      if (qi.type == 'select') {
-        // #6: Validate that at least one option is selected
-        if (_answers[i].isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Please select an option for: ${qi.header}'),
-              backgroundColor: const Color(0xFFDA3633),
-              behavior: SnackBarBehavior.floating,
-              duration: const Duration(seconds: 3),
+  @override
+  Widget build(BuildContext context) {
+    final busy = _submitting || _rejecting;
+    return ControlPanel(
+      borderColor: AppPalette.primary.withValues(alpha: 0.36),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: AppPalette.primarySoft,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.question_answer_outlined,
+                  color: AppPalette.primary,
+                  size: 19,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  widget.request.questions.length == 1
+                      ? 'AtomCLI needs an answer'
+                      : '${widget.request.questions.length} questions from AtomCLI',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 17),
+          for (
+            var index = 0;
+            index < widget.request.questions.length;
+            index++
+          ) ...[
+            _QuestionInput(
+              question: widget.request.questions[index],
+              controller: _controllers[index],
+              selected: _answers[index],
+              enabled: !busy,
+              onToggle: (value) => _toggleAnswer(index, value),
             ),
-          );
+            if (index < widget.request.questions.length - 1)
+              const SizedBox(height: 20),
+          ],
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              OutlinedButton(
+                onPressed: busy ? null : _reject,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppPalette.danger,
+                  side: BorderSide(
+                    color: AppPalette.danger.withValues(alpha: 0.4),
+                  ),
+                  minimumSize: const Size(90, 46),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                ),
+                child: _rejecting
+                    ? const _ButtonProgress()
+                    : const Text('Reject'),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: busy ? null : _submit,
+                  icon: _submitting
+                      ? const _ButtonProgress(dark: true)
+                      : const Icon(Icons.send_rounded, size: 17),
+                  label: const Text('Send answer'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleAnswer(int questionIndex, String value) {
+    final question = widget.request.questions[questionIndex];
+    setState(() {
+      if (question.multiple) {
+        if (_answers[questionIndex].contains(value)) {
+          _answers[questionIndex].remove(value);
+        } else {
+          _answers[questionIndex].add(value);
+        }
+      } else {
+        _answers[questionIndex] = [value];
+      }
+    });
+  }
+
+  Future<void> _submit() async {
+    final finalAnswers = <List<String>>[];
+    for (var index = 0; index < widget.request.questions.length; index++) {
+      final question = widget.request.questions[index];
+      if (question.type == 'select') {
+        if (_answers[index].isEmpty) {
+          _showError('Choose an option for ${question.header}.');
           return;
         }
-        finalAnswers.add(List<String>.from(_answers[i]));
+        finalAnswers.add(List<String>.from(_answers[index]));
       } else {
-        // text or password
-        finalAnswers.add([_textControllers[i].text]);
+        final value = _controllers[index].text.trim();
+        if (value.isEmpty) {
+          _showError('Enter an answer for ${question.header}.');
+          return;
+        }
+        finalAnswers.add([value]);
       }
     }
 
     final ws = ref.read(wsServiceProvider);
-    if (ws == null) return;
-    ws.replyQuestion(
-      id: widget.question.reqId,
-      answers: finalAnswers,
-    );
-    ref.read(questionsProvider.notifier).remove(widget.question.reqId);
+    if (ws == null || !ws.isConnected) {
+      _showError('AtomCLI is offline. Your answer was not sent.');
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await ws.replyQuestion(
+        id: widget.request.reqId,
+        answers: finalAnswers,
+        directory: widget.request.directory,
+      );
+      ref.read(questionsProvider.notifier).remove(widget.request.reqId);
+    } catch (error) {
+      if (mounted) _showError(_cleanError(error));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
+
+  Future<void> _reject() async {
+    final ws = ref.read(wsServiceProvider);
+    if (ws == null || !ws.isConnected) {
+      _showError('AtomCLI is offline. The question remains pending.');
+      return;
+    }
+    setState(() => _rejecting = true);
+    try {
+      await ws.rejectQuestion(
+        id: widget.request.reqId,
+        directory: widget.request.directory,
+      );
+      ref.read(questionsProvider.notifier).remove(widget.request.reqId);
+    } catch (error) {
+      if (mounted) _showError(_cleanError(error));
+    } finally {
+      if (mounted) setState(() => _rejecting = false);
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _QuestionInput extends StatelessWidget {
+  final QuestionInfo question;
+  final TextEditingController controller;
+  final List<String> selected;
+  final bool enabled;
+  final ValueChanged<String> onToggle;
+
+  const _QuestionInput({
+    required this.question,
+    required this.controller,
+    required this.selected,
+    required this.enabled,
+    required this.onToggle,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: const Color(0xFF161B22),
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(
-          color: const Color(0xFF79C0FF).withValues(alpha: 0.4),
-          width: 1,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          question.header.toUpperCase(),
+          style: Theme.of(
+            context,
+          ).textTheme.labelSmall?.copyWith(color: AppPalette.primary),
         ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF79C0FF).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: const Color(0xFF79C0FF).withValues(alpha: 0.4),
-                    ),
+        const SizedBox(height: 5),
+        Text(question.question, style: Theme.of(context).textTheme.bodyLarge),
+        const SizedBox(height: 11),
+        if (question.type == 'select')
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: question.options
+                .map(
+                  (option) => FilterChip(
+                    selected: selected.contains(option.label),
+                    onSelected: enabled ? (_) => onToggle(option.label) : null,
+                    label: Text(option.label),
+                    tooltip: option.description,
+                    selectedColor: AppPalette.primarySoft,
+                    checkmarkColor: AppPalette.primary,
+                    side: const BorderSide(color: AppPalette.stroke),
                   ),
-                  child: const Text(
-                    'question',
-                    style: TextStyle(
-                      color: Color(0xFF79C0FF),
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-                const Spacer(),
-                if (widget.question.sessionId.isNotEmpty)
-                  Text(
-                    widget.question.sessionId.length > 10
-                        ? '…${widget.question.sessionId.substring(widget.question.sessionId.length - 6)}'
-                        : widget.question.sessionId,
-                    style: const TextStyle(
-                      color: Colors.white24,
-                      fontSize: 10,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-              ],
+                )
+                .toList(),
+          )
+        else
+          TextField(
+            controller: controller,
+            enabled: enabled,
+            obscureText: question.type == 'password',
+            maxLines: question.type == 'password' ? 1 : 3,
+            minLines: question.type == 'password' ? 1 : 1,
+            decoration: InputDecoration(
+              hintText: question.placeholder ?? 'Type your answer',
             ),
-            const SizedBox(height: 12),
-            // Each question
-            for (int i = 0; i < widget.question.questions.length; i++)
-              _buildQuestionInput(i, widget.question.questions[i]),
-            const SizedBox(height: 12),
-            // Action buttons
-            Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF238636),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                    ),
-                    onPressed: _submit,
-                    icon: const Icon(Icons.send_rounded, size: 16),
-                    label: const Text('Answer', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextButton.icon(
-                    style: TextButton.styleFrom(
-                      foregroundColor: const Color(0xFFDA3633),
-                      backgroundColor: const Color(0xFFDA3633).withValues(alpha: 0.1),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(6),
-                        side: BorderSide(color: const Color(0xFFDA3633).withValues(alpha: 0.3)),
-                      ),
-                    ),
-                    onPressed: widget.onReject,
-                    icon: const Icon(Icons.close, size: 15),
-                    label: const Text('Reject', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-              ],
+          ),
+      ],
+    );
+  }
+}
+
+class _EmptyInbox extends StatelessWidget {
+  const _EmptyInbox();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(34),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: AppPalette.mint.withValues(alpha: 0.08),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.done_all_rounded,
+                color: AppPalette.mint,
+                size: 30,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Inbox clear',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 7),
+            Text(
+              'Permission requests and questions will arrive here.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium,
             ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildQuestionInput(int index, QuestionInfo qi) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: index < widget.question.questions.length - 1 ? 12 : 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Question header + text
-          Text(
-            qi.header,
-            style: const TextStyle(
-              color: Color(0xFF79C0FF),
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            qi.question,
-            style: const TextStyle(color: Colors.white, fontSize: 13),
-          ),
-          const SizedBox(height: 8),
-          // Input based on type
-          if (qi.type == 'select' && qi.options.isNotEmpty)
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: qi.options.map((opt) {
-                final isSelected = _answers[index].contains(opt.label);
-                return FilterChip(
-                  selected: isSelected,
-                  label: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(opt.label, style: const TextStyle(fontSize: 12)),
-                      if (opt.description.isNotEmpty)
-                        Text(
-                          opt.description,
-                          style: const TextStyle(fontSize: 10, color: Colors.white54),
-                        ),
-                    ],
-                  ),
-                  selectedColor: const Color(0xFF79C0FF).withValues(alpha: 0.2),
-                  checkmarkColor: const Color(0xFF79C0FF),
-                  backgroundColor: const Color(0xFF21262D),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(6),
-                    side: BorderSide(
-                      color: isSelected
-                          ? const Color(0xFF79C0FF).withValues(alpha: 0.6)
-                          : const Color(0xFF30363D),
-                    ),
-                  ),
-                  onSelected: (selected) {
-                    setState(() {
-                      if (qi.multiple) {
-                        if (selected) {
-                          _answers[index].add(opt.label);
-                        } else {
-                          _answers[index].remove(opt.label);
-                        }
-                      } else {
-                        _answers[index] = selected ? [opt.label] : [];
-                      }
-                    });
-                  },
-                );
-              }).toList(),
-            )
-          else
-            TextField(
-              controller: _textControllers[index],
-              obscureText: qi.type == 'password',
-              style: const TextStyle(color: Colors.white, fontSize: 13),
-              decoration: InputDecoration(
-                hintText: qi.placeholder ?? 'Type your answer…',
-                hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
-                filled: true,
-                fillColor: const Color(0xFF21262D),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Color(0xFF30363D)),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: const BorderSide(color: Color(0xFF79C0FF)),
-                ),
-              ),
-            ),
-        ],
+class _ButtonProgress extends StatelessWidget {
+  final bool dark;
+
+  const _ButtonProgress({this.dark = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 16,
+      height: 16,
+      child: CircularProgressIndicator(
+        strokeWidth: 2,
+        color: dark ? AppPalette.background : AppPalette.textSecondary,
       ),
     );
   }
 }
+
+String _shortSession(String value) {
+  if (value.length <= 14) return value;
+  return '${value.substring(0, 6)}…${value.substring(value.length - 5)}';
+}
+
+String _cleanError(Object error) => error.toString().replaceFirst(
+  RegExp(r'^(Bad state|TimeoutException):\s*'),
+  '',
+);

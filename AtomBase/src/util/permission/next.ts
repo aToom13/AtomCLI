@@ -245,7 +245,7 @@ export namespace PermissionNext {
     async (input) => {
       const s = await state()
       const existing = s.pending[input.requestID]
-      if (!existing) return
+      if (!existing) return false
       delete s.pending[input.requestID]
       Bus.publish(Event.Replied, {
         sessionID: existing.info.sessionID,
@@ -267,14 +267,18 @@ export namespace PermissionNext {
             pending.reject(new RejectedError())
           }
         }
-        return
+        return true
       }
       if (input.reply === "once") {
         existing.resolve()
-        return
+        return true
       }
       if (input.reply === "always") {
-        for (const pattern of existing.info.always) {
+        // Some integrations do not provide a broader recommended pattern.
+        // In that case persist the exact patterns being reviewed so every
+        // permission request can still offer a meaningful "always" action.
+        const approvalPatterns = existing.info.always.length > 0 ? existing.info.always : existing.info.patterns
+        for (const pattern of approvalPatterns) {
           s.approved.push({
             permission: existing.info.permission,
             pattern,
@@ -309,8 +313,9 @@ export namespace PermissionNext {
             projectID: Instance.project.id,
           })
         }
-        return
+        return true
       }
+      return false
     },
   )
 

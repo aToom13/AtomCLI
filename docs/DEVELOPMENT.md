@@ -70,12 +70,12 @@ The build matrix produces Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and
 
 ### Pre-release repository check
 
-Use `AtomBase/package.json` as the release source of truth. Keep the versions in `libs/companion/package.json`, `libs/plugin/package.json`, `libs/script/package.json`, `libs/sdk/js/package.json`, and `libs/util/package.json` aligned with it, then update `bun.lock`. The Flutter application under `companion/` has an independent mobile version.
+Use `AtomBase/package.json` as the release source of truth. Keep the versions in `libs/companion/package.json`, `libs/plugin/package.json`, `libs/script/package.json`, `libs/sdk/js/package.json`, `libs/util/package.json`, and the Flutter manifest under `companion/` aligned with it, then update `bun.lock`.
 
 Do not edit those mirrored versions individually. Set and propagate a release version from the repository root:
 
 ```sh
-bun run version:sync 3.4.1
+bun run version:sync 3.4.2-beta
 bun run version:check
 ```
 

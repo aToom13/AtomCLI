@@ -283,8 +283,14 @@ export namespace Server {
         return undefined
       }
     }
-    const server = tryServe(opts.port) ?? tryServe(0)
-    if (!server) throw new Error(`Failed to start companion server on port ${opts.port}`)
+    const server = tryServe(opts.port)
+    if (!server) {
+      throw new Error(
+        opts.port === 0
+          ? "Failed to start companion server on an available port"
+          : `Failed to start companion server on port ${opts.port}. The port is already in use or unavailable.`,
+      )
+    }
     return server
   }
 }
