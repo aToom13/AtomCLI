@@ -36,7 +36,7 @@ atomcli setup --yes
 
 `atomcli upgrade` remains an alias for `atomcli update`. Installer and update progress is shown with an overall progress bar plus activity spinners for long downloads. On Linux, automatic system-package installation can request `sudo`; use `ATOMCLI_SKIP_PLAYWRIGHT=1` only when browser automation is intentionally unavailable.
 
-To build from source, use Bun 1.3.10:
+To build from source, use Bun 1.3.14:
 
 ```sh
 git clone https://github.com/aToom13/AtomCLI.git

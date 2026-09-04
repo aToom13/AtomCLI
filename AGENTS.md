@@ -4,7 +4,7 @@ Guidance for agentic coding agents working in this monorepo. `AtomBase/` is the 
 
 ## Must-follow constraints
 
-- **Bun only** — no npm or yarn anywhere. Package manager is pinned to `bun@1.3.10`.
+- **Bun only** — no npm or yarn anywhere. Package manager is pinned to `bun@1.3.14`.
 - **Monorepo root is not the main package.** All primary development happens in `AtomBase/`. Root `bun turbo` delegates to packages; run package-specific commands from within each package dir.
 - Run the app with `bun run --conditions=browser ./src/index.ts` (from `AtomBase/`). The `--conditions=browser` flag is required for TUI and SolidJS imports; missing it causes silent import failures.
 - **SDK codegen is required after any server API change.** After modifying routes in `AtomBase/src/server/`, regenerate the SDK:

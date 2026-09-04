@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Bun 1.3.10
+- Bun 1.3.14
 - Git
 
 Use Bun only; this repository does not use npm or Yarn. The monorepo root delegates workspace tasks, while the primary application package is `AtomBase/`.

@@ -6,8 +6,8 @@ import fs from "fs/promises"
 import fsSync from "fs"
 import { afterAll, setDefaultTimeout } from "bun:test"
 
-// Bun 1.3.10 can fall back to its 5s default when this package is reached
-// through the monorepo. Keep the effective timeout aligned with bunfig.toml.
+// Bun can fall back to its 5s default when this package is reached through the
+// monorepo. Keep the effective timeout aligned with bunfig.toml.
 setDefaultTimeout(10_000)
 
 const dir = path.join(os.tmpdir(), "atomcli-test-data-" + process.pid)

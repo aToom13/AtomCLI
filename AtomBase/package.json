@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "@atomcli/script": "workspace:*",
-    "@babel/core": "7.28.0",
+    "@babel/core": "7.29.6",
     "@octokit/webhooks-types": "7.6.1",
     "@parcel/watcher-darwin-arm64": "2.6.0",
     "@parcel/watcher-darwin-x64": "2.6.0",

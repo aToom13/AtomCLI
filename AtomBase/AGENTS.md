@@ -2,7 +2,7 @@
 
 ## Must-follow constraints
 
-- **Bun only** — do not use npm or Yarn. The repository pins `bun@1.3.10`.
+- **Bun only** — do not use npm or Yarn. The repository pins `bun@1.3.14`.
 - Run with `bun run --conditions=browser ./src/index.ts`. The `--conditions=browser` flag is required for TUI and SolidJS imports. The build also uses `conditions: ["browser"]`. Missing this flag causes silent import failures.
 - `@/*` → `./src/*`, `@tui/*` → `./src/interfaces/cli/cmd/tui/*`. Use path aliases; never use relative `../../` chains across directory boundaries.
 - **`ai` package**: use `import type` for types only. For runtime calls, use `await import(...)`. Top-level `import` from `ai` under `--conditions=browser` causes Bun ESM resolution failures.
