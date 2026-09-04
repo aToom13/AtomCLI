@@ -57,3 +57,32 @@ grep -Fxq \
 grep -Fxq \
     "https://github.com/aToom13/AtomCLI/releases/download/v9.8.7/SHA256SUMS" \
     "$fixture_dir/downloads"
+
+# Browser runtime setup must run independently of the source-build fallback so
+# prebuilt installs and updates both synchronize and launch-check Playwright.
+fake_bin="$fixture_dir/fake-bin"
+browser_config="$fixture_dir/browser-config"
+mkdir -p "$fake_bin" "$browser_config/playwright/node_modules/playwright"
+printf '{"version":"1.62.0"}\n' > "$browser_config/playwright/node_modules/playwright/package.json"
+cat > "$fake_bin/bun" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ATOMCLI_INSTALLER_TEST_COMMANDS"
+exit 0
+EOF
+chmod +x "$fake_bin/bun"
+ln -s bun "$fake_bin/bunx"
+
+export ATOMCLI_INSTALLER_TEST_COMMANDS="$fixture_dir/browser-commands"
+PATH="$fake_bin:$PATH"
+CONFIG_DIR="$browser_config"
+PLAYWRIGHT_VERSION="1.62.0"
+OS_TYPE="linux"
+RESOLVED_VERSION=""
+detect_distro() { echo "other"; }
+setup_playwright >/dev/null
+
+grep -Fxq "playwright install --no-shell chromium" "$ATOMCLI_INSTALLER_TEST_COMMANDS"
+grep -Fq -- "--conditions=browser -e" "$ATOMCLI_INSTALLER_TEST_COMMANDS"
+
+progress_output=$(progress_start 2; progress_step "one"; progress_step "two")
+printf '%s' "$progress_output" | grep -Fq "100%  two"

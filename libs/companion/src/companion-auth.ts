@@ -1,7 +1,7 @@
 import { verify as cryptoVerify } from "node:crypto"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 
 /**
  * Companion App Authentication (AtomBase)
@@ -14,135 +14,157 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
  * CRITICAL: Do NOT change to DER/PEM without updating the Flutter side too.
  */
 export namespace CompanionAuth {
-    export interface Device {
-        deviceName: string
-        /** Raw 32-byte ED25519 public key, Base64-encoded */
-        publicKeyBase64: string
-        pairedAt: number
+  export interface Device {
+    /** Stable app-install identity. Older records may only have deviceName. */
+    deviceId?: string
+    deviceName: string
+    /** Raw 32-byte ED25519 public key, Base64-encoded */
+    publicKeyBase64: string
+    pairedAt: number
+  }
+
+  // ---------------------------------------------------------------------------
+  // Persistence
+  // ---------------------------------------------------------------------------
+
+  const _atomcliDir = join(process.env.ATOMCLI_TEST_HOME || homedir(), ".atomcli")
+  const _devicesPath = join(_atomcliDir, "companion-devices.json")
+
+  let _loaded = false
+  const _devices = new Map<string, Device>()
+
+  function _ensureDir() {
+    try {
+      mkdirSync(_atomcliDir, { recursive: true, mode: 0o700 })
+    } catch {
+      /* already exists */
     }
+  }
 
-    // ---------------------------------------------------------------------------
-    // Persistence
-    // ---------------------------------------------------------------------------
-
-    const _atomcliDir = join(process.env.ATOMCLI_TEST_HOME || homedir(), ".atomcli")
-    const _devicesPath = join(_atomcliDir, "companion-devices.json")
-
-    let _loaded = false
-    const _devices = new Map<string, Device>()
-
-    function _ensureDir() {
-        try { mkdirSync(_atomcliDir, { recursive: true }) } catch { /* already exists */ }
+  /** Load persisted devices from disk (called once at startup). */
+  export function loadDevices(): void {
+    if (_loaded) return
+    _loaded = true
+    _ensureDir()
+    try {
+      const raw = readFileSync(_devicesPath, "utf8")
+      const list: Device[] = JSON.parse(raw)
+      for (const d of list) {
+        _devices.set(d.deviceId ?? d.deviceName, d)
+      }
+    } catch {
+      // File doesn't exist yet — that's fine, fresh start
     }
+  }
 
-    /** Load persisted devices from disk (called once at startup). */
-    export function loadDevices(): void {
-        if (_loaded) return
-        _loaded = true
-        _ensureDir()
-        try {
-            const raw = readFileSync(_devicesPath, "utf8")
-            const list: Device[] = JSON.parse(raw)
-            for (const d of list) {
-                _devices.set(d.deviceName, d)
-            }
-        } catch {
-            // File doesn't exist yet — that's fine, fresh start
-        }
+  function _saveDevices(): void {
+    _ensureDir()
+    try {
+      const list = Array.from(_devices.values())
+      writeFileSync(_devicesPath, JSON.stringify(list, null, 2), { encoding: "utf8", mode: 0o600 })
+      chmodSync(_devicesPath, 0o600)
+    } catch (err) {
+      console.error("[companion-auth] failed to persist devices:", err)
     }
+  }
 
-    function _saveDevices(): void {
-        _ensureDir()
-        try {
-            const list = Array.from(_devices.values())
-            writeFileSync(_devicesPath, JSON.stringify(list, null, 2), "utf8")
-        } catch (err) {
-            console.error("[companion-auth] failed to persist devices:", err)
-        }
+  // ---------------------------------------------------------------------------
+  // Device management
+  // ---------------------------------------------------------------------------
+
+  export function registerDevice(deviceName: string, publicKeyBase64: string, deviceId?: string): Device {
+    if (!_loaded) loadDevices()
+    const device: Device = { deviceId, deviceName, publicKeyBase64, pairedAt: Date.now() }
+    _devices.set(deviceId ?? deviceName, device)
+    _saveDevices()
+    return device
+  }
+
+  export function getDevice(identity: string): Device | undefined {
+    if (!_loaded) loadDevices()
+    return _devices.get(identity) ?? Array.from(_devices.values()).find((device) => device.deviceName === identity)
+  }
+
+  export function listDevices(): Device[] {
+    if (!_loaded) loadDevices()
+    return Array.from(_devices.values())
+  }
+
+  /** Attach a stable installation id to a protocol-v2 device record. */
+  export function bindDeviceId(deviceName: string, deviceId: string): boolean {
+    if (!_loaded) loadDevices()
+    const device = Array.from(_devices.values()).find((candidate) => candidate.deviceName === deviceName)
+    if (!device) return false
+    const existing = _devices.get(deviceId)
+    if (existing && existing !== device) return false
+    _devices.delete(device.deviceId ?? device.deviceName)
+    device.deviceId = deviceId
+    _devices.set(deviceId, device)
+    _saveDevices()
+    return true
+  }
+
+  export function removeDevice(identity: string): boolean {
+    if (!_loaded) loadDevices()
+    const device = getDevice(identity)
+    const removed = device ? _devices.delete(device.deviceId ?? device.deviceName) : false
+    if (removed) _saveDevices()
+    return removed
+  }
+
+  // ---------------------------------------------------------------------------
+  // Signature verification
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Verify an ED25519 signature over `payload`.
+   *
+   * ED25519 uses the single-pass `crypto.verify(null, data, key, sig)` API.
+   * The stream-based `createVerify('ed25519')` throws ERR_CRYPTO_INVALID_DIGEST.
+   *
+   * Import aliased as `cryptoVerify` to avoid name shadowing by this function.
+   */
+  export function verify(identity: string, payload: string, signatureB64: string): boolean {
+    const device = getDevice(identity)
+    if (!device) return false
+    try {
+      const rawPub = Buffer.from(device.publicKeyBase64, "base64")
+      if (rawPub.length !== 32) return false
+      // Wrap raw 32-byte key in ASN.1 SPKI DER envelope for Node.js crypto
+      const derPrefix = Buffer.from("302a300506032b6570032100", "hex")
+      const derKey = Buffer.concat([derPrefix, rawPub])
+      const signature = Buffer.from(signatureB64, "base64")
+      if (signature.length !== 64) return false
+      const payloadBuffer = Buffer.from(payload, "utf-8")
+      return (cryptoVerify as Function)(null, payloadBuffer, { key: derKey, format: "der", type: "spki" }, signature)
+    } catch {
+      return false
     }
+  }
 
-    // ---------------------------------------------------------------------------
-    // Device management
-    // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Pairing token management (in-memory only — short-lived by design)
+  // ---------------------------------------------------------------------------
 
-    export function registerDevice(deviceName: string, publicKeyBase64: string): Device {
-        if (!_loaded) loadDevices()
-        const device: Device = { deviceName, publicKeyBase64, pairedAt: Date.now() }
-        _devices.set(deviceName, device)
-        _saveDevices()
-        return device
+  const _tokens = new Map<string, { expiresAt: number }>()
+
+  export function issueToken(ttlMs = 5 * 60 * 1000): string {
+    const token = globalThis.crypto.randomUUID()
+    _tokens.set(token, { expiresAt: Date.now() + ttlMs })
+    return token
+  }
+
+  export function consumeToken(token: string): boolean {
+    const entry = _tokens.get(token)
+    if (!entry) return false
+    _tokens.delete(token)
+    return Date.now() <= entry.expiresAt
+  }
+
+  export function purgeExpiredTokens(): void {
+    const now = Date.now()
+    for (const [token, { expiresAt }] of Array.from(_tokens)) {
+      if (now > expiresAt) _tokens.delete(token)
     }
-
-    export function getDevice(deviceName: string): Device | undefined {
-        if (!_loaded) loadDevices()
-        return _devices.get(deviceName)
-    }
-
-    export function listDevices(): Device[] {
-        if (!_loaded) loadDevices()
-        return Array.from(_devices.values())
-    }
-
-    export function removeDevice(deviceName: string): boolean {
-        if (!_loaded) loadDevices()
-        const removed = _devices.delete(deviceName)
-        if (removed) _saveDevices()
-        return removed
-    }
-
-    // ---------------------------------------------------------------------------
-    // Signature verification
-    // ---------------------------------------------------------------------------
-
-    /**
-     * Verify an ED25519 signature over `payload`.
-     *
-     * ED25519 uses the single-pass `crypto.verify(null, data, key, sig)` API.
-     * The stream-based `createVerify('ed25519')` throws ERR_CRYPTO_INVALID_DIGEST.
-     *
-     * Import aliased as `cryptoVerify` to avoid name shadowing by this function.
-     */
-    export function verify(deviceName: string, payload: string, signatureB64: string): boolean {
-        const device = _devices.get(deviceName) ?? (loadDevices(), _devices.get(deviceName))
-        if (!device) return false
-        try {
-            const rawPub = Buffer.from(device.publicKeyBase64, "base64")
-            if (rawPub.length !== 32) return false
-            // Wrap raw 32-byte key in ASN.1 SPKI DER envelope for Node.js crypto
-            const derPrefix = Buffer.from("302a300506032b6570032100", "hex")
-            const derKey = Buffer.concat([derPrefix, rawPub])
-            const signature = Buffer.from(signatureB64, "base64")
-            if (signature.length !== 64) return false
-            const payloadBuffer = Buffer.from(payload, "utf-8")
-            return (cryptoVerify as Function)(null, payloadBuffer, { key: derKey, format: "der", type: "spki" }, signature)
-        } catch {
-            return false
-        }
-    }
-
-    // ---------------------------------------------------------------------------
-    // Pairing token management (in-memory only — short-lived by design)
-    // ---------------------------------------------------------------------------
-
-    const _tokens = new Map<string, { expiresAt: number }>()
-
-    export function issueToken(ttlMs = 5 * 60 * 1000): string {
-        const token = globalThis.crypto.randomUUID()
-        _tokens.set(token, { expiresAt: Date.now() + ttlMs })
-        return token
-    }
-
-    export function consumeToken(token: string): boolean {
-        const entry = _tokens.get(token)
-        if (!entry) return false
-        _tokens.delete(token)
-        return Date.now() <= entry.expiresAt
-    }
-
-    export function purgeExpiredTokens(): void {
-        const now = Date.now()
-        for (const [token, { expiresAt }] of Array.from(_tokens)) {
-            if (now > expiresAt) _tokens.delete(token)
-        }
-    }
+  }
 }

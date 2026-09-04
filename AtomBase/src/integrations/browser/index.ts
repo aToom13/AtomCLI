@@ -1,10 +1,6 @@
-import { Log } from "@/util/util/log"
 import fs from "fs"
-import path from "path"
 import os from "os"
-import { Global } from "@/core/global"
-
-// Type-only imports for Playwright types
+import path from "path"
 import type {
   Browser as PlaywrightBrowser,
   BrowserContext,
@@ -14,9 +10,13 @@ import type {
   Page,
   Request,
 } from "playwright"
+import { Global } from "@/core/global"
+import { Log } from "@/util/util/log"
 
 const MAX_BROWSER_EVENTS = 1_000
 const DEFAULT_BROWSER_EVENT_LIMIT = 50
+
+declare const ATOMCLI_PLAYWRIGHT_VERSION: string | undefined
 
 export type BrowserConsoleEvent = {
   id: number
@@ -98,6 +98,7 @@ export function detectLinuxDistro(): LinuxDistro | null {
  * Falls back to null when playwright is not resolvable from this module graph.
  */
 export async function resolveBundledPlaywrightVersion(): Promise<string | null> {
+  if (typeof ATOMCLI_PLAYWRIGHT_VERSION !== "undefined") return ATOMCLI_PLAYWRIGHT_VERSION
   try {
     const pkg = await import("playwright/package.json").catch(() => null)
     return pkg?.default?.version ?? pkg?.version ?? null
@@ -209,6 +210,11 @@ export class BrowserManager {
 
     for (const modulePath of this.resolvePlaywrightCandidates()) {
       try {
+        // Do not ask Bun to import an external path before it exists. Failed
+        // dynamic imports can remain negatively cached for the lifetime of a
+        // compiled process, which previously made `atomcli setup` install the
+        // package successfully but fail its immediate re-check.
+        if (modulePath !== "playwright" && !fs.existsSync(modulePath)) continue
         const pw = await import(modulePath)
         // Record the resolved playwright version for accurate install hints
         try {
@@ -673,10 +679,10 @@ export class BrowserManager {
    */
   public getInstallHint(): string {
     const version = this.playwrightVersion ? `@${this.playwrightVersion}` : ""
-    const base = `bunx playwright${version} install chromium`
+    const base = `bunx playwright${version} install --no-shell chromium`
     const distro = detectLinuxDistro()
 
-    if (distro === "debian") return `bunx playwright${version} install --with-deps chromium`
+    if (distro === "debian") return `bunx playwright${version} install --with-deps --no-shell chromium`
 
     if (distro === "arch") {
       const pacmanDeps = [
@@ -807,7 +813,7 @@ export class BrowserManager {
         .map((p) => `\n  - ${p}`)
         .join("")
       throw new Error(
-        `Playwright module could not be resolved. Install it with: bunx playwright${version} install chromium` +
+        `Playwright module could not be resolved. Install it with: bunx playwright${version} install --no-shell chromium` +
           `\nSearched locations:${searched}` +
           (process.env.ATOMCLI_PLAYWRIGHT_PATH
             ? ""
@@ -839,17 +845,19 @@ export class BrowserManager {
       try {
         const { chromium } = await this.getPlaywright()
         this.log.info("launching browser", { headless })
-        this.browser = await chromium.launch({ headless, args })
+        this.browser = await chromium.launch({ headless, args, ...(headless ? { channel: "chromium" } : {}) })
       } catch (e: any) {
         this.log.warn("headed launch failed, falling back to headless", { error: e.message })
         headless = true
         const { chromium } = await this.getPlaywright()
         const headlessArgs = args.filter((arg) => !arg.startsWith("--class="))
-        this.browser = await chromium.launch({ headless, args: headlessArgs }).catch((launchError: any) => {
-          throw new Error(
-            `Chromium launch failed after both headed and headless attempts: ${launchError?.message ?? launchError} (headed error was: ${e?.message ?? e})`,
-          )
-        })
+        this.browser = await chromium
+          .launch({ headless, channel: "chromium", args: headlessArgs })
+          .catch((launchError: any) => {
+            throw new Error(
+              `Chromium launch failed after both headed and headless attempts: ${launchError?.message ?? launchError} (headed error was: ${e?.message ?? e})`,
+            )
+          })
       }
       this.launchedHeadless = headless
       if (!headless && !hasWindowRule) await this.moveBrowserToWorkspace(hostWorkspace)
@@ -870,6 +878,39 @@ export class BrowserManager {
       await this.init()
     }
     return this.page!
+  }
+
+  /**
+   * Prove that the discovered module, browser revision, host libraries, and
+   * sandbox can complete a real launch. Availability checks alone only prove
+   * that files exist, which is insufficient on rolling Linux distributions
+   * and inside compiled Bun binaries.
+   */
+  public async verifyInstallation() {
+    if (!(await this.isPlaywrightAvailable())) {
+      throw new Error(`Playwright or its Chromium executable was not found. ${this.getInstallHint()}`)
+    }
+    const { chromium } = await this.getPlaywright()
+    const args =
+      process.platform === "linux" && process.geteuid?.() === 0 ? ["--no-sandbox", "--disable-setuid-sandbox"] : []
+    const headless =
+      process.platform !== "darwin" &&
+      process.platform !== "win32" &&
+      !process.env.DISPLAY &&
+      !process.env.WAYLAND_DISPLAY
+    const probe = await chromium.launch({ headless, args, ...(headless ? { channel: "chromium" } : {}) })
+    try {
+      const page = await probe.newPage()
+      await page.goto("data:text/html,<title>AtomCLI browser probe</title>")
+      if ((await page.title()) !== "AtomCLI browser probe") throw new Error("Chromium probe page did not respond")
+    } finally {
+      await probe.close()
+    }
+    return {
+      modulePath: this.playwrightPath,
+      version: this.playwrightVersion,
+      executablePath: this.playwrightExpectedExecutable,
+    }
   }
 
   public async getContext(): Promise<BrowserContext> {

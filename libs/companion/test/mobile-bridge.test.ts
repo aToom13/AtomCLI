@@ -122,6 +122,48 @@ describe("MobileBridge", () => {
       },
     })
 
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "message_failed",
+            sessionID: "session_live",
+            role: "assistant",
+            error: {
+              name: "APIError",
+              data: {
+                message: "Add credits token=private https://user:pass@example.test/buy?key=secret",
+                statusCode: 402,
+                isRetryable: false,
+                responseBody: "sensitive provider response",
+                responseHeaders: { authorization: "Bearer secret" },
+              },
+            },
+          },
+        },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "message_updated",
+      payload: {
+        info: {
+          id: "message_failed",
+          error: {
+            name: "APIError",
+            data: {
+              message: "Add credits token=<redacted> https://example.test/buy",
+              statusCode: 402,
+              isRetryable: false,
+            },
+          },
+        },
+      },
+    })
+    expect(JSON.stringify(messages.at(-1))).not.toContain("sensitive provider response")
+    expect(JSON.stringify(messages.at(-1))).not.toContain("user:pass")
+
     for (const directory of ["/home/user/project-a", "/home/user/project-b"]) {
       bus.emit("event", {
         directory,
@@ -144,6 +186,104 @@ describe("MobileBridge", () => {
       ]),
     )
 
+    for (const workflowId of ["wf_one", "wf_two"]) {
+      bus.emit("event", {
+        directory: "/home/user/shared-project",
+        payload: {
+          type: "tui.chain.add_step",
+          properties: {
+            workflowId,
+            stepId: "build",
+            name: "build",
+            description: workflowId,
+            sessionID: "session_shared",
+          },
+        },
+      })
+    }
+    bus.emit("event", {
+      directory: "/home/user/shared-project",
+      payload: {
+        type: "tui.chain.parallel.update",
+        properties: {
+          workflowId: "wf_two",
+          sessionID: "session_shared",
+          stepIndex: 0,
+          status: "running",
+        },
+      },
+    })
+    MobileBridge.sendSnapshot("phone")
+    const shared = messages
+      .at(-1)
+      ?.payload.dag.filter((step: Record<string, unknown>) => step.directory === "/home/user/shared-project")
+    expect(shared).toMatchObject([
+      { workflowId: "wf_one", status: "pending" },
+      { workflowId: "wf_two", status: "running" },
+    ])
+
+    bus.emit("event", {
+      directory: "/home/user/shared-project",
+      payload: {
+        type: "tui.subagent.active",
+        properties: {
+          sessionId: "ses_child",
+          parentSessionId: "session_shared",
+          parentStepId: "build",
+          agentType: "reviewer",
+          description: "Review build",
+        },
+      },
+    })
+    bus.emit("event", {
+      payload: {
+        type: "tui.subagent.activity",
+        properties: {
+          sessionId: "ses_child",
+          kind: "tool",
+          label: "Running tests",
+          status: "completed",
+          output: "3 passed",
+          time: 123,
+        },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "sub_agent_activity",
+      payload: { sessionID: "ses_child", label: "Running tests", output: "3 passed" },
+    })
+    for (const label of ["Draft", "Draft complete"]) {
+      bus.emit("event", {
+        payload: {
+          type: "tui.subagent.activity",
+          properties: { sessionId: "ses_child", kind: "transcript", label, time: 124 },
+        },
+      })
+    }
+    bus.emit("event", {
+      payload: {
+        type: "tui.subagent.failed",
+        properties: { sessionId: "ses_child", error: "review failed" },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "sub_agent_failed",
+      payload: { sessionID: "ses_child", error: "review failed" },
+    })
+    MobileBridge.sendSnapshot("phone")
+    expect(messages.at(-1)?.payload.sub_agents).toContainEqual(
+      expect.objectContaining({
+        sessionID: "ses_child",
+        parentStepId: "build",
+        directory: "/home/user/shared-project",
+        status: "failed",
+        activities: [
+          expect.objectContaining({ label: "Running tests", status: "completed" }),
+          expect.objectContaining({ label: "Draft complete", kind: "transcript" }),
+        ],
+      }),
+    )
+
     bus.emit("event", {
       directory: "/home/user/project-a",
       payload: { type: "tui.chain.start", properties: {} },
@@ -152,13 +292,57 @@ describe("MobileBridge", () => {
     MobileBridge.sendSnapshot("phone")
     expect(messages.at(-1)?.payload.artifacts).toContainEqual(expect.objectContaining({ id: "artifact_test" }))
     expect(messages.at(-1)?.payload.previews).toContainEqual(expect.objectContaining({ id: "preview_test" }))
-    expect(messages.at(-1)?.payload.dag).toEqual([
+    expect(messages.at(-1)?.payload.dag).not.toContainEqual(
+      expect.objectContaining({ name: "build", directory: "/home/user/project-a" }),
+    )
+    expect(messages.at(-1)?.payload.dag).toContainEqual(
       expect.objectContaining({ name: "build", directory: "/home/user/project-b" }),
-    ])
+    )
     expect(messages.at(-1)?.payload.bridge_epoch).toBe(MobileBridge.epoch())
+    expect(messages.at(-1)?.bridge_epoch).toBe(MobileBridge.epoch())
+    expect(messages.at(-1)?.payload.cursor).toEqual({
+      bridge_epoch: MobileBridge.epoch(),
+      seq_id: messages.at(-1)?.payload.current_seq_id,
+    })
+
+    bus.emit("event", {
+      payload: {
+        type: "companion.artifact.deleted",
+        properties: { id: "artifact_test" },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "artifact_deleted",
+      payload: { id: "artifact_test" },
+    })
+    MobileBridge.sendSnapshot("phone")
+    expect(messages.at(-1)?.payload.artifacts).toEqual([])
+    const sequenceBeforeIdleStream = messages.at(-1)?.payload.current_seq_id
 
     MobileBridge.unregisterClient("phone")
     expect(MobileBridge.connectedClientCount()).toBe(0)
+
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          delta: "ignored while no phone is connected",
+          part: {
+            id: "part_idle",
+            messageID: "message_idle",
+            sessionID: "session_idle",
+            type: "text",
+            text: "ignored while no phone is connected",
+          },
+        },
+      },
+    })
+
+    MobileBridge.registerClient("idle-probe", (data) => messages.push(JSON.parse(data)))
+    MobileBridge.sendSnapshot("idle-probe")
+    expect(messages.at(-1)?.payload.current_seq_id).toBe(sequenceBeforeIdleStream)
+    MobileBridge.unregisterClient("idle-probe")
   })
 
   test("can rebuild missed pending state from the server source of truth", () => {
@@ -178,5 +362,15 @@ describe("MobileBridge", () => {
       { req_id: "question_recovered", sessionID: "session_recovered" },
     ])
     MobileBridge.unregisterClient("reconnected-phone")
+  })
+
+  test("rejects a cursor from another bridge epoch", () => {
+    const messages: Record<string, any>[] = []
+    MobileBridge.registerClient("stale-phone", (data) => messages.push(JSON.parse(data)))
+
+    expect(MobileBridge.replayMissed("stale-phone", 0, crypto.randomUUID())).toBe("epoch_mismatch")
+    expect(messages).toEqual([])
+
+    MobileBridge.unregisterClient("stale-phone")
   })
 })

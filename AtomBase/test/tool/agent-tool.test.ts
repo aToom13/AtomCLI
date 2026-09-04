@@ -5,6 +5,7 @@ import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { Session } from "@/core/session"
 import { SessionStatus } from "@/core/session/status"
+import { SessionExecutionProfile } from "@/core/session/execution-profile"
 
 describe("AgentTool", () => {
   const dummyCtx = {
@@ -258,6 +259,62 @@ describe("AgentTool", () => {
 
         expect(result.metadata.error).toBe(true)
         expect(result.output).toContain("does not belong to the current session")
+      },
+    })
+  })
+
+  test("companion fast profile blocks a redundant low-risk reviewer spawn", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "companion-fast-reviewer"
+        SessionExecutionProfile.set(sessionID, "companion-fast")
+        const instance = await AgentTool.init({})
+
+        expect(instance.description).toContain("Companion fast sessions reject")
+        expect(
+          instance.execute(
+            {
+              action: "spawn",
+              subagent_type: "reviewer",
+              description: "Verify pipe art",
+              prompt: "Check the Flappy Bird pipe orientation after the visual fix.",
+              owns: ["flappy-pixel/game.js"],
+            },
+            { ...dummyCtx, sessionID },
+          ),
+        ).rejects.toThrow("blocks redundant reviewer/checker agents")
+      },
+    })
+  })
+
+  test("companion fast profile still permits critical security review", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "companion-fast-security-review"
+        SessionExecutionProfile.set(sessionID, "companion-fast")
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [
+              {
+                id: "review-auth",
+                prompt: "Review the authentication token validation change.",
+                agent: "reviewer",
+                owns: ["src/auth/token.ts"],
+              },
+            ],
+          },
+          { ...dummyCtx, sessionID },
+        )
+
+        expect(result.metadata.error).not.toBe(true)
+        expect(result.output).toContain("review-auth")
       },
     })
   })

@@ -1,0 +1,19 @@
+name: atomcli_android_live_updates
+description: Android Live Update bridge for the AtomCLI Companion.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.3
+  flutter: ">=3.38.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: io.atomcli.live_updates
+        pluginClass: AtomcliLiveUpdatesPlugin

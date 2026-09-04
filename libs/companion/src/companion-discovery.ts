@@ -1,5 +1,6 @@
 import * as os from "node:os"
 import { Log } from "@atomcli/util"
+import { CompanionProtocol } from "./protocol"
 
 const log = Log.create({ service: "companion-discovery" })
 
@@ -115,7 +116,7 @@ export namespace CompanionDiscovery {
     const httpHost = endpoints[0] ? new URL(endpoints[0].url).host : null
 
     return {
-      v: 2,
+      v: CompanionProtocol.PAIRING_VERSION,
       endpoints: endpoints.map((e) => e.url),
       pairing_token: pairingToken,
       // If no IP endpoint found, http_pair will be empty — caller must warn user.

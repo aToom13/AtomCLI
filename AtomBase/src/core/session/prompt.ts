@@ -53,7 +53,8 @@ import { LLM } from "./llm"
 import { iife } from "@/util/util/iife"
 import { Shell } from "@/interfaces/shell/shell"
 import { Skill } from "@/integrations/skill"
-import { HarnessState } from "./harness-state"
+import { escapeXmlText, HarnessState } from "./harness-state"
+import { SessionExecutionProfile } from "./execution-profile"
 import { AgentEval } from "@/core/eval/harness"
 
 // @ts-ignore
@@ -559,7 +560,8 @@ export namespace SessionPrompt {
 
       // normal processing
       const agent = await Agent.get(lastUser.agent)
-      const maxSteps = agent.steps ?? Infinity
+      const fastProfile = SessionExecutionProfile.get(sessionID) === "companion-fast"
+      const maxSteps = agent.steps ?? (fastProfile ? 18 : Infinity)
       const isLastStep = step >= maxSteps
       msgs = insertReminders({
         messages: msgs,
@@ -676,7 +678,7 @@ export namespace SessionPrompt {
         SystemPrompt.environment(userText, loadedMcpNames),
         SystemPrompt.custom(),
         userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
-        userText ? recallCoreMemories(userText, 3) : Promise.resolve(""),
+        userText ? recallCoreMemories(userText, 3, { skipRerank: fastProfile }) : Promise.resolve(""),
         userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
       ])
 
@@ -1366,6 +1368,39 @@ export namespace SessionPrompt {
     }
 
     let aggregatedReminders: string[] = []
+
+    if (!["reviewer", "checker", "explore", "plan"].includes(input.agent.name)) {
+      const toolCallIDs = new Set<string>()
+      for (const message of input.messages) {
+        for (let index = 0; index < message.parts.length; index++) {
+          const part = message.parts[index]
+          if (part.type !== "tool") continue
+          toolCallIDs.add(part.id || `${message.info.id}:${index}`)
+        }
+      }
+      const progress = HarnessState.consumeTaskflowReminder({
+        sessionID,
+        toolCallCount: toolCallIDs.size,
+      })
+      if (progress) {
+        const completed = progress.steps.filter((step) => step.status === "completed").length
+        const visibleSteps = progress.steps.slice(0, 20)
+        const omitted = progress.steps.length - visibleSteps.length
+        aggregatedReminders.push(
+          [
+            `<taskflow_progress trigger="${progress.trigger}" tool_calls_since_last="${progress.toolCallsSinceLast}">`,
+            `Taskflow progress: ${completed}/${progress.steps.length} completed.`,
+            ...visibleSteps.map((step) => `- [${step.status}] ${escapeXmlText(step.id)}: ${escapeXmlText(step.name)}`),
+            ...(omitted > 0 ? [`- ... ${omitted} additional step(s) omitted from this bounded reminder.`] : []),
+            progress.statusUnchanged
+              ? `Taskflow status has not changed since the previous checkpoint. Reconcile the active task and call taskflow update/complete/fail if its recorded status is stale.`
+              : `Review the active task and keep taskflow status synchronized as work proceeds.`,
+            `This reminder is advisory: do not mark work complete without evidence.`,
+            `</taskflow_progress>`,
+          ].join("\n"),
+        )
+      }
+    }
 
     if (input.agent.name === "plan" && !syntheticTexts.has(PROMPT_PLAN)) {
       aggregatedReminders.push(PROMPT_PLAN)

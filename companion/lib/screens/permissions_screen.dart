@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/control_widgets.dart';
@@ -11,14 +12,28 @@ class PermissionsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final permissions = ref.watch(permissionsProvider);
-    final questions = ref.watch(questionsProvider);
+    final strings = AppLocalizations.of(context);
+    final focusedRequest = ref.watch(inboxFocusRequestProvider);
+    final permissions = [...ref.watch(permissionsProvider)]
+      ..sort(
+        (a, b) => _focusOrder(
+          a.reqId,
+          focusedRequest,
+        ).compareTo(_focusOrder(b.reqId, focusedRequest)),
+      );
+    final questions = [...ref.watch(questionsProvider)]
+      ..sort(
+        (a, b) => _focusOrder(
+          a.reqId,
+          focusedRequest,
+        ).compareTo(_focusOrder(b.reqId, focusedRequest)),
+      );
     final connection = ref.watch(connectionStateProvider);
     final total = permissions.length + questions.length;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Inbox'),
+        title: Text(strings.tabInbox),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16),
@@ -32,34 +47,36 @@ class PermissionsScreen extends ConsumerWidget {
               padding: const EdgeInsets.fromLTRB(18, 8, 18, 32),
               children: [
                 Text(
-                  '$total decision${total == 1 ? '' : 's'} waiting',
+                  strings.decisionsWaiting(total),
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Nothing is removed until AtomCLI confirms your action.',
+                  strings.awaitConfirmation,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 if (permissions.isNotEmpty) ...[
                   const SizedBox(height: 26),
-                  const SectionLabel('Permission requests'),
+                  SectionLabel(strings.permissionRequests),
                   const SizedBox(height: 10),
                   for (final permission in permissions) ...[
                     _PermissionCard(
-                      key: ValueKey(permission.reqId),
+                      key: ValueKey('permission-${permission.reqId}'),
                       permission: permission,
+                      focused: permission.reqId == focusedRequest,
                     ),
                     const SizedBox(height: 10),
                   ],
                 ],
                 if (questions.isNotEmpty) ...[
                   const SizedBox(height: 20),
-                  const SectionLabel('Questions'),
+                  SectionLabel(strings.questions),
                   const SizedBox(height: 10),
                   for (final question in questions) ...[
                     _QuestionCard(
-                      key: ValueKey(question.reqId),
+                      key: ValueKey('question-${question.reqId}'),
                       request: question,
+                      focused: question.reqId == focusedRequest,
                     ),
                     const SizedBox(height: 10),
                   ],
@@ -70,10 +87,18 @@ class PermissionsScreen extends ConsumerWidget {
   }
 }
 
+int _focusOrder(String requestId, String? focusedRequest) =>
+    requestId == focusedRequest ? 0 : 1;
+
 class _PermissionCard extends ConsumerStatefulWidget {
   final PendingPermission permission;
+  final bool focused;
 
-  const _PermissionCard({super.key, required this.permission});
+  const _PermissionCard({
+    super.key,
+    required this.permission,
+    required this.focused,
+  });
 
   @override
   ConsumerState<_PermissionCard> createState() => _PermissionCardState();
@@ -84,10 +109,13 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final permission = widget.permission;
     final busy = _pendingAction != null;
     return ControlPanel(
-      borderColor: AppPalette.amber.withValues(alpha: 0.36),
+      borderColor: widget.focused
+          ? AppPalette.primary
+          : AppPalette.amber.withValues(alpha: 0.36),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -100,7 +128,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   color: AppPalette.amber.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.shield_outlined,
                   color: AppPalette.amber,
                   size: 20,
@@ -125,9 +153,9 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   ],
                 ),
               ),
-              const Text(
-                'REVIEW',
-                style: TextStyle(
+              Text(
+                strings.review,
+                style: const TextStyle(
                   color: AppPalette.amber,
                   fontFamily: 'monospace',
                   fontSize: 9,
@@ -187,7 +215,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   icon: _pendingAction == 'deny'
                       ? const _ButtonProgress()
                       : const Icon(Icons.close_rounded, size: 18),
-                  label: const Text('Deny'),
+                  label: Text(strings.deny),
                 ),
               ),
               const SizedBox(width: 10),
@@ -197,7 +225,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   icon: _pendingAction == 'allow'
                       ? const _ButtonProgress(dark: true)
                       : const Icon(Icons.check_rounded, size: 18),
-                  label: const Text('Allow once'),
+                  label: Text(strings.allowOnce),
                 ),
               ),
             ],
@@ -211,7 +239,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   icon: _pendingAction == 'allow_always'
                       ? const _ButtonProgress()
                       : const Icon(Icons.verified_user_outlined, size: 17),
-                  label: const Text('Always allow'),
+                  label: Text(strings.alwaysAllow),
                 ),
               ),
               const SizedBox(width: 10),
@@ -224,7 +252,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   icon: _pendingAction == 'autonomous'
                       ? const _ButtonProgress()
                       : const Icon(Icons.bolt_rounded, size: 17),
-                  label: const Text('Full autonomous'),
+                  label: Text(strings.fullAutonomous),
                 ),
               ),
             ],
@@ -232,7 +260,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
           if (permission.always.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              'Always allow applies to: ${permission.always.join(', ')}',
+              strings.alwaysAllowScope(permission.always.join(', ')),
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -242,9 +270,10 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
   }
 
   Future<void> _resolve(String resolution) async {
+    final strings = AppLocalizations.of(context);
     final ws = ref.read(wsServiceProvider);
     if (ws == null || !ws.isConnected) {
-      _showError('AtomCLI is offline. The permission remains pending.');
+      _showError(strings.permissionOffline);
       return;
     }
     setState(() => _pendingAction = resolution);
@@ -263,6 +292,7 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
   }
 
   Future<void> _confirmAutonomous() async {
+    final strings = AppLocalizations.of(context);
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
       backgroundColor: AppPalette.panel,
@@ -274,12 +304,12 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Enable full autonomous mode?',
+                strings.enableAutonomousQuestion,
                 style: Theme.of(context).textTheme.headlineSmall,
               ),
               const SizedBox(height: 8),
               Text(
-                'AtomCLI will allow subsequent tools in this session without asking again. Explicit agent safety denials remain enforced.',
+                strings.enableAutonomousExplanation,
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 18),
@@ -288,14 +318,14 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => Navigator.pop(context, false),
-                      child: const Text('Cancel'),
+                      child: Text(strings.cancel),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: FilledButton(
                       onPressed: () => Navigator.pop(context, true),
-                      child: const Text('Enable'),
+                      child: Text(strings.enable),
                     ),
                   ),
                 ],
@@ -317,8 +347,13 @@ class _PermissionCardState extends ConsumerState<_PermissionCard> {
 
 class _QuestionCard extends ConsumerStatefulWidget {
   final PendingQuestion request;
+  final bool focused;
 
-  const _QuestionCard({super.key, required this.request});
+  const _QuestionCard({
+    super.key,
+    required this.request,
+    required this.focused,
+  });
 
   @override
   ConsumerState<_QuestionCard> createState() => _QuestionCardState();
@@ -350,9 +385,12 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final busy = _submitting || _rejecting;
     return ControlPanel(
-      borderColor: AppPalette.primary.withValues(alpha: 0.36),
+      borderColor: widget.focused
+          ? AppPalette.mint
+          : AppPalette.primary.withValues(alpha: 0.36),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -365,7 +403,7 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
                   color: AppPalette.primarySoft,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.question_answer_outlined,
                   color: AppPalette.primary,
                   size: 19,
@@ -375,8 +413,10 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
               Expanded(
                 child: Text(
                   widget.request.questions.length == 1
-                      ? 'AtomCLI needs an answer'
-                      : '${widget.request.questions.length} questions from AtomCLI',
+                      ? strings.needsAnswer
+                      : strings.questionsFromAtomcli(
+                          widget.request.questions.length,
+                        ),
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -415,7 +455,7 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
                 ),
                 child: _rejecting
                     ? const _ButtonProgress()
-                    : const Text('Reject'),
+                    : Text(strings.reject),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -424,7 +464,7 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
                   icon: _submitting
                       ? const _ButtonProgress(dark: true)
                       : const Icon(Icons.send_rounded, size: 17),
-                  label: const Text('Send answer'),
+                  label: Text(strings.sendAnswer),
                 ),
               ),
             ],
@@ -450,19 +490,20 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
   }
 
   Future<void> _submit() async {
+    final strings = AppLocalizations.of(context);
     final finalAnswers = <List<String>>[];
     for (var index = 0; index < widget.request.questions.length; index++) {
       final question = widget.request.questions[index];
       if (question.type == 'select') {
         if (_answers[index].isEmpty) {
-          _showError('Choose an option for ${question.header}.');
+          _showError(strings.chooseOption(question.header));
           return;
         }
         finalAnswers.add(List<String>.from(_answers[index]));
       } else {
         final value = _controllers[index].text.trim();
         if (value.isEmpty) {
-          _showError('Enter an answer for ${question.header}.');
+          _showError(strings.enterAnswerFor(question.header));
           return;
         }
         finalAnswers.add([value]);
@@ -471,7 +512,7 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
 
     final ws = ref.read(wsServiceProvider);
     if (ws == null || !ws.isConnected) {
-      _showError('AtomCLI is offline. Your answer was not sent.');
+      _showError(strings.answerOffline);
       return;
     }
     setState(() => _submitting = true);
@@ -490,9 +531,10 @@ class _QuestionCardState extends ConsumerState<_QuestionCard> {
   }
 
   Future<void> _reject() async {
+    final strings = AppLocalizations.of(context);
     final ws = ref.read(wsServiceProvider);
     if (ws == null || !ws.isConnected) {
-      _showError('AtomCLI is offline. The question remains pending.');
+      _showError(strings.questionOffline);
       return;
     }
     setState(() => _rejecting = true);
@@ -533,6 +575,7 @@ class _QuestionInput extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -571,7 +614,7 @@ class _QuestionInput extends StatelessWidget {
             maxLines: question.type == 'password' ? 1 : 3,
             minLines: question.type == 'password' ? 1 : 1,
             decoration: InputDecoration(
-              hintText: question.placeholder ?? 'Type your answer',
+              hintText: question.placeholder ?? strings.typeAnswer,
             ),
           ),
       ],
@@ -584,6 +627,7 @@ class _EmptyInbox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(34),
@@ -597,7 +641,7 @@ class _EmptyInbox extends StatelessWidget {
                 color: AppPalette.mint.withValues(alpha: 0.08),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.done_all_rounded,
                 color: AppPalette.mint,
                 size: 30,
@@ -605,12 +649,12 @@ class _EmptyInbox extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             Text(
-              'Inbox clear',
+              strings.inboxClear,
               style: Theme.of(context).textTheme.headlineSmall,
             ),
             const SizedBox(height: 7),
             Text(
-              'Permission requests and questions will arrive here.',
+              strings.inboxClearBody,
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium,
             ),

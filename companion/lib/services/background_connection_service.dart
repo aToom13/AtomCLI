@@ -5,9 +5,14 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import '../l10n/app_localizations.dart';
+import '../l10n/app_localizations_en.dart';
+import '../l10n/app_localizations_tr.dart';
 import '../models.dart';
 import 'auth_service.dart';
+import 'companion_preferences.dart';
 import 'notification_service.dart';
+import 'power_policy.dart';
 import 'websocket_service.dart';
 
 const _backgroundChannelId = 'atomcli_connection';
@@ -16,13 +21,14 @@ const _backgroundNotificationId = 4096;
 class BackgroundConnectionService {
   static Future<void>? _resumeInFlight;
   static Future<void>? _pauseInFlight;
+  static Future<void>? _stopInFlight;
 
   static Future<void> configure({required bool startNow}) async {
-    const channel = AndroidNotificationChannel(
+    final strings = _backgroundStrings();
+    final channel = AndroidNotificationChannel(
       _backgroundChannelId,
-      'AtomCLI connection',
-      description:
-          'Keeps the secure AtomCLI command link active in the background.',
+      strings.backgroundChannelName,
+      description: strings.backgroundChannelDescription,
       importance: Importance.low,
       showBadge: false,
     );
@@ -38,11 +44,14 @@ class BackgroundConnectionService {
       androidConfiguration: AndroidConfiguration(
         onStart: backgroundConnectionEntryPoint,
         autoStart: startNow,
-        autoStartOnBoot: true,
+        // Android 12+ can reject foreground-service launches from boot and
+        // package-replaced receivers. Reconnect only from a visible app
+        // lifecycle transition or an explicit notification action.
+        autoStartOnBoot: false,
         isForegroundMode: true,
         notificationChannelId: _backgroundChannelId,
-        initialNotificationTitle: 'AtomCLI Companion',
-        initialNotificationContent: 'Starting secure command link',
+        initialNotificationTitle: strings.appTitle,
+        initialNotificationContent: strings.backgroundStarting,
         foregroundServiceNotificationId: _backgroundNotificationId,
         foregroundServiceTypes: const [AndroidForegroundType.remoteMessaging],
       ),
@@ -55,6 +64,38 @@ class BackgroundConnectionService {
   }
 
   static Future<void> start() => FlutterBackgroundService().startService();
+
+  static Future<void> stopAndWait() {
+    final inFlight = _stopInFlight;
+    if (inFlight != null) return inFlight;
+    final operation = _stopServiceAndWait();
+    _stopInFlight = operation;
+    return operation.whenComplete(() {
+      if (identical(_stopInFlight, operation)) _stopInFlight = null;
+    });
+  }
+
+  static Future<void> _stopServiceAndWait() async {
+    // A background handoff may still be starting the service when Android
+    // reports the activity as resumed. Let that operation settle before
+    // claiming foreground ownership; otherwise this method can observe
+    // "not running" just before the second isolate opens a competing socket.
+    await _resumeInFlight;
+    final service = FlutterBackgroundService();
+    if (!await service.isRunning()) return;
+    // isRunning becomes true before the background Dart isolate necessarily
+    // registers its event listeners. Retry the bounded stop signal so a
+    // foreground resume cannot lose the only handoff message.
+    for (var attempt = 0; attempt < 50; attempt++) {
+      service.invoke('stopService');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!await service.isRunning()) return;
+    }
+    throw StateError('Background connection service did not stop in time');
+  }
+
+  static Stream<Map<String, dynamic>?> get notificationActions =>
+      FlutterBackgroundService().on('notificationActionForForeground');
 
   static Future<void> pauseForForeground() {
     final inFlight = _pauseInFlight;
@@ -95,10 +136,10 @@ class BackgroundConnectionService {
     }
   }
 
-  static Future<void> resumeForBackground() async {
+  static Future<void> resumeForBackground(ConnectionPowerMode mode) async {
     final inFlight = _resumeInFlight;
     if (inFlight != null) return inFlight;
-    final operation = _resumeService();
+    final operation = _resumeService(mode);
     _resumeInFlight = operation;
     try {
       await operation;
@@ -107,11 +148,12 @@ class BackgroundConnectionService {
     }
   }
 
-  static Future<void> _resumeService() async {
+  static Future<void> _resumeService(ConnectionPowerMode mode) async {
     final service = FlutterBackgroundService();
     if (!await service.isRunning()) await service.startService();
     service.invoke('resumeSocket', {
       'request_id': DateTime.now().microsecondsSinceEpoch,
+      'power_mode': mode.wireName,
     });
   }
 
@@ -122,10 +164,11 @@ class BackgroundConnectionService {
 void backgroundConnectionEntryPoint(ServiceInstance service) async {
   WidgetsFlutterBinding.ensureInitialized();
   DartPluginRegistrant.ensureInitialized();
+  final strings = _backgroundStrings();
   if (service is AndroidServiceInstance) {
     await service.setForegroundNotificationInfo(
-      title: 'AtomCLI Companion',
-      content: 'Loading saved command link',
+      title: strings.appTitle,
+      content: strings.backgroundLoading,
     );
   }
   try {
@@ -134,15 +177,20 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
     // Keep the command link alive if notification plug-in initialization is
     // temporarily unavailable in the background isolate.
   }
+  await CompanionPreferences.instance.load();
 
   WebSocketService? socket;
   StreamSubscription<BackendEvent>? subscription;
   Future<void>? connectInFlight;
   var pausedForForeground = false;
+  var powerMode = ConnectionPowerMode.balanced;
   var latestHandoffId = 0;
-  final activeTasks = <String, String>{};
-  final sessionTasks = <String, String>{};
+  final liveTasks = LiveTaskTracker();
+  final activeSessionIds = <String>{};
+  var receivedSessionList = false;
   final notifiedRequests = <String>{};
+  final pendingNotificationIds = <String>{};
+  final notificationActionsInFlight = <String>{};
 
   bool shouldNotify(String id) {
     if (!notifiedRequests.add(id)) return false;
@@ -161,28 +209,74 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
     await oldSocket?.dispose();
   }
 
-  Future<void> updateTasks() =>
-      NotificationService.instance.showTaskList(activeTasks.values.toList());
+  Future<void> stopBalancedWhenIdle() async {
+    if (powerMode != ConnectionPowerMode.balanced ||
+        !receivedSessionList ||
+        liveTasks.activeTasks.isNotEmpty ||
+        activeSessionIds.isNotEmpty ||
+        pendingNotificationIds.isNotEmpty ||
+        pausedForForeground) {
+      return;
+    }
+    await disconnect();
+    await NotificationService.instance.showTaskList(const {});
+    service.stopSelf();
+  }
+
+  Future<void> updateTasks({bool evaluateIdle = true}) async {
+    await NotificationService.instance.showTaskList(liveTasks.activeTasks);
+    if (evaluateIdle) await stopBalancedWhenIdle();
+  }
 
   void handleEvent(BackendEvent event) {
+    if (event.type == 'session_list') {
+      activeSessionIds.clear();
+      final sessions = event.payload['sessions'] as List? ?? const [];
+      for (final raw in sessions.whereType<Map>()) {
+        final session = SessionInfo.fromJson(Map<String, dynamic>.from(raw));
+        if (session.isActive) activeSessionIds.add(session.id);
+      }
+      receivedSessionList = true;
+      unawaited(stopBalancedWhenIdle());
+    }
+    if (event.type == 'session_status') {
+      final sessionId = event.payload['sessionID'] as String?;
+      final status = event.payload['status'];
+      final type = status is Map ? status['type'] as String? : null;
+      if (sessionId != null && (type == 'busy' || type == 'retry')) {
+        activeSessionIds.add(sessionId);
+      } else if (sessionId != null && type != null) {
+        activeSessionIds.remove(sessionId);
+        unawaited(stopBalancedWhenIdle());
+      }
+    }
     if (event.type == 'permission_request') {
       final permission = PendingPermission.fromJson(event.payload);
+      pendingNotificationIds.add(permission.reqId);
       if (shouldNotify(permission.reqId)) {
         NotificationService.instance.showPermissionRequest(
           reqId: permission.reqId,
           permission: permission.permission,
           patterns: permission.patterns,
+          sessionId: permission.sessionId,
+          directory: permission.directory,
         );
       }
     }
     if (event.type == 'question_request') {
       final question = PendingQuestion.fromJson(event.payload);
+      pendingNotificationIds.add(question.reqId);
       if (shouldNotify(question.reqId)) {
-        NotificationService.instance.showPermissionRequest(
-          reqId: question.reqId,
-          permission: 'question',
-          patterns: question.questions.map((item) => item.header).toList(),
-        );
+        NotificationService.instance.showQuestionRequest(question);
+      }
+    }
+    if (event.type == 'permission_resolved' ||
+        event.type == 'question_resolved') {
+      final requestId = event.payload['requestID'] as String?;
+      if (requestId != null) {
+        pendingNotificationIds.remove(requestId);
+        NotificationService.instance.cancelRequest(requestId);
+        unawaited(stopBalancedWhenIdle());
       }
     }
     if (event.type == 'artifact_shared') {
@@ -198,31 +292,28 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
       }
     }
     if (event.type == 'snapshot') {
-      activeTasks.clear();
-      sessionTasks.clear();
+      final snapshotRequestIds = <String>{};
       final dag = event.payload['dag'] as List? ?? const [];
-      for (final raw in dag.whereType<Map>()) {
-        final step = DagStep.fromJson(Map<String, dynamic>.from(raw));
-        if (_isActive(step.status)) {
-          final key = _taskKey(step.name, step.sessionId, step.directory);
-          activeTasks[key] = step.description.isEmpty
-              ? step.name
-              : step.description;
-          if (step.sessionId != null) sessionTasks[step.sessionId!] = key;
-        }
-      }
-      updateTasks();
+      liveTasks.replace(
+        dag.whereType<Map>().map(
+          (raw) => DagStep.fromJson(Map<String, dynamic>.from(raw)),
+        ),
+      );
+      unawaited(updateTasks(evaluateIdle: false));
       final permissions =
           event.payload['pending_permissions'] as List? ?? const [];
       for (final raw in permissions.whereType<Map>()) {
         final permission = PendingPermission.fromJson(
           Map<String, dynamic>.from(raw),
         );
+        snapshotRequestIds.add(permission.reqId);
         if (!shouldNotify(permission.reqId)) continue;
         NotificationService.instance.showPermissionRequest(
           reqId: permission.reqId,
           permission: permission.permission,
           patterns: permission.patterns,
+          sessionId: permission.sessionId,
+          directory: permission.directory,
         );
       }
       final questions = event.payload['pending_questions'] as List? ?? const [];
@@ -230,43 +321,37 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
         final question = PendingQuestion.fromJson(
           Map<String, dynamic>.from(raw),
         );
+        snapshotRequestIds.add(question.reqId);
         if (!shouldNotify(question.reqId)) continue;
-        NotificationService.instance.showPermissionRequest(
-          reqId: question.reqId,
-          permission: 'question',
-          patterns: question.questions.map((item) => item.header).toList(),
-        );
+        NotificationService.instance.showQuestionRequest(question);
       }
+      for (final staleId in pendingNotificationIds.difference(
+        snapshotRequestIds,
+      )) {
+        NotificationService.instance.cancelRequest(staleId);
+      }
+      pendingNotificationIds
+        ..clear()
+        ..addAll(snapshotRequestIds);
+      unawaited(stopBalancedWhenIdle());
     }
     if (event.type == 'event') {
       final topic = event.topic ?? '';
-      final name = event.payload['name'] as String?;
-      final sessionId = event.payload['sessionID'] as String?;
-      final directory = event.payload['directory'] as String?;
-      if (topic == 'tui.chain.add_step' && name != null) {
-        final status = event.payload['status'] as String? ?? 'pending';
-        if (_isActive(status)) {
-          final key = _taskKey(name, sessionId, directory);
-          activeTasks[key] = event.payload['description'] as String? ?? name;
-          if (sessionId != null) sessionTasks[sessionId] = key;
+      if (liveTasks.apply(topic, event.payload)) {
+        final isChainBoundary =
+            topic == 'tui.chain.start' || topic == 'tui.chain.clear';
+        unawaited(updateTasks(evaluateIdle: !isChainBoundary));
+        if (topic == 'tui.chain.clear') {
+          // Orchestrate emits clear/start/add as a burst when replacing a DAG.
+          // Give those events time to arrive before Balanced mode concludes
+          // that the bridge became idle. A final clear still stops promptly.
+          unawaited(
+            Future<void>.delayed(
+              const Duration(seconds: 1),
+              stopBalancedWhenIdle,
+            ),
+          );
         }
-        updateTasks();
-      }
-      if (topic == 'tui.chain.update_step') {
-        final key = sessionId == null
-            ? (name == null ? null : _taskKey(name, null, directory))
-            : sessionTasks[sessionId];
-        if (key != null &&
-            !_isActive(event.payload['status'] as String? ?? '')) {
-          activeTasks.remove(key);
-          updateTasks();
-        }
-      }
-      if (topic == 'tui.chain.complete_step' ||
-          topic == 'tui.chain.fail_step') {
-        final key = sessionId == null ? name : sessionTasks.remove(sessionId);
-        if (key != null) activeTasks.remove(key);
-        updateTasks();
       }
     }
   }
@@ -286,19 +371,26 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
       return;
     }
 
+    receivedSessionList = false;
+    activeSessionIds.clear();
     socket = WebSocketService(
       endpoints: AuthService.instance.endpoints,
       initialSequence: AuthService.instance.lastSequence,
+      heartbeatInterval: CompanionPowerPolicy.backgroundHeartbeat(powerMode),
+      heartbeatTimeout: CompanionPowerPolicy.backgroundHeartbeatTimeout(
+        powerMode,
+      ),
+      retryCap: CompanionPowerPolicy.backgroundRetryCap,
       onSequenceChange: AuthService.instance.recordSequence,
       onStateChange: (state) async {
         if (service is! AndroidServiceInstance) return;
         final content = switch (state) {
-          WsLifecycle.connected => 'Connected and listening for decisions',
-          WsLifecycle.connecting => 'Connecting to your machine',
-          WsLifecycle.disconnected => 'Connection interrupted; retrying',
+          WsLifecycle.connected => strings.backgroundConnected,
+          WsLifecycle.connecting => strings.backgroundConnecting,
+          WsLifecycle.disconnected => strings.backgroundRetrying,
         };
         await service.setForegroundNotificationInfo(
-          title: 'AtomCLI Companion',
+          title: strings.appTitle,
           content: content,
         );
       },
@@ -326,8 +418,8 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
     if (requestId < latestHandoffId || !pausedForForeground) return;
     if (service is AndroidServiceInstance) {
       await service.setForegroundNotificationInfo(
-        title: 'AtomCLI Companion',
-        content: 'Connected through the open app',
+        title: strings.appTitle,
+        content: strings.backgroundOpenApp,
       );
     }
     service.invoke('socketPaused', {'request_id': requestId});
@@ -338,20 +430,69 @@ void backgroundConnectionEntryPoint(ServiceInstance service) async {
     if (requestId < latestHandoffId) return;
     latestHandoffId = requestId;
     pausedForForeground = false;
+    powerMode = ConnectionPowerModeCodec.parse(event?['power_mode']);
     await connect();
+  });
+
+  service.on('notificationAction').listen((event) async {
+    if (event == null) return;
+    NotificationActionRequest request;
+    try {
+      request = NotificationActionRequest.fromJson(
+        Map<String, dynamic>.from(event),
+      );
+    } catch (_) {
+      return;
+    }
+    if (!notificationActionsInFlight.add(request.dedupeKey)) return;
+    try {
+      if (pausedForForeground) {
+        service.invoke('notificationActionForForeground', request.toJson());
+        return;
+      }
+      await connect();
+      final activeSocket = socket;
+      if (activeSocket == null) {
+        throw StateError(strings.backgroundNoMachine);
+      }
+      if (!activeSocket.isConnected) {
+        await activeSocket.ensureConnected().timeout(
+          const Duration(seconds: 6),
+        );
+      }
+      if (!activeSocket.isConnected) {
+        throw StateError(strings.permissionOffline);
+      }
+      final result = await executeNotificationAction(
+        activeSocket,
+        request,
+      ).timeout(const Duration(seconds: 12));
+      await NotificationService.instance.showActionResult(
+        request,
+        success: result.isOk,
+        error: result.error,
+      );
+    } catch (error) {
+      await NotificationService.instance.showActionResult(
+        request,
+        success: false,
+        error: error.toString().replaceFirst('Bad state: ', ''),
+      );
+    } finally {
+      notificationActionsInFlight.remove(request.dedupeKey);
+    }
   });
 
   service.on('stopService').listen((_) async {
     await disconnect();
-    await NotificationService.instance.showTaskList(const []);
+    await NotificationService.instance.showTaskList(const {});
     service.stopSelf();
   });
 
   await connect();
 }
 
-bool _isActive(String status) =>
-    status == 'running' || status == 'in_progress' || status.endsWith('ing');
-
-String _taskKey(String name, String? sessionId, String? directory) =>
-    '${directory ?? ''}\u0000${sessionId ?? ''}\u0000$name';
+AppLocalizations _backgroundStrings() =>
+    PlatformDispatcher.instance.locale.languageCode == 'tr'
+    ? AppLocalizationsTr()
+    : AppLocalizationsEn();

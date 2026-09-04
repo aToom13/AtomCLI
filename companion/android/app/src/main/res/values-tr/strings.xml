@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AtomCLI Companion</string>
+    <string name="share_file_limit">Paylaşılan dosyaların yalnızca ilk %1$d tanesi içe aktarıldı.</string>
+    <string name="share_size_limit">256 MiB içe aktarma sınırına ulaşıldığı için bazı dosyalar atlandı.</string>
+    <string name="shared_file_fallback">paylasilan-dosya</string>
+    <string name="share_too_large">Paylaşılan içerik çok büyük</string>
+</resources>

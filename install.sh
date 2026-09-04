@@ -24,10 +24,15 @@ CROSS="✗"
 ARROW="→"
 SPINNER="◐◓◑◒"
 
+# Overall progress (kept separate from per-command spinners).
+PROGRESS_CURRENT=0
+PROGRESS_TOTAL=1
+
 # Installation directory - all under ~/.atomcli/
 INSTALL_DIR="${ATOMCLI_INSTALL_DIR:-$HOME/.atomcli/bin}"
 CONFIG_DIR="${ATOMCLI_CONFIG_DIR:-$HOME/.atomcli}"
-PLAYWRIGHT_VERSION="1.62.0"
+DEFAULT_PLAYWRIGHT_VERSION="1.62.0"
+PLAYWRIGHT_VERSION="$DEFAULT_PLAYWRIGHT_VERSION"
 
 # Banner
 print_banner() {
@@ -82,6 +87,24 @@ info() {
     echo -e "${DIM}  $1${NC}"
 }
 
+progress_start() {
+    PROGRESS_CURRENT=0
+    PROGRESS_TOTAL="$1"
+}
+
+progress_step() {
+    PROGRESS_CURRENT=$((PROGRESS_CURRENT + 1))
+    local label="$1"
+    local width=24
+    local filled=$((PROGRESS_CURRENT * width / PROGRESS_TOTAL))
+    local empty=$((width - filled))
+    local bar_fill bar_empty percent
+    bar_fill=$(printf '%*s' "$filled" '' | tr ' ' '=')
+    bar_empty=$(printf '%*s' "$empty" '')
+    percent=$((PROGRESS_CURRENT * 100 / PROGRESS_TOTAL))
+    printf "${CYAN}[%s>%s]${NC} %3d%%  %s\n" "$bar_fill" "$bar_empty" "$percent" "$label"
+}
+
 # Detect OS
 detect_os() {
     OS="$(uname -s)"
@@ -112,6 +135,59 @@ has() {
     command -v "$1" >/dev/null 2>&1
 }
 
+run_privileged() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif has sudo; then
+        sudo "$@"
+    else
+        error "Administrator privileges are required to install missing system dependencies."
+        return 1
+    fi
+}
+
+install_base_dependencies() {
+    case "$OS_TYPE" in
+        darwin)
+            if ! has brew; then
+                error "Homebrew is required to install missing dependencies on macOS."
+                info "Install it from https://brew.sh and re-run this installer."
+                return 1
+            fi
+            brew install git curl coreutils
+            ;;
+        nixos)
+            error "Missing dependencies must be declared through Nix on NixOS."
+            info "Try: nix-shell -p bun git curl coreutils gnutar"
+            return 1
+            ;;
+        linux)
+            case "$(detect_distro)" in
+                debian)
+                    run_privileged apt-get update
+                    run_privileged apt-get install -y git curl ca-certificates tar coreutils
+                    ;;
+                arch)
+                    run_privileged pacman -S --needed --noconfirm git curl ca-certificates tar coreutils
+                    ;;
+                fedora)
+                    run_privileged dnf install -y git curl ca-certificates tar coreutils
+                    ;;
+                *)
+                    if has apk; then
+                        run_privileged apk add git curl ca-certificates tar coreutils
+                    elif has zypper; then
+                        run_privileged zypper --non-interactive install git curl ca-certificates tar coreutils
+                    else
+                        error "No supported package manager was found for automatic dependency installation."
+                        return 1
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+}
+
 # Detect Linux distro family from /etc/os-release (debian | arch | fedora | other | "")
 detect_distro() {
     if [ ! -f /etc/os-release ]; then
@@ -136,34 +212,26 @@ check_dependencies() {
     echo -e "${BOLD}Checking dependencies...${NC}"
     echo ""
     
-    local deps_ok=true
-    
-    # Check git
-    if has git; then
-        success "git $(git --version | cut -d' ' -f3)"
-    else
-        error "git not found"
-        if [ "$OS_TYPE" = "darwin" ] && has brew; then
-            warn "Attempting to install git via Homebrew..."
-            brew install git >/dev/null 2>&1 && success "git installed via brew" || { error "brew install git failed"; deps_ok=false; }
-        else
-            deps_ok=false
-        fi
+    local missing=false
+    has git || missing=true
+    has curl || missing=true
+    has tar || missing=true
+    { has sha256sum || has shasum; } || missing=true
+
+    if [ "$missing" = true ]; then
+        warn "Required system dependencies are missing; installing them automatically..."
+        install_base_dependencies || exit 1
     fi
-    
-    # Check curl or wget
-    if has curl; then
-        success "curl $(curl --version | head -1 | cut -d' ' -f2)"
-    elif has wget; then
-        success "wget $(wget --version | head -1 | cut -d' ' -f3)"
+
+    local deps_ok=true
+    has git && success "git $(git --version | cut -d' ' -f3)" || { error "git not found"; deps_ok=false; }
+    has curl && success "curl $(curl --version | head -1 | cut -d' ' -f2)" || { error "curl not found"; deps_ok=false; }
+    has tar && success "tar available" || { error "tar not found"; deps_ok=false; }
+    if has sha256sum || has shasum; then
+        success "SHA-256 verification available"
     else
-        error "curl or wget not found"
-        if [ "$OS_TYPE" = "darwin" ] && has brew; then
-            warn "Attempting to install curl via Homebrew..."
-            brew install curl >/dev/null 2>&1 && success "curl installed via brew" || { error "brew install curl failed"; deps_ok=false; }
-        else
-            deps_ok=false
-        fi
+        error "sha256sum or shasum not found"
+        deps_ok=false
     fi
     
     # Check Bun (will install if missing, except on NixOS)
@@ -194,8 +262,18 @@ check_dependencies() {
 install_bun() {
     if [ "$BUN_INSTALLED" = false ]; then
         step "Installing Bun..."
-        curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 &
-        spin $! "Installing Bun..."
+        local bun_log
+        bun_log=$(mktemp)
+        (curl -fsSL https://bun.sh/install | bash >"$bun_log" 2>&1) &
+        local bun_pid=$!
+        spin "$bun_pid" "Installing Bun..."
+        if ! wait "$bun_pid"; then
+            error "Failed to install Bun"
+            tail -20 "$bun_log" 2>/dev/null || true
+            rm -f "$bun_log"
+            exit 1
+        fi
+        rm -f "$bun_log"
         
         # Source bun
         export BUN_INSTALL="$HOME/.bun"
@@ -273,35 +351,34 @@ install_binary() {
         if [ -d "$SOURCE_DIR/.git" ]; then
             step "Updating source..."
             cd "$SOURCE_DIR"
-            git pull >/dev/null 2>&1
+            if ! git pull >/dev/null 2>&1; then
+                error "Failed to update source code"
+                exit 1
+            fi
         else
             step "Cloning repository..."
             rm -rf "$SOURCE_DIR"
-            git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$SOURCE_DIR" >/dev/null 2>&1
-        fi
-        
-        if [ $? -ne 0 ]; then
-            error "Failed to obtain source code"
-            exit 1
+            if ! git clone --depth 1 https://github.com/aToom13/AtomCLI.git "$SOURCE_DIR" >/dev/null 2>&1; then
+                error "Failed to obtain source code"
+                exit 1
+            fi
         fi
         success "Source code ready"
         
         step "Installing dependencies..."
         cd "$SOURCE_DIR/AtomBase"
-        bun install >/dev/null 2>&1
-        if [ $? -ne 0 ]; then
+        if ! bun install >/dev/null 2>&1; then
             error "Failed to install dependencies"
             exit 1
         fi
         success "Dependencies installed"
         
         step "Installing Playwright browsers..."
-        bunx playwright install chromium >/dev/null 2>&1
-        if [ $? -eq 0 ]; then
+        if bunx playwright install --no-shell chromium >/dev/null 2>&1; then
             success "Playwright browsers installed"
         else
             warn "Could not install Playwright browsers automatically"
-            info "Run manually: cd $SOURCE_DIR/AtomBase && bunx playwright install chromium"
+            info "Run manually: cd $SOURCE_DIR/AtomBase && bunx playwright install --no-shell chromium"
         fi
         
         step "Creating wrapper script..."
@@ -317,18 +394,18 @@ cd "$SOURCE_DIR/AtomBase" || exit 1
 if [ -f /etc/NIXOS ]; then
     # On NixOS, try using steam-run for native module compatibility
     if command -v steam-run >/dev/null 2>&1; then
-        exec steam-run bun run src/index.ts "\$@"
+        exec steam-run bun run --conditions=browser ./src/index.ts "\$@"
     else
         # If steam-run is not in PATH, try via nix-shell (cached)
         # We construct the command string carefully to preserve arguments
-        CMD="steam-run bun run src/index.ts"
+        CMD="steam-run bun run --conditions=browser ./src/index.ts"
         for arg in "\$@"; do
             CMD="\$CMD \"\$arg\""
         done
         exec nix-shell -p steam-run nodejs_22 --run "\$CMD"
     fi
 else
-    exec bun run src/index.ts "\$@"
+    exec bun run --conditions=browser ./src/index.ts "\$@"
 fi
 EOF
         chmod +x "$INSTALL_DIR/atomcli"
@@ -339,14 +416,17 @@ EOF
     # Try to get from releases first
     local version=""
     if [ -n "$VERSION" ]; then
+        local normalized_version="${VERSION#v}"
+        if ! [[ "$normalized_version" =~ ^[[:alnum:]][[:alnum:]._-]{0,127}$ ]]; then
+            error "Invalid release version: $VERSION"
+            return 1
+        fi
         # Ensure starts with v
-        case "$VERSION" in
-            v*) version="$VERSION" ;;
-            *) version="v$VERSION" ;;
-        esac
+        version="v$normalized_version"
     else
         version=$(get_latest_release)
     fi
+    RESOLVED_VERSION="$version"
     local binary_name="atomcli-${OS_TYPE}-${ARCH_TYPE}"
     if [ "$OS_TYPE" = "windows" ]; then
         binary_name="${binary_name}.exe"
@@ -360,7 +440,7 @@ EOF
         local url="https://github.com/aToom13/AtomCLI/releases/download/${version}/${binary_name}"
         local checksum_url="https://github.com/aToom13/AtomCLI/releases/download/${version}/SHA256SUMS"
         local download_dir tmp_binary tmp_manifest
-        download_dir=$(mktemp -d)
+        download_dir=$(mktemp -d "${INSTALL_DIR}/.atomcli-download.XXXXXX")
         tmp_binary="$download_dir/$binary_name"
         tmp_manifest="$download_dir/SHA256SUMS"
 
@@ -393,13 +473,15 @@ EOF
     
     step "Cloning repository..."
     if [ -n "$version" ]; then
-        git clone --depth 1 --branch "$version" https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1
+        if ! git clone --depth 1 --branch "$version" https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1; then
+            error "Failed to clone repository"
+            exit 1
+        fi
     else
-        git clone --depth 1 https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1
-    fi
-    if [ $? -ne 0 ]; then
-        error "Failed to clone repository"
-        exit 1
+        if ! git clone --depth 1 https://github.com/aToom13/AtomCLI.git >/dev/null 2>&1; then
+            error "Failed to clone repository"
+            exit 1
+        fi
     fi
     success "Cloned repository"
     
@@ -407,9 +489,9 @@ EOF
     # standalone ~/.atomcli/playwright install matches it exactly (mismatched
     # versions cause "Executable doesn't exist" browser failures).
     PLAYWRIGHT_VERSION=$(grep -o '"playwright": *"[^"]*"' AtomCLI/AtomBase/package.json 2>/dev/null | head -1 | sed 's/.*"playwright": *"//;s/"//')
-    if ! [[ "$PLAYWRIGHT_VERSION" =~ ^[0-9]+.[0-9]+.[0-9]+$ ]]; then
-        warn "Could not read a valid pinned playwright version; installing unpinned"
-        PLAYWRIGHT_VERSION=""
+    if ! [[ "$PLAYWRIGHT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        warn "Could not read a valid pinned Playwright version; using $DEFAULT_PLAYWRIGHT_VERSION"
+        PLAYWRIGHT_VERSION="$DEFAULT_PLAYWRIGHT_VERSION"
     fi
     if [ -n "$PLAYWRIGHT_VERSION" ]; then
         info "Pinned playwright version: $PLAYWRIGHT_VERSION"
@@ -444,8 +526,8 @@ EOF
         sleep 1
     done
     
-    wait $pid
-    local exit_code=$?
+    local exit_code=0
+    wait "$pid" || exit_code=$?
     printf "\r"  # Clear progress line
     
     if [ $exit_code -ne 0 ]; then
@@ -455,35 +537,6 @@ EOF
         exit 1
     fi
     success "Installed dependencies"
-    
-    # Install Playwright browsers
-    step "Installing Playwright browsers..."
-    echo -e "${DIM}    (This may take 1-2 minutes)${NC}"
-    
-    local playwright_log="/tmp/atomcli_playwright_$$.log"
-    (cd AtomBase && bunx playwright install chromium > "$playwright_log" 2>&1) &
-    local pw_pid=$!
-    local pw_elapsed=0
-    local pw_timeout=300  # 5 minute timeout
-    
-    while kill -0 $pw_pid 2>/dev/null; do
-        pw_elapsed=$((pw_elapsed + 1))
-        if [ $pw_elapsed -ge $pw_timeout ]; then
-            kill $pw_pid 2>/dev/null
-            warn "Playwright browser installation timed out"
-            info "You can install manually later: bunx playwright install chromium"
-            break
-        fi
-        # Show progress every 5 seconds
-        if [ $((pw_elapsed % 5)) -eq 0 ]; then
-            printf "\r${BLUE}◐${NC} Installing Playwright browsers... ${DIM}(${pw_elapsed}s)${NC}  "
-        fi
-        sleep 1
-    done
-    
-    wait $pw_pid 2>/dev/null
-    printf "\r"  # Clear progress line
-    success "Installed Playwright browsers"
     
     cd AtomBase
     echo ""
@@ -518,8 +571,8 @@ EOF
         sleep 1
     done
     
-    wait $build_pid
-    local build_exit=$?
+    local build_exit=0
+    wait "$build_pid" || build_exit=$?
     printf "\r"  # Clear progress line
     
     if [ $build_exit -eq 0 ]; then
@@ -591,57 +644,129 @@ EOF
     
     success "Installed AtomCLI to $INSTALL_DIR"
     
-    # Setup Playwright for browser tool (plug and play)
-    step "Setting up Playwright for browser tool..."
-    
-    local playwright_dir="$CONFIG_DIR/playwright"
-    mkdir -p "$playwright_dir"
-    
-    if [ ! -d "$playwright_dir/node_modules/playwright" ]; then
-        cd "$playwright_dir"
-        
-        if has bun; then
-            step "Installing Playwright package via bun..."
-            bun init -y > /dev/null 2>&1 || true
-            (bun add --exact "playwright@$PLAYWRIGHT_VERSION" > /dev/null 2>&1) &
-            spin $! "Installing Playwright package..."
-            
-            if [ -d "node_modules/playwright" ]; then
-                success "Playwright package installed"
-                
-                step "Installing Chromium browser..."
-                (bunx playwright install chromium > /dev/null 2>&1) &
-                spin $! "Installing Chromium..."
-                success "Chromium installed"
-                
-                # Try to install system deps (Debian/Ubuntu only — apt-based)
-                if [ "$(detect_distro)" = "debian" ] && command -v sudo >/dev/null 2>&1; then
-                    info "Installing system dependencies (may require password)..."
-                    sudo bunx playwright install-deps chromium 2>/dev/null || warn "Could not auto-install system deps"
-                elif [ "$(detect_distro)" = "arch" ]; then
-                    info "Arch-based system detected — Playwright install-deps is apt-only, skipping."
-                    info "If the browser fails to launch, install system libraries via pacman:"
-                    info "  sudo pacman -S --needed nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3 gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence"
-                elif [ "$(detect_distro)" = "fedora" ]; then
-                    info "Fedora/RHEL-based system detected. If Chromium reports missing libraries, run:"
-                    info "  sudo dnf install alsa-lib atk at-spi2-atk cups-libs gtk3 libdrm libX11 libXcomposite libXdamage libXext libXfixes libXrandr libxcb libxkbcommon mesa-libgbm nss pango"
-                fi
-            else
-                warn "Could not install Playwright package"
-            fi
-        else
-            warn "Bun not found. Browser tool may not work."
-            info "To install Playwright manually, run:"
-            info "  bun add --exact playwright@$PLAYWRIGHT_VERSION && bunx playwright install chromium"
-        fi
-        
-        cd - > /dev/null
-    else
-        success "Playwright already installed"
+}
+
+install_arch_browser_dependencies() {
+    local packages=(
+        nss nspr alsa-lib at-spi2-core cups dbus libdrm libxkbcommon
+        libxcomposite libxdamage libxfixes libxrandr mesa libxss gtk3
+        gdk-pixbuf2 pango cairo wayland libxrender libxtst libxshmfence
+    )
+    local missing
+    if missing=$(pacman -T "${packages[@]}" 2>/dev/null); then
+        success "Chromium system libraries are present"
+        return 0
     fi
-    
-    # Set NODE_PATH hint for atomcli
-    info "Note: If browser tool still fails, ensure NODE_PATH includes: $playwright_dir/node_modules"
+    warn "Installing missing Chromium system libraries: ${missing//$'\n'/ }"
+    # shellcheck disable=SC2086
+    run_privileged pacman -S --needed --noconfirm $missing
+}
+
+install_fedora_browser_dependencies() {
+    local packages=(
+        alsa-lib atk at-spi2-atk cups-libs gtk3 libdrm libX11 libXcomposite
+        libXdamage libXext libXfixes libXrandr libxcb libxkbcommon mesa-libgbm nss pango
+    )
+    local missing=()
+    local package
+    for package in "${packages[@]}"; do
+        rpm -q "$package" >/dev/null 2>&1 || missing+=("$package")
+    done
+    [ ${#missing[@]} -eq 0 ] && { success "Chromium system libraries are present"; return 0; }
+    warn "Installing ${#missing[@]} missing Chromium system libraries..."
+    run_privileged dnf install -y "${missing[@]}"
+}
+
+# Install the exact Playwright runtime expected by the released AtomCLI binary,
+# download Chromium, install distro dependencies when supported, and prove that
+# a real launch succeeds. This is intentionally run for both fresh
+# installs and updates so a Playwright version bump cannot leave a stale browser.
+setup_playwright() {
+    if [ "${ATOMCLI_SKIP_PLAYWRIGHT:-0}" = "1" ]; then
+        warn "Skipping Playwright setup because ATOMCLI_SKIP_PLAYWRIGHT=1"
+        return 0
+    fi
+    if [ "$OS_TYPE" = "nixos" ]; then
+        info "NixOS source installation manages Playwright through its wrapper environment"
+        return 0
+    fi
+
+    step "Preparing browser automation runtime..."
+    local playwright_dir="$CONFIG_DIR/playwright"
+    local package_file="$playwright_dir/node_modules/playwright/package.json"
+    local installed_version=""
+    local setup_log verify_log install_status=0
+    mkdir -p "$playwright_dir"
+    setup_log=$(mktemp)
+    verify_log=$(mktemp)
+
+    # A version picker may install an older/newer release than the installer
+    # script itself. Resolve that release's exact Playwright dependency before
+    # touching the runtime so the binary and browser revision cannot diverge.
+    if [ -n "${RESOLVED_VERSION:-}" ]; then
+        local release_package release_playwright
+        release_package=$(curl -fsSL \
+            "https://raw.githubusercontent.com/aToom13/AtomCLI/${RESOLVED_VERSION}/AtomBase/package.json" \
+            2>/dev/null || true)
+        release_playwright=$(printf '%s' "$release_package" | grep -o '"playwright"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
+        if [[ "$release_playwright" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            PLAYWRIGHT_VERSION="$release_playwright"
+        fi
+    fi
+
+    if [ -f "$package_file" ]; then
+        installed_version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$package_file" | head -1 | cut -d'"' -f4)
+    fi
+
+    if [ "$installed_version" != "$PLAYWRIGHT_VERSION" ]; then
+        [ -n "$installed_version" ] && info "Updating Playwright $installed_version -> $PLAYWRIGHT_VERSION"
+        (cd "$playwright_dir" && bun init -y >/dev/null 2>&1 || true; bun add --exact "playwright@$PLAYWRIGHT_VERSION" >"$setup_log" 2>&1) &
+        local package_pid=$!
+        spin "$package_pid" "Installing Playwright $PLAYWRIGHT_VERSION..."
+        if ! wait "$package_pid"; then
+            error "Playwright package installation failed"
+            tail -20 "$setup_log" 2>/dev/null || true
+            rm -f "$setup_log" "$verify_log"
+            return 1
+        fi
+        success "Playwright $PLAYWRIGHT_VERSION installed"
+    else
+        success "Playwright $PLAYWRIGHT_VERSION is current"
+    fi
+
+    case "$(detect_distro)" in
+        arch) install_arch_browser_dependencies || install_status=$? ;;
+        fedora) install_fedora_browser_dependencies || install_status=$? ;;
+    esac
+    if [ "$install_status" -ne 0 ]; then
+        warn "System dependency installation failed; attempting Chromium setup anyway"
+    fi
+
+    local browser_args=(playwright install --no-shell chromium)
+    if [ "$(detect_distro)" = "debian" ]; then
+        browser_args=(playwright install --with-deps --no-shell chromium)
+    fi
+    (cd "$playwright_dir" && bunx "${browser_args[@]}" >"$setup_log" 2>&1) &
+    local browser_pid=$!
+    spin "$browser_pid" "Downloading and configuring Chromium..."
+    if ! wait "$browser_pid"; then
+        error "Chromium installation failed"
+        tail -25 "$setup_log" 2>/dev/null || true
+        rm -f "$setup_log" "$verify_log"
+        return 1
+    fi
+
+    if ! (cd "$playwright_dir" && bun --conditions=browser -e \
+        'import { chromium } from "playwright"; const headless = process.platform !== "darwin" && process.platform !== "win32" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY; const browser = await chromium.launch({ headless, ...(headless ? { channel: "chromium" } : {}) }); await browser.close()' \
+        >"$verify_log" 2>&1); then
+        error "Chromium was downloaded but could not launch on this system"
+        tail -25 "$verify_log" 2>/dev/null || true
+        rm -f "$setup_log" "$verify_log"
+        return 1
+    fi
+
+    rm -f "$setup_log" "$verify_log"
+    success "Browser automation runtime verified"
 }
 
 # Setup PATH
@@ -1036,9 +1161,8 @@ verify_installation() {
         exit 1
     fi
     
-    local version
-    version=$("$INSTALL_DIR/atomcli" --version 2>/dev/null)
-    local exit_code=$?
+    local version exit_code=0
+    version=$("$INSTALL_DIR/atomcli" --version 2>/dev/null) || exit_code=$?
     
     if [ $exit_code -eq 0 ] && [ -n "$version" ]; then
         success "AtomCLI ${version} ready!"
@@ -1084,10 +1208,12 @@ print_complete() {
 # Main installation flow
 main_install() {
     print_banner
+    progress_start 9
     detect_os
     
     echo -e "${DIM}  OS: ${OS_TYPE} | Arch: ${ARCH_TYPE}${NC}"
     
+    progress_step "System and dependency scan"
     check_dependencies
     install_bun
     
@@ -1096,6 +1222,7 @@ main_install() {
         select_version
         
         if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
+            RESOLVED_VERSION="main"
             info "Building from source..."
             local tmp_dir
             tmp_dir=$(mktemp -d)
@@ -1114,25 +1241,43 @@ main_install() {
                 error "Build produced no binary"
             fi
             rm -rf "$tmp_dir"
+            progress_step "AtomCLI binary"
+            progress_step "Browser runtime"
+            setup_playwright || warn "AtomCLI was installed, but the browser tool needs attention (see errors above)."
+            progress_step "PATH configuration"
             setup_path
+            progress_step "Shell completion"
             setup_completion
+            progress_step "Configuration"
             setup_config
+            progress_step "Model catalog"
             prefetch_models_cache
+            progress_step "Bundled skills"
             install_skills_bundle
             setup_optional_features
+            progress_step "Final verification"
             verify_installation 
             print_complete
             return
         fi
     fi
     
+    progress_step "AtomCLI binary"
     install_binary
+    progress_step "Browser runtime"
+    setup_playwright || warn "AtomCLI was installed, but the browser tool needs attention (see errors above)."
+    progress_step "PATH configuration"
     setup_path
+    progress_step "Shell completion"
     setup_completion
+    progress_step "Configuration"
     setup_config
+    progress_step "Model catalog"
     prefetch_models_cache
+    progress_step "Bundled skills"
     install_skills_bundle
     setup_optional_features
+    progress_step "Final verification"
     verify_installation
     print_complete
 }
@@ -1303,6 +1448,7 @@ select_version() {
 # Update function
 update() {
     print_banner
+    progress_start 9
     
     echo -e "${CYAN}${BOLD}Updating AtomCLI...${NC}"
     echo ""
@@ -1318,9 +1464,12 @@ update() {
         select_version
         
         if [ "${INSTALL_FROM_SOURCE:-false}" = true ]; then
+            RESOLVED_VERSION="main"
             info "Building from source..."
             detect_os
+            progress_step "System and dependency scan"
             check_dependencies
+            install_bun
             # Clone and build from source
             local tmp_dir
             tmp_dir=$(mktemp -d)
@@ -1338,6 +1487,21 @@ update() {
                 error "Build produced no binary"
             fi
             rm -rf "$tmp_dir"
+            progress_step "AtomCLI binary"
+            progress_step "Browser runtime"
+            setup_playwright || warn "AtomCLI was updated, but the browser tool needs attention (see errors above)."
+            progress_step "PATH configuration"
+            setup_path
+            progress_step "Shell completion"
+            setup_completion
+            progress_step "Configuration"
+            setup_config
+            progress_step "Model catalog"
+            prefetch_models_cache
+            progress_step "Bundled skills"
+            install_skills_bundle
+            progress_step "Final verification"
+            verify_installation
             echo ""
             echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${GREEN}${CHECK}${NC} ${BOLD}AtomCLI built from source successfully!${NC}"
@@ -1350,19 +1514,28 @@ update() {
     # Run main install flow
     detect_os
     echo -e "${DIM}  OS: ${OS_TYPE} | Arch: ${ARCH_TYPE}${NC}"
+    progress_step "System and dependency scan"
     check_dependencies
+    install_bun
     
     # Force reinstall of binary
+    progress_step "AtomCLI binary"
     install_binary
+    progress_step "Browser runtime"
+    setup_playwright || warn "AtomCLI was updated, but the browser tool needs attention (see errors above)."
     
     # Setup path/config again to ensure they are correct (idempotent)
+    progress_step "PATH configuration"
     setup_path
+    progress_step "Shell completion"
     setup_completion
+    progress_step "Configuration"
     setup_config
+    progress_step "Model catalog"
     prefetch_models_cache
+    progress_step "Bundled skills"
     install_skills_bundle
-    setup_optional_features
-    
+    progress_step "Final verification"
     verify_installation
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

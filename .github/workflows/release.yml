@@ -23,6 +23,19 @@ jobs:
       - name: Install Dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.2
+          cache: true
+
       - name: Validate release metadata
         run: |
           bun run version:check
@@ -43,6 +56,50 @@ jobs:
               process.exit(1)
             }
           '
+
+      - name: Validate source and protocol
+        env:
+          ATOMCLI_TEST_HOME: ${{ runner.temp }}/atomcli-test-home
+        run: |
+          bun turbo typecheck
+          bun turbo test
+          cd libs/companion
+          bun run protocol:check
+          cd ../..
+          git diff --exit-code -- libs/sdk/js/src/v2/gen
+
+      - name: Validate and build Android Companion
+        working-directory: companion
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ATOMCLI_ANDROID_KEYSTORE_BASE64 }}
+          ATOMCLI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ATOMCLI_ANDROID_KEYSTORE_PASSWORD }}
+          ATOMCLI_ANDROID_KEY_ALIAS: ${{ secrets.ATOMCLI_ANDROID_KEY_ALIAS }}
+          ATOMCLI_ANDROID_KEY_PASSWORD: ${{ secrets.ATOMCLI_ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "${KEYSTORE_BASE64}"
+          test -n "${ATOMCLI_ANDROID_KEYSTORE_PASSWORD}"
+          test -n "${ATOMCLI_ANDROID_KEY_ALIAS}"
+          test -n "${ATOMCLI_ANDROID_KEY_PASSWORD}"
+          export ATOMCLI_ANDROID_KEYSTORE_PATH="${RUNNER_TEMP}/atomcli-android-release.jks"
+          trap 'rm -f "${ATOMCLI_ANDROID_KEYSTORE_PATH}"' EXIT
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${ATOMCLI_ANDROID_KEYSTORE_PATH}"
+          flutter pub get --enforce-lockfile
+          flutter analyze
+          flutter test
+          flutter build apk --release
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          APK_ANALYZER="${ANDROID_HOME}/cmdline-tools/latest/bin/apkanalyzer"
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -s "${APK}"
+          MANIFEST="$(${APK_ANALYZER} manifest print "${APK}")"
+          printf '%s\n' "${MANIFEST}" | grep -q "android:versionName=\"${ATOMCLI_VERSION}\""
+          printf '%s\n' "${MANIFEST}" | grep -q 'android.permission.POST_PROMOTED_NOTIFICATIONS'
+          CERTIFICATES="$(${APKSIGNER} verify --verbose --print-certs "${APK}")"
+          printf '%s\n' "${CERTIFICATES}" | grep -q '^Verifies$'
+          if printf '%s\n' "${CERTIFICATES}" | grep -q 'CN=Android Debug'; then
+            echo 'Refusing to publish a debug-signed Android APK' >&2
+            exit 1
+          fi
 
       - name: Build
         run: |
@@ -69,6 +126,7 @@ jobs:
           cp AtomBase/dist/atomcli-windows-x64/bin/atomcli.exe release_assets/atomcli-windows-x64.exe
           cp AtomBase/dist/atomcli-windows-arm64/bin/atomcli.exe release_assets/atomcli-windows-arm64.exe
           cp AtomBase/dist/atomcli-windows-x64-baseline/bin/atomcli.exe release_assets/atomcli-windows-x64-baseline.exe
+          cp companion/build/app/outputs/flutter-apk/app-release.apk release_assets/atomcli-companion-android.apk
 
       - name: Prepare Bundled Skills Archives
         run: |
@@ -99,6 +157,7 @@ jobs:
             release_assets/atomcli-windows-x64.exe
             release_assets/atomcli-windows-arm64.exe
             release_assets/atomcli-windows-x64-baseline.exe
+            release_assets/atomcli-companion-android.apk
             release_assets/SHA256SUMS
             release_assets/skills.tar.gz
             release_assets/skills.zip

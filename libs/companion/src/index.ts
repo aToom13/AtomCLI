@@ -1,5 +1,8 @@
 export { CompanionAuth } from "./companion-auth"
+export { CompanionAudit } from "./audit"
 export { CompanionDiscovery } from "./companion-discovery"
+export { CompanionIdentity } from "./identity"
+export { CompanionProtocol } from "./protocol"
 export { MobileBridge } from "./mobile-bridge"
 export { PermissionMutex } from "./permission-mutex"
 export { NtfyService } from "./ntfy"

@@ -1,0 +1,5 @@
+"CFBundleDisplayName" = "AtomCLI Companion";
+"NSCameraUsageDescription" = "AtomCLI kamerayı yalnızca bir oturuma fotoğraf eklemeyi seçtiğinizde kullanır.";
+"NSMicrophoneUsageDescription" = "AtomCLI mikrofonu yalnızca konuşmayı metne dönüştürmeyi istediğiniz sırada kullanır.";
+"NSSpeechRecognitionUsageDescription" = "AtomCLI istediğiniz konuşma girdisini düzenlenebilir mesaj taslağına dönüştürür.";
+"NSPhotoLibraryUsageDescription" = "AtomCLI yalnızca eklemeyi veya işaretlemeyi seçtiğiniz görsellere erişir.";

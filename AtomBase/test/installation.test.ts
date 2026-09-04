@@ -1,3 +1,4 @@
+import "./preload"
 import { describe, expect, test } from "bun:test"
 import { Installation } from "@/services/installation"
 
@@ -10,5 +11,11 @@ describe("Installation Service - Windows Native Upgrade Helpers", () => {
 
   test("cleanupOldExecutables runs without throwing on non-windows or missing old file", async () => {
     await expect(Installation.cleanupOldExecutables()).resolves.toBeUndefined()
+  })
+
+  test("release targets are normalized and unsafe values are rejected", () => {
+    expect(Installation.normalizeReleaseTarget("v3.4.2-beta")).toBe("3.4.2-beta")
+    expect(() => Installation.normalizeReleaseTarget("3.4.2'; Remove-Item C:\\*")).toThrow("Invalid release target")
+    expect(() => Installation.normalizeReleaseTarget("".padEnd(129, "a"))).toThrow("Invalid release target")
   })
 })

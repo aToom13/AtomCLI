@@ -6,8 +6,27 @@ import 'package:http/http.dart' as http;
 class PairingResult {
   final bool success;
   final String? error;
-  const PairingResult.ok() : success = true, error = null;
-  const PairingResult.fail(this.error) : success = false;
+  final String? machineId;
+  final String? machineName;
+  final String? processId;
+  final String? bridgeId;
+  final String? projectDirectory;
+
+  const PairingResult.ok({
+    required this.machineId,
+    this.machineName,
+    this.processId,
+    this.bridgeId,
+    this.projectDirectory,
+  }) : success = true,
+       error = null;
+  const PairingResult.fail(this.error)
+    : success = false,
+      machineId = null,
+      machineName = null,
+      processId = null,
+      bridgeId = null,
+      projectDirectory = null;
 }
 
 /// Handles the HTTP POST /companion/pair handshake.
@@ -17,6 +36,7 @@ class PairingService {
     required String pairingToken,
     required String publicKeyBase64,
     required String deviceName,
+    required String deviceId,
   }) async {
     try {
       final response = await http
@@ -27,12 +47,20 @@ class PairingService {
               'pairing_token': pairingToken,
               'public_key': publicKeyBase64,
               'device_name': deviceName,
+              'device_id': deviceId,
             }),
           )
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        return const PairingResult.ok();
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        return PairingResult.ok(
+          machineId: body['machine_id'] as String?,
+          machineName: body['machine_name'] as String?,
+          processId: body['process_id'] as String?,
+          bridgeId: body['bridge_id'] as String?,
+          projectDirectory: body['project_directory'] as String?,
+        );
       } else {
         try {
           final body = jsonDecode(response.body) as Map<String, dynamic>;

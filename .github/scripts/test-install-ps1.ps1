@@ -19,6 +19,15 @@ try {
         throw "PowerShell installer release mapping is incorrect"
     }
 
+    $Version = "3.4.2'; Remove-Item C:\\*"
+    try {
+        Select-Version
+        throw "unsafe release target unexpectedly passed validation"
+    } catch {
+        if ($_.Exception.Message -notlike "Invalid release version:*") { throw }
+    }
+    $Version = $null
+
     $hash = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath $manifestPath -Value "$hash  atomcli-windows-x64.exe"
     if (-not (Test-ReleaseChecksum -BinaryPath $binaryPath -ManifestPath $manifestPath -AssetName "atomcli-windows-x64.exe")) {

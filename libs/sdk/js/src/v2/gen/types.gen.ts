@@ -1205,6 +1205,7 @@ export type EventTuiChainStart = {
   type: "tui.chain.start"
   properties: {
     sessionID?: string
+    workflowId?: string
     mode?: "safe" | "autonomous"
   }
 }
@@ -1213,6 +1214,7 @@ export type EventTuiChainAddStep = {
   type: "tui.chain.add_step"
   properties: {
     sessionID?: string
+    workflowId?: string
     stepId?: string
     name: string
     description: string
@@ -1231,8 +1233,12 @@ export type EventTuiChainUpdateStep = {
   type: "tui.chain.update_step"
   properties: {
     sessionID?: string
+    workflowId?: string
     status:
       | "pending"
+      | "waiting"
+      | "paused"
+      | "stopped"
       | "running"
       | "coding"
       | "searching_web"
@@ -1253,6 +1259,7 @@ export type EventTuiChainCompleteStep = {
   type: "tui.chain.complete_step"
   properties: {
     sessionID?: string
+    workflowId?: string
     output?: string
   }
 }
@@ -1261,6 +1268,7 @@ export type EventTuiChainFailStep = {
   type: "tui.chain.fail_step"
   properties: {
     sessionID?: string
+    workflowId?: string
     error: string
   }
 }
@@ -1269,6 +1277,7 @@ export type EventTuiChainSetTodos = {
   type: "tui.chain.set_todos"
   properties: {
     sessionID?: string
+    workflowId?: string
     todos: Array<{
       id: string
       content: string
@@ -1281,6 +1290,7 @@ export type EventTuiChainTodoDone = {
   type: "tui.chain.todo_done"
   properties: {
     sessionID?: string
+    workflowId?: string
     todoIndex: number
   }
 }
@@ -1289,6 +1299,7 @@ export type EventTuiChainClear = {
   type: "tui.chain.clear"
   properties: {
     sessionID?: string
+    workflowId?: string
   }
 }
 
@@ -1296,6 +1307,7 @@ export type EventTuiChainSubplanStart = {
   type: "tui.chain.subplan.start"
   properties: {
     sessionID?: string
+    workflowId?: string
     /**
      * Index of the parent step this sub-plan belongs to
      */
@@ -1315,6 +1327,7 @@ export type EventTuiChainSubplanEnd = {
   type: "tui.chain.subplan.end"
   properties: {
     sessionID?: string
+    workflowId?: string
     stepIndex: number
     success: boolean
   }
@@ -1324,9 +1337,13 @@ export type EventTuiChainParallelUpdate = {
   type: "tui.chain.parallel.update"
   properties: {
     sessionID?: string
+    workflowId?: string
     stepIndex: number
     status:
       | "pending"
+      | "waiting"
+      | "paused"
+      | "stopped"
       | "running"
       | "coding"
       | "searching_web"
@@ -2113,6 +2130,7 @@ export type Event =
   | EventSessionStatus
   | EventSessionCompacted
   | EventCompanionArtifactShared
+  | EventCompanionArtifactDeleted
   | EventCompanionPreviewUpdated
   | EventFileWatcherUpdated
   | EventVcsBranchUpdated
@@ -2396,9 +2414,18 @@ export type EventCompanionArtifactShared = {
     name: string
     mime: string
     size: number
+    sha256: string
     createdAt: number
+    expiresAt: number
     sessionID?: string
     downloadPath: string
+  }
+}
+
+export type EventCompanionArtifactDeleted = {
+  type: "companion.artifact.deleted"
+  properties: {
+    id: string
   }
 }
 
@@ -2417,6 +2444,7 @@ export type EventCompanionPreviewUpdated = {
     directory: string
     sessionID?: string
     exitCode?: number
+    accessExpiresAt?: number
   }
 }
 

@@ -1,6 +1,6 @@
 /**
  * AtomCLI Memory System - Core Types
- * 
+ *
  * This module defines all the type definitions for the persistent memory system.
  * These types support learning, preferences, session persistence, and knowledge graph.
  */
@@ -16,13 +16,13 @@ import { ulid } from "ulid"
  * Memory item types - categorizes what kind of information is stored
  */
 export const MemoryType = z.enum([
-  "error",      // Error patterns and solutions
-  "pattern",    // Successful patterns and approaches
-  "solution",   // Specific solutions to problems
+  "error", // Error patterns and solutions
+  "pattern", // Successful patterns and approaches
+  "solution", // Specific solutions to problems
   "preference", // User preferences and settings
-  "context",    // Project/context specific information
-  "research",   // Web research findings
-  "knowledge",  // General knowledge acquired
+  "context", // Project/context specific information
+  "research", // Web research findings
+  "knowledge", // General knowledge acquired
 ])
 
 export type MemoryType = z.infer<typeof MemoryType>
@@ -31,13 +31,13 @@ export type MemoryType = z.infer<typeof MemoryType>
  * Preference categories - groups user preferences by domain
  */
 export const PreferenceCategory = z.enum([
-  "code_style",      // Code formatting, style preferences
-  "communication",   // How to communicate with user
-  "tool_usage",      // Preferred tools and commands
-  "feature",         // Feature preferences and settings
-  "workflow",        // Workflow and process preferences
-  "language",        // Programming language preferences
-  "framework",       // Framework preferences
+  "code_style", // Code formatting, style preferences
+  "communication", // How to communicate with user
+  "tool_usage", // Preferred tools and commands
+  "feature", // Feature preferences and settings
+  "workflow", // Workflow and process preferences
+  "language", // Programming language preferences
+  "framework", // Framework preferences
 ])
 
 export type PreferenceCategory = z.infer<typeof PreferenceCategory>
@@ -46,12 +46,12 @@ export type PreferenceCategory = z.infer<typeof PreferenceCategory>
  * Knowledge graph node types
  */
 export const NodeType = z.enum([
-  "concept",   // Abstract concept
-  "pattern",   // Code pattern
-  "error",     // Error node
-  "solution",  // Solution node
-  "file",      // File reference
-  "project",   // Project reference
+  "concept", // Abstract concept
+  "pattern", // Code pattern
+  "error", // Error node
+  "solution", // Solution node
+  "file", // File reference
+  "project", // Project reference
   "technology", // Technology stack
   "knowledge", // General knowledge
 ])
@@ -62,14 +62,14 @@ export type NodeType = z.infer<typeof NodeType>
  * Knowledge graph edge types
  */
 export const EdgeType = z.enum([
-  "related_to",   // General relationship
-  "depends_on",   // Dependency
-  "solves",       // Solves relationship
-  "causes",       // Causes relationship
-  "improves",     // Improves relationship
-  "implements",   // Implementation relationship
-  "uses",         // Usage relationship
-  "similar_to",   // Similarity
+  "related_to", // General relationship
+  "depends_on", // Dependency
+  "solves", // Solves relationship
+  "causes", // Causes relationship
+  "improves", // Improves relationship
+  "implements", // Implementation relationship
+  "uses", // Usage relationship
+  "similar_to", // Similarity
 ])
 
 export type EdgeType = z.infer<typeof EdgeType>
@@ -101,6 +101,7 @@ export const SearchOptions = z.object({
   limit: z.number(),
   minRelevance: z.number(),
   tags: z.array(z.string()).optional,
+  skipRerank: z.boolean().optional(),
 })
 
 export type SearchOptions = z.infer<typeof SearchOptions>
@@ -145,7 +146,7 @@ export type MemoryItem = z.infer<typeof MemoryItem>
  */
 export const ErrorLearning = z.object({
   id: z.string(),
-  errorType: z.string(),          // "TypeError", "ReferenceError", etc.
+  errorType: z.string(), // "TypeError", "ReferenceError", etc.
   errorMessage: z.string(),
   stackTrace: z.string().optional(),
   filePath: z.string().optional(),
@@ -172,11 +173,13 @@ export const ResearchLearning = z.object({
   id: z.string(),
   query: z.string(),
   topic: z.string(),
-  findings: z.array(z.object({
-    source: z.string(),
-    content: z.string(),
-    relevance: z.number(),
-  })),
+  findings: z.array(
+    z.object({
+      source: z.string(),
+      content: z.string(),
+      relevance: z.number(),
+    }),
+  ),
   summary: z.string(),
   appliedTo: z.array(z.string()),
   metadata: MemoryMetadata,
@@ -327,12 +330,12 @@ export type BackgroundPriority = z.infer<typeof BackgroundPriority>
  * Background task types
  */
 export const BackgroundTaskType = z.enum([
-  "embed",          // Generate embeddings
-  "graph_cleanup",  // Clean up graph
-  "research",       // Do research
-  "suggestion",     // Generate suggestions
-  "summary",        // Summarize conversations
-  "migration",      // Data migration
+  "embed", // Generate embeddings
+  "graph_cleanup", // Clean up graph
+  "research", // Do research
+  "suggestion", // Generate suggestions
+  "summary", // Summarize conversations
+  "migration", // Data migration
 ])
 
 export type BackgroundTaskType = z.infer<typeof BackgroundTaskType>
@@ -396,11 +399,13 @@ export const EffectivenessMetrics = z.object({
   totalLearned: z.number(),
   successfulApplications: z.number(),
   failedApplications: z.number(),
-  topPatterns: z.array(z.object({
-    pattern: z.string(),
-    successRate: z.number(),
-    usageCount: z.number(),
-  })),
+  topPatterns: z.array(
+    z.object({
+      pattern: z.string(),
+      successRate: z.number(),
+      usageCount: z.number(),
+    }),
+  ),
 })
 
 export type EffectivenessMetrics = z.infer<typeof EffectivenessMetrics>
@@ -427,19 +432,25 @@ export type ImprovementSuggestion = z.infer<typeof ImprovementSuggestion>
 export const MemoryConfig = z.object({
   enabled: z.boolean,
   storage: z.enum(["json", "chroma", "hybrid"]),
-  chroma: z.object({
-    persistPath: z.string().optional(),
-  }).optional(),
-  embedding: z.object({
-    provider: z.enum(["openai", "local"]),
-    model: z.string(),
-    dimensions: z.number(),
-  }).optional(),
+  chroma: z
+    .object({
+      persistPath: z.string().optional(),
+    })
+    .optional(),
+  embedding: z
+    .object({
+      provider: z.enum(["openai", "local"]),
+      model: z.string(),
+      dimensions: z.number(),
+    })
+    .optional(),
   backgroundLearning: BackgroundConfig.optional(),
-  retention: z.object({
-    maxItems: z.number(),
-    ttlDays: z.number(),
-  }).optional(),
+  retention: z
+    .object({
+      maxItems: z.number(),
+      ttlDays: z.number(),
+    })
+    .optional(),
 })
 
 export type MemoryConfig = z.infer<typeof MemoryConfig>
@@ -513,7 +524,7 @@ export function createUserPreference(
   userId: string,
   category: PreferenceCategory,
   key: string,
-  value: any
+  value: any,
 ): UserPreference {
   const now = new Date().toISOString()
   return {

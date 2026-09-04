@@ -9,14 +9,14 @@ Use Bun only; this repository does not use npm or Yarn. The monorepo root delega
 
 ## Repository layout
 
-| Location                   | Purpose                                                                            |
-| -------------------------- | ---------------------------------------------------------------------------------- |
-| `AtomBase/`                | CLI, TUI, server, providers, tools, sessions, and configuration                    |
-| `libs/sdk/js/`             | Generated JavaScript/TypeScript SDK                                                |
-| `libs/companion/`          | Companion pairing, mobile bridge, and discovery library                            |
-| `companion/`               | Flutter companion application                                                      |
-| `.atomcli/` and `.claude/` | Tracked skills and agents copied into release artifacts; runtime state stays local |
-| `docs/`                    | Maintained user and developer documentation                                        |
+| Location                   | Purpose                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| `AtomBase/`                | CLI, TUI, server, providers, tools, sessions, and configuration                   |
+| `libs/sdk/js/`             | Generated JavaScript/TypeScript SDK                                               |
+| `libs/companion/`          | Companion pairing, mobile bridge, and discovery library                           |
+| `companion/`               | Flutter companion application                                                     |
+| `.atomcli/` and `.claude/` | Tracked skills and agents copied into release artifacts; includes `atomcli-guide` |
+| `docs/`                    | Maintained user and developer documentation                                       |
 
 ## Run locally
 
@@ -51,6 +51,15 @@ The models.dev fixture is the required test convention. `test/preload.ts` copies
 
 Prefer behavior-level tests over implementation-only assertions. A regression test should exercise the public boundary that failed, use an isolated temporary project when filesystem or Git state matters, and assert an observable result. Provider unit tests may mock transport, but live provider probes must remain explicitly opt-in and must distinguish rate limits from compatibility failures.
 
+When the bundled AtomCLI guide changes, validate its frontmatter, reference paths, development coverage, and runtime discovery:
+
+```sh
+cd AtomBase
+MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test test/skill/atomcli-guide.test.ts
+bun run --conditions=browser ./src/index.ts skill list
+bun run --conditions=browser ./src/index.ts skill show atomcli-guide
+```
+
 The `eval benchmark` command measures model-driven agent behavior and is not part of the deterministic validation commands above. Without `--execute` it only reports stored observations. With `--execute`, every case materializes its own fixture into the workspace, prompts the selected agent under a hard per-case timeout, and is then graded by an independent verifier before all changes are reverted. Verifier sources are moved out of the worktree for the duration of a run and restored automatically, including after interruption. On an interactive terminal the command offers provider, model, and agent menus unless `--model` is given. Executing the benchmark contacts the selected provider, consumes quota, and takes minutes per case. See `AtomBase/evals/README.md`.
 
 ## Build and release
@@ -66,7 +75,9 @@ Pushing a `v*` Git tag is the only automated release trigger. This repository do
 
 Release jobs run from a clean checkout. The build copies root `.atomcli/` and `.claude/` directories, so only tracked, reviewable skills and agents belong there. Local configuration, credentials, package manifests/locks, installed dependencies, plans, runs, and session state must remain ignored.
 
-The build matrix produces Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64 executables. x64 baseline variants cover older processors without AVX2. Bun has no FreeBSD runtime or compile target, so FreeBSD cannot be advertised as a supported AtomCLI runtime; platform-specific helpers should still fail clearly or use a system executable where possible.
+The build matrix produces Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64 executables. x64 baseline variants cover older processors without AVX2. Stable GitHub releases also build, test, sign, checksum, and attach `atomcli-companion-android.apk`. Bun has no FreeBSD runtime or compile target, so FreeBSD cannot be advertised as a supported AtomCLI runtime; platform-specific helpers should still fail clearly or use a system executable where possible.
+
+The published Android APK must use one persistent signing identity so users can install later releases as upgrades. Configure the repository secrets `ATOMCLI_ANDROID_KEYSTORE_BASE64`, `ATOMCLI_ANDROID_KEYSTORE_PASSWORD`, `ATOMCLI_ANDROID_KEY_ALIAS`, and `ATOMCLI_ANDROID_KEY_PASSWORD`; the tag workflow fails before building the APK when any value is missing. The keystore itself must never be committed. A local `flutter build apk --release` without these environment variables deliberately uses the debug identity for device testing only and must not be distributed.
 
 ### Pre-release repository check
 
@@ -75,7 +86,7 @@ Use `AtomBase/package.json` as the release source of truth. Keep the versions in
 Do not edit those mirrored versions individually. Set and propagate a release version from the repository root:
 
 ```sh
-bun run version:sync 3.4.2-beta
+bun run version:sync 3.4.2
 bun run version:check
 ```
 
@@ -136,18 +147,20 @@ Global files include `config.json`, `atomcli.json`, `atomcli.jsonc`, and `mcp.js
 
 ## Architecture
 
-| Concern                      | Location                                    |
-| ---------------------------- | ------------------------------------------- |
-| CLI registration             | `AtomBase/src/index.ts`                     |
-| CLI commands and TUI         | `AtomBase/src/interfaces/cli/cmd/`          |
-| Configuration                | `AtomBase/src/core/config/config.ts`        |
-| Project-scoped state         | `AtomBase/src/services/project/instance.ts` |
-| Sessions and prompt assembly | `AtomBase/src/core/session/`                |
-| Providers                    | `AtomBase/src/integrations/provider/`       |
-| Tools                        | `AtomBase/src/integrations/tool/`           |
-| MCP                          | `AtomBase/src/integrations/mcp/`            |
-| Server routes                | `AtomBase/src/server/`                      |
-| Agent evaluation             | `AtomBase/src/core/eval/`                   |
+| Concern                      | Location                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| CLI registration             | `AtomBase/src/index.ts`                                                                          |
+| CLI commands and TUI         | `AtomBase/src/interfaces/cli/cmd/`                                                               |
+| Configuration                | `AtomBase/src/core/config/config.ts`                                                             |
+| Project-scoped state         | `AtomBase/src/services/project/instance.ts`                                                      |
+| Sessions and prompt assembly | `AtomBase/src/core/session/`                                                                     |
+| Providers                    | `AtomBase/src/integrations/provider/`                                                            |
+| Tools                        | `AtomBase/src/integrations/tool/`                                                                |
+| Skills                       | `AtomBase/src/integrations/skill/` and `AtomBase/src/integrations/tool/skill.ts`                 |
+| MCP                          | `AtomBase/src/integrations/mcp/`                                                                 |
+| Server routes                | `AtomBase/src/server/`                                                                           |
+| Companion networking         | `AtomBase/src/interfaces/cli/network.ts`, `AtomBase/src/server/server.ts`, and `libs/companion/` |
+| Agent evaluation             | `AtomBase/src/core/eval/`                                                                        |
 
 Follow the namespace export pattern and use path aliases (`@/*`, `@tui/*`). Code built with `--conditions=browser` must use type-only imports for `ai` and dynamic imports for its runtime use.
 
@@ -166,4 +179,21 @@ Do not manually edit `libs/sdk/js/src/v2/gen/`; it is generated.
 
 ## Documentation maintenance
 
-Keep documentation tied to its source of truth. Validate command examples with `atomcli --help`, configuration examples against `Config.Info`, and SDK claims against `libs/sdk/js/`. Avoid hard-coded provider counts, model lists, and package versions unless a release artifact requires them.
+Treat documentation as part of the behavior change, not as a release-only cleanup. Update the canonical guide and the corresponding runtime guide reference together:
+
+| Changed topic                      | Canonical documentation                        | Bundled guide reference                 |
+| ---------------------------------- | ---------------------------------------------- | --------------------------------------- |
+| Product overview or first run      | `README.md`                                    | `getting-started-and-tui.md`            |
+| Configuration or permissions       | relevant guide plus schema examples            | `configuration.md`                      |
+| Providers and models               | `docs/PROVIDERS.md`                            | `providers-and-models.md`               |
+| Skills, agents, commands, or MCP   | `docs/SKILLS-GUIDE.md` / `docs/MCP-GUIDE.md`   | `extensions.md`                         |
+| Server, attach, ACP, or Companion  | `companion/README.md` and relevant server docs | `server-and-companion.md`               |
+| Troubleshooting and operations     | `README.md` or the owning package README       | `operations-and-troubleshooting.md`     |
+| Contributor workflow and internals | `AGENTS.md`, `AtomBase/AGENTS.md`, this guide  | `development-and-contributing.md`       |
+| HTTP API                           | route docs and generated SDK                   | only the relevant operational reference |
+
+The bundled guide lives at `.atomcli/skills/atomcli-guide/`. Keep `SKILL.md` as a compact router and place detailed instructions in `references/`; loading the entrypoint should not flood every session with the whole manual. Its description must clearly distinguish AtomCLI product/development questions from ordinary coding tasks in repositories that merely use AtomCLI. Trigger words surface a candidate only—the agent still decides whether to load it.
+
+Validate command examples with `atomcli --help` or `atomcli <command> --help`, configuration examples against `Config.Info`, and SDK claims against `libs/sdk/js/`. Check relative Markdown links, run `git diff --check`, and avoid hard-coded provider counts, model lists, ports that can be assigned dynamically, and package versions unless a release artifact requires them.
+
+Do not update `RELEASE_NOTES.md` merely because documentation changed. Release notes and versioned statements belong to an explicitly requested release-preparation change.

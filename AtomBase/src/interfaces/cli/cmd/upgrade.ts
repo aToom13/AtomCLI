@@ -1,11 +1,11 @@
 import type { Argv } from "yargs"
-import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
+import { UI } from "../ui"
 import { Installation } from "@/services/installation"
 
 export const UpgradeCommand = {
-  command: "upgrade [target]",
-  describe: "upgrade atomcli to the latest or a specific version",
+  command: ["update [target]", "upgrade [target]"],
+  describe: "update atomcli and its runtime dependencies to the latest or a specific version",
   builder: (yargs: Argv) => {
     return yargs
       .positional("target", {
@@ -103,8 +103,6 @@ export const UpgradeCommand = {
 
         if (selected === "__source__") {
           prompts.log.info("Building from source...")
-          const buildSpinner = prompts.spinner()
-          buildSpinner.start("Cloning and building AtomCLI from source...")
           try {
             const proc = Bun.spawn(
               [
@@ -112,18 +110,15 @@ export const UpgradeCommand = {
                 "-c",
                 "curl -fsSL https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.sh | bash -s -- --source",
               ],
-              { stdout: "pipe", stderr: "pipe" },
+              { stdout: "inherit", stderr: "inherit" },
             )
             await proc.exited
             if (proc.exitCode !== 0) {
-              const stderr = await new Response(proc.stderr).text()
-              buildSpinner.stop("Build failed", 1)
-              prompts.log.error(stderr || "Build from source failed")
+              prompts.log.error("Build from source failed")
             } else {
-              buildSpinner.stop("Build from source complete")
+              prompts.log.success("Build from source complete")
             }
           } catch (e) {
-            buildSpinner.stop("Build failed", 1)
             prompts.log.error((e as Error).message)
           }
           prompts.outro("Done")
@@ -135,23 +130,21 @@ export const UpgradeCommand = {
     }
 
     if (Installation.compareVersions(Installation.VERSION, target) === 0) {
-      prompts.log.warn(`atomcli upgrade skipped: ${target} is already installed`)
+      prompts.log.warn(`atomcli update skipped: ${target} is already installed`)
       prompts.outro("Done")
       return
     }
 
     prompts.log.info(`From ${Installation.VERSION} → ${target}`)
-    const spinner = prompts.spinner()
-    spinner.start("Upgrading...")
+    prompts.log.info("Starting verified update and runtime dependency repair...")
     const err = await Installation.upgrade(method, target).catch((err) => err)
     if (err) {
-      spinner.stop("Upgrade failed", 1)
       if (err instanceof Installation.UpgradeFailedError) prompts.log.error(err.data.stderr)
       else if (err instanceof Error) prompts.log.error(err.message)
       prompts.outro("Done")
       return
     }
-    spinner.stop("Upgrade complete")
+    prompts.log.success("Update complete")
     prompts.outro("Done")
   },
 }

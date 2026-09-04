@@ -4,6 +4,8 @@ This directory contains package maintenance scripts. `build.ts` is the productio
 
 The build clears `AtomBase/dist/`, bundles supported targets, and copies repository-root `.atomcli/` and `.claude/` directories into release output. Keep local configuration, credentials, package manifests/locks, dependencies, plans, runs, and session state ignored so only tracked skills and agents enter a clean release checkout. Releases are triggered only by pushing a `v*` tag, and package publication uses Bun.
 
+The copied assets include the built-in `atomcli-guide`. If it changes, run `test/skill/atomcli-guide.test.ts` and verify `skill list` before building so malformed frontmatter or broken reference links do not ship in every binary.
+
 Use:
 
 ```sh

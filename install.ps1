@@ -10,7 +10,9 @@ param(
     [switch]$Uninstall,
     [switch]$Update,
     [switch]$Source,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$RuntimeOnly,
+    [string]$Version = $env:VERSION
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,6 +30,27 @@ function Write-Success { param([string]$M) Write-Host "v  $M" -ForegroundColor G
 function Write-Err     { param([string]$M) Write-Host "x  $M" -ForegroundColor Red }
 function Write-Warn    { param([string]$M) Write-Host "!  $M" -ForegroundColor Yellow }
 function Write-Info    { param([string]$M) Write-Host "   $M" -ForegroundColor DarkGray }
+
+function Start-InstallProgress {
+    param([int]$Total)
+    $script:ProgressCurrent = 0
+    $script:ProgressTotal = [Math]::Max(1, $Total)
+}
+
+function Set-InstallProgress {
+    param([string]$Activity)
+    $script:ProgressCurrent++
+    $percent = [Math]::Min(100, [Math]::Floor(($script:ProgressCurrent * 100) / $script:ProgressTotal))
+    $width = 24
+    $filled = [Math]::Floor(($percent * $width) / 100)
+    $bar = ("=" * $filled) + ">" + (" " * [Math]::Max(0, $width - $filled))
+    Write-Progress -Activity "AtomCLI setup" -Status $Activity -PercentComplete $percent
+    Write-Host ("[{0}] {1,3}%  {2}" -f $bar, $percent, $Activity) -ForegroundColor Cyan
+}
+
+function Complete-InstallProgress {
+    Write-Progress -Activity "AtomCLI setup" -Completed
+}
 
 function Show-Banner {
     Write-Host ""
@@ -48,6 +71,7 @@ function Show-Help {
     Write-Host "Usage:" -ForegroundColor White
     Write-Host "  irm <url> | iex                        # Install (interactive)"
     Write-Host "  irm <url> | iex; Update-AtomCLI        # Update (version picker)"
+    Write-Host "  .\install.ps1 -Update -Version 3.4.2  # Non-interactive update"
     Write-Host "  irm <url> | iex; Uninstall-AtomCLI     # Uninstall"
     Write-Host "  irm <url> | iex; Install-AtomCLI -FromSource  # Build from source"
     Write-Host ""
@@ -259,6 +283,22 @@ function Get-ReleaseDownloadInfo {
 # Version selection menu
 # ─────────────────────────────────────────────────────────────
 function Select-Version {
+    if ($Version) {
+        $normalizedVersion = $Version -replace '^v',''
+        if ($normalizedVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$') {
+            throw "Invalid release version: $Version"
+        }
+        $script:SelectedVersion = $normalizedVersion
+        Write-Info "Selected from command/environment: v$($script:SelectedVersion)"
+        return
+    }
+
+    if ($env:NONINTERACTIVE -eq "1") {
+        $latest = Get-LatestRelease
+        if ($latest) { $script:SelectedVersion = $latest -replace '^v','' }
+        return
+    }
+
     Write-Host ""
     Write-Host "  Fetching available versions..." -ForegroundColor Cyan
 
@@ -507,46 +547,82 @@ function Invoke-SourceBuild {
 # Playwright browser setup
 # ─────────────────────────────────────────────────────────────
 function Install-PlaywrightBrowsers {
+    if ($env:ATOMCLI_SKIP_PLAYWRIGHT -eq "1") {
+        Write-Warn "Skipping Playwright setup because ATOMCLI_SKIP_PLAYWRIGHT=1"
+        return
+    }
+
     $playwrightDir = Join-Path $ConfigDir "playwright"
     New-Item -ItemType Directory -Force -Path $playwrightDir | Out-Null
 
-    if (Test-Path (Join-Path $playwrightDir "node_modules\playwright")) {
-        Write-Success "Playwright already installed"
-        return
+    $desiredVersion = $PlaywrightVersion
+    $releaseTag = if ($script:SelectedVersion) { "v$($script:SelectedVersion)" } else { Get-LatestRelease }
+    if ($releaseTag) {
+        try {
+            $releasePackage = Invoke-RestMethod -Uri "https://raw.githubusercontent.com/aToom13/AtomCLI/$releaseTag/AtomBase/package.json" -ErrorAction Stop
+            if ("$($releasePackage.dependencies.playwright)" -match '^\d+\.\d+\.\d+$') {
+                $desiredVersion = "$($releasePackage.dependencies.playwright)"
+            }
+        } catch {
+            Write-Warn "Could not resolve the release Playwright version; using pinned $desiredVersion"
+        }
+    }
+
+    $packageFile = Join-Path $playwrightDir "node_modules\playwright\package.json"
+    $installedVersion = $null
+    if (Test-Path $packageFile) {
+        try { $installedVersion = (Get-Content -LiteralPath $packageFile -Raw | ConvertFrom-Json).version } catch { }
     }
 
     Push-Location $playwrightDir
     try {
-        Write-Step "Installing Playwright package..."
-        $pwJob = Start-Job -ScriptBlock { param($wd, $version); Set-Location $wd; bun init -y 2>&1; bun add --exact "playwright@$version" 2>&1 } -ArgumentList $PWD.Path, $PlaywrightVersion
         $chars = @('|','/','-','\'); $pi = 0
-        while ($pwJob.State -eq 'Running') {
-            Write-Host "`r$($chars[$pi % 4]) Installing Playwright package...   " -NoNewline -ForegroundColor Blue
-            Start-Sleep -Milliseconds 200; $pi++
-        }
-        Write-Host "`r                                          `r" -NoNewline
-        Receive-Job $pwJob | Out-Null; Remove-Job $pwJob
-
-        if (Test-Path (Join-Path $playwrightDir "node_modules\playwright")) {
-            Write-Success "Playwright package installed"
-
-            Write-Step "Installing Chromium browser..."
-            Write-Info "(may take 1-2 minutes)"
-            $chromJob = Start-Job -ScriptBlock { param($wd); Set-Location $wd; bunx playwright install chromium 2>&1 } -ArgumentList $PWD.Path
-            $ci2 = 0
-            while ($chromJob.State -eq 'Running') {
-                Write-Host "`r$($chars[$ci2 % 4]) Downloading Chromium... ($ci2`s)   " -NoNewline -ForegroundColor Blue
-                Start-Sleep -Seconds 1; $ci2++
-                if ($ci2 -gt 300) { Stop-Job $chromJob; Write-Warn "Chromium download timed out"; break }
+        if ($installedVersion -ne $desiredVersion) {
+            if ($installedVersion) { Write-Info "Updating Playwright $installedVersion -> $desiredVersion" }
+            Write-Step "Installing Playwright $desiredVersion..."
+            $pwJob = Start-Job -ScriptBlock {
+                param($wd, $version)
+                Set-Location $wd
+                bun init -y 2>&1 | Out-Null
+                bun add --exact "playwright@$version" 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "bun add failed with exit code $LASTEXITCODE" }
+            } -ArgumentList $PWD.Path, $desiredVersion
+            while ($pwJob.State -eq 'Running') {
+                Write-Host "`r$($chars[$pi % 4]) Installing Playwright...   " -NoNewline -ForegroundColor Blue
+                Start-Sleep -Milliseconds 200; $pi++
             }
-            Write-Host "`r                                              `r" -NoNewline
-            Receive-Job $chromJob -ErrorAction SilentlyContinue | Out-Null
-            Remove-Job $chromJob -ErrorAction SilentlyContinue
-            Write-Success "Chromium installed"
+            Write-Host "`r                                          `r" -NoNewline
+            $pwState = $pwJob.State
+            $pwOutput = Receive-Job $pwJob -ErrorAction SilentlyContinue | Out-String
+            Remove-Job $pwJob
+            if ($pwState -ne 'Completed') { throw "Playwright package installation failed: $pwOutput" }
+            Write-Success "Playwright $desiredVersion installed"
         } else {
-            Write-Warn "Could not install Playwright package"
-            Write-Info "Run manually: cd $playwrightDir && bun add --exact playwright@$PlaywrightVersion && bunx playwright install chromium"
+            Write-Success "Playwright $desiredVersion is current"
         }
+
+        Write-Step "Downloading and configuring Chromium..."
+        $chromJob = Start-Job -ScriptBlock {
+            param($wd)
+            Set-Location $wd
+            bunx playwright install --no-shell chromium 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Chromium install failed with exit code $LASTEXITCODE" }
+        } -ArgumentList $PWD.Path
+        $ci2 = 0
+        while ($chromJob.State -eq 'Running') {
+            Write-Host "`r$($chars[$ci2 % 4]) Downloading Chromium... ($ci2`s)   " -NoNewline -ForegroundColor Blue
+            Start-Sleep -Seconds 1; $ci2++
+            if ($ci2 -gt 300) { Stop-Job $chromJob; throw "Chromium download timed out after 5 minutes" }
+        }
+        Write-Host "`r                                              `r" -NoNewline
+        $chromState = $chromJob.State
+        $chromOutput = Receive-Job $chromJob -ErrorAction SilentlyContinue | Out-String
+        Remove-Job $chromJob -ErrorAction SilentlyContinue
+        if ($chromState -ne 'Completed') { throw "Chromium installation failed: $chromOutput" }
+
+        & bun --conditions=browser -e 'import { chromium } from "playwright"; const headless = process.platform !== "darwin" && process.platform !== "win32" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY; const browser = await chromium.launch({ headless, ...(headless ? { channel: "chromium" } : {}) }); await browser.close()' 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Chromium was downloaded but failed its launch verification" }
+        Write-Success "Browser automation runtime verified"
     } finally {
         Pop-Location
     }
@@ -934,6 +1010,8 @@ function Uninstall-AtomCLI {
 # ─────────────────────────────────────────────────────────────
 function Update-AtomCLI {
     Show-Banner
+    $progressSteps = if ($RuntimeOnly) { 6 } else { 7 }
+    Start-InstallProgress -Total $progressSteps
     Write-Host "Updating AtomCLI..." -ForegroundColor Cyan
     Write-Host ""
 
@@ -944,16 +1022,29 @@ function Update-AtomCLI {
         Write-Warn "AtomCLI not found. Performing fresh installation."
     }
 
+    Set-InstallProgress "System and dependency scan"
     Get-SystemInfo
     Test-Dependencies
     Install-Bun
     Select-Version
 
-    Install-Binary -FromSource:($script:InstallFromSource -eq $true)
+    if (-not $RuntimeOnly) {
+        Set-InstallProgress "AtomCLI binary"
+        Install-Binary -FromSource:($script:InstallFromSource -eq $true)
+    } else {
+        Write-Info "Binary replacement already completed; repairing release runtime"
+    }
+    Set-InstallProgress "Browser runtime"
+    Install-PlaywrightBrowsers
+    Set-InstallProgress "PATH configuration"
     Add-ToPath
+    Set-InstallProgress "PowerShell completion"
     Install-Completion
+    Set-InstallProgress "Bundled skills"
     Install-SkillsBundle
+    Set-InstallProgress "Final verification"
     Test-Installation
+    Complete-InstallProgress
 
     Write-Host ""
     Write-Host "────────────────────────────────────────────────────────" -ForegroundColor Green
@@ -1001,18 +1092,28 @@ function Get-SystemInfo {
 function Install-AtomCLI {
     param([switch]$FromSource)
     Show-Banner
+    Start-InstallProgress -Total 8
+    Set-InstallProgress "System and dependency scan"
     Get-SystemInfo
     Test-Dependencies
     Install-Bun
     Select-Version
+    Set-InstallProgress "AtomCLI binary"
     Install-Binary -FromSource:$FromSource
+    Set-InstallProgress "Browser runtime"
     Install-PlaywrightBrowsers
+    Set-InstallProgress "PATH configuration"
     Add-ToPath
+    Set-InstallProgress "PowerShell completion"
     Install-Completion
+    Set-InstallProgress "Configuration"
     Initialize-Config
+    Set-InstallProgress "Bundled skills"
     Install-SkillsBundle
     Setup-OptionalFeatures
+    Set-InstallProgress "Final verification"
     Test-Installation
+    Complete-InstallProgress
     Show-Complete -Kilocode:$script:EnableKilocode
 }
 

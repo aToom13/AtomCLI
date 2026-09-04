@@ -11,6 +11,7 @@ import { SubAgentRuntime } from "./subagent-runtime"
 import { HarnessState } from "@/core/session/harness-state"
 import { MessageV2 } from "@/core/session/message-v2"
 import { SubAgentLifecycle } from "./subagent-lifecycle"
+import { SessionExecutionProfile } from "@/core/session/execution-profile"
 
 /**
  * Shared sub-agent session spawn utility.
@@ -115,6 +116,8 @@ export namespace SubAgent {
     sessionId?: string
     /** Child session title (defaults to description + agent name) */
     title?: string
+    /** Stable task identifier used to nest this agent under Mission Control. */
+    parentStepId?: string
     /** Extra tools to deny beyond the base set */
     deniedTools?: Record<string, boolean>
     /** Called as soon as the child identity is known, before its prompt starts */
@@ -226,7 +229,7 @@ export namespace SubAgent {
 
   async function spawnInProcess(config: SpawnConfig): Promise<SpawnResult> {
     let isNewSession = false
-    const parentStepId = HarnessState.getRunningStep(config.parentSessionID)
+    const parentStepId = config.parentStepId ?? HarnessState.getRunningStep(config.parentSessionID)
 
     // Try to reuse existing session
     let session: Session.Info | null = null
@@ -281,6 +284,7 @@ export namespace SubAgent {
     // this to distinguish a user-deleted child from an ordinary model failure
     // and must not wait until spawn() returns to learn the session ID.
     await config.onSession?.({ sessionId: session.id, isNewSession })
+    SessionExecutionProfile.inherit(config.parentSessionID, session.id)
 
     const startedAt = Date.now()
     SubAgentLifecycle.update({

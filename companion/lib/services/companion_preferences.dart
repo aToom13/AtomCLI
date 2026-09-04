@@ -2,12 +2,22 @@ import 'dart:convert';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'power_policy.dart';
+import 'privacy_policy.dart';
+import '../theme/app_theme.dart';
+
 class CompanionPreferences {
   CompanionPreferences._();
 
   static final instance = CompanionPreferences._();
   static const _storageKey = 'companion_preferences_v1';
-  static const _storage = FlutterSecureStorage();
+  // All secure-storage callers must use the same Android backend. Mixing the
+  // legacy cipher backend with EncryptedSharedPreferences makes the plugin
+  // migrate this entry whenever AuthService starts, so preferences appear to
+  // reset on every process launch.
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   final List<String> recentModels = [];
   final Set<String> favoriteModels = {};
@@ -15,6 +25,11 @@ class CompanionPreferences {
   String? lastModel;
   String? lastAgent;
   String? lastDirectory;
+  ConnectionPowerMode powerMode = ConnectionPowerMode.balanced;
+  NotificationPrivacyMode notificationPrivacy =
+      NotificationPrivacyMode.protected;
+  bool protectScreenPreviews = true;
+  AppAccent accent = AppAccent.azure;
 
   Future<void> load() async {
     try {
@@ -41,6 +56,15 @@ class CompanionPreferences {
       lastModel = json['last_model'] as String?;
       lastAgent = json['last_agent'] as String?;
       lastDirectory = json['last_directory'] as String?;
+      powerMode = ConnectionPowerModeCodec.parse(json['power_mode']);
+      notificationPrivacy = NotificationPrivacyModeCodec.parse(
+        json['notification_privacy'],
+      );
+      protectScreenPreviews = json['protect_screen_previews'] as bool? ?? true;
+      accent = AppAccent.values.firstWhere(
+        (value) => value.name == json['accent'],
+        orElse: () => AppAccent.azure,
+      );
     } catch (_) {
       // Corrupt or unavailable preferences should never prevent pairing.
     }
@@ -81,6 +105,27 @@ class CompanionPreferences {
     _save();
   }
 
+  Future<void> selectPowerMode(ConnectionPowerMode mode) {
+    powerMode = mode;
+    return _save();
+  }
+
+  Future<void> selectNotificationPrivacy(NotificationPrivacyMode mode) {
+    notificationPrivacy = mode;
+    return _save();
+  }
+
+  Future<void> selectScreenProtection(bool enabled) {
+    protectScreenPreviews = enabled;
+    return _save();
+  }
+
+  Future<void> selectAccent(AppAccent value) {
+    accent = value;
+    AppPalette.selectAccent(value);
+    return _save();
+  }
+
   Future<void> _save() async {
     try {
       await _storage.write(
@@ -92,6 +137,10 @@ class CompanionPreferences {
           'last_model': lastModel,
           'last_agent': lastAgent,
           'last_directory': lastDirectory,
+          'power_mode': powerMode.wireName,
+          'notification_privacy': notificationPrivacy.wireName,
+          'protect_screen_previews': protectScreenPreviews,
+          'accent': accent.name,
         }),
       );
     } catch (_) {

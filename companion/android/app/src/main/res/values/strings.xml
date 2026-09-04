@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AtomCLI Companion</string>
+    <string name="share_file_limit">Only the first %1$d shared files were imported.</string>
+    <string name="share_size_limit">Some files were skipped because the 256 MiB import limit was reached.</string>
+    <string name="shared_file_fallback">shared-file</string>
+    <string name="share_too_large">Shared input is too large</string>
+</resources>

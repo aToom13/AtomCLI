@@ -1,16 +1,24 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../models.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
+import 'image_annotation_screen.dart';
 import '../theme/app_theme.dart';
 import '../services/companion_preferences.dart';
+import '../services/mobile_input_service.dart';
 import '../services/transfer_service.dart';
+import '../services/websocket_service.dart';
+import '../widgets/adaptive_layout.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -23,14 +31,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   bool _sending = false;
+  _DeliveryState _deliveryState = _DeliveryState.idle;
+  Timer? _deliveryResetTimer;
   bool _creating = false;
   bool _uploading = false;
   double? _uploadProgress;
+  TransferCancellation? _uploadCancellation;
   final List<CompanionArtifact> _pendingAttachments = [];
   String? _attachmentSessionId;
+  final SpeechToText _speech = SpeechToText();
+  bool _listening = false;
+  String _speechPrefix = '';
+  IncomingShare? _pendingIncomingShare;
+  bool _shareDialogOpen = false;
+  bool _shareWaitingNoticeShown = false;
 
   @override
   void dispose() {
+    _deliveryResetTimer?.cancel();
+    _speech.cancel();
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -38,10 +57,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final sessions = ref.watch(sessionListProvider);
     final conversation = ref.watch(conversationProvider);
     final connection = ref.watch(connectionStateProvider);
     final messages = conversation.messagesFor(conversation.selectedSessionId);
+    final subAgents = ref
+        .watch(subAgentProvider)
+        .where(
+          (agent) =>
+              agent.parentSessionId == conversation.selectedSessionId &&
+              (conversation.selectedDirectory == null ||
+                  agent.directory == null ||
+                  agent.directory == conversation.selectedDirectory),
+        )
+        .toList();
     final selectedSession = _findSession(
       sessions,
       conversation.selectedSessionId,
@@ -63,106 +93,162 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (sessionId == null) return;
       final before = previous?.messagesFor(sessionId).length ?? 0;
       if (next.messagesFor(sessionId).length != before) _scrollToEnd();
+      if (_pendingIncomingShare != null) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _offerIncomingShare(),
+        );
+      }
+    });
+    ref.listen<IncomingShare?>(incomingShareProvider, (_, share) {
+      if (share == null) return;
+      ref.read(incomingShareProvider.notifier).state = null;
+      _pendingIncomingShare = share;
+      _shareWaitingNoticeShown = false;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _offerIncomingShare(),
+      );
+    });
+    ref.listen<PromptErrorNotice?>(promptErrorProvider, (_, notice) {
+      if (notice == null) return;
+      ref.read(promptErrorProvider.notifier).clear();
+      if (notice.sessionId != null &&
+          notice.sessionId != conversation.selectedSessionId) {
+        return;
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() => _deliveryState = _DeliveryState.failed);
+        _showError(_conversationFailureText(strings, notice.failure));
+      });
     });
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Sessions'),
-        actions: [
-          IconButton(
-            key: const Key('session-history-button'),
-            tooltip: 'Session history',
-            onPressed: () => _showSessions(sessions),
-            icon: Badge(
-              isLabelVisible: sessions.isNotEmpty,
-              smallSize: 7,
-              backgroundColor: AppPalette.amber,
-              child: const Icon(Icons.history_rounded),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final conversationPane = Column(
+          children: [
+            _SessionHeader(
+              session: selectedSession,
+              sessionCount: sessions.length,
+              connected: connection == WsConnectionState.connected,
+              onTap: () => _showSessions(sessions),
+              onRefresh: conversation.selectedSessionId == null
+                  ? null
+                  : () => ref
+                        .read(conversationProvider.notifier)
+                        .selectSession(
+                          conversation.selectedSessionId!,
+                          reload: true,
+                        ),
+              onStop: selectedSession?.isActive == true
+                  ? () => _stopSession(selectedSession!)
+                  : null,
             ),
-          ),
-          IconButton(
-            key: const Key('new-session-button'),
-            tooltip: 'New session',
-            onPressed: _creating || connection != WsConnectionState.connected
-                ? null
-                : _createSession,
-            icon: _creating
-                ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.add_comment_outlined),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _SessionHeader(
-            session: selectedSession,
-            sessionCount: sessions.length,
-            connected: connection == WsConnectionState.connected,
-            onTap: () => _showSessions(sessions),
-            onRefresh: conversation.selectedSessionId == null
-                ? null
-                : () => ref
-                      .read(conversationProvider.notifier)
-                      .selectSession(
-                        conversation.selectedSessionId!,
-                        reload: true,
-                      ),
-            onStop: selectedSession?.isActive == true
-                ? () => _stopSession(selectedSession!)
-                : null,
-          ),
-          const _WorkflowStrip(),
-          Expanded(
-            child: loading && messages.isEmpty
-                ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
-                : messages.isEmpty
-                ? _EmptyConversation(
-                    hasSession: conversation.selectedSessionId != null,
-                    onCreate: _creating ? null : _createSession,
-                    onHistory: () => _showSessions(sessions),
-                  )
-                : ListView.builder(
-                    key: ValueKey(conversation.selectedSessionId),
-                    controller: _scrollController,
-                    padding: const EdgeInsets.fromLTRB(13, 10, 13, 20),
-                    itemCount: messages.length,
-                    itemBuilder: (_, index) => _MessageCard(
-                      key: ValueKey(messages[index].id),
-                      message: messages[index],
+            const _WorkflowStrip(),
+            Expanded(
+              child: loading && messages.isEmpty
+                  ? const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : messages.isEmpty
+                  ? _EmptyConversation(
+                      hasSession: conversation.selectedSessionId != null,
+                      onCreate: _creating ? null : _createSession,
+                      onHistory: () => _showSessions(sessions),
+                    )
+                  : ListView.builder(
+                      key: ValueKey(conversation.selectedSessionId),
+                      controller: _scrollController,
+                      padding: const EdgeInsets.fromLTRB(13, 10, 13, 20),
+                      itemCount: messages.length + (subAgents.isEmpty ? 0 : 1),
+                      itemBuilder: (_, index) {
+                        if (index == messages.length) {
+                          return _SubAgentWorkCard(
+                            key: ValueKey(
+                              subAgents
+                                  .map((agent) => agent.sessionId)
+                                  .join(','),
+                            ),
+                            agents: subAgents,
+                          );
+                        }
+                        return _MessageCard(
+                          key: ValueKey(messages[index].id),
+                          message: messages[index],
+                          onSelectModel: _showModels,
+                          hideAgentTool: subAgents.isNotEmpty,
+                        );
+                      },
                     ),
-                  ),
+            ),
+            _Composer(
+              controller: _messageController,
+              sending: _sending,
+              deliveryState: _deliveryState,
+              uploading: _uploading,
+              uploadProgress: _uploading ? _uploadProgress : null,
+              onPauseUpload: _uploadCancellation?.cancel,
+              attachments: _pendingAttachments,
+              onRemoveAttachment: (artifact) {
+                setState(() {
+                  _pendingAttachments.removeWhere(
+                    (candidate) => candidate.id == artifact.id,
+                  );
+                  if (_pendingAttachments.isEmpty) _attachmentSessionId = null;
+                });
+              },
+              connected: connection == WsConnectionState.connected,
+              onSend: _send,
+              onAttach: _showAttachmentPicker,
+              onSpeech: _toggleDictation,
+              listening: _listening,
+              onModel: _showModels,
+              onAgent: _showAgents,
+              onVariant: _showVariants,
+            ),
+          ],
+        );
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(strings.tabSessions),
+            actions: [
+              IconButton(
+                key: const Key('new-session-button'),
+                tooltip: strings.newSession,
+                onPressed:
+                    _creating || connection != WsConnectionState.connected
+                    ? null
+                    : _createSession,
+                icon: _creating
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add_comment_outlined),
+              ),
+            ],
           ),
-          _Composer(
-            controller: _messageController,
-            sending: _sending,
-            uploading: _uploading,
-            uploadProgress: _uploading ? _uploadProgress : null,
-            attachments: _pendingAttachments,
-            onRemoveAttachment: (artifact) {
-              setState(() {
-                _pendingAttachments.removeWhere(
-                  (candidate) => candidate.id == artifact.id,
-                );
-                if (_pendingAttachments.isEmpty) _attachmentSessionId = null;
-              });
-            },
-            connected: connection == WsConnectionState.connected,
-            onSend: _send,
-            onAttach: _showAttachmentPicker,
-            onModel: _showModels,
-            onAgent: _showAgents,
-            onVariant: _showVariants,
+          body: AdaptiveTwoPane(
+            compact: conversationPane,
+            primary: _WideSessionPane(
+              sessions: sessions,
+              selectedId: conversation.selectedSessionId,
+              connected: connection == WsConnectionState.connected,
+              creating: _creating,
+              onCreate: _createSession,
+              onSelect: (sessionId) => ref
+                  .read(conversationProvider.notifier)
+                  .selectSession(sessionId),
+              onDelete: _confirmDeleteSession,
+            ),
+            detail: conversationPane,
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
   Future<void> _showSessions(List<SessionInfo> sessions) async {
-    final selected = await showModalBottomSheet<String>(
+    final selected = await showModalBottomSheet<_SessionPickerResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppPalette.panel,
@@ -171,8 +257,63 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         selectedId: ref.read(conversationProvider).selectedSessionId,
       ),
     );
-    if (selected != null) {
-      await ref.read(conversationProvider.notifier).selectSession(selected);
+    if (selected == null) return;
+    final delete = selected.delete;
+    if (delete != null) {
+      await _confirmDeleteSession(delete);
+      return;
+    }
+    if (selected.sessionId != null) {
+      await ref
+          .read(conversationProvider.notifier)
+          .selectSession(selected.sessionId!);
+    }
+  }
+
+  Future<void> _confirmDeleteSession(SessionInfo session) async {
+    final strings = AppLocalizations.of(context);
+    if (session.isActive) {
+      _showError(strings.activeSessionCannotDelete);
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(strings.deleteSessionQuestion),
+        content: Text(strings.deleteSessionExplanation(_sessionTitle(session))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(strings.cancel),
+          ),
+          FilledButton(
+            key: const Key('confirm-delete-session'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(backgroundColor: AppPalette.danger),
+            child: Text(strings.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      final result = await ref
+          .read(wsServiceProvider)
+          ?.deleteSession(sessionId: session.id, directory: session.directory);
+      if (result == null || !result.isOk) {
+        throw StateError(result?.error ?? strings.connectionOffline);
+      }
+      ref.read(sessionListProvider.notifier).remove(session.id);
+      ref.read(conversationProvider.notifier).removeSession(session.id);
+      final remaining = ref.read(sessionListProvider);
+      if (remaining.isNotEmpty) {
+        await ref
+            .read(conversationProvider.notifier)
+            .selectSession(remaining.first.id);
+      }
+      if (mounted) _showNotice(strings.sessionDeleted);
+    } catch (error) {
+      _showError(_errorText(error));
     }
   }
 
@@ -206,7 +347,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         .where((item) => item.id == conversation.selectedModelId)
         .firstOrNull;
     if (model == null || model.variants.isEmpty) {
-      _showError('This model does not expose configurable thinking levels.');
+      _showError(AppLocalizations.of(context).thinkingUnavailable);
       return;
     }
     final selected = await showModalBottomSheet<String>(
@@ -243,7 +384,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Future<void> _createSession() async {
     final ws = ref.read(wsServiceProvider);
     if (ws == null || !ws.isConnected) {
-      _showError('AtomCLI is offline.');
+      _showError(AppLocalizations.of(context).connectionOffline);
       return;
     }
     final selection = ref.read(conversationProvider);
@@ -273,6 +414,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _send() async {
+    final strings = AppLocalizations.of(context);
     final text = _messageController.text.trim();
     if ((text.isEmpty && _pendingAttachments.isEmpty) ||
         _sending ||
@@ -280,16 +422,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
     final ws = ref.read(wsServiceProvider);
-    if (ws == null || !ws.isConnected) {
-      _showError('AtomCLI is offline. Your message was not sent.');
+    if (ws == null) {
+      _showError(AppLocalizations.of(context).pairBeforeSending);
       return;
     }
     final selection = ref.read(conversationProvider);
+    if (!ws.isConnected && selection.selectedSessionId == null) {
+      _showError(AppLocalizations.of(context).reconnectBeforeSession);
+      return;
+    }
+    if (!ws.isConnected && _pendingAttachments.isNotEmpty) {
+      _showError(AppLocalizations.of(context).attachmentsOffline);
+      return;
+    }
     if (_pendingAttachments.isNotEmpty &&
         selection.selectedSessionId != _attachmentSessionId) {
-      _showError(
-        'These attachments belong to another session. Remove them or return to that session.',
-      );
+      _showError(strings.attachmentsWrongSession);
       return;
     }
     var directory = selection.selectedDirectory;
@@ -299,30 +447,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
       if (directory == null || !mounted) return;
     }
-    setState(() => _sending = true);
+    setState(() {
+      _deliveryResetTimer?.cancel();
+      _sending = true;
+      _deliveryState = _DeliveryState.sending;
+    });
+    ref.read(promptErrorProvider.notifier).clear();
+    String? optimisticMessageId;
+    final existingSessionId = selection.selectedSessionId;
+    if (existingSessionId != null) {
+      optimisticMessageId = ref
+          .read(conversationProvider.notifier)
+          .addOptimisticUserMessage(
+            existingSessionId,
+            text.isEmpty ? strings.reviewAttachments : text,
+          );
+      _messageController.clear();
+      _scrollToEnd();
+    }
     try {
       final attachments = List<CompanionArtifact>.from(_pendingAttachments);
       final sessionId = selection.selectedSessionId;
       if (sessionId == null) {
-        await ws.createSession(
-          text: text.isEmpty ? 'Review the attached file(s).' : text,
+        final result = await ws.createSession(
+          text: text.isEmpty ? strings.reviewAttachments : text,
           model: selection.selectedModelId,
           agent: selection.selectedAgentName,
           variant: selection.selectedVariant,
           directory: directory,
         );
+        if (!result.isOk) {
+          throw StateError(result.error ?? strings.messageFailed);
+        }
+        _showAcceptedDelivery();
       } else {
-        await ws.sendChatMessage(
+        final result = await ws.sendChatMessage(
           sessionId: sessionId,
-          text: text.isEmpty ? 'Review the attached file(s).' : text,
+          text: text.isEmpty ? strings.reviewAttachments : text,
           model: selection.selectedModelId,
           agent: selection.selectedAgentName,
           variant: selection.selectedVariant,
           directory: selection.selectedDirectory,
           attachments: attachments.map((artifact) => artifact.id).toList(),
         );
+        if (result.status == 'queued') {
+          if (mounted) setState(() => _deliveryState = _DeliveryState.queued);
+          _showNotice(strings.queuedReceipt);
+        } else {
+          _showAcceptedDelivery();
+        }
       }
-      _messageController.clear();
+      if (sessionId == null) _messageController.clear();
       if (mounted) {
         setState(() {
           _pendingAttachments.removeWhere(
@@ -334,14 +509,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
       _scrollToEnd();
     } catch (error) {
+      if (existingSessionId != null && optimisticMessageId != null) {
+        ref
+            .read(conversationProvider.notifier)
+            .removeMessage(existingSessionId, optimisticMessageId);
+        if (_messageController.text.isEmpty) {
+          _messageController.text = text;
+          _messageController.selection = TextSelection.collapsed(
+            offset: text.length,
+          );
+        }
+      }
+      if (mounted) setState(() => _deliveryState = _DeliveryState.failed);
       _showError(_errorText(error));
     } finally {
       if (mounted) setState(() => _sending = false);
     }
   }
 
+  void _showAcceptedDelivery() {
+    if (!mounted) return;
+    setState(() => _deliveryState = _DeliveryState.accepted);
+    _deliveryResetTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _deliveryState == _DeliveryState.accepted) {
+        setState(() => _deliveryState = _DeliveryState.idle);
+      }
+    });
+  }
+
   Future<void> _showAttachmentPicker() async {
-    final imageOnly = await showModalBottomSheet<bool>(
+    final strings = AppLocalizations.of(context);
+    final action = await showModalBottomSheet<_MobileInputAction>(
       context: context,
       backgroundColor: AppPalette.panel,
       builder: (sheetContext) => SafeArea(
@@ -353,32 +551,370 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               const _SheetHandle(),
               const SizedBox(height: 12),
               ListTile(
-                leading: const Icon(
-                  Icons.image_outlined,
-                  color: AppPalette.primary,
+                leading: Icon(
+                  Icons.photo_camera_outlined,
+                  color: AppPalette.mint,
                 ),
-                title: const Text('Photo or image'),
-                subtitle: const Text('Attach an image from this phone'),
-                onTap: () => Navigator.pop(sheetContext, true),
+                title: Text(strings.camera),
+                subtitle: Text(strings.cameraSubtitle),
+                onTap: () =>
+                    Navigator.pop(sheetContext, _MobileInputAction.camera),
+              ),
+              ListTile(
+                leading: Icon(Icons.image_outlined, color: AppPalette.primary),
+                title: Text(strings.photoOrImage),
+                subtitle: Text(strings.photoOrImageSubtitle),
+                onTap: () =>
+                    Navigator.pop(sheetContext, _MobileInputAction.image),
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.draw_outlined,
+                  color: AppPalette.amber,
+                ),
+                title: Text(strings.markUpAnImage),
+                subtitle: Text(strings.markUpImageSubtitle),
+                onTap: () =>
+                    Navigator.pop(sheetContext, _MobileInputAction.annotate),
               ),
               ListTile(
                 leading: const Icon(
                   Icons.attach_file_rounded,
                   color: AppPalette.amber,
                 ),
-                title: const Text('Any file'),
-                subtitle: const Text(
-                  'Upload a document, archive or source file',
-                ),
-                onTap: () => Navigator.pop(sheetContext, false),
+                title: Text(strings.anyFile),
+                subtitle: Text(strings.anyFileSubtitle),
+                onTap: () =>
+                    Navigator.pop(sheetContext, _MobileInputAction.file),
               ),
             ],
           ),
         ),
       ),
     );
-    if (imageOnly == null || !mounted) return;
-    await _uploadAttachment(imageOnly: imageOnly);
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _MobileInputAction.camera:
+        await _captureOrAnnotate(ImageSource.camera);
+        break;
+      case _MobileInputAction.annotate:
+        await _captureOrAnnotate(ImageSource.gallery);
+        break;
+      case _MobileInputAction.image:
+        await _uploadAttachment(imageOnly: true);
+        break;
+      case _MobileInputAction.file:
+        await _uploadAttachment(imageOnly: false);
+        break;
+    }
+  }
+
+  bool _canStageMobileInput() {
+    final socket = ref.read(wsServiceProvider);
+    final conversation = ref.read(conversationProvider);
+    final sessionId = conversation.selectedSessionId;
+    if (socket == null || !socket.isConnected) {
+      _showError(AppLocalizations.of(context).connectionOffline);
+      return false;
+    }
+    if (sessionId == null) {
+      _showError(AppLocalizations.of(context).selectSessionForImage);
+      return false;
+    }
+    if (_uploading || _pendingAttachments.length >= 10) {
+      _showError(AppLocalizations.of(context).attachmentLimit);
+      return false;
+    }
+    if (_pendingAttachments.isNotEmpty && sessionId != _attachmentSessionId) {
+      _showError(
+        'The staged attachments belong to another session. Remove them first.',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _captureOrAnnotate(ImageSource source) async {
+    if (!_canStageMobileInput()) return;
+    try {
+      final selected = await ImagePicker().pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 2048,
+        maxHeight: 2048,
+        requestFullMetadata: false,
+      );
+      if (selected == null || !mounted) return;
+      final annotated = await Navigator.push<AnnotatedImage>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ImageAnnotationScreen(
+            imagePath: selected.path,
+            filename: selected.name,
+          ),
+        ),
+      );
+      if (annotated == null || !mounted) return;
+      await _uploadMobileImage(annotated);
+    } catch (error) {
+      _showError(_errorText(error));
+    }
+  }
+
+  Future<void> _uploadMobileImage(AnnotatedImage image) async {
+    if (!_canStageMobileInput()) return;
+    final strings = AppLocalizations.of(context);
+    final socket = ref.read(wsServiceProvider)!;
+    final conversation = ref.read(conversationProvider);
+    final sessionId = conversation.selectedSessionId!;
+    setState(() {
+      _uploading = true;
+      _uploadProgress = 0;
+      _uploadCancellation = TransferCancellation();
+    });
+    try {
+      final artifact = await TransferService.uploadBytes(
+        socket: socket,
+        sessionId: sessionId,
+        directory: conversation.selectedDirectory,
+        bytes: image.bytes,
+        filename: image.filename,
+        mime: 'image/png',
+        cancellation: _uploadCancellation,
+        onProgress: (transferred, total) {
+          if (!mounted) return;
+          setState(
+            () => _uploadProgress = total > 0 ? transferred / total : null,
+          );
+        },
+      );
+      if (artifact == null || !mounted) {
+        throw StateError(strings.imageRejected);
+      }
+      setState(() {
+        _attachmentSessionId = sessionId;
+        _pendingAttachments.add(artifact);
+      });
+      _showNotice(strings.readyWithDraft(artifact.name));
+    } catch (error) {
+      _showError(_errorText(error));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _uploading = false;
+          _uploadProgress = null;
+          _uploadCancellation = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _toggleDictation() async {
+    final strings = AppLocalizations.of(context);
+    if (_speech.isListening) {
+      await _speech.stop();
+      if (mounted) setState(() => _listening = false);
+      return;
+    }
+    try {
+      final available =
+          _speech.isAvailable ||
+          await _speech.initialize(
+            onStatus: (status) {
+              if (mounted) setState(() => _listening = status == 'listening');
+            },
+            onError: (error) {
+              if (!mounted) return;
+              setState(() => _listening = false);
+              _showError(strings.speechFailed(error.errorMsg));
+            },
+            options: [SpeechToText.androidNoBluetooth],
+          );
+      if (!available) {
+        throw StateError(strings.speechUnavailable);
+      }
+      _speechPrefix = _messageController.text.trimRight();
+      if (_speechPrefix.isNotEmpty) _speechPrefix = '$_speechPrefix ';
+      await _speech.listen(
+        onResult: (result) {
+          if (!mounted) return;
+          _messageController.text = '$_speechPrefix${result.recognizedWords}';
+          _messageController.selection = TextSelection.collapsed(
+            offset: _messageController.text.length,
+          );
+        },
+        listenOptions: SpeechListenOptions(
+          onDevice: true,
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+          listenFor: const Duration(seconds: 45),
+          pauseFor: const Duration(seconds: 4),
+        ),
+      );
+      if (mounted) setState(() => _listening = _speech.isListening);
+    } catch (error) {
+      if (mounted) setState(() => _listening = false);
+      _showError(_errorText(error));
+    }
+  }
+
+  Future<void> _offerIncomingShare() async {
+    final strings = AppLocalizations.of(context);
+    final share = _pendingIncomingShare;
+    if (share == null || _shareDialogOpen || !mounted) return;
+    final conversation = ref.read(conversationProvider);
+    final sessionId = conversation.selectedSessionId;
+    if (sessionId == null) {
+      if (!_shareWaitingNoticeShown) {
+        _shareWaitingNoticeShown = true;
+        _showNotice(strings.selectTargetSession);
+      }
+      return;
+    }
+    final session = _findSession(ref.read(sessionListProvider), sessionId);
+    _shareDialogOpen = true;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(strings.addSharedToDraft),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              strings.targetSession(
+                session == null ? sessionId : _sessionTitle(session),
+              ),
+            ),
+            if (conversation.selectedDirectory != null)
+              Text(strings.projectLabel(conversation.selectedDirectory!)),
+            const SizedBox(height: 12),
+            if (share.text != null)
+              Text(share.text!, maxLines: 3, overflow: TextOverflow.ellipsis),
+            for (final file in share.files)
+              Text(
+                '• ${file.name} (${_attachmentBytes(context, file.size)})',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            for (final issue in share.issues)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  issue,
+                  style: const TextStyle(color: AppPalette.amber),
+                ),
+              ),
+            const SizedBox(height: 10),
+            Text(strings.sendSafety),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(strings.discard),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(strings.addToDraft),
+          ),
+        ],
+      ),
+    );
+    _shareDialogOpen = false;
+    if (!mounted) return;
+    if (accepted != true) {
+      _pendingIncomingShare = null;
+      await MobileInputService.instance.discard(share);
+      return;
+    }
+    if (share.files.length > 10 - _pendingAttachments.length) {
+      _showError(strings.sharedAttachmentLimit);
+      return;
+    }
+    final socket = ref.read(wsServiceProvider);
+    if (share.files.isNotEmpty && (socket == null || !socket.isConnected)) {
+      _showError(strings.reconnectSharedFiles);
+      return;
+    }
+    _pendingIncomingShare = null;
+    if (share.text != null) {
+      final current = _messageController.text.trimRight();
+      _messageController.text = current.isEmpty
+          ? share.text!
+          : '$current\n${share.text!}';
+      _messageController.selection = TextSelection.collapsed(
+        offset: _messageController.text.length,
+      );
+    }
+    if (share.files.isEmpty) return;
+    await _uploadSharedFiles(
+      share,
+      socket: socket!,
+      sessionId: sessionId,
+      directory: conversation.selectedDirectory,
+    );
+  }
+
+  Future<void> _uploadSharedFiles(
+    IncomingShare share, {
+    required WebSocketService socket,
+    required String sessionId,
+    required String? directory,
+  }) async {
+    final strings = AppLocalizations.of(context);
+    final total = share.files.fold<int>(0, (sum, file) => sum + file.size);
+    var completed = 0;
+    setState(() {
+      _uploading = true;
+      _uploadProgress = 0;
+      _uploadCancellation = TransferCancellation();
+    });
+    try {
+      for (final file in share.files) {
+        final artifact = await TransferService.uploadLocalFile(
+          socket: socket,
+          sessionId: sessionId,
+          directory: directory,
+          path: file.path,
+          filename: file.name,
+          size: file.size,
+          mime: file.mime,
+          cancellation: _uploadCancellation,
+          onProgress: (transferred, _) {
+            if (!mounted) return;
+            setState(
+              () => _uploadProgress = total > 0
+                  ? (completed + transferred) / total
+                  : null,
+            );
+          },
+        );
+        if (artifact == null) {
+          throw StateError(strings.fileRejected(file.name));
+        }
+        completed += file.size;
+        if (mounted) {
+          setState(() {
+            _attachmentSessionId = sessionId;
+            _pendingAttachments.add(artifact);
+          });
+        }
+        await MobileInputService.instance.discard(IncomingShare(files: [file]));
+      }
+      if (mounted) _showNotice(strings.sharedReady);
+    } catch (error) {
+      _showError(_errorText(error));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _uploading = false;
+          _uploadProgress = null;
+          _uploadCancellation = null;
+        });
+      }
+    }
   }
 
   Future<void> _uploadAttachment({required bool imageOnly}) async {
@@ -386,15 +922,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final conversation = ref.read(conversationProvider);
     final sessionId = conversation.selectedSessionId;
     if (socket == null || !socket.isConnected) {
-      _showError('AtomCLI is offline.');
+      _showError(AppLocalizations.of(context).connectionOffline);
       return;
     }
     if (sessionId == null) {
-      _showError('Create or select a session before attaching a file.');
+      _showError(AppLocalizations.of(context).selectSessionForFile);
       return;
     }
     if (_uploading || _pendingAttachments.length >= 10) {
-      _showError('You can stage up to 10 attachments at a time.');
+      _showError(AppLocalizations.of(context).attachmentLimit);
       return;
     }
     if (_pendingAttachments.isNotEmpty && sessionId != _attachmentSessionId) {
@@ -406,6 +942,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     setState(() {
       _uploading = true;
       _uploadProgress = 0;
+      _uploadCancellation = TransferCancellation();
     });
     try {
       final artifacts = await TransferService.pickAndUpload(
@@ -417,6 +954,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         agent: conversation.selectedAgentName,
         variant: conversation.selectedVariant,
         maxFiles: 10 - _pendingAttachments.length,
+        cancellation: _uploadCancellation,
         onUploaded: (artifact) {
           if (!mounted) return;
           setState(() {
@@ -449,6 +987,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         setState(() {
           _uploading = false;
           _uploadProgress = null;
+          _uploadCancellation = null;
         });
       }
     }
@@ -456,6 +995,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<String?> _chooseNewSessionDirectory(String? initial) async {
     var selected = initial;
+    final strings = AppLocalizations.of(context);
     return showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -471,12 +1011,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 const _SheetHandle(),
                 const SizedBox(height: 18),
                 Text(
-                  'New session',
+                  strings.newSession,
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Choose the machine folder AtomCLI should work in.',
+                  strings.chooseMachineFolder,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 18),
@@ -489,12 +1029,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       color: AppPalette.amber,
                     ),
                     title: Text(
-                      selected?.split('/').lastOrNull ?? 'Choose a folder',
+                      selected?.split('/').lastOrNull ?? strings.chooseFolder,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(
-                      selected ?? 'Browse the directory tree on your machine',
+                      selected ?? strings.browseDirectoryTree,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -513,7 +1053,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     Expanded(
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(sheetContext),
-                        child: const Text('Cancel'),
+                        child: Text(strings.cancel),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -528,7 +1068,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                 Navigator.pop(sheetContext, selected);
                               },
                         icon: const Icon(Icons.add_rounded),
-                        label: const Text('Create session'),
+                        label: Text(strings.createSession),
                       ),
                     ),
                   ],
@@ -578,6 +1118,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
   }
+
+  void _showNotice(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: AppPalette.primarySoft),
+    );
+  }
 }
 
 class _SessionHeader extends StatelessWidget {
@@ -599,67 +1146,91 @@ class _SessionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppPalette.surface,
-      child: InkWell(
-        key: const Key('active-session-header'),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 11, 8, 11),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                connected ? Icons.forum_rounded : Icons.cloud_off_outlined,
-                color: connected ? AppPalette.mint : AppPalette.textMuted,
-                size: 20,
-              ),
-              const SizedBox(width: 11),
-              Expanded(
+    final strings = AppLocalizations.of(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      padding: const EdgeInsets.fromLTRB(8, 7, 6, 7),
+      decoration: BoxDecoration(
+        color: AppPalette.panel,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppPalette.stroke),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: connected
+                  ? AppPalette.mint.withValues(alpha: 0.12)
+                  : AppPalette.elevated,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: Icon(
+              connected ? Icons.forum_rounded : Icons.cloud_off_outlined,
+              color: connected ? AppPalette.mint : AppPalette.textMuted,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: InkWell(
+              key: const Key('active-session-header'),
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       session == null
-                          ? 'No active session'
+                          ? strings.noActiveSession
                           : _sessionTitle(session!),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
+                    const SizedBox(height: 2),
                     Text(
                       session == null
-                          ? '$sessionCount saved sessions'
-                          : '${session!.formattedDate}  ·  tap for history',
+                          ? strings.savedSessions(sessionCount)
+                          : _sessionDate(context, session!),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
                 ),
               ),
-              if (onStop != null)
-                IconButton.filledTonal(
-                  key: const Key('stop-session-button'),
-                  tooltip: 'Stop running agent',
-                  onPressed: onStop,
-                  icon: const Icon(
-                    Icons.stop_rounded,
-                    color: AppPalette.danger,
-                    size: 19,
-                  ),
-                )
-              else if (onRefresh != null)
-                IconButton(
-                  tooltip: 'Reload messages',
-                  onPressed: onRefresh,
-                  icon: const Icon(Icons.refresh_rounded, size: 19),
-                ),
-              const Icon(
-                Icons.unfold_more_rounded,
-                color: AppPalette.textMuted,
-              ),
-            ],
+            ),
           ),
-        ),
+          if (onStop != null)
+            IconButton(
+              key: const Key('stop-session-button'),
+              tooltip: strings.stopRunningAgent,
+              onPressed: onStop,
+              icon: const Icon(
+                Icons.stop_circle_outlined,
+                color: AppPalette.danger,
+                size: 22,
+              ),
+            )
+          else if (onRefresh != null)
+            IconButton(
+              tooltip: strings.reloadMessages,
+              onPressed: onRefresh,
+              icon: const Icon(Icons.refresh_rounded, size: 20),
+            ),
+          IconButton(
+            tooltip: strings.sessionHistory,
+            onPressed: onTap,
+            icon: const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: AppPalette.textMuted,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -670,13 +1241,23 @@ class _WorkflowStrip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final strings = AppLocalizations.of(context);
     final directory = ref.watch(
       conversationProvider.select((state) => state.selectedDirectory),
     );
+    final sessionId = ref.watch(
+      conversationProvider.select((state) => state.selectedSessionId),
+    );
     final allSteps = ref.watch(dagProvider);
-    final steps = directory == null
-        ? allSteps
-        : allSteps.where((step) => step.directory == directory).toList();
+    final steps = sessionId == null
+        ? const <DagStep>[]
+        : allSteps
+              .where(
+                (step) =>
+                    step.sessionId == sessionId &&
+                    (directory == null || step.directory == directory),
+              )
+              .toList();
     if (steps.isEmpty) return const SizedBox.shrink();
     final complete = steps.where((step) => step.status == 'complete').length;
     return Container(
@@ -699,7 +1280,7 @@ class _WorkflowStrip extends ConsumerWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Workflow  $complete/${steps.length}',
+              strings.workflowProgress(complete, steps.length),
               style: Theme.of(context).textTheme.labelLarge,
             ),
           ),
@@ -732,30 +1313,27 @@ class _EmptyConversation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
+            Icon(
               Icons.chat_bubble_outline_rounded,
               color: AppPalette.primary,
               size: 42,
             ),
             const SizedBox(height: 14),
             Text(
-              hasSession
-                  ? 'This session has no messages'
-                  : 'Choose a session or start a new one',
+              hasSession ? strings.noMessages : strings.chooseSession,
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 7),
             Text(
-              hasSession
-                  ? 'Send a message below to begin.'
-                  : 'Your full AtomCLI session history is available here.',
+              hasSession ? strings.sendToBegin : strings.historyAvailable,
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
@@ -766,12 +1344,12 @@ class _EmptyConversation extends StatelessWidget {
                 children: [
                   OutlinedButton(
                     onPressed: onHistory,
-                    child: const Text('Open history'),
+                    child: Text(strings.openHistory),
                   ),
                   const SizedBox(width: 10),
                   FilledButton(
                     onPressed: onCreate,
-                    child: const Text('New session'),
+                    child: Text(strings.newSession),
                   ),
                 ],
               ),
@@ -783,16 +1361,79 @@ class _EmptyConversation extends StatelessWidget {
   }
 }
 
+enum _DeliveryState { idle, sending, accepted, queued, failed }
+
+class _DeliveryPill extends StatelessWidget {
+  final _DeliveryState state;
+
+  const _DeliveryPill({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    final (label, icon, color) = switch (state) {
+      _DeliveryState.sending => (
+        strings.messageSending,
+        Icons.sync_rounded,
+        AppPalette.amber,
+      ),
+      _DeliveryState.accepted => (
+        strings.messageDelivered,
+        Icons.done_rounded,
+        AppPalette.mint,
+      ),
+      _DeliveryState.queued => (
+        strings.messageQueued,
+        Icons.schedule_rounded,
+        AppPalette.amber,
+      ),
+      _DeliveryState.failed => (
+        strings.messageFailed,
+        Icons.error_outline_rounded,
+        AppPalette.danger,
+      ),
+      _DeliveryState.idle => ('', Icons.done_rounded, AppPalette.textMuted),
+    };
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Composer extends ConsumerWidget {
   final TextEditingController controller;
   final bool sending;
+  final _DeliveryState deliveryState;
   final bool uploading;
   final double? uploadProgress;
+  final VoidCallback? onPauseUpload;
   final List<CompanionArtifact> attachments;
   final ValueChanged<CompanionArtifact> onRemoveAttachment;
   final bool connected;
   final VoidCallback onSend;
   final VoidCallback onAttach;
+  final VoidCallback onSpeech;
+  final bool listening;
   final VoidCallback onModel;
   final VoidCallback onAgent;
   final VoidCallback onVariant;
@@ -800,13 +1441,17 @@ class _Composer extends ConsumerWidget {
   const _Composer({
     required this.controller,
     required this.sending,
+    required this.deliveryState,
     required this.uploading,
     required this.uploadProgress,
+    required this.onPauseUpload,
     required this.attachments,
     required this.onRemoveAttachment,
     required this.connected,
     required this.onSend,
     required this.onAttach,
+    required this.onSpeech,
+    required this.listening,
     required this.onModel,
     required this.onAgent,
     required this.onVariant,
@@ -814,12 +1459,66 @@ class _Composer extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final strings = AppLocalizations.of(context);
     final conversation = ref.watch(conversationProvider);
     final models = ref.watch(modelsListProvider);
     ModelInfo? model;
     for (final candidate in models) {
       if (candidate.id == conversation.selectedModelId) model = candidate;
     }
+    void openRuntimeSettings() {
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        backgroundColor: AppPalette.panel,
+        builder: (sheetContext) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.memory_rounded),
+                  title: Text(strings.models),
+                  subtitle: Text(model?.id ?? strings.selectModel),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    onModel();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.psychology_alt_outlined),
+                  title: Text(strings.thinkingEffort),
+                  subtitle: Text(
+                    conversation.selectedVariant?.toUpperCase() ??
+                        strings.defaultLabel,
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    onVariant();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.smart_toy_outlined),
+                  title: Text(strings.agent),
+                  subtitle: Text(
+                    conversation.selectedAgentName ?? strings.defaultLabel,
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    onAgent();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Container(
       padding: EdgeInsets.fromLTRB(
         12,
@@ -849,6 +1548,13 @@ class _Composer extends ConsumerWidget {
                   '${(uploadProgress! * 100).clamp(0, 100).round()}%',
                   style: Theme.of(context).textTheme.labelSmall,
                 ),
+                IconButton(
+                  key: const Key('pause-upload-button'),
+                  tooltip: strings.pauseUpload,
+                  onPressed: onPauseUpload,
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.pause_rounded, size: 18),
+                ),
               ],
             ),
             const SizedBox(height: 9),
@@ -868,93 +1574,121 @@ class _Composer extends ConsumerWidget {
             ),
             const SizedBox(height: 9),
           ],
+          Row(
+            children: [
+              Expanded(
+                child: TextButton.icon(
+                  key: const Key('model-selector'),
+                  onPressed: onModel,
+                  style: TextButton.styleFrom(
+                    alignment: Alignment.centerLeft,
+                    foregroundColor: AppPalette.textSecondary,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  icon: Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 17,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  label: Text(
+                    model == null
+                        ? strings.selectModel
+                        : '${model.name} · ${model.providerName}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+              if (deliveryState != _DeliveryState.idle)
+                _DeliveryPill(state: deliveryState),
+              IconButton(
+                key: const Key('runtime-settings-button'),
+                tooltip: strings.agent,
+                onPressed: openRuntimeSettings,
+                icon: const Icon(Icons.tune_rounded, size: 19),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
           Container(
-            height: 42,
             decoration: BoxDecoration(
               color: AppPalette.panel,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(24),
               border: Border.all(color: AppPalette.stroke),
             ),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
+                IconButton(
+                  key: const Key('attachment-input-button'),
+                  tooltip: strings.attachFile,
+                  onPressed: connected && !sending && !uploading
+                      ? onAttach
+                      : null,
+                  icon: const Icon(Icons.add_rounded),
+                ),
                 Expanded(
-                  child: _RuntimeButton(
-                    key: const Key('model-selector'),
-                    icon: Icons.memory_rounded,
-                    label: model?.name ?? 'Select model',
-                    accent: AppPalette.primary,
-                    onTap: onModel,
+                  child: TextField(
+                    key: const Key('message-input'),
+                    controller: controller,
+                    enabled: connected,
+                    minLines: 1,
+                    maxLines: 5,
+                    textCapitalization: TextCapitalization.sentences,
+                    decoration: InputDecoration(
+                      filled: false,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                      hintText: connected
+                          ? strings.messageAtomcli
+                          : strings.waitingForAtomcli,
+                    ),
                   ),
                 ),
-                const VerticalDivider(width: 1),
-                _RuntimeButton(
-                  key: const Key('variant-selector'),
-                  icon: Icons.psychology_alt_outlined,
-                  label:
-                      conversation.selectedVariant?.toUpperCase() ?? 'DEFAULT',
-                  accent: AppPalette.amber,
-                  onTap: onVariant,
+                IconButton(
+                  key: const Key('speech-input-button'),
+                  tooltip: listening
+                      ? strings.stopDictation
+                      : strings.startDictation,
+                  onPressed: connected && !sending && !uploading
+                      ? onSpeech
+                      : null,
+                  color: listening ? AppPalette.amber : null,
+                  icon: Icon(
+                    listening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                  ),
                 ),
-                const VerticalDivider(width: 1),
-                _RuntimeButton(
-                  key: const Key('agent-selector'),
-                  icon: Icons.smart_toy_outlined,
-                  label: conversation.selectedAgentName ?? 'Agent',
-                  accent: AppPalette.mint,
-                  onTap: onAgent,
+                Padding(
+                  padding: const EdgeInsets.only(right: 4, bottom: 4),
+                  child: IconButton.filled(
+                    key: const Key('send-message-button'),
+                    tooltip: strings.send,
+                    onPressed: connected && !sending && !uploading
+                        ? onSend
+                        : null,
+                    icon: sending
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppPalette.background,
+                            ),
+                          )
+                        : const Icon(Icons.arrow_upward_rounded),
+                  ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 9),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              IconButton(
-                tooltip: 'Attach file',
-                onPressed: connected && !sending && !uploading
-                    ? onAttach
-                    : null,
-                icon: const Icon(Icons.add_circle_outline_rounded),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: TextField(
-                  key: const Key('message-input'),
-                  controller: controller,
-                  enabled: connected && !sending,
-                  minLines: 1,
-                  maxLines: 5,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    hintText: connected
-                        ? 'Message AtomCLI'
-                        : 'Waiting for AtomCLI',
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filled(
-                key: const Key('send-message-button'),
-                tooltip: 'Send',
-                onPressed: connected && !sending && !uploading ? onSend : null,
-                icon: sending
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppPalette.background,
-                        ),
-                      )
-                    : const Icon(Icons.arrow_upward_rounded),
-              ),
-            ],
           ),
         ],
       ),
     );
   }
 }
+
+enum _MobileInputAction { camera, image, annotate, file }
 
 class _DraftAttachment extends ConsumerWidget {
   final CompanionArtifact artifact;
@@ -964,6 +1698,7 @@ class _DraftAttachment extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final strings = AppLocalizations.of(context);
     final socket = ref.watch(wsServiceProvider);
     Uri? thumbnail;
     if (artifact.kind == 'image' && socket != null) {
@@ -1014,14 +1749,14 @@ class _DraftAttachment extends ConsumerWidget {
                   style: Theme.of(context).textTheme.labelMedium,
                 ),
                 Text(
-                  _attachmentBytes(artifact.size),
+                  _attachmentBytes(context, artifact.size),
                   style: Theme.of(context).textTheme.labelSmall,
                 ),
               ],
             ),
           ),
           IconButton(
-            tooltip: 'Remove attachment',
+            tooltip: strings.removeAttachment,
             visualDensity: VisualDensity.compact,
             onPressed: onRemove,
             icon: const Icon(Icons.close_rounded, size: 17),
@@ -1032,52 +1767,170 @@ class _DraftAttachment extends ConsumerWidget {
   }
 }
 
-String _attachmentBytes(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+String _attachmentBytes(BuildContext context, int bytes) {
+  final format = NumberFormat(
+    '#,##0.#',
+    Localizations.localeOf(context).toString(),
+  );
+  if (bytes < 1024) return '${format.format(bytes)} B';
+  if (bytes < 1024 * 1024) return '${format.format(bytes / 1024)} KB';
+  return '${format.format(bytes / (1024 * 1024))} MB';
 }
 
-class _RuntimeButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color accent;
-  final VoidCallback onTap;
+String _sessionDate(BuildContext context, SessionInfo session) =>
+    DateFormat.yMd(
+      Localizations.localeOf(context).toString(),
+    ).add_Hm().format(DateTime.fromMillisecondsSinceEpoch(session.updated));
 
-  const _RuntimeButton({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.accent,
-    required this.onTap,
+class _WideSessionPane extends StatefulWidget {
+  final List<SessionInfo> sessions;
+  final String? selectedId;
+  final bool connected;
+  final bool creating;
+  final VoidCallback onCreate;
+  final ValueChanged<String> onSelect;
+  final ValueChanged<SessionInfo> onDelete;
+
+  const _WideSessionPane({
+    required this.sessions,
+    required this.selectedId,
+    required this.connected,
+    required this.creating,
+    required this.onCreate,
+    required this.onSelect,
+    required this.onDelete,
   });
 
   @override
+  State<_WideSessionPane> createState() => _WideSessionPaneState();
+}
+
+class _WideSessionPaneState extends State<_WideSessionPane> {
+  String _query = '';
+
+  @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    final query = _query.trim().toLowerCase();
+    final sessions = widget.sessions
+        .where(
+          (session) =>
+              query.isEmpty ||
+              session.title.toLowerCase().contains(query) ||
+              session.id.toLowerCase().contains(query) ||
+              session.directory.toLowerCase().contains(query),
+        )
+        .toList();
     return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: Row(
-            children: [
-              Icon(icon, color: accent, size: 16),
-              const SizedBox(width: 6),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 150),
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
+      key: const Key('tablet-session-pane'),
+      color: AppPalette.surface,
+      child: SafeArea(
+        top: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 9),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      strings.sessionHistory,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                   ),
-                ),
+                  Text(
+                    '${widget.sessions.length}',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+              child: TextField(
+                key: const Key('tablet-session-search'),
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  hintText: strings.searchSessions,
+                  isDense: true,
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+            ),
+            Expanded(
+              child: sessions.isEmpty
+                  ? _PickerEmpty(strings.noMatchingSessions)
+                  : ListView.separated(
+                      itemCount: sessions.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final session = sessions[index];
+                        final selected = session.id == widget.selectedId;
+                        return ListTile(
+                          selected: selected,
+                          selectedTileColor: AppPalette.primarySoft,
+                          leading: Icon(
+                            session.isActive
+                                ? Icons.motion_photos_on_rounded
+                                : Icons.forum_outlined,
+                            color: session.isActive ? AppPalette.mint : null,
+                          ),
+                          title: Text(
+                            _sessionTitle(session),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            _sessionDate(context, session),
+                            maxLines: 1,
+                          ),
+                          trailing: PopupMenuButton<String>(
+                            tooltip: strings.sessionOptions,
+                            onSelected: (_) => widget.onDelete(session),
+                            itemBuilder: (_) => [
+                              PopupMenuItem(
+                                value: 'delete',
+                                enabled: !session.isActive,
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.delete_outline_rounded,
+                                      color: AppPalette.danger,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(strings.deleteSession),
+                                  ],
+                                ),
+                              ),
+                            ],
+                            icon: Icon(
+                              selected
+                                  ? Icons.check_rounded
+                                  : Icons.more_horiz_rounded,
+                            ),
+                          ),
+                          onTap: () => widget.onSelect(session.id),
+                        );
+                      },
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: FilledButton.icon(
+                onPressed: widget.connected && !widget.creating
+                    ? widget.onCreate
+                    : null,
+                icon: widget.creating
+                    ? const SizedBox.square(
+                        dimension: 17,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add_comment_outlined),
+                label: Text(strings.newSession),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1092,6 +1945,14 @@ class _SessionPicker extends StatefulWidget {
 
   @override
   State<_SessionPicker> createState() => _SessionPickerState();
+}
+
+class _SessionPickerResult {
+  final String? sessionId;
+  final SessionInfo? delete;
+
+  const _SessionPickerResult.select(this.sessionId) : delete = null;
+  const _SessionPickerResult.delete(this.delete) : sessionId = null;
 }
 
 class _SessionPickerState extends State<_SessionPicker> {
@@ -1109,12 +1970,12 @@ class _SessionPickerState extends State<_SessionPicker> {
         )
         .toList();
     return _PickerFrame(
-      title: 'Session history',
+      title: AppLocalizations.of(context).sessionHistory,
       count: widget.sessions.length,
-      searchHint: 'Search sessions',
+      searchHint: AppLocalizations.of(context).searchSessions,
       onSearch: (value) => setState(() => _query = value),
       child: sessions.isEmpty
-          ? const _PickerEmpty('No matching sessions')
+          ? _PickerEmpty(AppLocalizations.of(context).noMatchingSessions)
           : ListView.separated(
               itemCount: sessions.length,
               separatorBuilder: (_, _) => const Divider(height: 1),
@@ -1138,19 +1999,55 @@ class _SessionPickerState extends State<_SessionPicker> {
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${session.formattedDate}  ·  ${session.directory.split('/').last}\n${session.directory}',
+                    '${_sessionDate(context, session)}  ·  ${session.directory.split('/').last}\n${session.directory}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  trailing: session.isActive
-                      ? const Text(
-                          'RUNNING',
-                          style: TextStyle(color: AppPalette.mint, fontSize: 9),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (session.isActive)
+                        Text(
+                          AppLocalizations.of(context).running,
+                          style: const TextStyle(
+                            color: AppPalette.mint,
+                            fontSize: 9,
+                          ),
                         )
-                      : selected
-                      ? const Icon(Icons.check_rounded)
-                      : null,
-                  onTap: () => Navigator.pop(context, session.id),
+                      else if (selected)
+                        const Icon(Icons.check_rounded),
+                      PopupMenuButton<String>(
+                        key: ValueKey('session-options-${session.id}'),
+                        tooltip: AppLocalizations.of(context).sessionOptions,
+                        onSelected: (_) => Navigator.pop(
+                          context,
+                          _SessionPickerResult.delete(session),
+                        ),
+                        itemBuilder: (_) => [
+                          PopupMenuItem(
+                            value: 'delete',
+                            enabled: !session.isActive,
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.delete_outline_rounded,
+                                  color: AppPalette.danger,
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  AppLocalizations.of(context).deleteSession,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  onTap: () => Navigator.pop(
+                    context,
+                    _SessionPickerResult.select(session.id),
+                  ),
                 );
               },
             ),
@@ -1176,6 +2073,7 @@ class _ModelPickerState extends State<_ModelPicker> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final query = _query.toLowerCase();
     final preferences = CompanionPreferences.instance;
     final filtered = widget.models
@@ -1192,34 +2090,34 @@ class _ModelPickerState extends State<_ModelPicker> {
                   (model.family?.toLowerCase().contains(query) ?? false)),
         )
         .toList();
-    final sections = _modelSections(filtered, preferences);
+    final sections = _modelSections(filtered, preferences, strings);
     return _PickerFrame(
-      title: 'Models',
+      title: strings.models,
       count: widget.models.length,
-      searchHint: 'Search model, provider or family',
+      searchHint: strings.searchModels,
       onSearch: (value) => setState(() => _query = value),
       filters: [
         FilterChip(
           selected: _freeOnly,
           onSelected: (value) => setState(() => _freeOnly = value),
           avatar: const Icon(Icons.savings_outlined, size: 15),
-          label: const Text('Free'),
+          label: Text(strings.free),
         ),
         FilterChip(
           selected: _reasoningOnly,
           onSelected: (value) => setState(() => _reasoningOnly = value),
           avatar: const Icon(Icons.psychology_alt_outlined, size: 15),
-          label: const Text('Reasoning'),
+          label: Text(strings.reasoning),
         ),
         FilterChip(
           selected: _favoritesOnly,
           onSelected: (value) => setState(() => _favoritesOnly = value),
           avatar: const Icon(Icons.star_outline_rounded, size: 15),
-          label: const Text('Favorites'),
+          label: Text(strings.favorites),
         ),
       ],
       child: filtered.isEmpty
-          ? const _PickerEmpty('No connected models were returned by AtomCLI')
+          ? _PickerEmpty(strings.noModels)
           : ListView(
               padding: const EdgeInsets.only(bottom: 24),
               children: [
@@ -1255,6 +2153,7 @@ class _ModelPickerState extends State<_ModelPicker> {
   List<(String, List<ModelInfo>)> _modelSections(
     List<ModelInfo> models,
     CompanionPreferences preferences,
+    AppLocalizations strings,
   ) {
     final byId = {for (final model in models) model.id: model};
     final used = <String>{};
@@ -1266,9 +2165,9 @@ class _ModelPickerState extends State<_ModelPicker> {
 
     final result = <(String, List<ModelInfo>)>[];
     final recent = take(preferences.recentModels);
-    if (recent.isNotEmpty) result.add(('Recent', recent));
+    if (recent.isNotEmpty) result.add((strings.recent, recent));
     final favorites = take(preferences.favoriteModels);
-    if (favorites.isNotEmpty) result.add(('Favorites', favorites));
+    if (favorites.isNotEmpty) result.add((strings.favorites, favorites));
 
     final providers = <String, List<ModelInfo>>{};
     for (final model in models.where((model) => used.add(model.id))) {
@@ -1312,6 +2211,7 @@ class _ModelRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     return Material(
       color: selected ? AppPalette.primarySoft : Colors.transparent,
       child: InkWell(
@@ -1361,17 +2261,17 @@ class _ModelRow extends StatelessWidget {
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                         if (model.free)
-                          const Text(
-                            'FREE',
-                            style: TextStyle(
+                          Text(
+                            strings.freeBadge,
+                            style: const TextStyle(
                               color: AppPalette.mint,
                               fontSize: 9,
                             ),
                           ),
                         if (model.reasoning)
-                          const Text(
-                            'THINK',
-                            style: TextStyle(
+                          Text(
+                            strings.thinkBadge,
+                            style: const TextStyle(
                               color: AppPalette.amber,
                               fontSize: 9,
                             ),
@@ -1387,7 +2287,9 @@ class _ModelRow extends StatelessWidget {
                 ),
               ),
               IconButton(
-                tooltip: favorite ? 'Remove favorite' : 'Add favorite',
+                tooltip: favorite
+                    ? strings.removeFavorite
+                    : strings.addFavorite,
                 onPressed: onFavorite,
                 icon: Icon(
                   favorite ? Icons.star_rounded : Icons.star_outline_rounded,
@@ -1395,7 +2297,7 @@ class _ModelRow extends StatelessWidget {
                 ),
               ),
               if (selected)
-                const Icon(Icons.check_rounded, color: AppPalette.primary),
+                Icon(Icons.check_rounded, color: AppPalette.primary),
             ],
           ),
         ),
@@ -1412,6 +2314,7 @@ class _VariantPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final levels = ['__default__', ...variants];
     return SafeArea(
       child: Padding(
@@ -1423,12 +2326,12 @@ class _VariantPicker extends StatelessWidget {
             const _SheetHandle(),
             const SizedBox(height: 18),
             Text(
-              'Thinking effort',
+              strings.thinkingEffort,
               style: Theme.of(context).textTheme.headlineSmall,
             ),
             const SizedBox(height: 5),
             Text(
-              'Only levels supported by the selected model are shown.',
+              strings.thinkingEffortBody,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 13),
@@ -1444,11 +2347,11 @@ class _VariantPicker extends StatelessWidget {
                 ),
                 title: Text(
                   level == '__default__'
-                      ? 'Model default'
+                      ? strings.modelDefault
                       : level.toUpperCase(),
                 ),
                 subtitle: level == '__default__'
-                    ? const Text('Use the provider model default')
+                    ? Text(strings.providerDefault)
                     : null,
                 onTap: () => Navigator.pop(context, level),
               ),
@@ -1473,21 +2376,27 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
   String? _error;
   bool _loading = true;
   bool _showHidden = false;
+  bool _initialized = false;
 
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
     _load(widget.initialPath);
   }
 
   Future<void> _load(String? path) async {
+    final strings = AppLocalizations.of(context);
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final ws = ref.read(wsServiceProvider);
-      if (ws == null) throw StateError('AtomCLI is offline');
+      if (ws == null) {
+        throw StateError(strings.connectionOffline);
+      }
       final listing = await ws.listDirectories(path: path);
       if (!mounted) return;
       setState(() => _listing = listing);
@@ -1495,7 +2404,9 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
       if (path != null) {
         try {
           final ws = ref.read(wsServiceProvider);
-          if (ws == null) throw StateError('AtomCLI is offline');
+          if (ws == null) {
+            throw StateError(strings.connectionOffline);
+          }
           final fallback = await ws.listDirectories();
           if (mounted) setState(() => _listing = fallback);
         } catch (fallbackError) {
@@ -1511,6 +2422,7 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final listing = _listing;
     final directories =
         listing?.directories
@@ -1529,7 +2441,7 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
               child: Row(
                 children: [
                   IconButton(
-                    tooltip: 'Parent folder',
+                    tooltip: strings.parentFolder,
                     onPressed: listing?.parent == null || _loading
                         ? null
                         : () => _load(listing!.parent),
@@ -1540,13 +2452,13 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Working directory',
+                          strings.workingDirectory,
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                         Text(
                           listing?.path ??
                               widget.initialPath ??
-                              'Loading machine folders',
+                              strings.loadingFolders,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.bodySmall
@@ -1557,8 +2469,8 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
                   ),
                   IconButton(
                     tooltip: _showHidden
-                        ? 'Hide hidden folders'
-                        : 'Show hidden folders',
+                        ? strings.hideHiddenFolders
+                        : strings.showHiddenFolders,
                     onPressed: () => setState(() => _showHidden = !_showHidden),
                     icon: Icon(
                       _showHidden
@@ -1567,6 +2479,7 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
                     ),
                   ),
                   IconButton(
+                    tooltip: strings.close,
                     onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.close_rounded),
                   ),
@@ -1603,7 +2516,7 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
                   : _error != null
                   ? _PickerEmpty(_error!)
                   : directories.isEmpty
-                  ? const _PickerEmpty('This folder has no child folders')
+                  ? _PickerEmpty(strings.noChildFolders)
                   : ListView.separated(
                       itemCount: directories.length,
                       separatorBuilder: (_, _) =>
@@ -1638,7 +2551,7 @@ class _DirectoryPickerState extends ConsumerState<_DirectoryPicker> {
                     ? null
                     : () => Navigator.pop(context, listing.path),
                 icon: const Icon(Icons.check_rounded),
-                label: const Text('Use this folder'),
+                label: Text(strings.useFolder),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size.fromHeight(48),
                 ),
@@ -1676,10 +2589,10 @@ class _AgentPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _PickerFrame(
-      title: 'Agent',
+      title: AppLocalizations.of(context).agent,
       count: agents.length,
       child: agents.isEmpty
-          ? const _PickerEmpty('No primary agents were returned by AtomCLI')
+          ? _PickerEmpty(AppLocalizations.of(context).noAgents)
           : ListView.separated(
               itemCount: agents.length,
               separatorBuilder: (_, _) => const Divider(height: 1),
@@ -1724,6 +2637,7 @@ class _PickerFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     return SafeArea(
       child: SizedBox(
         height: MediaQuery.sizeOf(context).height * 0.78,
@@ -1749,6 +2663,7 @@ class _PickerFrame extends StatelessWidget {
                     ),
                   ),
                   IconButton(
+                    tooltip: strings.close,
                     onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.close_rounded),
                   ),
@@ -1807,23 +2722,365 @@ class _PickerEmpty extends StatelessWidget {
   }
 }
 
-class _MessageCard extends StatelessWidget {
-  final ConversationMessage message;
+class _SubAgentWorkCard extends StatefulWidget {
+  final List<SubAgentInfo> agents;
 
-  const _MessageCard({super.key, required this.message});
+  const _SubAgentWorkCard({super.key, required this.agents});
+
+  @override
+  State<_SubAgentWorkCard> createState() => _SubAgentWorkCardState();
+}
+
+class _SubAgentWorkCardState extends State<_SubAgentWorkCard> {
+  final _activityController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollToLatest();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SubAgentWorkCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final before = oldWidget.agents.fold<int>(
+      0,
+      (count, agent) => count + agent.activities.length,
+    );
+    final after = widget.agents.fold<int>(
+      0,
+      (count, agent) => count + agent.activities.length,
+    );
+    if (before != after) _scrollToLatest();
+  }
+
+  @override
+  void dispose() {
+    _activityController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToLatest() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_activityController.hasClients) return;
+      _activityController.animateTo(
+        _activityController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    final activities = [
+      for (final agent in widget.agents)
+        for (final activity in agent.activities)
+          (agent: agent, activity: activity),
+    ]..sort((a, b) => a.activity.time.compareTo(b.activity.time));
+    final running = widget.agents
+        .where((agent) => agent.status == 'running')
+        .length;
+    final failed = widget.agents.any((agent) => agent.status == 'failed');
+    final accent = failed
+        ? AppPalette.danger
+        : running > 0
+        ? AppPalette.mint
+        : AppPalette.primary;
+
+    return Semantics(
+      container: true,
+      label: strings.subAgentActivity,
+      child: Container(
+        key: const Key('sub-agent-work-card'),
+        margin: const EdgeInsets.only(bottom: 13),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.sizeOf(context).width * 0.92,
+        ),
+        decoration: BoxDecoration(
+          color: AppPalette.panel,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: accent.withValues(alpha: 0.38)),
+          boxShadow: [
+            BoxShadow(
+              color: accent.withValues(alpha: 0.06),
+              blurRadius: 24,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(17),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 12, 10),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: Icon(
+                        Icons.account_tree_rounded,
+                        color: accent,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            strings.subAgentActivity,
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  color: AppPalette.text,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            widget.agents
+                                .map((agent) => agent.name)
+                                .join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    _AgentWorkStatus(
+                      label: running > 0
+                          ? strings.running
+                          : failed
+                          ? strings.statusFail
+                          : strings.statusDone,
+                      color: accent,
+                      pulse: running > 0,
+                    ),
+                  ],
+                ),
+              ),
+              Divider(
+                height: 1,
+                color: AppPalette.stroke.withValues(alpha: 0.8),
+              ),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 236),
+                child: activities.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(
+                          children: [
+                            SizedBox.square(
+                              dimension: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.8,
+                                color: accent,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                strings.waitingForAgentActivity,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : Scrollbar(
+                        controller: _activityController,
+                        thumbVisibility: activities.length > 4,
+                        child: ListView.builder(
+                          key: const Key('sub-agent-activity-list'),
+                          controller: _activityController,
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.symmetric(vertical: 7),
+                          itemCount: activities.length,
+                          itemBuilder: (context, index) {
+                            final entry = activities[index];
+                            return _SubAgentActivityRow(
+                              agent: entry.agent,
+                              activity: entry.activity,
+                              isLast: index == activities.length - 1,
+                            );
+                          },
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentWorkStatus extends StatelessWidget {
+  final String label;
+  final Color color;
+  final bool pulse;
+
+  const _AgentWorkStatus({
+    required this.label,
+    required this.color,
+    required this.pulse,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 9,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.7,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SubAgentActivityRow extends StatelessWidget {
+  final SubAgentInfo agent;
+  final SubAgentActivity activity;
+  final bool isLast;
+
+  const _SubAgentActivityRow({
+    required this.agent,
+    required this.activity,
+    required this.isLast,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (activity.status) {
+      'error' => AppPalette.danger,
+      'completed' => AppPalette.mint,
+      'pending' => AppPalette.textMuted,
+      _ => AppPalette.primary,
+    };
+    final icon = switch (activity.kind) {
+      'tool' => Icons.build_rounded,
+      'command' => Icons.terminal_rounded,
+      _ => Icons.notes_rounded,
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 7, 14, 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 26,
+            height: 26,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 14, color: color),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  activity.label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppPalette.text,
+                    fontWeight: isLast ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+                if (activity.output?.trim().isNotEmpty == true) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    activity.output!.replaceAll(RegExp(r'\s+'), ' ').trim(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (widgetAgentLabel(agent, context).isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    widgetAgentLabel(agent, context),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppPalette.textMuted,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String widgetAgentLabel(SubAgentInfo value, BuildContext context) {
+    return value.name;
+  }
+}
+
+class _MessageCard extends StatelessWidget {
+  final ConversationMessage message;
+  final VoidCallback onSelectModel;
+  final bool hideAgentTool;
+
+  const _MessageCard({
+    super.key,
+    required this.message,
+    required this.onSelectModel,
+    this.hideAgentTool = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final user = message.role == 'user';
     final visibleParts = message.parts
         .where(
-          (part) =>
-              part.type == 'tool' ||
-              part.type == 'file' ||
-              part.text.trim().isNotEmpty,
+          (part) => part.type == 'tool'
+              ? !(hideAgentTool && part.tool == 'agent')
+              : part.type == 'file' || part.text.trim().isNotEmpty,
         )
         .toList();
-    if (visibleParts.isEmpty) return const SizedBox.shrink();
+    if (visibleParts.isEmpty && message.failure == null) {
+      return const SizedBox.shrink();
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 13),
       child: Column(
@@ -1834,7 +3091,7 @@ class _MessageCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
             child: Text(
-              '${user ? 'You' : 'AtomCLI'}  ${DateFormat('HH:mm').format(message.time)}',
+              '${user ? strings.you : 'AtomCLI'}  ${DateFormat.Hm(Localizations.localeOf(context).toString()).format(message.time)}',
               style: TextStyle(
                 color: user ? AppPalette.primary : AppPalette.mint,
                 fontSize: 10,
@@ -1877,7 +3134,7 @@ class _MessageCard extends StatelessWidget {
                       fontSize: 14,
                       height: 1.45,
                     ),
-                    code: const TextStyle(
+                    code: TextStyle(
                       color: AppPalette.primary,
                       backgroundColor: AppPalette.background,
                       fontFamily: 'monospace',
@@ -1890,10 +3147,122 @@ class _MessageCard extends StatelessWidget {
                   ),
                 ),
               ),
+          if (message.failure != null)
+            _AssistantFailureCard(
+              failure: message.failure!,
+              modelId: message.modelId,
+              onSelectModel: onSelectModel,
+            ),
         ],
       ),
     );
   }
+}
+
+class _AssistantFailureCard extends StatelessWidget {
+  final ConversationFailure failure;
+  final String? modelId;
+  final VoidCallback onSelectModel;
+
+  const _AssistantFailureCard({
+    required this.failure,
+    required this.modelId,
+    required this.onSelectModel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    return Container(
+      key: const Key('assistant-failure-card'),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * 0.92,
+      ),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppPalette.danger.withValues(alpha: 0.08),
+        border: Border.all(color: AppPalette.danger.withValues(alpha: 0.45)),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.error_outline_rounded,
+                size: 19,
+                color: AppPalette.danger,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  strings.responseFailedTitle,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: AppPalette.text,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (failure.statusCode != null)
+                Text(
+                  'HTTP ${failure.statusCode}',
+                  style: const TextStyle(
+                    color: AppPalette.danger,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          Text(
+            _conversationFailureText(strings, failure),
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: AppPalette.text,
+              height: 1.4,
+            ),
+          ),
+          if (modelId?.isNotEmpty == true) ...[
+            const SizedBox(height: 8),
+            SelectableText(
+              modelId!,
+              key: const Key('assistant-failure-model'),
+              style: const TextStyle(
+                color: AppPalette.textMuted,
+                fontSize: 11,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Text(
+            strings.responseFailureHint,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 7),
+          TextButton.icon(
+            key: const Key('failure-select-model'),
+            onPressed: onSelectModel,
+            icon: const Icon(Icons.tune_rounded, size: 18),
+            label: Text(strings.selectAnotherModel),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _conversationFailureText(
+  AppLocalizations strings,
+  ConversationFailure failure,
+) {
+  return switch (failure.statusCode) {
+    401 || 403 => strings.providerAuthenticationRequired,
+    402 => strings.providerCreditsRequired,
+    429 => strings.providerRateLimited,
+    _ => failure.message,
+  };
 }
 
 class _FilePart extends ConsumerWidget {
@@ -1903,6 +3272,7 @@ class _FilePart extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final strings = AppLocalizations.of(context);
     final image = part.mime?.startsWith('image/') == true;
     final socket = ref.watch(wsServiceProvider);
     final artifact = ref
@@ -1968,14 +3338,14 @@ class _FilePart extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      part.filename ?? 'Attachment',
+                      part.filename ?? strings.attachment,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.labelLarge,
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      part.mime ?? 'File attached to this session',
+                      part.mime ?? strings.fileAttached,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
@@ -1996,6 +3366,7 @@ class _ToolPart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     final state = part.toolState ?? const <String, dynamic>{};
     final status = state['status'] as String? ?? 'pending';
     final input = state['input'];
@@ -2004,11 +3375,11 @@ class _ToolPart extends StatelessWidget {
     final title = state['title'] as String?;
     final command = input is Map ? input['command']?.toString() : null;
     final detail = [
-      if (input != null) 'INPUT\n${_prettyValue(input)}',
+      if (input != null) '${strings.inputLabel}\n${_prettyValue(input)}',
       if (output != null && output.toString().isNotEmpty)
-        'OUTPUT\n${_prettyValue(output)}',
+        '${strings.outputLabel}\n${_prettyValue(output)}',
       if (error != null && error.toString().isNotEmpty)
-        'ERROR\n${_prettyValue(error)}',
+        '${strings.errorLabel}\n${_prettyValue(error)}',
     ].join('\n\n');
     final color = switch (status) {
       'completed' => AppPalette.mint,
@@ -2038,7 +3409,7 @@ class _ToolPart extends StatelessWidget {
           size: 18,
         ),
         title: Text(
-          title ?? part.tool ?? 'tool',
+          title ?? part.tool ?? strings.toolLabel,
           style: Theme.of(context).textTheme.labelLarge,
         ),
         subtitle: command == null
@@ -2057,9 +3428,9 @@ class _ToolPart extends StatelessWidget {
         ),
         children: [
           if (detail.isEmpty)
-            const Align(
+            Align(
               alignment: Alignment.centerLeft,
-              child: Text('No command details were returned.'),
+              child: Text(AppLocalizations.of(context).noCommandDetails),
             )
           else
             Container(
@@ -2129,7 +3500,10 @@ class _ReasoningPart extends StatelessWidget {
           color: AppPalette.textMuted,
           size: 18,
         ),
-        title: const Text('Reasoning', style: TextStyle(fontSize: 12)),
+        title: Text(
+          AppLocalizations.of(context).reasoning,
+          style: const TextStyle(fontSize: 12),
+        ),
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),

@@ -1,0 +1,5 @@
+"CFBundleDisplayName" = "AtomCLI Companion";
+"NSCameraUsageDescription" = "AtomCLI uses the camera only when you choose to attach a photo to a session.";
+"NSMicrophoneUsageDescription" = "AtomCLI uses the microphone only while you request speech-to-text input.";
+"NSSpeechRecognitionUsageDescription" = "AtomCLI converts requested speech input into an editable message draft.";
+"NSPhotoLibraryUsageDescription" = "AtomCLI accesses only images you choose to attach or annotate.";

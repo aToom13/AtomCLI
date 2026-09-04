@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+enum AppAccent { azure, violet, coral }
+
 abstract final class AppPalette {
   static const background = Color(0xFF080B0F);
   static const surface = Color(0xFF0E141B);
@@ -7,19 +9,34 @@ abstract final class AppPalette {
   static const elevated = Color(0xFF19232E);
   static const stroke = Color(0xFF263442);
   static const strokeStrong = Color(0xFF38516A);
-  static const primary = Color(0xFF63AFFF);
-  static const primarySoft = Color(0xFF173A59);
+  static final accentSelection = ValueNotifier<AppAccent>(AppAccent.azure);
+  static Color get primary => switch (accentSelection.value) {
+    AppAccent.azure => const Color(0xFF63AFFF),
+    AppAccent.violet => const Color(0xFFA78BFA),
+    AppAccent.coral => const Color(0xFFFF8A70),
+  };
+  static Color get primarySoft => switch (accentSelection.value) {
+    AppAccent.azure => const Color(0xFF173A59),
+    AppAccent.violet => const Color(0xFF312552),
+    AppAccent.coral => const Color(0xFF512A27),
+  };
   static const mint = Color(0xFF55D6BE);
   static const amber = Color(0xFFFFBE55);
   static const danger = Color(0xFFFF6B76);
   static const text = Color(0xFFF2F6FA);
   static const textSecondary = Color(0xFFA9B7C5);
-  static const textMuted = Color(0xFF6D7C8B);
+  // Keeps small secondary labels above WCAG AA contrast on `panel`.
+  static const textMuted = Color(0xFF7C8B9B);
+
+  static void selectAccent(AppAccent accent) {
+    if (accentSelection.value == accent) return;
+    accentSelection.value = accent;
+  }
 }
 
 abstract final class AppTheme {
   static ThemeData get dark {
-    const scheme = ColorScheme.dark(
+    final scheme = ColorScheme.dark(
       primary: AppPalette.primary,
       onPrimary: Color(0xFF04111E),
       secondary: AppPalette.mint,
@@ -40,6 +57,8 @@ abstract final class AppTheme {
       dividerColor: AppPalette.stroke,
       splashColor: AppPalette.primary.withValues(alpha: 0.08),
       highlightColor: AppPalette.primary.withValues(alpha: 0.04),
+      focusColor: AppPalette.primary.withValues(alpha: 0.22),
+      materialTapTargetSize: MaterialTapTargetSize.padded,
       textTheme: const TextTheme(
         displaySmall: TextStyle(
           color: AppPalette.text,
@@ -128,7 +147,7 @@ abstract final class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: AppPalette.primary, width: 1.5),
+          borderSide: BorderSide(color: AppPalette.primary, width: 1.5),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -141,6 +160,15 @@ abstract final class AppTheme {
             borderRadius: BorderRadius.circular(14),
           ),
         ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(minimumSize: const Size(0, 48)),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(minimumSize: const Size(0, 48)),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(minimumSize: const Size.square(48)),
       ),
       navigationBarTheme: NavigationBarThemeData(
         height: 68,

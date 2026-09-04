@@ -5,6 +5,17 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val atomcliReleaseKeystore = System.getenv("ATOMCLI_ANDROID_KEYSTORE_PATH")
+val atomcliReleaseStorePassword = System.getenv("ATOMCLI_ANDROID_KEYSTORE_PASSWORD")
+val atomcliReleaseKeyAlias = System.getenv("ATOMCLI_ANDROID_KEY_ALIAS")
+val atomcliReleaseKeyPassword = System.getenv("ATOMCLI_ANDROID_KEY_PASSWORD")
+val hasAtomcliReleaseSigning = listOf(
+    atomcliReleaseKeystore,
+    atomcliReleaseStorePassword,
+    atomcliReleaseKeyAlias,
+    atomcliReleaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "io.atomcli.companion"
     compileSdk = flutter.compileSdkVersion
@@ -30,9 +41,27 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasAtomcliReleaseSigning) {
+            create("atomcliRelease") {
+                storeFile = file(atomcliReleaseKeystore!!)
+                storePassword = atomcliReleaseStorePassword
+                keyAlias = atomcliReleaseKeyAlias
+                keyPassword = atomcliReleaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            // Local release builds remain installable for device testing. The
+            // GitHub release workflow requires and injects the persistent
+            // AtomCLI signing identity so published APKs stay upgradeable.
+            signingConfig = if (hasAtomcliReleaseSigning) {
+                signingConfigs.getByName("atomcliRelease")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/companion",
-  "version": "3.4.2-beta",
+  "version": "3.4.2",
   "type": "module",
   "private": true,
   "main": "src/index.ts",
@@ -8,8 +8,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "protocol:generate": "bun run script/generate-protocol.ts",
+    "protocol:check": "bun run script/generate-protocol.ts --check",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun run protocol:check && bun test"
   },
   "devDependencies": {
     "@types/bun": "1.3.4",

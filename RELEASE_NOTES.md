@@ -1,15 +1,41 @@
-# AtomCLI v3.4.2-beta
+# AtomCLI v3.4.2
 
-This is an early developer preview of the redesigned Android Companion. It is intended for development devices and trusted local networks. Interfaces and wire behavior may still change before a stable release.
+AtomCLI 3.4.2 improves installation, updates, browser portability, agent execution, and the redesigned Android Companion. Companion remains a beta product under active development: its mobile UI, protocol capabilities, background behavior, and platform integrations may change in later releases. Local-network access is intended for trusted networks; Tailscale remains the recommended remote path.
 
-## Android Companion Developer Preview
+## Installation and Updates
+
+- Reworked the Bash and PowerShell installers with dependency discovery, automatic repair where supported, progress bars, activity indicators, checksum verification, and clearer failure recovery.
+- Added the same dependency and browser-health repair path to `atomcli update`; retained `atomcli upgrade` as a compatible alias and added explicit-version updates.
+- Added `atomcli setup --check` for a non-mutating health probe and `atomcli setup --yes` for unattended dependency repair.
+- Kept release archives, generated binaries, local configuration, runtime state, and signing material outside tracked source.
+
+## Browser Reliability
+
+- Fixed Playwright discovery in compiled `atomcli` binaries so an installation is rechecked after repair instead of remaining stuck behind a failed import cache.
+- Added release-matched Playwright installation and a real Chromium launch probe rather than treating file presence as a successful browser setup.
+- Added dependency handling and diagnostics for Arch/CachyOS, Debian/Ubuntu, and Fedora/RHEL families, plus the portable Windows and macOS installation path.
+- Improved headless fallback and Chromium channel selection for systems without an active X11 or Wayland display.
+
+## Long-running Task Continuity
+
+- Added session-scoped taskflow checkpoints after every five tool calls or five minutes, evaluated on the next active model turn without waking idle sessions.
+- Included a bounded snapshot of recorded step states and an explicit stale-status reminder when work continues without a taskflow update.
+- Kept reminders advisory: AtomCLI never marks a task complete merely because tools ran or time elapsed.
+- Reset reminder cadence when a plan starts or clears and kept reviewer, checker, explorer, and planner sessions outside the progress-injection path.
+
+## Android Companion Beta
 
 - Rebuilt the mobile experience around Deck, Sessions, Inbox, and Link instead of decorative placeholder screens.
+- Reorganized the interface into clearer control, chat, request, file, and settings surfaces; added selectable accent themes and adaptive layouts for larger screens.
 - Added live session history, streamed assistant text, reasoning state, tool state, sub-agent activity, task progress, and session status.
+- Kept sub-agent activity inside a bounded, internally scrolling message card instead of allowing long-running work to grow the entire conversation indefinitely.
 - Added searchable recent sessions, working-directory selection from a folder tree, and continuation of existing AtomCLI conversations from Android.
+- Scoped task, chat, cache, transfer, and connection state by machine, project, process, and session so concurrent AtomCLI instances do not merge their work.
 - Added model selection with recent and favorite ordering, provider grouping, free-text filtering, capability filters, reasoning variants, and persistence of the last used model, variant, agent, and directory.
 - Added expandable tool details so command input, output, errors, and completion state can be inspected from the phone.
-- Added session abort controls and explicit Android-origin context in prompts sent from the phone.
+- Added optimistic message delivery states, failure recovery, conversation deletion, session abort controls, and explicit Android-origin context in prompts sent from the phone.
+- Added a risk-proportionate Companion execution profile to reduce unnecessary sub-agent fan-out and verification latency for routine mobile requests while retaining stronger review for sensitive work.
+- Fixed Android 16 Live Update eligibility by declaring promoted-notification access and posting every active primary task through the public promoted-ongoing contract used by Samsung Now Bar. Promoted status, task title, progress, and lock-screen placement were validated on a Samsung SM-S938B running Android 16 and One UI 8.5.
 
 ## Remote Approvals
 
@@ -23,6 +49,7 @@ This is an early developer preview of the redesigned Android Companion. It is in
 
 - Added PC-to-phone sharing through the `companion_send` tool, including image previews, download, open, and Android share actions.
 - Added phone-to-session uploads for images and arbitrary files, with multi-file staging, removable attachments, upload progress, and model-compatibility fallback messaging.
+- Replaced fragile single-request uploads with resumable chunks, authoritative offsets, idempotent ticket recovery, app-private staging, and whole-file checksum validation to prevent picker handoff timeouts from losing the transfer.
 - Added `companion_preview` for managed development servers, discoverable LAN and Tailscale URLs, captured logs, browser launch, and remote stop controls.
 - Added machine-grouped received items in Deck, persistent empty states, bounded transfer history, and 24-hour artifact retention.
 - Added transfer notifications for shared artifacts and preview activity where Android permits them.
@@ -46,13 +73,15 @@ This is an early developer preview of the redesigned Android Companion. It is in
 
 ## Platform Scope
 
-- Android is the current companion delivery target; iOS remains out of scope for this preview.
+- Android is the current companion delivery target; iOS remains outside this release's supported scope.
+- Added a signed Android Companion APK to the GitHub release assets and checksum manifest.
+- Companion is distributed as beta software even though AtomCLI 3.4.2 uses stable CLI version metadata.
 - Synced AtomCLI workspace versions and the Flutter application version through one release-version command.
-- The `-beta` suffix is prerelease metadata, so `v3.4.2-beta` publishes as a GitHub prerelease.
+- Version `3.4.2` is stable release metadata; the exact release tag is `v3.4.2`.
 
 ## Validation
 
 - AtomBase and workspace typechecks passed.
 - Deterministic Bun test suites and focused companion security, transfer, bridge, permission, and Flutter widget tests passed.
 - Flutter analysis and tests passed.
-- Release metadata was checked against the exact `v3.4.2-beta` tag contract.
+- Release metadata was checked against the exact `v3.4.2` tag contract.

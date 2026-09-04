@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="live_task_fallback_title">Etkin AtomCLI görevi</string>
+    <string name="live_task_fallback_text">Çalışıyor</string>
+    <string name="live_tasks_channel">Canlı AtomCLI görevleri</string>
+    <string name="live_tasks_description">Etkin AtomCLI görevinin anlık ilerlemesi</string>
+    <string name="open_atomcli">Görevleri göster</string>
+</resources>

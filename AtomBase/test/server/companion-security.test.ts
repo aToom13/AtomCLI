@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { generateKeyPairSync, sign } from "node:crypto"
-import { CompanionAuth } from "@atomcli/companion"
+import { CompanionAudit, CompanionAuth } from "@atomcli/companion"
 import { CompanionProtocol } from "@/server/companion-protocol"
 import { Server } from "@/server/server"
 import { Question } from "@/interfaces/question"
@@ -38,6 +38,17 @@ function messages(socket: WebSocket) {
 }
 
 describe("companion authentication", () => {
+  test("allows automatically assigned companion listeners to coexist", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const first = Server.listenCompanion({ port: 0, directory: tmp.path })
+    const second = Server.listenCompanion({ port: 0, directory: tmp.path })
+    try {
+      expect(first.port).not.toBe(second.port)
+    } finally {
+      await Promise.all([first.stop(true), second.stop(true)])
+    }
+  })
+
   test("does not silently move a companion listener to another port", async () => {
     await using tmp = await tmpdir({ git: true })
     const first = Server.listenCompanion({ port: 0, directory: tmp.path })
@@ -55,9 +66,27 @@ describe("companion authentication", () => {
     const keyPair = generateKeyPairSync("ed25519")
     const publicDer = keyPair.publicKey.export({ format: "der", type: "spki" })
     const deviceName = `test-device-${crypto.randomUUID()}`
-    CompanionAuth.registerDevice(deviceName, publicDer.subarray(publicDer.length - 32).toString("base64"))
-
+    const deviceId = `test-installation-${crypto.randomUUID()}`
     const server = Server.listenCompanion({ port: 0, directory: tmp.path })
+    const pairResponse = await fetch(`http://127.0.0.1:${server.port}/companion/pair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairing_token: CompanionAuth.issueToken(),
+        public_key: publicDer.subarray(publicDer.length - 32).toString("base64"),
+        device_name: deviceName,
+        device_id: deviceId,
+      }),
+    })
+    expect(pairResponse.status).toBe(200)
+    expect(await pairResponse.json()).toMatchObject({
+      status: "ok",
+      machine_id: expect.any(String),
+      machine_name: expect.any(String),
+      process_id: expect.any(String),
+      bridge_id: expect.any(String),
+      project_directory: tmp.path,
+    })
     const socket = new WebSocket(`ws://127.0.0.1:${server.port}/companion/ws`)
     const next = messages(socket)
 
@@ -68,6 +97,22 @@ describe("companion authentication", () => {
       })
 
       const challenge = await next((value) => value.type === "auth_challenge")
+      expect(challenge).toMatchObject({
+        protocol: 3,
+        protocol_version: 3,
+        protocol_min: 2,
+      })
+      expect(Array.isArray(challenge.capabilities)).toBe(true)
+      expect(challenge.capabilities).toContain("missions.control")
+      expect(challenge.identity).toMatchObject({
+        machine_id: expect.any(String),
+        process_id: expect.any(String),
+        bridge_id: expect.any(String),
+      })
+      const peerIdentity = challenge.identity as Record<string, unknown>
+      expect(new Set([peerIdentity.machine_id, peerIdentity.process_id, peerIdentity.bridge_id]).size).toBe(3)
+      expect(peerIdentity.machine_name).toBeUndefined()
+      expect(peerIdentity.project_directory).toBeUndefined()
       socket.send(JSON.stringify({ type: "request_snapshot" }))
       expect((await next((value) => value.error === "authentication_required")).error).toBe("authentication_required")
 
@@ -76,6 +121,9 @@ describe("companion authentication", () => {
         challenge: challenge.challenge,
         timestamp: Date.now(),
         device_name: deviceName,
+        device_id: deviceId,
+        protocol_version: 3,
+        capabilities: ["core.sync", "identity.v1", "actions.signed"],
       }
       authentication.signature = sign(
         null,
@@ -85,6 +133,27 @@ describe("companion authentication", () => {
       socket.send(JSON.stringify(authentication))
 
       const authenticated = await next((value) => value.type === "auth_ok")
+      expect(authenticated).toMatchObject({
+        protocol_version: 3,
+        capabilities: ["core.sync", "identity.v1", "actions.signed"],
+        identity: {
+          ...peerIdentity,
+          machine_name: expect.any(String),
+          project_directory: tmp.path,
+        },
+      })
+      socket.send(
+        JSON.stringify({
+          type: "sync",
+          last_seq_id: 0,
+          bridge_epoch: crypto.randomUUID(),
+        }),
+      )
+      expect(await next((value) => value.type === "resync_required")).toMatchObject({
+        reason: "epoch_mismatch",
+        snapshot_follows: true,
+        bridge_epoch: authenticated.bridge_epoch,
+      })
       const modelList = await next((value) => value.type === "models_list")
       expect(Array.isArray(modelList.models)).toBe(true)
       const firstModel = (modelList.models as Array<Record<string, unknown>>)[0]
@@ -176,6 +245,22 @@ describe("companion authentication", () => {
       expect(replayed.status).toBe("error")
       expect(replayed.error).toBe("replayed_message")
 
+      const idempotentRetry: Record<string, unknown> = {
+        ...command,
+        counter: 2,
+        timestamp: Date.now(),
+      }
+      idempotentRetry.signature = sign(
+        null,
+        Buffer.from(CompanionProtocol.canonicalPayload(idempotentRetry)),
+        keyPair.privateKey,
+      ).toString("base64")
+      socket.send(JSON.stringify(idempotentRetry))
+      const cached = await next(
+        (value) => value.type === "action_result" && value.client_request_id === commandRequestID,
+      )
+      expect(cached).toEqual(unsupported)
+
       const pendingAnswer = Instance.provide({
         directory: tmp.path,
         fn: () =>
@@ -220,7 +305,7 @@ describe("companion authentication", () => {
         directory: tmp.path,
         client_request_id: questionRequestID,
         connection_id: authenticated.connection_id,
-        counter: 2,
+        counter: 3,
         timestamp: Date.now(),
         device_name: deviceName,
       }
@@ -250,7 +335,7 @@ describe("companion authentication", () => {
         directory: tmp.path,
         client_request_id: uploadRequestID,
         connection_id: authenticated.connection_id,
-        counter: 3,
+        counter: 4,
         timestamp: Date.now(),
         device_name: deviceName,
       }
@@ -273,12 +358,62 @@ describe("companion authentication", () => {
       expect(uploadResponse.status).toBe(200)
       expect(await uploadResponse.json()).toMatchObject({ status: "ok", artifact: { title: "phone.png" } })
 
+      const pauseRequestID = crypto.randomUUID()
+      const pause: Record<string, unknown> = {
+        type: "pause_session",
+        session_id: historySession.id,
+        directory: tmp.path,
+        client_request_id: pauseRequestID,
+        connection_id: authenticated.connection_id,
+        counter: 5,
+        timestamp: Date.now(),
+        device_name: deviceName,
+      }
+      pause.signature = sign(null, Buffer.from(CompanionProtocol.canonicalPayload(pause)), keyPair.privateKey).toString(
+        "base64",
+      )
+      socket.send(JSON.stringify(pause))
+      expect(
+        await next((value) => value.type === "action_result" && value.client_request_id === pauseRequestID),
+      ).toMatchObject({ action: "pause_session", status: "ok", id: historySession.id })
+      expect(CompanionAudit.recent().at(-1)).toMatchObject({
+        action: "pause_session",
+        outcome: "ok",
+        deviceId,
+      })
+
+      const deleteRequestID = crypto.randomUUID()
+      const deleteSession: Record<string, unknown> = {
+        type: "delete_session",
+        session_id: historySession.id,
+        directory: tmp.path,
+        client_request_id: deleteRequestID,
+        connection_id: authenticated.connection_id,
+        counter: 6,
+        timestamp: Date.now(),
+        device_name: deviceName,
+      }
+      deleteSession.signature = sign(
+        null,
+        Buffer.from(CompanionProtocol.canonicalPayload(deleteSession)),
+        keyPair.privateKey,
+      ).toString("base64")
+      socket.send(JSON.stringify(deleteSession))
+      expect(
+        await next((value) => value.type === "action_result" && value.client_request_id === deleteRequestID),
+      ).toMatchObject({ action: "delete_session", status: "ok", id: historySession.id })
+      expect(CompanionAudit.recent().at(-1)).toMatchObject({
+        action: "delete_session",
+        outcome: "ok",
+        deviceId,
+      })
+
       const requestID = crypto.randomUUID()
       const unpair: Record<string, unknown> = {
         type: "unpair",
         client_request_id: requestID,
         connection_id: authenticated.connection_id,
-        counter: 4,
+        counter: 7,
         timestamp: Date.now(),
         device_name: deviceName,
       }

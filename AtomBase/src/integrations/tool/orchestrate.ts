@@ -20,6 +20,7 @@ import { WorkflowStore } from "@/core/orchestration/workflow-store"
 import { OrchestrationGraph } from "@/core/orchestration/graph"
 import { WorkflowBlackboard } from "@/core/orchestration/blackboard"
 import { ReviewPolicy } from "@/core/verification/review-policy"
+import { SessionExecutionProfile } from "@/core/session/execution-profile"
 import { ReviewV2 } from "@/core/verification/review-v2"
 import { TaskProfile } from "@/core/routing/task-profile"
 import { SubAgentRuntime } from "./subagent-runtime"
@@ -375,10 +376,18 @@ function ownershipOverlaps(left: string, right: string) {
 }
 
 /** Pure investigation does not need a second agent to repeat the same read. */
-function requiresTaskQA(task: TaskNode, editedFileCount: number, editedFiles: string[] = []): boolean {
+function requiresTaskQA(
+  task: TaskNode,
+  editedFileCount: number,
+  editedFiles: string[] = [],
+  profile: SessionExecutionProfile.Name = "standard",
+): boolean {
   if (task.agent === "reviewer" || task.agent === "checker") return false
   if (editedFileCount === 0) return false
-  return ReviewPolicy.requiresIndependentReview("adaptive", { editedFiles, prompt: task.prompt })
+  return ReviewPolicy.requiresIndependentReview(profile === "companion-fast" ? "fast" : "adaptive", {
+    editedFiles,
+    prompt: task.prompt,
+  })
 }
 
 async function modelTemporaryAvailability(reference: ModelReference) {
@@ -638,12 +647,13 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         // here used to erase the user's task list on every agent creation.
         if (workflow.ownsTaskflowUI) {
           try {
-            await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-            await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
+            await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID, workflowId })
+            await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID, workflowId })
             for (const task of tasks) {
               const deps = task.dependsOn.length > 0 ? ` (needs: ${task.dependsOn.join(", ")})` : ""
               await Bus.publish(TuiEvent.ChainAddStep, {
                 stepId: task.id,
+                workflowId,
                 name: `${task.id}`,
                 description: `@${task.agent} [${task.category}]${deps}: ${task.prompt.slice(0, 80)}`,
                 agentType: task.agent,
@@ -651,7 +661,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 sessionID: ctx.sessionID,
               })
             }
-            await Bus.publish(TuiEvent.ChainUpdateStep, { status: "pending", sessionID: ctx.sessionID })
+            await Bus.publish(TuiEvent.ChainUpdateStep, {
+              status: "pending",
+              sessionID: ctx.sessionID,
+              workflowId,
+            })
           } catch {
             /* TUI may not be active */
           }
@@ -872,6 +886,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       stepIndex: stepIdx,
                       status: "running",
                       sessionID: ctx.sessionID,
+                      workflowId: workflow.id,
                     })
                   }
                 } catch {
@@ -955,6 +970,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                         stepIndex: stepIdx,
                         status: "complete",
                         sessionID: ctx.sessionID,
+                        workflowId: workflow.id,
                       })
                     }
                   } catch {
@@ -1043,6 +1059,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                         parts: promptParts,
                         permissions,
                         description: `[${task.category}] ${task.id}`,
+                        parentStepId: task.id,
                         sessionId: existingSessionId ?? undefined,
                         title: `[${task.category}] ${task.id} (@${task.agent})`,
                         // primary_tools = tools reserved for primary agents — deny them
@@ -1088,7 +1105,14 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       const editedFiles = isolationPreview?.changedFiles.length
                         ? isolationPreview.changedFiles.map((file) => path.join(isolation.parentRoot, file))
                         : trackedEditedFiles
-                      if (!requiresTaskQA(task, editedFiles.length, editedFiles)) {
+                      if (
+                        !requiresTaskQA(
+                          task,
+                          editedFiles.length,
+                          editedFiles,
+                          SessionExecutionProfile.get(ctx.sessionID),
+                        )
+                      ) {
                         await completeTask(spawnResult, attempt, "not-needed")
                         continue
                       }
@@ -1302,6 +1326,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                           stepIndex: stepIdx,
                           status: "failed",
                           sessionID: ctx.sessionID,
+                          workflowId: workflow.id,
                         })
                       }
                     } catch {
@@ -1338,7 +1363,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             // Clear Chain UI on finish
             if (ownsTaskflowUI) {
               try {
-                await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+                await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID, workflowId: workflow.id })
               } catch {
                 /* TUI may not be active */
               }
@@ -1553,7 +1578,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
             await checkpoint(workflow)
             if (workflow.ownsTaskflowUI && !HarnessState.hasActivePlan(ctx.sessionID)) {
               try {
-                await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+                await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID, workflowId: workflow.id })
               } catch {
                 /* TUI may not be active */
               }

@@ -12,6 +12,7 @@
 - After changing a route under `src/server/`, regenerate the SDK from this directory with `bun run dev generate > ../libs/sdk/js/openapi.json`, then run `cd ../libs/sdk/js && bun run build`. Never hand-edit `../libs/sdk/js/src/v2/gen/`.
 - Releases are triggered only by `v*` tags. No release helper is tracked; maintainer-specific helpers must remain ignored. Never push a commit or tag, publish a package, or add generated release output without explicit user authorization.
 - Root `.atomcli/` and `.claude/` contain tracked release assets. Their local config, credentials, package manifests/locks, dependencies, plans, runs, and session state must stay ignored.
+- User-visible changes must update their canonical documentation and the relevant root `.atomcli/skills/atomcli-guide/references/` page when that bundled guide covers the topic.
 
 ## Validation before finishing
 
@@ -24,6 +25,9 @@ MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test
 
 # Single test file
 bun test test/tool/tool.test.ts
+
+# Bundled AtomCLI guide
+MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json bun test test/skill/atomcli-guide.test.ts
 ```
 
 ## Repo-specific conventions
@@ -36,6 +40,7 @@ bun test test/tool/tool.test.ts
 - **Tool `execute()` return**: must be `{ title: string, output: string, metadata: M }`. The `metadata.truncated` field gates the automatic truncation wrapper.
 - **Agent permission defaults**: `*.env` and `*.env.*` files are denied by default (read) except `*.env.example`. `question` tool is denied by default for subagents.
 - **Orchestrate workflow**: always plan first (`action="plan"`), then execute (`action="execute"`) with the returned `workflowId`. Sub-agents always deny `todowrite`, `todoread`, and `task`.
+- **Companion listener port**: automatic selection prefers 4096 and then uses an available port; explicit `--companion-port` or `server.companionPort` fails on collision.
 
 ## Important locations
 
@@ -49,6 +54,7 @@ bun test test/tool/tool.test.ts
 | `test/preload.ts`                       | Test env setup — XDG dirs, provider key cleanup              |
 | `test/tool/fixtures/`                   | Test fixtures; `models-api.json` required for provider tests |
 | `script/build.ts`                       | Cross-platform binary build; copies `../.atomcli/` into dist |
+| `../.atomcli/skills/atomcli-guide/`     | Bundled product and contributor guidance                     |
 
 Before release preparation, run `git ls-files -ci --exclude-standard` from the repository root. It must produce no output; a tracked file must never be hidden by an ignore rule.
 
@@ -67,3 +73,4 @@ Before release preparation, run `git ls-files -ci --exclude-standard` from the r
 - `privatemode-ai` is a runtime mock alias. Do not remove it.
 - Edit tool uses a 9-replacer fallback chain for fuzzy matching. Failures throw; they do not silently no-op. If `oldString` matches multiple locations, you must add more surrounding context.
 - `bun run build` runs `rm -rf dist` unconditionally. Never store files in `dist/`.
+- Concurrent AtomCLI processes may expose different automatic Companion ports. Always publish and persist the actual bound port; never assume every process owns 4096.

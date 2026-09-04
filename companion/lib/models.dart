@@ -106,6 +106,8 @@ class TodoItem {
 
 /// A DAG step from the orchestrator.
 class DagStep {
+  final String? stepId;
+  final String? workflowId;
   final String name;
   final String description;
   final String
@@ -117,6 +119,8 @@ class DagStep {
   final List<TodoItem> todos;
 
   const DagStep({
+    this.stepId,
+    this.workflowId,
     required this.name,
     required this.description,
     required this.status,
@@ -130,6 +134,8 @@ class DagStep {
   factory DagStep.fromJson(Map<String, dynamic> json) {
     final rawTodos = json['todos'] as List? ?? [];
     return DagStep(
+      stepId: json['stepId'] as String?,
+      workflowId: json['workflowId'] as String?,
       name: json['name'] as String,
       description: json['description'] as String,
       status: json['status'] as String? ?? 'pending',
@@ -145,6 +151,8 @@ class DagStep {
 
   DagStep copyWith({String? status, List<TodoItem>? todos}) {
     return DagStep(
+      stepId: stepId,
+      workflowId: workflowId,
       name: name,
       description: description,
       status: status ?? this.status,
@@ -273,43 +281,246 @@ class DirectoryListing {
 class SubAgentInfo {
   final String sessionId;
   final String? parentSessionId;
+  final String? parentStepId;
+  final String? directory;
   final String agentType;
   final String name;
   final String status; // 'running' | 'done' | 'failed'
   final int startedAt;
   final int? finishedAt;
+  final List<SubAgentActivity> activities;
 
   SubAgentInfo({
     required this.sessionId,
     this.parentSessionId,
+    this.parentStepId,
+    this.directory,
     required this.agentType,
     required this.name,
     required this.status,
     required this.startedAt,
     this.finishedAt,
+    this.activities = const [],
   });
 
   factory SubAgentInfo.fromJson(Map<String, dynamic> json) {
     return SubAgentInfo(
       sessionId: json['sessionID'] as String,
       parentSessionId: json['parentSessionID'] as String?,
+      parentStepId: json['parentStepId'] as String?,
+      directory: json['directory'] as String?,
       agentType: json['agentType'] as String? ?? 'unknown',
       name: json['name'] as String? ?? json['agentType'] as String? ?? 'Agent',
       status: json['status'] as String? ?? 'running',
       startedAt: json['startedAt'] as int? ?? 0,
       finishedAt: json['finishedAt'] as int?,
+      activities: (json['activities'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (item) =>
+                SubAgentActivity.fromJson(Map<String, dynamic>.from(item)),
+          )
+          .toList(),
     );
   }
 
-  SubAgentInfo copyWith({String? status, int? finishedAt}) => SubAgentInfo(
+  SubAgentInfo copyWith({
+    String? status,
+    int? finishedAt,
+    List<SubAgentActivity>? activities,
+  }) => SubAgentInfo(
     sessionId: sessionId,
     parentSessionId: parentSessionId,
+    parentStepId: parentStepId,
+    directory: directory,
     agentType: agentType,
     name: name,
     status: status ?? this.status,
     startedAt: startedAt,
     finishedAt: finishedAt ?? this.finishedAt,
+    activities: activities ?? this.activities,
   );
+}
+
+class SubAgentActivity {
+  final String kind;
+  final String label;
+  final String status;
+  final String? output;
+  final int time;
+
+  const SubAgentActivity({
+    required this.kind,
+    required this.label,
+    required this.status,
+    this.output,
+    required this.time,
+  });
+
+  factory SubAgentActivity.fromJson(Map<String, dynamic> json) {
+    return SubAgentActivity(
+      kind: json['kind'] as String? ?? 'transcript',
+      label: json['label'] as String? ?? '',
+      status: json['status'] as String? ?? 'running',
+      output: json['output'] as String?,
+      time: json['time'] as int? ?? 0,
+    );
+  }
+}
+
+enum MissionStatus { waiting, running, paused, completed, failed }
+
+/// A display-ready workflow assembled from chain, child-agent and decision
+/// events. This is deliberately derived state: reconnect snapshots remain the
+/// source of truth and the phone never invents a second workflow database.
+class MissionInfo {
+  final String id;
+  final String? workflowId;
+  final String? sessionId;
+  final String? directory;
+  final List<DagStep> steps;
+  final List<SubAgentInfo> agents;
+  final int pendingDecisions;
+  final MissionStatus status;
+
+  const MissionInfo({
+    required this.id,
+    this.workflowId,
+    this.sessionId,
+    this.directory,
+    required this.steps,
+    required this.agents,
+    required this.pendingDecisions,
+    required this.status,
+  });
+
+  int get completedSteps =>
+      steps.where((step) => step.status == 'complete').length;
+
+  static List<MissionInfo> assemble({
+    required List<DagStep> steps,
+    required List<SubAgentInfo> agents,
+    required List<PendingPermission> permissions,
+    required List<PendingQuestion> questions,
+  }) {
+    final groupedSteps = <String, List<DagStep>>{};
+    for (final step in steps) {
+      final key = _missionKey(
+        workflowId: step.workflowId,
+        sessionId: step.sessionId,
+        directory: step.directory,
+      );
+      groupedSteps.putIfAbsent(key, () => []).add(step);
+    }
+
+    final missions = <MissionInfo>[];
+    final assignedAgents = <String>{};
+    for (final entry in groupedSteps.entries) {
+      final missionSteps = entry.value;
+      final first = missionSteps.first;
+      final missionAgents = agents.where((agent) {
+        final stepMatches =
+            agent.parentStepId == null ||
+            missionSteps.any((step) => step.stepId == agent.parentStepId);
+        final matches =
+            stepMatches &&
+            agent.parentSessionId == first.sessionId &&
+            (agent.directory == null ||
+                first.directory == null ||
+                agent.directory == first.directory);
+        if (matches) assignedAgents.add(agent.sessionId);
+        return matches;
+      }).toList();
+      missions.add(
+        _build(
+          id: entry.key,
+          workflowId: first.workflowId,
+          sessionId: first.sessionId,
+          directory: first.directory,
+          steps: missionSteps,
+          agents: missionAgents,
+          permissions: permissions,
+          questions: questions,
+        ),
+      );
+    }
+
+    for (final agent in agents) {
+      if (assignedAgents.contains(agent.sessionId)) continue;
+      final sessionId = agent.parentSessionId ?? agent.sessionId;
+      missions.add(
+        _build(
+          id: _missionKey(sessionId: sessionId, directory: agent.directory),
+          sessionId: sessionId,
+          directory: agent.directory,
+          steps: const [],
+          agents: [agent],
+          permissions: permissions,
+          questions: questions,
+        ),
+      );
+    }
+    return missions;
+  }
+
+  static MissionInfo _build({
+    required String id,
+    String? workflowId,
+    String? sessionId,
+    String? directory,
+    required List<DagStep> steps,
+    required List<SubAgentInfo> agents,
+    required List<PendingPermission> permissions,
+    required List<PendingQuestion> questions,
+  }) {
+    final relatedSessions = <String>{
+      ?sessionId,
+      ...agents.map((agent) => agent.sessionId),
+    };
+    final decisions =
+        permissions
+            .where((item) => relatedSessions.contains(item.sessionId))
+            .length +
+        questions
+            .where((item) => relatedSessions.contains(item.sessionId))
+            .length;
+    final states = [
+      ...steps.map((step) => step.status),
+      ...agents.map((agent) => agent.status),
+    ];
+    final status =
+        states.any((state) => state == 'failed' || state == 'stopped')
+        ? MissionStatus.failed
+        : states.any((state) => state == 'paused')
+        ? MissionStatus.paused
+        : decisions > 0
+        ? MissionStatus.waiting
+        : states.any(_isRunning)
+        ? MissionStatus.running
+        : states.isNotEmpty &&
+              states.every((state) => state == 'complete' || state == 'done')
+        ? MissionStatus.completed
+        : MissionStatus.waiting;
+    return MissionInfo(
+      id: id,
+      workflowId: workflowId,
+      sessionId: sessionId,
+      directory: directory,
+      steps: steps,
+      agents: agents,
+      pendingDecisions: decisions,
+      status: status,
+    );
+  }
+
+  static bool _isRunning(String status) =>
+      status == 'running' || status == 'in_progress' || status.endsWith('ing');
+
+  static String _missionKey({
+    String? workflowId,
+    String? sessionId,
+    String? directory,
+  }) => workflowId ?? '${directory ?? ''}\u0000${sessionId ?? 'unassigned'}';
 }
 
 /// An option for a select-type question.
@@ -397,7 +608,9 @@ class CompanionArtifact {
   final String name;
   final String mime;
   final int size;
+  final String? sha256;
   final DateTime createdAt;
+  final DateTime? expiresAt;
   final String? sessionId;
   final String downloadPath;
 
@@ -410,7 +623,9 @@ class CompanionArtifact {
     required this.name,
     required this.mime,
     required this.size,
+    this.sha256,
     required this.createdAt,
+    this.expiresAt,
     this.sessionId,
     required this.downloadPath,
   });
@@ -425,9 +640,13 @@ class CompanionArtifact {
         name: json['name'] as String? ?? 'file',
         mime: json['mime'] as String? ?? 'application/octet-stream',
         size: json['size'] as int? ?? 0,
+        sha256: json['sha256'] as String?,
         createdAt: DateTime.fromMillisecondsSinceEpoch(
           json['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
         ),
+        expiresAt: json['expiresAt'] is int
+            ? DateTime.fromMillisecondsSinceEpoch(json['expiresAt'] as int)
+            : null,
         sessionId: json['sessionID'] as String?,
         downloadPath: json['downloadPath'] as String? ?? '',
       );
@@ -446,6 +665,7 @@ class CompanionPreview {
   final String directory;
   final String? sessionId;
   final int? exitCode;
+  final DateTime? accessExpiresAt;
 
   const CompanionPreview({
     required this.id,
@@ -460,6 +680,7 @@ class CompanionPreview {
     required this.directory,
     this.sessionId,
     this.exitCode,
+    this.accessExpiresAt,
   });
 
   factory CompanionPreview.fromJson(Map<String, dynamic> json) =>
@@ -480,6 +701,11 @@ class CompanionPreview {
         directory: json['directory'] as String? ?? '',
         sessionId: json['sessionID'] as String?,
         exitCode: json['exitCode'] as int?,
+        accessExpiresAt: json['accessExpiresAt'] is int
+            ? DateTime.fromMillisecondsSinceEpoch(
+                json['accessExpiresAt'] as int,
+              )
+            : null,
       );
 }
 
@@ -544,6 +770,73 @@ class ConversationPart {
   }
 }
 
+class ConversationFailure {
+  final String code;
+  final String message;
+  final int? statusCode;
+  final bool retryable;
+
+  const ConversationFailure({
+    required this.code,
+    required this.message,
+    this.statusCode,
+    this.retryable = false,
+  });
+
+  factory ConversationFailure.fromJson(Object? raw) {
+    if (raw is String) {
+      return ConversationFailure(
+        code: 'Error',
+        message: _boundedFailureText(raw),
+      );
+    }
+    final error = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : const <String, dynamic>{};
+    final data = error['data'] is Map
+        ? Map<String, dynamic>.from(error['data'] as Map)
+        : const <String, dynamic>{};
+    final status = data['statusCode'] ?? error['statusCode'];
+    return ConversationFailure(
+      code: error['name'] as String? ?? error['code'] as String? ?? 'Error',
+      message: _boundedFailureText(
+        data['message'] as String? ??
+            error['message'] as String? ??
+            'Unknown provider error',
+      ),
+      statusCode: status is num ? status.toInt() : null,
+      retryable:
+          data['isRetryable'] as bool? ??
+          error['isRetryable'] as bool? ??
+          false,
+    );
+  }
+}
+
+String _boundedFailureText(String value) {
+  final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.length <= 500) return normalized;
+  return '${normalized.substring(0, 497)}...';
+}
+
+String? _conversationModelId(Map<String, dynamic> json) {
+  final model = json['model'];
+  if (model is String && model.isNotEmpty) return model;
+  if (model is Map) {
+    final providerId = model['providerID'] as String?;
+    final modelId = model['modelID'] as String?;
+    if (providerId?.isNotEmpty == true && modelId?.isNotEmpty == true) {
+      return '$providerId/$modelId';
+    }
+  }
+  final providerId = json['providerID'] as String?;
+  final modelId = json['modelID'] as String?;
+  if (providerId?.isNotEmpty == true && modelId?.isNotEmpty == true) {
+    return '$providerId/$modelId';
+  }
+  return null;
+}
+
 class ConversationMessage {
   final String id;
   final String sessionId;
@@ -553,6 +846,7 @@ class ConversationMessage {
   final String? modelId;
   final String? agent;
   final String? variant;
+  final ConversationFailure? failure;
 
   const ConversationMessage({
     required this.id,
@@ -563,6 +857,7 @@ class ConversationMessage {
     this.modelId,
     this.agent,
     this.variant,
+    this.failure,
   });
 
   factory ConversationMessage.fromJson(Map<String, dynamic> json) {
@@ -589,9 +884,12 @@ class ConversationMessage {
                 const {'text', 'reasoning', 'tool', 'file'}.contains(part.type),
           )
           .toList(),
-      modelId: json['model'] as String?,
+      modelId: _conversationModelId(json),
       agent: json['agent'] as String?,
       variant: json['variant'] as String?,
+      failure: json['error'] == null
+          ? null
+          : ConversationFailure.fromJson(json['error']),
     );
   }
 
@@ -602,6 +900,7 @@ class ConversationMessage {
     String? modelId,
     String? agent,
     String? variant,
+    ConversationFailure? failure,
   }) {
     return ConversationMessage(
       id: id,
@@ -612,6 +911,7 @@ class ConversationMessage {
       modelId: modelId ?? this.modelId,
       agent: agent ?? this.agent,
       variant: variant ?? this.variant,
+      failure: failure ?? this.failure,
     );
   }
 }

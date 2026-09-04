@@ -67,6 +67,14 @@ export interface ReviewVerdict {
 export interface SessionHarness {
   /** TaskFlow state machine */
   steps: TaskFlowStep[]
+  /** Cadence and revision state for bounded taskflow prompt reminders. */
+  taskflowReminder?: {
+    lastToolCallCount?: number
+    lastReminderAt: number
+    lastReminderRevision: number
+    statusRevision: number
+    lastStatusUpdateAt: number
+  }
   /** Files modified via edit/write tools in this session */
   editedFiles: Set<string>
   /** Ring buffer of last N bash executions */
@@ -80,6 +88,8 @@ export interface SessionHarness {
 const MAX_EXECUTION_LOGS = 5
 const MAX_LOG_BYTES = 10_000
 const MAX_COMMAND_BYTES = 2_000
+export const TASKFLOW_REMINDER_TOOL_INTERVAL = 5
+export const TASKFLOW_REMINDER_INTERVAL_MS = 5 * 60 * 1_000
 
 /** Hard cap on tracked edited files per session — prevents unbounded memory growth. */
 export const MAX_EDITED_FILES_TRACKED = 1_000
@@ -141,7 +151,14 @@ export namespace HarnessState {
    */
   export function startPlan(sessionID: string, steps: { id: string; name: string }[]): void {
     const s = getSession(sessionID)
+    const now = Date.now()
     s.steps = steps.map((step) => ({ ...step, status: "pending" as const }))
+    s.taskflowReminder = {
+      lastReminderAt: now,
+      lastReminderRevision: 0,
+      statusRevision: 0,
+      lastStatusUpdateAt: now,
+    }
     log.info("taskflow plan started", { sessionID, count: steps.length })
   }
 
@@ -187,7 +204,58 @@ export namespace HarnessState {
       step.status = to
     }
 
+    recordPlanStatusUpdate(sessionID)
     log.info("taskflow step transition", { sessionID, stepId, from, to: step.status })
+  }
+
+  /** Record a taskflow status/todo update that is not represented by a step transition. */
+  export function recordPlanStatusUpdate(sessionID: string): void {
+    const s = getSession(sessionID)
+    if (!s.taskflowReminder || s.steps.length === 0) return
+    s.taskflowReminder.statusRevision++
+    s.taskflowReminder.lastStatusUpdateAt = Date.now()
+  }
+
+  /**
+   * Consume a due taskflow reminder. Tool cadence is based on distinct tool
+   * parts in the current session transcript; wall-clock cadence is evaluated
+   * on the next model turn and never wakes an idle session by itself.
+   */
+  export function consumeTaskflowReminder(input: { sessionID: string; toolCallCount: number; now?: number }):
+    | {
+        trigger: "tools" | "time" | "tools+time"
+        toolCallsSinceLast: number
+        statusUnchanged: boolean
+        statusAgeMs: number
+        steps: ReadonlyArray<TaskFlowStep>
+      }
+    | undefined {
+    const s = getSession(input.sessionID)
+    if (s.steps.length === 0 || !s.taskflowReminder) return undefined
+
+    const now = input.now ?? Date.now()
+    const reminder = s.taskflowReminder
+    if (reminder.lastToolCallCount === undefined || input.toolCallCount < reminder.lastToolCallCount) {
+      reminder.lastToolCallCount = input.toolCallCount
+    }
+
+    const toolCallsSinceLast = input.toolCallCount - reminder.lastToolCallCount
+    const toolsDue = toolCallsSinceLast >= TASKFLOW_REMINDER_TOOL_INTERVAL
+    const timeDue = now - reminder.lastReminderAt >= TASKFLOW_REMINDER_INTERVAL_MS
+    if (!toolsDue && !timeDue) return undefined
+
+    const statusUnchanged = reminder.statusRevision === reminder.lastReminderRevision
+    const result = {
+      trigger: toolsDue && timeDue ? ("tools+time" as const) : toolsDue ? ("tools" as const) : ("time" as const),
+      toolCallsSinceLast,
+      statusUnchanged,
+      statusAgeMs: Math.max(0, now - reminder.lastStatusUpdateAt),
+      steps: s.steps.map((step) => ({ ...step })),
+    }
+    reminder.lastToolCallCount = input.toolCallCount
+    reminder.lastReminderAt = now
+    reminder.lastReminderRevision = reminder.statusRevision
+    return result
   }
 
   /**
@@ -208,6 +276,7 @@ export namespace HarnessState {
     }
 
     s.steps = []
+    s.taskflowReminder = undefined
     log.info("taskflow plan cleared", { sessionID, hadWarnings: warnings.length > 0 })
     return { warnings }
   }

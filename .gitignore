@@ -32,8 +32,12 @@ refs/
 .npmrc
 *.pem
 *.key
+*.jks
+*.keystore
 *.p12
 *.pfx
+**/keystore-password*.txt
+**/key-password*.txt
 
 # Repository-local AtomCLI configuration and runtime state. Bundled skills and
 # agents under these directories remain trackable release assets.
@@ -55,6 +59,8 @@ refs/
 **/.atomcli/node_modules/
 **/.atomcli/cache/
 **/.atomcli/inbox/
+**/.atomcli/transfers/
+**/.atomcli/companion-audit*.jsonl
 **/.atomcli/plan/
 **/.atomcli/plans/
 **/.atomcli/runs/
@@ -97,6 +103,8 @@ atomcli-dev
 release_bin/
 **/release_bin/
 /release_assets/
+*.apk
+*.aab
 *.tgz
 
 # Test, documentation, and generated working output

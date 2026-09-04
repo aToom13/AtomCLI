@@ -48,6 +48,7 @@ export const TuiEvent = {
     "tui.chain.start",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       mode: z.enum(["safe", "autonomous"]).default("safe"),
     }),
   ),
@@ -55,6 +56,7 @@ export const TuiEvent = {
     "tui.chain.add_step",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       stepId: z.string().optional(),
       name: z.string(),
       description: z.string(),
@@ -76,8 +78,12 @@ export const TuiEvent = {
     "tui.chain.update_step",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       status: z.enum([
         "pending",
+        "waiting",
+        "paused",
+        "stopped",
         "running",
         "coding",
         "searching_web",
@@ -98,6 +104,7 @@ export const TuiEvent = {
     "tui.chain.complete_step",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       output: z.string().optional(),
     }),
   ),
@@ -105,6 +112,7 @@ export const TuiEvent = {
     "tui.chain.fail_step",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       error: z.string(),
     }),
   ),
@@ -112,6 +120,7 @@ export const TuiEvent = {
     "tui.chain.set_todos",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       todos: z.array(
         z.object({
           id: z.string(),
@@ -125,6 +134,7 @@ export const TuiEvent = {
     "tui.chain.todo_done",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       todoIndex: z.number(),
     }),
   ),
@@ -132,6 +142,7 @@ export const TuiEvent = {
     "tui.chain.clear",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
     }),
   ),
   // Sub-plan: creates a nested plan under the current step when issues arise
@@ -139,6 +150,7 @@ export const TuiEvent = {
     "tui.chain.subplan.start",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       stepIndex: z.number().describe("Index of the parent step this sub-plan belongs to"),
       reason: z.string().describe("Why a sub-plan is needed"),
       steps: z.array(
@@ -153,6 +165,7 @@ export const TuiEvent = {
     "tui.chain.subplan.end",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       stepIndex: z.number(),
       success: z.boolean(),
     }),
@@ -162,9 +175,13 @@ export const TuiEvent = {
     "tui.chain.parallel.update",
     z.object({
       sessionID: z.string().optional(),
+      workflowId: z.string().optional(),
       stepIndex: z.number(),
       status: z.enum([
         "pending",
+        "waiting",
+        "paused",
+        "stopped",
         "running",
         "coding",
         "searching_web",

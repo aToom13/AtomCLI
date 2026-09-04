@@ -50,8 +50,60 @@ jobs:
       - name: Test installer checksum verification
         run: bash .github/scripts/test-install-sh.sh
 
+      - name: Test Companion device smoke classifications
+        run: bash .github/scripts/test-companion-device-smoke.sh
+
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install --yes shellcheck
 
       - name: Lint shell installer
-        run: shellcheck --severity=error install.sh .github/scripts/test-install-sh.sh
+        run: shellcheck --severity=error install.sh .github/scripts/test-install-sh.sh companion/tool/verify-android-device.sh .github/scripts/test-companion-device-smoke.sh
+
+  android-companion:
+    name: Android Companion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.2
+          cache: true
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check Companion protocol codegen
+        working-directory: libs/companion
+        run: bun run protocol:check
+
+      - name: Install Flutter dependencies
+        working-directory: companion
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze Companion
+        working-directory: companion
+        run: flutter analyze
+
+      - name: Test Companion
+        working-directory: companion
+        run: flutter test
+
+      - name: Build release APK
+        working-directory: companion
+        run: flutter build apk --release

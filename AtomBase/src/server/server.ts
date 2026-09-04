@@ -283,7 +283,7 @@ export namespace Server {
         return undefined
       }
     }
-    const server = tryServe(opts.port)
+    const server = opts.port === 0 ? (tryServe(4096) ?? tryServe(0)) : tryServe(opts.port)
     if (!server) {
       throw new Error(
         opts.port === 0

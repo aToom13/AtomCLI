@@ -5,6 +5,9 @@ import { PermissionNext } from "@/util/permission/next"
 import { Session } from "@/core/session"
 import { SessionReuse } from "./session-reuse"
 import { SubAgent } from "./subagent"
+import { SessionExecutionProfile } from "@/core/session/execution-profile"
+import { ReviewPolicy } from "@/core/verification/review-policy"
+import { Config } from "@/core/config/config"
 
 const parameters = z.object({
   action: z
@@ -115,6 +118,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     "change files or write code receive independent reviewer QA; read-only investigation does not",
     "spawn a redundant reviewer. Rejected reviewed work is auto-retried up to 2 times. You CANNOT do other",
     'work while a spawn is running. Do not say "I\'ll also do X while sub-agents work".',
+    "Companion fast sessions reject manually spawned reviewer/checker agents for low-risk work; use one focused direct verification instead.",
     "",
     "ACTIONS:",
     "1. action='spawn': Run a single sub-agent task (specify subagent_type, prompt, description).",
@@ -135,6 +139,17 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     description,
     parameters,
     async execute(params: z.infer<typeof parameters>, ctx) {
+      const rejectRedundantFastReviewer = async (agent: string, prompt: string, ownedFiles: string[] = []) => {
+        if (SessionExecutionProfile.get(ctx.sessionID) !== "companion-fast") return
+        if (agent !== "reviewer" && agent !== "checker") return
+        const config = await Config.get()
+        if (config.review?.policy === "always") return
+        if (ReviewPolicy.requiresIndependentReview("fast", { editedFiles: ownedFiles, prompt })) return
+        throw new Error(
+          "Companion fast profile blocks redundant reviewer/checker agents for this low-risk task. Run one focused verification directly and return the result.",
+        )
+      }
+
       const ownedChildSession = async (sessionID: string) => {
         const session = await Session.get(sessionID).catch(() => null)
         if (!session) throw new Error(`Sub-agent session "${sessionID}" not found`)
@@ -151,20 +166,23 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
         // Permission gate — the same "task" permission that guards spawn must also
         // guard the workflow path, otherwise agent(action='workflow', tasks=[...])
         // would bypass the sub-agent spawn control entirely.
-        if (params.tasks && !ctx.extra?.bypassAgentCheck) {
+        if (params.tasks) {
           for (const t of params.tasks) {
             // Must mirror OrchestrateTool's default (orchestrate.ts: `agent: t.agent || "coder"`),
             // otherwise tasks without an explicit agent bypass the spawn permission gate.
             const agent = t.agent ?? "coder"
-            await ctx.ask({
-              permission: "task",
-              patterns: [agent],
-              always: ["*"],
-              metadata: {
-                description: t.id,
-                subagent_type: agent,
-              },
-            })
+            await rejectRedundantFastReviewer(agent, t.prompt, t.owns)
+            if (!ctx.extra?.bypassAgentCheck) {
+              await ctx.ask({
+                permission: "task",
+                patterns: [agent],
+                always: ["*"],
+                metadata: {
+                  description: t.id,
+                  subagent_type: agent,
+                },
+              })
+            }
           }
         }
 
@@ -241,6 +259,8 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
       if (!params.subagent_type || !params.prompt || !params.description) {
         throw new Error("subagent_type, prompt, and description are required when starting a task")
       }
+
+      await rejectRedundantFastReviewer(params.subagent_type, params.prompt, params.owns)
 
       // Permission gate — same permission id as TaskTool.run so existing rules keep working
       if (!ctx.extra?.bypassAgentCheck) {

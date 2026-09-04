@@ -1,0 +1,32 @@
+{
+  "authChallenge": {
+    "type": "auth_challenge",
+    "protocol": 3,
+    "protocol_version": 3,
+    "protocol_min": 2,
+    "capabilities": ["core.sync", "identity.v1", "actions.signed"],
+    "identity": {
+      "machine_id": "11111111-1111-4111-8111-111111111111",
+      "process_id": "22222222-2222-4222-8222-222222222222",
+      "bridge_id": "33333333-3333-4333-8333-333333333333",
+      "machine_name": "Contract workstation",
+      "project_directory": "/code/project"
+    },
+    "challenge": "44444444-4444-4444-8444-444444444444",
+    "expires_at": 2000000000000
+  },
+  "signedMutation": {
+    "message": {
+      "type": "pause_session",
+      "session_id": "session-contract",
+      "directory": "/code/project",
+      "device_name": "Galaxy Contract",
+      "device_id": "device-contract",
+      "connection_id": "55555555-5555-4555-8555-555555555555",
+      "counter": 7,
+      "timestamp": 1900000000000,
+      "signature": "not-part-of-canonical-payload"
+    },
+    "canonical": "{\"connection_id\":\"55555555-5555-4555-8555-555555555555\",\"counter\":7,\"device_id\":\"device-contract\",\"directory\":\"/code/project\",\"session_id\":\"session-contract\",\"timestamp\":1900000000000,\"type\":\"pause_session\"}"
+  }
+}

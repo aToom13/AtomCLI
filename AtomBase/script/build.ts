@@ -148,6 +148,7 @@ for (const item of targets) {
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       ATOMCLI_WORKER_PATH: workerPath,
       ATOMCLI_CHANNEL: `'${Script.channel}'`,
+      ATOMCLI_PLAYWRIGHT_VERSION: `'${pkg.dependencies.playwright}'`,
       ATOMCLI_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
     },
     external: [

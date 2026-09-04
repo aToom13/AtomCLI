@@ -115,11 +115,20 @@ import type {
  * Returns formatted lines (max `limit`); never throws — an empty string means
  * "nothing relevant found" so callers can skip the block entirely.
  */
-export async function recallCoreMemories(query: string, limit = 3): Promise<string> {
+export async function recallCoreMemories(
+  query: string,
+  limit = 3,
+  options: { skipRerank?: boolean } = {},
+): Promise<string> {
   if (!query.trim()) return ""
   try {
     const { storage } = await initialize()
-    const items = await storage.search(query.trim(), { limit, minRelevance: 0, tags: undefined })
+    const items = await storage.search(query.trim(), {
+      limit,
+      minRelevance: 0,
+      tags: undefined,
+      skipRerank: options.skipRerank,
+    })
     return items.map((item) => `- ${item.title}: ${item.content}`).join("\n")
   } catch {
     return ""

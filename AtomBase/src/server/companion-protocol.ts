@@ -9,11 +9,15 @@ export namespace CompanionProtocol {
     challenge: string
     timestamp: number
     device_name: string
+    device_id?: string
+    protocol_version?: number
+    capabilities?: string[]
     signature: string
   }
 
   export interface SignedMutation {
     device_name: string
+    device_id?: string
     connection_id: string
     counter: number
     timestamp: number
@@ -22,6 +26,7 @@ export namespace CompanionProtocol {
 
   export interface ConnectionState {
     deviceName: string
+    deviceId: string
     connectionId: string
     lastCounter: number
   }
@@ -47,7 +52,12 @@ export namespace CompanionProtocol {
       return "expired_challenge" as const
     }
     const payload = canonicalPayload(message as unknown as Record<string, unknown>)
-    if (!CompanionAuth.verify(message.device_name, payload, message.signature)) return "invalid_signature" as const
+    const verified =
+      CompanionAuth.verify(message.device_id ?? message.device_name, payload, message.signature) ||
+      (message.device_id !== undefined && CompanionAuth.verify(message.device_name, payload, message.signature))
+    if (!verified) {
+      return "invalid_signature" as const
+    }
     return undefined
   }
 
@@ -56,13 +66,19 @@ export namespace CompanionProtocol {
     state: ConnectionState,
     now = Date.now(),
   ) {
-    if (message.device_name !== state.deviceName || message.connection_id !== state.connectionId) {
+    if (
+      message.device_name !== state.deviceName ||
+      (message.device_id !== undefined && message.device_id !== state.deviceId) ||
+      message.connection_id !== state.connectionId
+    ) {
       return "invalid_connection" as const
     }
     if (Math.abs(now - message.timestamp) > MESSAGE_CLOCK_SKEW_MS) return "expired_message" as const
     if (message.counter <= state.lastCounter) return "replayed_message" as const
     const payload = canonicalPayload(message)
-    if (!CompanionAuth.verify(message.device_name, payload, message.signature)) return "invalid_signature" as const
+    if (!CompanionAuth.verify(message.device_id ?? message.device_name, payload, message.signature)) {
+      return "invalid_signature" as const
+    }
     return undefined
   }
 }

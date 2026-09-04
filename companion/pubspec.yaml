@@ -2,13 +2,15 @@ name: atomcli_companion
 description: "AtomCLI Mobile Companion App"
 publish_to: "none"
 
-version: 3.4.2-beta+30402
+version: 3.4.2+30402
 
 environment:
   sdk: ^3.10.3
 
 dependencies:
   flutter:
+    sdk: flutter
+  flutter_localizations:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
@@ -21,6 +23,10 @@ dependencies:
   # Secure storage (private key)
   flutter_secure_storage: ^9.2.4
 
+  # Encrypted local cache and durable safe outbox
+  cryptography: ^2.7.0
+  sqflite: ^2.4.2
+
   # QR code scanning
   mobile_scanner: ^7.0.1
 
@@ -29,6 +35,8 @@ dependencies:
 
   # In-app notifications (permission requests)
   flutter_local_notifications: ^19.3.0
+  atomcli_android_live_updates:
+    path: packages/android_live_updates
 
   # HTTP pairing handshake
   http: ^1.4.0
@@ -40,18 +48,24 @@ dependencies:
   open_filex: ^4.7.0
   share_plus: ^12.0.2
   url_launcher: ^6.3.2
+  flutter_inappwebview: ^6.1.5
   mime: ^2.0.0
+  image_picker: ^1.2.3
+  speech_to_text: ^7.4.0
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  sqflite_common_ffi: ^2.3.6
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
 flutter:
+  generate: true
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.

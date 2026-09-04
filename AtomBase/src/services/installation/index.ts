@@ -1,8 +1,9 @@
-import { BusEvent } from "@/core/bus/bus-event"
+import crypto from "crypto"
 import path from "path"
 import { $ } from "bun"
 import z from "zod"
 import { NamedError } from "@atomcli/util/error"
+import { BusEvent } from "@/core/bus/bus-event"
 import { Log } from "@/util/util/log"
 import { iife } from "@/util/util/iife"
 import { Flag } from "@/interfaces/flag/flag"
@@ -165,22 +166,43 @@ export namespace Installation {
     } catch {}
   }
 
+  export function normalizeReleaseTarget(target: string) {
+    const normalized = target.replace(/^v/, "")
+    if (!/^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/.test(normalized)) {
+      throw new Error(`Invalid release target: ${target}`)
+    }
+    return normalized
+  }
+
   export async function upgradeWindowsNative(target: string) {
-    const versionTag = target.startsWith("v") ? target : `v${target}`
-    const binaryName = "atomcli-windows-x64.exe"
+    target = normalizeReleaseTarget(target)
+    const versionTag = `v${target}`
+    const architecture = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : undefined
+    if (!architecture) throw new Error(`Unsupported Windows architecture: ${process.arch}`)
+    const binaryName = `atomcli-windows-${architecture}.exe`
     const url = `https://github.com/aToom13/AtomCLI/releases/download/${versionTag}/${binaryName}`
+    const checksumUrl = `https://github.com/aToom13/AtomCLI/releases/download/${versionTag}/SHA256SUMS`
 
     log.info("downloading windows binary natively", { versionTag, url })
-    const res = await fetch(url)
+    const [res, checksumResponse] = await Promise.all([fetch(url), fetch(checksumUrl)])
     if (!res.ok) {
       throw new Error(`Failed to download release asset ${versionTag}: ${res.status} ${res.statusText}`)
     }
+    if (!checksumResponse.ok)
+      throw new Error(`Failed to download release checksums ${versionTag}: ${checksumResponse.status}`)
 
     const arrayBuffer = await res.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
     if (buffer.length === 0) {
       throw new Error("Downloaded binary asset is empty")
     }
+    const checksumManifest = await checksumResponse.text()
+    const escapedName = binaryName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const expected = checksumManifest.match(new RegExp(`^([a-fA-F0-9]{64})\\s+\\*?${escapedName}\\s*$`, "m"))?.[1]
+    if (!expected) throw new Error(`Release checksum is missing for ${binaryName}`)
+    const actual = crypto.createHash("sha256").update(buffer).digest("hex")
+    if (actual.toLowerCase() !== expected.toLowerCase())
+      throw new Error(`SHA-256 verification failed for ${binaryName}`)
 
     const currentExecPath = process.execPath
     const execDir = path.dirname(currentExecPath)
@@ -217,6 +239,7 @@ export namespace Installation {
   }
 
   export async function upgrade(method: Method, target: string) {
+    target = normalizeReleaseTarget(target)
     await cleanupOldExecutables()
     let cmd
     switch (method) {
@@ -266,22 +289,31 @@ export namespace Installation {
         try {
           await upgradeWindowsNative(target)
           log.info("upgraded natively", { method, target })
-          return
+          const tempPs1 = path.join(process.env.TEMP || "C:\\Windows\\Temp", `atomcli-update-${Date.now()}.ps1`)
+          cmd =
+            $`powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1' -OutFile '${tempPs1}'; & '${tempPs1}' -Update -RuntimeOnly -Version '${target}'"`.env(
+              {
+                ...process.env,
+                NONINTERACTIVE: "1",
+              },
+            )
         } catch (e: any) {
           log.warn("native windows upgrade failed, using safe script fallback", { error: e.message })
           const tempPs1 = path.join(process.env.TEMP || "C:\\Windows\\Temp", `atomcli-update-${Date.now()}.ps1`)
-          cmd = $`powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1' -OutFile '${tempPs1}'; & '${tempPs1}' -Update"`.env(
-            {
-              ...process.env,
-            },
-          )
+          cmd =
+            $`powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1' -OutFile '${tempPs1}'; & '${tempPs1}' -Update -Version '${target}'"`.env(
+              {
+                ...process.env,
+                NONINTERACTIVE: "1",
+              },
+            )
         }
         break
       }
       default:
         throw new Error(`Unknown method: ${method}`)
     }
-    const result = await cmd.quiet().throws(false)
+    const result = process.stdout.isTTY ? await cmd.throws(false) : await cmd.quiet().throws(false)
     log.info("upgraded", {
       method,
       target,

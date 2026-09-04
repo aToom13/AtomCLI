@@ -9,6 +9,7 @@ import { escapeXmlText, HarnessState, REVIEW_TOTAL_ATTEMPT_MULTIPLIER } from "@/
 import { ChangeImpact } from "@/core/verification/change-impact"
 import { ReviewV2 } from "@/core/verification/review-v2"
 import { Instance } from "@/services/project/instance"
+import { SessionExecutionProfile } from "@/core/session/execution-profile"
 
 const log = Log.create({ service: "review-gate" })
 
@@ -205,7 +206,12 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
   const enabled = config.review?.enabled !== false
   const maxAttempts = config.review?.max_attempts ?? 3
   const reviewerCount = config.review?.reviewer_count ?? 2
-  const policy = enabled ? (config.review?.policy ?? "adaptive") : "off"
+  const configuredPolicy = config.review?.policy ?? "adaptive"
+  const policy = enabled
+    ? configuredPolicy === "adaptive" && SessionExecutionProfile.get(sessionID) === "companion-fast"
+      ? "fast"
+      : configuredPolicy
+    : "off"
 
   if (!enabled) {
     log.info("review gate disabled via config", { sessionID })

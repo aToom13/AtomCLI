@@ -25,19 +25,30 @@ In PowerShell:
 irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex
 ```
 
+Both installers scan required commands and browser libraries, install missing dependencies through the platform package manager when possible, synchronize the Playwright version required by the selected AtomCLI release, and verify a real Chromium launch. The same repair path runs during updates:
+
+```sh
+atomcli update
+atomcli update vX.Y.Z
+atomcli setup --check
+atomcli setup --yes
+```
+
+`atomcli upgrade` remains an alias for `atomcli update`. Installer and update progress is shown with an overall progress bar plus activity spinners for long downloads. On Linux, automatic system-package installation can request `sudo`; use `ATOMCLI_SKIP_PLAYWRIGHT=1` only when browser automation is intentionally unavailable.
+
 To build from source, use Bun 1.3.10:
 
 ```sh
 git clone https://github.com/aToom13/AtomCLI.git
 cd AtomCLI
-bun install
+bun install --frozen-lockfile
 cd AtomBase
 bun run build
 ```
 
 Build output is written to `AtomBase/dist/` and is removed at the beginning of every build. Releases are triggered only by pushing a `v*` tag.
 
-Native release binaries target Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64. Baseline x64 builds support older CPUs without AVX2. FreeBSD is not a release target because the Bun runtime does not provide a FreeBSD executable target; the bundled ripgrep integration can use a system `rg` on FreeBSD when embedded in a future supported runtime.
+Native release binaries target Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64. Stable releases also attach a signed, checksum-covered Android Companion APK. Baseline x64 builds support older CPUs without AVX2. FreeBSD is not a release target because the Bun runtime does not provide a FreeBSD executable target; the bundled ripgrep integration can use a system `rg` on FreeBSD when embedded in a future supported runtime.
 
 ## Start
 
@@ -70,9 +81,38 @@ atomcli stats
 atomcli review --help
 ```
 
+## Built-in AtomCLI guide
+
+Release builds include the `atomcli-guide` skill. It covers everyday CLI use, configuration, providers, extensions, server and Companion workflows, troubleshooting, and source development. Ask a natural-language question such as “How do I add a skill in AtomCLI?” or “How should I test an AtomCLI server change?” and the agent can load the relevant part of the guide.
+
+Inspect the installed guide directly with:
+
+```sh
+atomcli skill show atomcli-guide
+```
+
+The guide uses focused reference files instead of placing the entire manual in every prompt. Its trigger words only surface it as a candidate; the active agent still decides whether the request is actually about AtomCLI. In a source checkout, the nearest `AGENTS.md` remains authoritative for contributor rules.
+
+## Android Companion
+
+> **Beta:** AtomCLI Companion is still under active development. Android builds are usable for testing and daily development workflows, but mobile behavior, protocol capabilities, background execution, and UI details may change between releases. Treat it as a companion control surface rather than the sole copy of important work.
+
+Start pairing from either the TUI or headless server:
+
+```sh
+atomcli --companion
+atomcli serve --companion
+```
+
+The first automatic Companion listener prefers port 4096. If that port is occupied, including by another AtomCLI process, AtomCLI selects an available port and prints the real endpoint in the pairing information. A port explicitly fixed with `--companion-port` or `server.companionPort` does not move silently and fails on collision.
+
+Paired device credentials are global, so later AtomCLI processes can enable their own Companion listener without showing a new QR code. Each process still owns a separate endpoint and session context; the phone connects to the selected machine endpoint, not to every running process at once. See the [Companion guide](companion/README.md).
+
 ## Reliability and code review
 
 AtomCLI guards file edits with content hashes and optional line anchors, so a stale agent action cannot silently overwrite a file that changed after it was read. Multi-operation edits are applied atomically.
+
+During an active long-running taskflow, AtomCLI injects a bounded progress checkpoint after every five tool calls or five minutes on the next model turn. The checkpoint lists recorded step states and reminds the agent to reconcile stale progress without automatically claiming that work completed.
 
 The LSP tool supports diagnostics, definitions, references, workspace symbols, formatting, code actions, symbol rename, and file rename. Mutating language-server operations validate every affected file and roll back the workspace edit if an apply step fails.
 
@@ -120,8 +160,10 @@ Use `atomcli auth login` for credentials. Provider overrides use the `provider` 
 - [Provider and model guide](docs/PROVIDERS.md)
 - [MCP guide](docs/MCP-GUIDE.md)
 - [Skills guide](docs/SKILLS-GUIDE.md)
+- [Android Companion guide](companion/README.md)
 - [Review V2 guide](docs/REVIEW.md)
 - [Prompt architecture](docs/prompts.md)
+- [Documentation index](docs/README.md)
 - [SDK guide](libs/sdk/README.md)
 
 ## Development

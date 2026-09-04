@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../models.dart';
+import '../generated/companion_protocol.g.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
 import '../services/auth_service.dart';
 import '../services/pairing_service.dart';
@@ -42,10 +44,11 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
   }
 
   Future<void> _pastePairingCode() async {
+    final strings = AppLocalizations.of(context);
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final raw = data?.text?.trim();
     if (raw == null || raw.isEmpty) {
-      _setError('Clipboard does not contain a pairing code.');
+      _setError(strings.clipboardNoPairingCode);
       return;
     }
     await _processRaw(raw);
@@ -53,44 +56,60 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
 
   Future<void> _processRaw(String raw) async {
     if (_processing) return;
+    final strings = AppLocalizations.of(context);
     setState(() {
       _processing = true;
       _error = null;
-      _status = 'Reading pairing code';
+      _status = strings.readingPairingCode;
     });
     await _controller.stop();
 
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('Pairing code is not an object');
+        throw FormatException(strings.pairingCodeInvalid);
       }
       final payload = PairingPayload.fromJson(decoded);
-      if (payload.v != 2) {
-        throw FormatException('Unsupported pairing version ${payload.v}');
+      if (payload.v != CompanionProtocolVersion.pairing) {
+        throw FormatException(strings.unsupportedPairingVersion(payload.v));
       }
 
-      _setStatus('Creating device identity');
+      _setStatus(strings.creatingDeviceIdentity);
       await AuthService.instance.init(Platform.localHostname);
       final publicKey = AuthService.instance.publicKeyBase64;
       final deviceName = AuthService.instance.deviceName;
-      if (publicKey == null || deviceName == null) {
-        throw StateError('Device identity could not be created');
+      final deviceId = AuthService.instance.deviceId;
+      if (publicKey == null || deviceName == null || deviceId == null) {
+        throw StateError(strings.deviceIdentityFailed);
       }
 
-      _setStatus('Contacting AtomCLI');
+      _setStatus(strings.contactingAtomcli);
       final result = await PairingService.pair(
         httpPairUrl: payload.httpPair,
         pairingToken: payload.pairingToken,
         publicKeyBase64: publicKey,
         deviceName: deviceName,
+        deviceId: deviceId,
       );
       if (!result.success) throw StateError(result.error ?? 'Pairing failed');
 
-      await AuthService.instance.saveEndpoints(payload.endpoints);
+      if (result.machineId == null || result.machineId!.isEmpty) {
+        // Protocol-v2 servers do not identify the machine until WebSocket auth.
+        await AuthService.instance.saveEndpoints(payload.endpoints);
+      } else {
+        await AuthService.instance.saveMachineProfile(
+          machineId: result.machineId!,
+          machineName: result.machineName,
+          projectDirectory: result.projectDirectory,
+          processId: result.processId,
+          bridgeId: result.bridgeId,
+          endpoints: payload.endpoints,
+        );
+      }
+      await ref.read(wsServiceProvider)?.dispose();
       final ws = _createWebSocket(payload.endpoints);
       ref.read(wsServiceProvider.notifier).state = ws;
-      _setStatus('Pairing complete');
+      _setStatus(strings.pairingComplete);
       if (mounted) Navigator.of(context).pushReplacementNamed('/home');
     } on FormatException catch (error) {
       _setError(error.message);
@@ -102,6 +121,8 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
   WebSocketService _createWebSocket(List<String> endpoints) {
     return WebSocketService(
       endpoints: endpoints,
+      initialSequence: AuthService.instance.lastSequence,
+      onSequenceChange: AuthService.instance.recordSequence,
       onStateChange: (lifecycle) {
         final mapped = switch (lifecycle) {
           WsLifecycle.connecting => WsConnectionState.connecting,
@@ -117,6 +138,15 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
           } catch (_) {}
         });
       },
+      onConnectionChange: (status) {
+        Future.microtask(() {
+          try {
+            ref.read(connectionDetailProvider.notifier).state = status;
+            ref.read(connectionMessageProvider.notifier).state =
+                connectionStatusMessage(status);
+          } catch (_) {}
+        });
+      },
     );
   }
 
@@ -127,6 +157,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
 
   Future<void> _retry() async {
     if (!mounted) return;
+    final strings = AppLocalizations.of(context);
     setState(() {
       _processing = false;
       _status = null;
@@ -135,7 +166,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
     try {
       await _controller.start();
     } catch (error) {
-      _setError('Camera could not be started: ${_cleanError(error)}');
+      _setError(strings.cameraStartFailed(_cleanError(error)));
     }
   }
 
@@ -155,6 +186,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: AppPalette.background,
       body: SafeArea(
@@ -176,14 +208,14 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                         ),
                       ),
                       Text(
-                        'Pair a machine',
+                        strings.pairMachine,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                     ],
                   ),
                   const Spacer(),
                   IconButton(
-                    tooltip: 'Toggle torch',
+                    tooltip: strings.toggleTorch,
                     onPressed: () async {
                       await _controller.toggleTorch();
                       if (mounted) {
@@ -249,12 +281,12 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const CircularProgressIndicator(
+                                CircularProgressIndicator(
                                   color: AppPalette.primary,
                                 ),
                                 const SizedBox(height: 16),
                                 Text(
-                                  _status ?? 'Pairing',
+                                  _status ?? strings.pairing,
                                   style: Theme.of(
                                     context,
                                   ).textTheme.titleMedium,
@@ -297,12 +329,12 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                       child: FilledButton.icon(
                         onPressed: _retry,
                         icon: const Icon(Icons.refresh_rounded),
-                        label: const Text('Try again'),
+                        label: Text(strings.tryAgain),
                       ),
                     ),
                   ] else ...[
                     Text(
-                      'Scan the code shown by AtomCLI. The app will try Tailscale first, then your local network.',
+                      strings.scanPairingCode,
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
@@ -310,7 +342,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                     TextButton.icon(
                       onPressed: _processing ? null : _pastePairingCode,
                       icon: const Icon(Icons.content_paste_rounded, size: 18),
-                      label: const Text('Paste pairing code'),
+                      label: Text(strings.pastePairingCode),
                     ),
                   ],
                 ],

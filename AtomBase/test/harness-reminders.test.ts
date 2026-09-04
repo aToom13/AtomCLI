@@ -54,6 +54,32 @@ function createAssistantMessage(sessionID: string, text: string, id = "msg-asst-
   }
 }
 
+function createToolMessage(sessionID: string, id: string, tool = "read"): MessageV2.WithParts {
+  return {
+    info: {
+      id: `msg-${id}`,
+      sessionID,
+      role: "assistant",
+      time: { created: Date.now() },
+      agent: "build",
+      modelID: "test",
+      providerID: "test",
+      mode: "",
+    } as unknown as MessageV2.Assistant,
+    parts: [
+      {
+        id,
+        sessionID,
+        messageID: `msg-${id}`,
+        type: "tool",
+        tool,
+        callID: `call-${id}`,
+        state: { status: "completed", input: {}, output: "ok", title: tool, metadata: {} },
+      } as unknown as MessageV2.ToolPart,
+    ],
+  }
+}
+
 const mockAgentInfo: Agent.Info = {
   name: "build",
   mode: "primary",
@@ -120,6 +146,88 @@ describe("HarnessState Unit Tests", () => {
 })
 
 describe("SessionPrompt Synthetic Reminders", () => {
+  test("injects taskflow progress after every five distinct tool calls", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-taskflow-tool-cadence"
+        HarnessState.startPlan(sessionID, [
+          { id: "inspect", name: "Inspect <unsafe> state" },
+          { id: "fix", name: "Apply fix" },
+        ])
+        const messages = [createUserMessage(sessionID, "Handle the long task")]
+
+        expect(
+          SessionPrompt.insertReminders({ messages, agent: mockAgentInfo, step: 1 }).some((message) =>
+            message.parts.some((part) => part.type === "text" && part.text.includes("taskflow_progress")),
+          ),
+        ).toBe(false)
+
+        for (let index = 1; index <= 4; index++) messages.push(createToolMessage(sessionID, `tool-${index}`))
+        expect(
+          SessionPrompt.insertReminders({ messages, agent: mockAgentInfo, step: 1 }).some((message) =>
+            message.parts.some((part) => part.type === "text" && part.text.includes("taskflow_progress")),
+          ),
+        ).toBe(false)
+
+        messages.push(createToolMessage(sessionID, "tool-5"))
+        const updated = SessionPrompt.insertReminders({ messages, agent: mockAgentInfo, step: 1 })
+        const reminder = updated.at(-1)!.parts[0] as MessageV2.TextPart
+        expect(reminder.text).toContain('<taskflow_progress trigger="tools" tool_calls_since_last="5">')
+        expect(reminder.text).toContain("[pending] inspect: Inspect &lt;unsafe&gt; state")
+        expect(reminder.text).toContain("status has not changed")
+      },
+    })
+  })
+
+  test("injects taskflow progress after five minutes on the next model turn", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-taskflow-time-cadence"
+        HarnessState.startPlan(sessionID, [{ id: "wait", name: "Wait for build" }])
+        const startedAt = Date.now()
+
+        expect(HarnessState.consumeTaskflowReminder({ sessionID, toolCallCount: 0, now: startedAt })).toBeUndefined()
+        expect(
+          HarnessState.consumeTaskflowReminder({
+            sessionID,
+            toolCallCount: 0,
+            now: startedAt + 5 * 60 * 1_000 - 1,
+          }),
+        ).toBeUndefined()
+
+        const reminder = HarnessState.consumeTaskflowReminder({
+          sessionID,
+          toolCallCount: 0,
+          now: startedAt + 5 * 60 * 1_000,
+        })
+        expect(reminder?.trigger).toBe("time")
+        expect(reminder?.statusUnchanged).toBe(true)
+      },
+    })
+  })
+
+  test("recognizes a taskflow status update between reminder checkpoints", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-taskflow-status-revision"
+        HarnessState.startPlan(sessionID, [{ id: "work", name: "Do work" }])
+        expect(HarnessState.consumeTaskflowReminder({ sessionID, toolCallCount: 0 })).toBeUndefined()
+        expect(HarnessState.consumeTaskflowReminder({ sessionID, toolCallCount: 5 })?.statusUnchanged).toBe(true)
+
+        HarnessState.transitionStep(sessionID, "work", "running")
+        const reminder = HarnessState.consumeTaskflowReminder({ sessionID, toolCallCount: 10 })
+        expect(reminder?.statusUnchanged).toBe(false)
+        expect(reminder?.steps[0].status).toBe("running")
+      },
+    })
+  })
+
   test("injects high reminder for 3 edited files (review gate active)", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({

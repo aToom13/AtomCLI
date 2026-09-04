@@ -7,6 +7,9 @@ import '../services/websocket_service.dart';
 import '../services/auth_service.dart';
 import '../services/notification_service.dart';
 import '../services/companion_preferences.dart';
+import '../services/connection_state_machine.dart';
+import '../services/local_cache_database.dart';
+import '../services/mobile_input_service.dart';
 
 // ---------------------------------------------------------------------------
 // Providers
@@ -36,6 +39,17 @@ final wsServiceProvider = StateProvider<WebSocketService?>((ref) {
           }
         });
       },
+      onConnectionChange: (status) {
+        Future.microtask(() {
+          try {
+            ref.read(connectionDetailProvider.notifier).state = status;
+            ref.read(connectionMessageProvider.notifier).state =
+                connectionStatusMessage(status);
+          } catch (_) {
+            /* ref may be disposed */
+          }
+        });
+      },
     );
   }
   return null;
@@ -48,8 +62,30 @@ final backendEventStreamProvider = StreamProvider<BackendEvent>((ref) {
   ref.onDispose(() {
     ws.dispose();
   });
-  return ws.connect();
+  return _cachedThenLiveEvents(ws);
 });
+
+Stream<BackendEvent> _cachedThenLiveEvents(WebSocketService ws) async* {
+  final profileId = AuthService.instance.activeProfileId;
+  if (profileId != null) {
+    try {
+      final cached = await LocalCacheDatabase.instance.loadEvents(profileId);
+      for (final event in cached) {
+        yield BackendEvent(
+          type: event.type,
+          payload: {
+            ...event.payload,
+            '_offline_cache': true,
+            '_cached_at': event.cachedAt.toIso8601String(),
+          },
+        );
+      }
+    } catch (_) {
+      // A corrupt/unavailable cache must not prevent a live connection.
+    }
+  }
+  yield* ws.connect();
+}
 
 // ---------------------------------------------------------------------------
 // Pending Permissions
@@ -71,6 +107,9 @@ class PermissionsNotifier extends Notifier<List<PendingPermission>> {
 
   void remove(String reqId) {
     state = state.where((p) => p.reqId != reqId).toList();
+    if (ref.read(inboxFocusRequestProvider) == reqId) {
+      ref.read(inboxFocusRequestProvider.notifier).state = null;
+    }
   }
 
   /// Replace full list from snapshot (authoritative).
@@ -86,10 +125,21 @@ final permissionsProvider =
 
 /// Main shell navigation. Keeping it in provider state allows activity cards
 /// and notifications to move to the correct destination without fake tab APIs.
-final shellTabProvider = StateProvider<int>((ref) => 0);
+abstract final class ShellTab {
+  static const control = 0;
+  static const chat = 1;
+  static const requests = 2;
+  static const files = 3;
+  static const devices = 4;
+}
+
+final shellTabProvider = StateProvider<int>((ref) => ShellTab.control);
 
 /// A workflow/sub-agent card can select a session before opening Sessions.
 final chatJumpToSessionProvider = StateProvider<String?>((ref) => null);
+final incomingShareProvider = StateProvider<IncomingShare?>((ref) => null);
+final inboxFocusRequestProvider = StateProvider<String?>((ref) => null);
+final missionFocusWorkflowProvider = StateProvider<String?>((ref) => null);
 final newSessionRequestProvider = StateProvider<int>((ref) => 0);
 
 class ArtifactsNotifier extends Notifier<List<CompanionArtifact>> {
@@ -103,6 +153,10 @@ class ArtifactsNotifier extends Notifier<List<CompanionArtifact>> {
 
   void setFromSnapshot(List<CompanionArtifact> artifacts) {
     state = [...artifacts]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  }
+
+  void remove(String id) {
+    state = state.where((artifact) => artifact.id != id).toList();
   }
 }
 
@@ -142,6 +196,7 @@ class DagNotifier extends Notifier<List<DagStep>> {
     final idx = state.indexWhere(
       (s) =>
           s.name == step.name &&
+          s.workflowId == step.workflowId &&
           s.sessionId == step.sessionId &&
           s.directory == step.directory,
     );
@@ -157,12 +212,14 @@ class DagNotifier extends Notifier<List<DagStep>> {
     String status, {
     String? sessionId,
     String? directory,
+    String? workflowId,
   }) {
     state = state
         .map(
           (s) =>
               s.name == name &&
                   (sessionId == null || s.sessionId == sessionId) &&
+                  (workflowId == null || s.workflowId == workflowId) &&
                   (directory == null || s.directory == directory)
               ? s.copyWith(status: status)
               : s,
@@ -175,12 +232,14 @@ class DagNotifier extends Notifier<List<DagStep>> {
     String? sessionId,
     String status, {
     String? directory,
+    String? workflowId,
   }) {
     if (sessionId == null) {
       // No sessionId — update the last running step
       final idx = state.lastIndexWhere(
         (s) =>
             (directory == null || s.directory == directory) &&
+            (workflowId == null || s.workflowId == workflowId) &&
             (s.status == 'running' || s.status.contains('ing')),
       );
       if (idx != -1) {
@@ -194,6 +253,7 @@ class DagNotifier extends Notifier<List<DagStep>> {
         .map(
           (s) =>
               s.sessionId == sessionId &&
+                  (workflowId == null || s.workflowId == workflowId) &&
                   (directory == null || s.directory == directory)
               ? s.copyWith(status: status)
               : s,
@@ -201,20 +261,32 @@ class DagNotifier extends Notifier<List<DagStep>> {
         .toList();
   }
 
-  void setTodos(String? sessionId, List<TodoItem> todos, {String? directory}) {
+  void setTodos(
+    String? sessionId,
+    List<TodoItem> todos, {
+    String? directory,
+    String? workflowId,
+  }) {
     state = state.map((s) {
       if ((sessionId == null || s.sessionId == sessionId) &&
           (directory == null || s.directory == directory)) {
+        if (workflowId != null && s.workflowId != workflowId) return s;
         return s.copyWith(todos: todos);
       }
       return s;
     }).toList();
   }
 
-  void markTodoDone(String? sessionId, int todoIndex, {String? directory}) {
+  void markTodoDone(
+    String? sessionId,
+    int todoIndex, {
+    String? directory,
+    String? workflowId,
+  }) {
     state = state.map((s) {
       if (sessionId != null && s.sessionId != sessionId) return s;
       if (directory != null && s.directory != directory) return s;
+      if (workflowId != null && s.workflowId != workflowId) return s;
       if (todoIndex < 0 || todoIndex >= s.todos.length) return s;
       final newTodos = [...s.todos];
       newTodos[todoIndex] = newTodos[todoIndex].copyWith(status: 'complete');
@@ -223,10 +295,19 @@ class DagNotifier extends Notifier<List<DagStep>> {
   }
 
   /// Update a specific step by index (for parallel updates).
-  void updateByIndex(int stepIndex, String status, {String? directory}) {
+  void updateByIndex(
+    int stepIndex,
+    String status, {
+    String? directory,
+    String? sessionId,
+    String? workflowId,
+  }) {
     final indexes = <int>[
       for (var index = 0; index < state.length; index++)
-        if (directory == null || state[index].directory == directory) index,
+        if ((directory == null || state[index].directory == directory) &&
+            (sessionId == null || state[index].sessionId == sessionId) &&
+            (workflowId == null || state[index].workflowId == workflowId))
+          index,
     ];
     if (stepIndex < 0 || stepIndex >= indexes.length) return;
     final updated = [...state];
@@ -235,10 +316,17 @@ class DagNotifier extends Notifier<List<DagStep>> {
     state = updated;
   }
 
-  void clear({String? directory}) {
-    state = directory == null
+  void clear({String? directory, String? sessionId, String? workflowId}) {
+    state = directory == null && sessionId == null && workflowId == null
         ? []
-        : state.where((step) => step.directory != directory).toList();
+        : state
+              .where(
+                (step) =>
+                    !((directory == null || step.directory == directory) &&
+                        (sessionId == null || step.sessionId == sessionId) &&
+                        (workflowId == null || step.workflowId == workflowId)),
+              )
+              .toList();
   }
 
   void setFromSnapshot(List<DagStep> steps) => state = steps;
@@ -306,6 +394,10 @@ class SessionListNotifier extends Notifier<List<SessionInfo>> {
               : session,
         )
         .toList();
+  }
+
+  void remove(String sessionId) {
+    state = state.where((session) => session.id != sessionId).toList();
   }
 }
 
@@ -401,12 +493,31 @@ final currentDirectoryProvider = StateProvider<String?>((ref) => null);
 // Prompt errors (sent by server when SessionPrompt.prompt fails)
 // ---------------------------------------------------------------------------
 
-class PromptErrorNotifier extends Notifier<String?> {
-  @override
-  String? build() => null;
+class PromptErrorNotice {
+  final String? sessionId;
+  final String? modelId;
+  final ConversationFailure failure;
 
-  void setError(String message) {
-    state = message;
+  const PromptErrorNotice({
+    required this.sessionId,
+    required this.failure,
+    this.modelId,
+  });
+}
+
+class PromptErrorNotifier extends Notifier<PromptErrorNotice?> {
+  @override
+  PromptErrorNotice? build() => null;
+
+  void setError(PromptErrorNotice notice) {
+    final current = state;
+    if (current?.sessionId == notice.sessionId &&
+        current?.modelId == notice.modelId &&
+        current?.failure.statusCode == notice.failure.statusCode &&
+        current?.failure.message == notice.failure.message) {
+      return;
+    }
+    state = notice;
   }
 
   void clear() {
@@ -414,9 +525,10 @@ class PromptErrorNotifier extends Notifier<String?> {
   }
 }
 
-final promptErrorProvider = NotifierProvider<PromptErrorNotifier, String?>(
-  PromptErrorNotifier.new,
-);
+final promptErrorProvider =
+    NotifierProvider<PromptErrorNotifier, PromptErrorNotice?>(
+      PromptErrorNotifier.new,
+    );
 
 // ---------------------------------------------------------------------------
 // Sub-agent sessions (spawned by orchestrators)
@@ -443,6 +555,41 @@ class SubAgentNotifier extends Notifier<List<SubAgentInfo>> {
       final updated = [...state];
       updated[idx] = updated[idx].copyWith(
         status: 'done',
+        finishedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+      state = updated;
+    }
+  }
+
+  void addActivity(String sessionId, SubAgentActivity activity) {
+    final idx = state.indexWhere((agent) => agent.sessionId == sessionId);
+    if (idx < 0) return;
+    final updated = [...state];
+    final previousActivities = updated[idx].activities;
+    final previous = previousActivities.lastOrNull;
+    final replace =
+        previous != null &&
+        previous.kind == activity.kind &&
+        (activity.kind == 'transcript' ||
+            previous.status == 'pending' ||
+            previous.status == 'running');
+    final activities = replace
+        ? [...previousActivities.take(previousActivities.length - 1), activity]
+        : [...previousActivities, activity];
+    updated[idx] = updated[idx].copyWith(
+      activities: activities.length > 40
+          ? activities.sublist(activities.length - 40)
+          : activities,
+    );
+    state = updated;
+  }
+
+  void markFailed(String sessionId) {
+    final idx = state.indexWhere((a) => a.sessionId == sessionId);
+    if (idx >= 0) {
+      final updated = [...state];
+      updated[idx] = updated[idx].copyWith(
+        status: 'failed',
         finishedAt: DateTime.now().millisecondsSinceEpoch,
       );
       state = updated;
@@ -483,6 +630,9 @@ class QuestionsNotifier extends Notifier<List<PendingQuestion>> {
 
   void remove(String reqId) {
     state = state.where((q) => q.reqId != reqId).toList();
+    if (ref.read(inboxFocusRequestProvider) == reqId) {
+      ref.read(inboxFocusRequestProvider.notifier).state = null;
+    }
   }
 
   void clear() => state = [];
@@ -588,6 +738,25 @@ class ConversationNotifier extends Notifier<ConversationState> {
     selectedAgentName: CompanionPreferences.instance.lastAgent,
     selectedDirectory: CompanionPreferences.instance.lastDirectory,
   );
+
+  void resetForMachine() {
+    state = ConversationState(
+      selectedModelId: CompanionPreferences.instance.lastModel,
+      selectedAgentName: CompanionPreferences.instance.lastAgent,
+      selectedDirectory: CompanionPreferences.instance.lastDirectory,
+    );
+  }
+
+  void removeSession(String sessionId) {
+    final messages = {...state.messages}..remove(sessionId);
+    final loading = {...state.loadingSessionIds}..remove(sessionId);
+    final wasSelected = state.selectedSessionId == sessionId;
+    state = state.copyWith(
+      clearSelectedSession: wasSelected,
+      messages: messages,
+      loadingSessionIds: loading,
+    );
+  }
 
   Future<void> syncSessions(List<SessionInfo> sessions) async {
     if (sessions.isEmpty) {
@@ -742,12 +911,26 @@ class ConversationNotifier extends Notifier<ConversationState> {
     );
   }
 
-  void addOptimisticUserMessage(String sessionId, String text) {
+  String addOptimisticUserMessage(String sessionId, String text) {
     final current = state.messagesFor(sessionId);
+    final message = _optimisticMessage(sessionId, text);
     state = state.copyWith(
       messages: {
         ...state.messages,
-        sessionId: [...current, _optimisticMessage(sessionId, text)],
+        sessionId: [...current, message],
+      },
+    );
+    return message.id;
+  }
+
+  void removeMessage(String sessionId, String messageId) {
+    state = state.copyWith(
+      messages: {
+        ...state.messages,
+        sessionId: state
+            .messagesFor(sessionId)
+            .where((message) => message.id != messageId)
+            .toList(),
       },
     );
   }
@@ -758,9 +941,17 @@ class ConversationNotifier extends Notifier<ConversationState> {
     if (messageId == null || sessionId == null) return;
     final current = [...state.messagesFor(sessionId)];
     final index = current.indexWhere((message) => message.id == messageId);
-    final role = info['role'] as String? ?? 'assistant';
+    final incoming = ConversationMessage.fromJson(info);
+    final role = incoming.role;
     if (index >= 0) {
-      current[index] = current[index].copyWith(role: role);
+      current[index] = current[index].copyWith(
+        role: role,
+        time: incoming.time,
+        modelId: incoming.modelId,
+        agent: incoming.agent,
+        variant: incoming.variant,
+        failure: incoming.failure,
+      );
     } else {
       final localIndex = role == 'user'
           ? current.lastIndexWhere(
@@ -768,58 +959,64 @@ class ConversationNotifier extends Notifier<ConversationState> {
                   message.role == 'user' && message.id.startsWith('local_'),
             )
           : -1;
-      final message = ConversationMessage(
-        id: messageId,
-        sessionId: sessionId,
-        role: role,
-        time: DateTime.now(),
-      );
       if (localIndex >= 0) {
-        current[localIndex] = message;
+        current[localIndex] = incoming;
       } else {
-        current.add(message);
+        current.add(incoming);
       }
     }
     state = state.copyWith(messages: {...state.messages, sessionId: current});
   }
 
   void applyMessagePart(Map<String, dynamic> payload) {
-    final rawPart = payload['part'];
-    if (rawPart is! Map) return;
-    final part = ConversationPart.fromJson(Map<String, dynamic>.from(rawPart));
-    if (part.sessionId.isEmpty || part.messageId.isEmpty) return;
-    final current = [...state.messagesFor(part.sessionId)];
-    var messageIndex = current.indexWhere(
-      (message) => message.id == part.messageId,
-    );
-    if (messageIndex < 0) {
-      current.add(
-        ConversationMessage(
-          id: part.messageId,
-          sessionId: part.sessionId,
-          role: 'assistant',
-          time: DateTime.now(),
-        ),
+    applyMessageParts([payload]);
+  }
+
+  void applyMessageParts(Iterable<Map<String, dynamic>> payloads) {
+    final messages = {...state.messages};
+    var changed = false;
+    for (final payload in payloads) {
+      final rawPart = payload['part'];
+      if (rawPart is! Map) continue;
+      final part = ConversationPart.fromJson(
+        Map<String, dynamic>.from(rawPart),
       );
-      messageIndex = current.length - 1;
-    }
-    final message = current[messageIndex];
-    final parts = [...message.parts];
-    final partIndex = part.id.isEmpty
-        ? -1
-        : parts.indexWhere((candidate) => candidate.id == part.id);
-    if (partIndex < 0) {
-      parts.add(part);
-    } else {
-      parts[partIndex] = parts[partIndex].merge(
-        part,
-        payload['delta'] as String?,
+      if (part.sessionId.isEmpty || part.messageId.isEmpty) continue;
+      final current = <ConversationMessage>[
+        ...(messages[part.sessionId] ?? const <ConversationMessage>[]),
+      ];
+      var messageIndex = current.indexWhere(
+        (message) => message.id == part.messageId,
       );
+      if (messageIndex < 0) {
+        current.add(
+          ConversationMessage(
+            id: part.messageId,
+            sessionId: part.sessionId,
+            role: 'assistant',
+            time: DateTime.now(),
+          ),
+        );
+        messageIndex = current.length - 1;
+      }
+      final message = current[messageIndex];
+      final parts = [...message.parts];
+      final partIndex = part.id.isEmpty
+          ? -1
+          : parts.indexWhere((candidate) => candidate.id == part.id);
+      if (partIndex < 0) {
+        parts.add(part);
+      } else {
+        parts[partIndex] = parts[partIndex].merge(
+          part,
+          payload['delta'] as String?,
+        );
+      }
+      current[messageIndex] = message.copyWith(parts: parts);
+      messages[part.sessionId] = current;
+      changed = true;
     }
-    current[messageIndex] = message.copyWith(parts: parts);
-    state = state.copyWith(
-      messages: {...state.messages, part.sessionId: current},
-    );
+    if (changed) state = state.copyWith(messages: messages);
   }
 
   void _finishLoading(String sessionId) {
@@ -866,6 +1063,29 @@ final connectionStateProvider = StateProvider<WsConnectionState>(
 );
 
 final connectionMessageProvider = StateProvider<String?>((_) => null);
+final connectionDetailProvider = StateProvider<ConnectionStatus>(
+  (_) => const ConnectionStatus(phase: ConnectionPhase.idle),
+);
+
+String? connectionStatusMessage(ConnectionStatus status) {
+  return switch (status.phase) {
+    ConnectionPhase.idle => null,
+    ConnectionPhase.discovering => 'Checking LAN and Tailscale endpoints.',
+    ConnectionPhase.connecting =>
+      status.endpoint == null
+          ? 'Opening a secure command link.'
+          : 'Connecting through ${status.endpoint}.',
+    ConnectionPhase.authenticating => 'Authenticating this device.',
+    ConnectionPhase.synchronizing => 'Synchronizing current machine state.',
+    ConnectionPhase.connected => null,
+    ConnectionPhase.retryWaiting =>
+      status.reason ?? 'Connection interrupted; waiting to retry.',
+    ConnectionPhase.suspended => 'Connection handed to the background service.',
+    ConnectionPhase.incompatible =>
+      status.reason ?? 'This AtomCLI protocol is not supported.',
+    ConnectionPhase.stopped => status.reason,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Event dispatcher — wire the WS stream to state notifiers
@@ -874,6 +1094,22 @@ final connectionMessageProvider = StateProvider<String?>((_) => null);
 /// Listen to backend events and dispatch to the correct notifiers.
 /// Call this once after pairing in your root widget.
 void dispatchBackendEvents(Ref ref) {
+  final pendingMessageParts = <Map<String, dynamic>>[];
+  Timer? messagePartTimer;
+
+  void flushMessageParts() {
+    messagePartTimer?.cancel();
+    messagePartTimer = null;
+    if (pendingMessageParts.isEmpty) return;
+    final batch = List<Map<String, dynamic>>.from(pendingMessageParts);
+    pendingMessageParts.clear();
+    ref.read(conversationProvider.notifier).applyMessageParts(batch);
+  }
+
+  ref.onDispose(() {
+    messagePartTimer?.cancel();
+    pendingMessageParts.clear();
+  });
   ref.listen<AsyncValue<BackendEvent>>(backendEventStreamProvider, (_, next) {
     next.whenData((event) {
       switch (event.type) {
@@ -890,18 +1126,20 @@ void dispatchBackendEvents(Ref ref) {
                     )
                     .toList(),
               );
+          final previousRequestIds = {
+            ...ref.read(permissionsProvider).map((item) => item.reqId),
+            ...ref.read(questionsProvider).map((item) => item.reqId),
+          };
           final perms = event.payload['pending_permissions'] as List? ?? [];
+          final pendingPermissions = perms
+              .map(
+                (perm) =>
+                    PendingPermission.fromJson(perm as Map<String, dynamic>),
+              )
+              .toList();
           ref
               .read(permissionsProvider.notifier)
-              .setFromSnapshot(
-                perms
-                    .map(
-                      (perm) => PendingPermission.fromJson(
-                        perm as Map<String, dynamic>,
-                      ),
-                    )
-                    .toList(),
-              );
+              .setFromSnapshot(pendingPermissions);
           final rawSubAgents = event.payload['sub_agents'] as List? ?? [];
           ref
               .read(subAgentProvider.notifier)
@@ -912,21 +1150,39 @@ void dispatchBackendEvents(Ref ref) {
                     )
                     .toList(),
               );
-          ref.read(connectionStateProvider.notifier).state =
-              WsConnectionState.connected;
-          ref.read(connectionMessageProvider.notifier).state = null;
+          final offlineCache = event.payload['_offline_cache'] == true;
+          if (offlineCache) {
+            ref.read(connectionStateProvider.notifier).state =
+                WsConnectionState.disconnected;
+            ref.read(connectionMessageProvider.notifier).state =
+                'Showing encrypted cached state while reconnecting.';
+          } else {
+            ref.read(connectionStateProvider.notifier).state =
+                WsConnectionState.connected;
+            ref.read(connectionMessageProvider.notifier).state = null;
+          }
           final rawQuestions =
               event.payload['pending_questions'] as List? ?? [];
+          final pendingQuestions = rawQuestions
+              .map((q) => PendingQuestion.fromJson(q as Map<String, dynamic>))
+              .toList();
           ref
               .read(questionsProvider.notifier)
-              .setFromSnapshot(
-                rawQuestions
-                    .map(
-                      (q) =>
-                          PendingQuestion.fromJson(q as Map<String, dynamic>),
-                    )
-                    .toList(),
-              );
+              .setFromSnapshot(pendingQuestions);
+          if (!offlineCache) {
+            final currentRequestIds = {
+              ...pendingPermissions.map((item) => item.reqId),
+              ...pendingQuestions.map((item) => item.reqId),
+            };
+            // The OS may still show a notification whose resolution event was
+            // missed while switching socket ownership. The live snapshot is
+            // authoritative; cached snapshots intentionally do not cancel it.
+            for (final requestId in previousRequestIds.difference(
+              currentRequestIds,
+            )) {
+              unawaited(NotificationService.instance.cancelRequest(requestId));
+            }
+          }
           final rawArtifacts = event.payload['artifacts'] as List? ?? [];
           ref
               .read(artifactsProvider.notifier)
@@ -1068,6 +1324,7 @@ void dispatchBackendEvents(Ref ref) {
           ref.read(logsProvider.notifier).add(LogEntry.fromJson(event.payload));
 
         case 'messages_result':
+          flushMessageParts();
           final sessionId = event.payload['session_id'] as String?;
           if (sessionId == null) break;
           final rawMessages = event.payload['messages'] as List? ?? const [];
@@ -1086,20 +1343,40 @@ void dispatchBackendEvents(Ref ref) {
         case 'message_updated':
           final info = event.payload['info'];
           if (info is Map) {
+            final message = ConversationMessage.fromJson(
+              Map<String, dynamic>.from(info),
+            );
             ref
                 .read(conversationProvider.notifier)
                 .applyMessageInfo(Map<String, dynamic>.from(info));
+            if (message.failure != null) {
+              ref
+                  .read(promptErrorProvider.notifier)
+                  .setError(
+                    PromptErrorNotice(
+                      sessionId: message.sessionId,
+                      modelId: message.modelId,
+                      failure: message.failure!,
+                    ),
+                  );
+            }
           }
 
         case 'message_part':
-          ref
-              .read(conversationProvider.notifier)
-              .applyMessagePart(event.payload);
+          pendingMessageParts.add(event.payload);
+          messagePartTimer ??= Timer(
+            const Duration(milliseconds: 50),
+            flushMessageParts,
+          );
 
         case 'artifact_shared':
           ref
               .read(artifactsProvider.notifier)
               .upsert(CompanionArtifact.fromJson(event.payload));
+
+        case 'artifact_deleted':
+          final id = event.payload['id'] as String?;
+          if (id != null) ref.read(artifactsProvider.notifier).remove(id);
 
         case 'preview_updated':
           ref
@@ -1122,9 +1399,16 @@ void dispatchBackendEvents(Ref ref) {
             reqId: perm.reqId,
             permission: perm.permission,
             patterns: perm.patterns,
+            sessionId: perm.sessionId,
+            directory: perm.directory,
           );
 
         case 'permission_resolved':
+          unawaited(
+            NotificationService.instance.cancelRequest(
+              event.payload['requestID'] as String,
+            ),
+          );
           ref
               .read(permissionsProvider.notifier)
               .remove(event.payload['requestID'] as String);
@@ -1139,6 +1423,18 @@ void dispatchBackendEvents(Ref ref) {
           final sid = event.payload['sessionID'] as String?;
           if (sid != null) ref.read(subAgentProvider.notifier).markDone(sid);
 
+        case 'sub_agent_activity':
+          final sid = event.payload['sessionID'] as String?;
+          if (sid != null) {
+            ref
+                .read(subAgentProvider.notifier)
+                .addActivity(sid, SubAgentActivity.fromJson(event.payload));
+          }
+
+        case 'sub_agent_failed':
+          final sid = event.payload['sessionID'] as String?;
+          if (sid != null) ref.read(subAgentProvider.notifier).markFailed(sid);
+
         case 'sub_agent_removed':
           final sid = event.payload['sessionID'] as String?;
           if (sid != null) {
@@ -1148,27 +1444,52 @@ void dispatchBackendEvents(Ref ref) {
         case 'question_request':
           final q = PendingQuestion.fromJson(event.payload);
           ref.read(questionsProvider.notifier).add(q);
-          NotificationService.instance.showPermissionRequest(
-            reqId: q.reqId,
-            permission: 'question',
-            patterns: q.questions.map((qi) => qi.header).toList(),
-          );
+          NotificationService.instance.showQuestionRequest(q);
 
         case 'question_resolved':
-          ref
-              .read(questionsProvider.notifier)
-              .remove(event.payload['requestID'] as String? ?? '');
+          final resolvedQuestionId =
+              event.payload['requestID'] as String? ?? '';
+          if (resolvedQuestionId.isNotEmpty) {
+            unawaited(
+              NotificationService.instance.cancelRequest(resolvedQuestionId),
+            );
+          }
+          ref.read(questionsProvider.notifier).remove(resolvedQuestionId);
 
         case 'prompt_error':
-          final errMsg =
-              event.payload['message'] as String? ??
-              'Unknown error from server';
-          ref.read(promptErrorProvider.notifier).setError(errMsg);
+          final sessionId = event.payload['session_id'] as String?;
+          final selected = ref.read(conversationProvider);
+          ref
+              .read(promptErrorProvider.notifier)
+              .setError(
+                PromptErrorNotice(
+                  sessionId: sessionId,
+                  modelId: sessionId == selected.selectedSessionId
+                      ? selected.selectedModelId
+                      : null,
+                  failure: ConversationFailure.fromJson({
+                    'name': 'PromptError',
+                    'data': {
+                      'message':
+                          event.payload['message'] as String? ??
+                          'Unknown error from server',
+                      if (event.payload['status_code'] is num)
+                        'statusCode': event.payload['status_code'],
+                      'isRetryable':
+                          event.payload['is_rate_limit'] as bool? ?? false,
+                    },
+                  }),
+                ),
+              );
 
         case 'connection_error':
         case 'protocol_error':
+        case 'resync_required':
           ref.read(connectionMessageProvider.notifier).state =
               event.payload['message'] as String? ??
+              (event.type == 'resync_required'
+                  ? 'Refreshing state after an event cursor mismatch.'
+                  : null) ??
               event.payload['error'] as String? ??
               'Connection error';
       }
@@ -1189,6 +1510,7 @@ void _handleDag(Ref ref, String topic, Map<String, dynamic> p) {
   final dag = ref.read(dagProvider.notifier);
   final sessionId = p['sessionID'] as String?;
   final directory = p['directory'] as String?;
+  final workflowId = p['workflowId'] as String?;
 
   switch (topic) {
     case 'tui.chain.add_step':
@@ -1203,37 +1525,77 @@ void _handleDag(Ref ref, String topic, Map<String, dynamic> p) {
           status,
           sessionId: sessionId,
           directory: directory,
+          workflowId: workflowId,
         );
       } else {
-        dag.updateBySessionId(sessionId, status, directory: directory);
+        dag.updateBySessionId(
+          sessionId,
+          status,
+          directory: directory,
+          workflowId: workflowId,
+        );
       }
 
     case 'tui.chain.complete_step':
-      dag.updateBySessionId(sessionId, 'complete', directory: directory);
+      dag.updateBySessionId(
+        sessionId,
+        'complete',
+        directory: directory,
+        workflowId: workflowId,
+      );
 
     case 'tui.chain.fail_step':
-      dag.updateBySessionId(sessionId, 'failed', directory: directory);
+      dag.updateBySessionId(
+        sessionId,
+        'failed',
+        directory: directory,
+        workflowId: workflowId,
+      );
 
     case 'tui.chain.set_todos':
       final rawTodos = p['todos'] as List? ?? [];
       final todos = rawTodos
           .map((t) => TodoItem.fromJson(t as Map<String, dynamic>))
           .toList();
-      dag.setTodos(sessionId, todos, directory: directory);
+      dag.setTodos(
+        sessionId,
+        todos,
+        directory: directory,
+        workflowId: workflowId,
+      );
 
     case 'tui.chain.todo_done':
       final todoIndex = p['todoIndex'] as int? ?? -1;
-      dag.markTodoDone(sessionId, todoIndex, directory: directory);
+      dag.markTodoDone(
+        sessionId,
+        todoIndex,
+        directory: directory,
+        workflowId: workflowId,
+      );
 
     case 'tui.chain.start':
-      dag.clear(directory: directory);
+      dag.clear(
+        directory: directory,
+        sessionId: sessionId,
+        workflowId: workflowId,
+      );
 
     case 'tui.chain.parallel.update':
       final stepIndex = p['stepIndex'] as int? ?? -1;
       final status = p['status'] as String? ?? '';
-      dag.updateByIndex(stepIndex, status, directory: directory);
+      dag.updateByIndex(
+        stepIndex,
+        status,
+        directory: directory,
+        sessionId: sessionId,
+        workflowId: workflowId,
+      );
 
     case 'tui.chain.clear':
-      dag.clear(directory: directory);
+      dag.clear(
+        directory: directory,
+        sessionId: sessionId,
+        workflowId: workflowId,
+      );
   }
 }

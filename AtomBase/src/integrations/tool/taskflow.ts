@@ -124,6 +124,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
           const todoIdx = params.todo_id ? parseInt(params.todo_id, 10) : 0
           if (!isNaN(todoIdx) && (params.todo_status === "completed" || params.todo_status === undefined)) {
             await Bus.publish(TuiEvent.ChainTodoDone, { todoIndex: todoIdx, sessionID: ctx.sessionID })
+            HarnessState.recordPlanStatusUpdate(ctx.sessionID)
           }
         }
 

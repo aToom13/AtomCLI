@@ -26,7 +26,7 @@ const options = {
   companionPort: {
     type: "number" as const,
     describe: "port for the scoped companion listener",
-    default: 4096,
+    default: 0,
   },
   auth: {
     type: "string" as const,

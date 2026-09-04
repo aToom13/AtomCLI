@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="live_task_fallback_title">Active AtomCLI task</string>
+    <string name="live_task_fallback_text">Working</string>
+    <string name="live_tasks_channel">Live AtomCLI tasks</string>
+    <string name="live_tasks_description">Glanceable progress for an active AtomCLI task</string>
+    <string name="open_atomcli">View tasks</string>
+</resources>

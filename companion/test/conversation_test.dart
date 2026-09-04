@@ -79,6 +79,51 @@ void main() {
     },
   );
 
+  test('streaming part batches publish one conversation state update', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    var updates = 0;
+    final subscription = container.listen(
+      conversationProvider,
+      (_, _) => updates++,
+    );
+    addTearDown(subscription.close);
+
+    container.read(conversationProvider.notifier).applyMessageParts([
+      {
+        'part': {
+          'id': 'part_batch',
+          'messageID': 'message_batch',
+          'sessionID': 'session_batch',
+          'type': 'text',
+          'text': 'Hello',
+        },
+      },
+      {
+        'part': {
+          'id': 'part_batch',
+          'messageID': 'message_batch',
+          'sessionID': 'session_batch',
+          'type': 'text',
+          'text': 'Hello world',
+        },
+        'delta': ' world',
+      },
+    ]);
+
+    expect(updates, 1);
+    expect(
+      container
+          .read(conversationProvider)
+          .messagesFor('session_batch')
+          .single
+          .parts
+          .single
+          .text,
+      'Hello world',
+    );
+  });
+
   test('workflow and question state stays deduplicated across projects', () {
     final container = ProviderContainer();
     addTearDown(container.dispose);
@@ -137,4 +182,79 @@ void main() {
     dag.clear(directory: '/project/a');
     expect(container.read(dagProvider).single.sessionId, 'session_b');
   });
+
+  test(
+    'Mission Control isolates workflows and attaches decisions and agents',
+    () {
+      const steps = [
+        DagStep(
+          stepId: 'inspect',
+          workflowId: 'wf_one',
+          name: 'inspect',
+          description: 'Inspect',
+          status: 'complete',
+          directory: '/project/a',
+          sessionId: 'session_parent',
+        ),
+        DagStep(
+          stepId: 'fix',
+          workflowId: 'wf_one',
+          name: 'fix',
+          description: 'Fix',
+          status: 'running',
+          directory: '/project/a',
+          sessionId: 'session_parent',
+        ),
+        DagStep(
+          stepId: 'other',
+          workflowId: 'wf_two',
+          name: 'other',
+          description: 'Other',
+          status: 'pending',
+          directory: '/project/a',
+          sessionId: 'session_parent',
+        ),
+      ];
+      final missions = MissionInfo.assemble(
+        steps: steps,
+        agents: [
+          SubAgentInfo(
+            sessionId: 'session_child',
+            parentSessionId: 'session_parent',
+            parentStepId: 'fix',
+            directory: '/project/a',
+            agentType: 'reviewer',
+            name: 'Review fix',
+            status: 'running',
+            startedAt: 1,
+          ),
+        ],
+        permissions: const [
+          PendingPermission(
+            reqId: 'permission_1',
+            sessionId: 'session_child',
+            permission: 'bash',
+            patterns: ['bun test'],
+            metadata: {},
+          ),
+        ],
+        questions: const [],
+      );
+
+      expect(missions, hasLength(2));
+      final first = missions.singleWhere((mission) => mission.id == 'wf_one');
+      expect(first.completedSteps, 1);
+      expect(first.agents.single.parentStepId, 'fix');
+      expect(first.pendingDecisions, 1);
+      expect(first.status, MissionStatus.waiting);
+      expect(
+        missions.singleWhere((mission) => mission.id == 'wf_two').steps,
+        hasLength(1),
+      );
+      expect(
+        missions.singleWhere((mission) => mission.id == 'wf_two').agents,
+        isEmpty,
+      );
+    },
+  );
 }
