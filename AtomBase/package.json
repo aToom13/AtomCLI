@@ -78,7 +78,7 @@
     "@opentui/solid": "0.1.72",
     "@parcel/watcher": "2.6.0",
     "@solid-primitives/event-bus": "1.1.4",
-    "@solid-primitives/scheduled": "1.5.2",
+    "@solid-primitives/scheduled": "1.5.3",
     "@zip.js/zip.js": "2.8.36",
     "ai": "catalog:",
     "bonjour-service": "1.4.4",
