@@ -15,7 +15,7 @@ test("stats skips unreadable storage records", async () => {
   await fs.mkdir(projectDir, { recursive: true })
   await fs.writeFile(corruptRecord, "{not-json")
 
-  const stats = await aggregateSessionStats()
+  const stats = await aggregateSessionStats(undefined, "corrupt-stats-fixture-project")
 
   expect(stats.totalSessions).toBe(0)
   expect(stats.skippedSessions).toBe(1)

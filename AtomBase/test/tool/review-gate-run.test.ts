@@ -16,6 +16,22 @@ const spawnMock = mock(async (_args: any) => ({
 mock.module("../../src/integrations/tool/subagent", () => ({
   SubAgent: {
     spawn: spawnMock,
+    status: (sessionId: string) => ({
+      sessionId,
+      runtime: "atom-inprocess",
+      status: "waiting",
+      startedAt: 0,
+      updatedAt: 0,
+    }),
+    wait: async (sessionId: string) => ({
+      sessionId,
+      runtime: "atom-inprocess",
+      status: "waiting",
+      startedAt: 0,
+      updatedAt: 0,
+    }),
+    cancel: async () => {},
+    capabilities: () => ({ wait: true, status: true, revive: true, steer: false }),
     buildFromAgent: (agent: any) => agent.permission ?? [],
     buildPermissions: (parent: any[]) => parent,
   },
