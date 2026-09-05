@@ -187,22 +187,23 @@ describe("SessionPrompt Synthetic Reminders", () => {
       directory: tmp.path,
       fn: async () => {
         const sessionID = "session-taskflow-time-cadence"
+        const beforeStartAt = Date.now()
         HarnessState.startPlan(sessionID, [{ id: "wait", name: "Wait for build" }])
-        const startedAt = Date.now()
+        const afterStartAt = Date.now()
 
-        expect(HarnessState.consumeTaskflowReminder({ sessionID, toolCallCount: 0, now: startedAt })).toBeUndefined()
+        expect(HarnessState.consumeTaskflowReminder({ sessionID, toolCallCount: 0, now: afterStartAt })).toBeUndefined()
         expect(
           HarnessState.consumeTaskflowReminder({
             sessionID,
             toolCallCount: 0,
-            now: startedAt + 5 * 60 * 1_000 - 1,
+            now: beforeStartAt + 5 * 60 * 1_000 - 1,
           }),
         ).toBeUndefined()
 
         const reminder = HarnessState.consumeTaskflowReminder({
           sessionID,
           toolCallCount: 0,
-          now: startedAt + 5 * 60 * 1_000,
+          now: afterStartAt + 5 * 60 * 1_000,
         })
         expect(reminder?.trigger).toBe("time")
         expect(reminder?.statusUnchanged).toBe(true)
