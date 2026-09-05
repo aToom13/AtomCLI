@@ -62,6 +62,7 @@ AtomCLI 3.4.2 improves installation, updates, browser portability, agent executi
 - Added restart-safe bridge epochs so event replay works after AtomCLI exits and starts again.
 - Fixed companion listener fallback behavior when the requested port is unavailable.
 - Reduced false upload failures by using direct HTTP transfer semantics with bounded connection timeouts.
+- Prevented background file indexing from leaking an unhandled error when a project directory is moved or removed during a scan.
 
 ## Security Boundaries
 
