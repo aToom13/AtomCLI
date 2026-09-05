@@ -1,40 +1,17 @@
 import "../preload"
 import fs from "fs/promises"
 import path from "path"
-import { describe, expect, test, mock, beforeEach } from "bun:test"
+import { describe, expect, test, beforeEach, spyOn } from "bun:test"
 
-// Mock SubAgent.spawn so runBlockingReview never hits a real model.
-// The mock must be registered BEFORE review-gate is imported.
-const spawnMock = mock(async (_args: any) => ({
+// Spy on only SubAgent.spawn so the shared Bun test process keeps the real
+// lifecycle methods for other test files.
+const { SubAgent } = await import("@/integrations/tool/subagent")
+const spawnMock = spyOn(SubAgent, "spawn").mockImplementation(async (_args: any) => ({
   sessionId: "reviewer-session-1",
   isNewSession: true,
   output: "",
   parts: [],
   structuredOutput: { verdict: "passed", summary: "All checks verified with raw output.", findings: [] },
-}))
-
-mock.module("../../src/integrations/tool/subagent", () => ({
-  SubAgent: {
-    spawn: spawnMock,
-    status: (sessionId: string) => ({
-      sessionId,
-      runtime: "atom-inprocess",
-      status: "waiting",
-      startedAt: 0,
-      updatedAt: 0,
-    }),
-    wait: async (sessionId: string) => ({
-      sessionId,
-      runtime: "atom-inprocess",
-      status: "waiting",
-      startedAt: 0,
-      updatedAt: 0,
-    }),
-    cancel: async () => {},
-    capabilities: () => ({ wait: true, status: true, revive: true, steer: false }),
-    buildFromAgent: (agent: any) => agent.permission ?? [],
-    buildPermissions: (parent: any[]) => parent,
-  },
 }))
 
 const { HarnessState } = await import("@/core/session/harness-state")
