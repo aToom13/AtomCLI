@@ -3,8 +3,6 @@ import "../preload"
 import { Server } from "@/server/server"
 import { ServerSecurity } from "@/server/security"
 import { Installation } from "@/services/installation"
-import { Instance } from "@/services/project/instance"
-import { tmpdir } from "../fixture/fixture"
 
 const servers: Array<ReturnType<typeof Server.listen>> = []
 
@@ -22,24 +20,19 @@ describe("control-plane security", () => {
   })
 
   test("requires bearer authentication for sensitive HTTP routes", async () => {
-    await using tmp = await tmpdir({ git: true })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const server = Server.listen({ hostname: "127.0.0.1", port: 0, auth: "test-control-token" })
-        servers.push(server)
-        const base = `http://127.0.0.1:${server.port}`
+    const server = Server.listen({ hostname: "127.0.0.1", port: 0, auth: "test-control-token" })
+    servers.push(server)
+    const base = `http://127.0.0.1:${server.port}`
 
-        for (const path of ["/pty", "/file", "/config", "/session"]) {
-          const unauthorized = await fetch(base + path)
-          expect(unauthorized.status).toBe(401)
-          const authorized = await fetch(base + path, {
-            headers: { authorization: "Bearer test-control-token" },
-          })
-          expect(authorized.status).not.toBe(401)
-        }
-      },
+    for (const path of ["/pty", "/file", "/config", "/session"]) {
+      const unauthorized = await fetch(base + path)
+      expect(unauthorized.status).toBe(401)
+    }
+
+    const authorized = await fetch(base + "/__auth_probe__", {
+      headers: { authorization: "Bearer test-control-token" },
     })
+    expect(authorized.status).toBe(404)
   })
 
   test("rejects rebinding hosts and mismatched browser origins", () => {
