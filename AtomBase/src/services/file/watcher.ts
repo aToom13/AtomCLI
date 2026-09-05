@@ -110,10 +110,12 @@ export namespace FileWatcher {
     },
   )
 
-  export function init() {
+  export async function init() {
     if (Flag.ATOMCLI_EXPERIMENTAL_DISABLE_FILEWATCHER) {
       return
     }
-    state()
+    await state().catch((error) => {
+      log.warn("failed to initialize watcher", { error })
+    })
   }
 }

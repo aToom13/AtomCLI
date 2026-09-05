@@ -230,7 +230,7 @@ export namespace File {
     }
   })
 
-  export function init() {
+  export async function init() {
     // Subscribe to file events here (not at module top-level) because
     // Bus.subscribe → Bus.raw → state() → Instance.directory requires
     // the AsyncLocalStorage context set up by Instance.provide().
@@ -239,7 +239,7 @@ export namespace File {
       _unsubCreated = Bus.subscribe(FileEvent.Created, invalidateCaches)
       _unsubDeleted = Bus.subscribe(FileEvent.Deleted, invalidateCaches)
     }
-    state()
+    await state()
   }
 
   export async function status() {
