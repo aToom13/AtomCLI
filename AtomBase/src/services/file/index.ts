@@ -148,87 +148,101 @@ export namespace File {
     return false
   }
 
-  const state = Instance.state(async () => {
-    type Entry = { files: string[]; dirs: string[] }
-    let cache: Entry = { files: [], dirs: [] }
-    let fetching = false
+  const state = Instance.state(
+    async () => {
+      type Entry = { files: string[]; dirs: string[] }
+      let cache: Entry = { files: [], dirs: [] }
+      let refreshPromise: Promise<void> | undefined
 
-    const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
+      const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
 
-    const fn = async (result: Entry) => {
-      // Disable scanning if in root of file system
-      if (Instance.directory === path.parse(Instance.directory).root) return
-      fetching = true
-      try {
-        if (isGlobalHome) {
-          const dirs = new Set<string>()
-          const ignore = new Set<string>()
+      const fn = async (result: Entry) => {
+        // Disable scanning if in root of file system
+        if (Instance.directory === path.parse(Instance.directory).root) return
+        try {
+          if (isGlobalHome) {
+            const dirs = new Set<string>()
+            const ignore = new Set<string>()
 
-          if (process.platform === "darwin") ignore.add("Library")
-          if (process.platform === "win32") ignore.add("AppData")
+            if (process.platform === "darwin") ignore.add("Library")
+            if (process.platform === "win32") ignore.add("AppData")
 
-          const ignoreNested = new Set(["node_modules", "dist", "build", "target", "vendor"])
-          const shouldIgnore = (name: string) => name.startsWith(".") || ignore.has(name)
-          const shouldIgnoreNested = (name: string) => name.startsWith(".") || ignoreNested.has(name)
+            const ignoreNested = new Set(["node_modules", "dist", "build", "target", "vendor"])
+            const shouldIgnore = (name: string) => name.startsWith(".") || ignore.has(name)
+            const shouldIgnoreNested = (name: string) => name.startsWith(".") || ignoreNested.has(name)
 
-          const top = await fs.promises
-            .readdir(Instance.directory, { withFileTypes: true })
-            .catch(() => [] as fs.Dirent[])
+            const top = await fs.promises
+              .readdir(Instance.directory, { withFileTypes: true })
+              .catch(() => [] as fs.Dirent[])
 
-          for (const entry of top) {
-            if (!entry.isDirectory()) continue
-            if (shouldIgnore(entry.name)) continue
-            dirs.add(entry.name + "/")
+            for (const entry of top) {
+              if (!entry.isDirectory()) continue
+              if (shouldIgnore(entry.name)) continue
+              dirs.add(entry.name + "/")
 
-            const base = path.join(Instance.directory, entry.name)
-            const children = await fs.promises.readdir(base, { withFileTypes: true }).catch(() => [] as fs.Dirent[])
-            for (const child of children) {
-              if (!child.isDirectory()) continue
-              if (shouldIgnoreNested(child.name)) continue
-              dirs.add(entry.name + "/" + child.name + "/")
+              const base = path.join(Instance.directory, entry.name)
+              const children = await fs.promises.readdir(base, { withFileTypes: true }).catch(() => [] as fs.Dirent[])
+              for (const child of children) {
+                if (!child.isDirectory()) continue
+                if (shouldIgnoreNested(child.name)) continue
+                dirs.add(entry.name + "/" + child.name + "/")
+              }
+            }
+
+            result.dirs = Array.from(dirs).toSorted()
+            cache = result
+            return
+          }
+
+          const set = new Set<string>()
+          for await (const file of Ripgrep.files({ cwd: Instance.directory })) {
+            result.files.push(file)
+            let current = file
+            while (true) {
+              const dir = path.dirname(current)
+              if (dir === ".") break
+              if (dir === current) break
+              current = dir
+              if (set.has(dir)) continue
+              set.add(dir)
+              result.dirs.push(path.join(dir, ""))
             }
           }
-
-          result.dirs = Array.from(dirs).toSorted()
           cache = result
-          return
+        } catch (error) {
+          log.warn("failed to refresh file cache", { error })
         }
-
-        const set = new Set<string>()
-        for await (const file of Ripgrep.files({ cwd: Instance.directory })) {
-          result.files.push(file)
-          let current = file
-          while (true) {
-            const dir = path.dirname(current)
-            if (dir === ".") break
-            if (dir === current) break
-            current = dir
-            if (set.has(dir)) continue
-            set.add(dir)
-            result.dirs.push(path.join(dir, ""))
-          }
-        }
-        cache = result
-      } catch (error) {
-        log.warn("failed to refresh file cache", { error })
-      } finally {
-        fetching = false
       }
-    }
-    void fn(cache)
 
-    return {
-      async files() {
-        if (!fetching) {
-          void fn({
-            files: [],
-            dirs: [],
-          })
-        }
-        return cache
-      },
-    }
-  })
+      const refresh = (result: Entry) => {
+        if (refreshPromise) return refreshPromise
+        const pending = fn(result)
+        const tracked = pending.finally(() => {
+          if (refreshPromise === tracked) refreshPromise = undefined
+        })
+        refreshPromise = tracked
+        return tracked
+      }
+
+      await refresh(cache)
+
+      return {
+        async files() {
+          if (!refreshPromise) {
+            void refresh({
+              files: [],
+              dirs: [],
+            })
+          }
+          return cache
+        },
+        async dispose() {
+          await refreshPromise
+        },
+      }
+    },
+    async (current) => current.dispose(),
+  )
 
   export async function init() {
     // Subscribe to file events here (not at module top-level) because
