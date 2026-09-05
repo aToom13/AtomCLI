@@ -68,6 +68,11 @@ jobs:
           cd ../..
           git diff --exit-code -- libs/sdk/js/src/v2/gen
 
+      - name: Build AtomCLI binaries
+        run: |
+          cd AtomBase
+          bun run build
+
       - name: Validate and build Android Companion
         working-directory: companion
         env:
@@ -100,11 +105,6 @@ jobs:
             echo 'Refusing to publish a debug-signed Android APK' >&2
             exit 1
           fi
-
-      - name: Build
-        run: |
-          cd AtomBase
-          bun run build
 
       - name: Rename and Prepare Release Assets
         run: |
