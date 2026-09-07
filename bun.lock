@@ -12,7 +12,7 @@
     },
     "AtomBase": {
       "name": "atomcli",
-      "version": "3.4.2",
+      "version": "3.4.3",
       "bin": {
         "atomcli": "./bin/atomcli",
       },
@@ -108,7 +108,7 @@
     },
     "libs/companion": {
       "name": "@atomcli/companion",
-      "version": "3.4.2",
+      "version": "3.4.3",
       "devDependencies": {
         "@types/bun": "1.3.4",
         "@types/node": "catalog:",
@@ -123,7 +123,7 @@
     },
     "libs/plugin": {
       "name": "@atomcli/plugin",
-      "version": "3.4.2",
+      "version": "3.4.3",
       "dependencies": {
         "@atomcli/sdk": "workspace:*",
         "zod": "catalog:",
@@ -137,14 +137,14 @@
     },
     "libs/script": {
       "name": "@atomcli/script",
-      "version": "3.4.2",
+      "version": "3.4.3",
       "devDependencies": {
         "@types/bun": "catalog:",
       },
     },
     "libs/sdk/js": {
       "name": "@atomcli/sdk",
-      "version": "3.4.2",
+      "version": "3.4.3",
       "devDependencies": {
         "@hey-api/openapi-ts": "0.99.0",
         "@tsconfig/node22": "catalog:",
@@ -155,7 +155,7 @@
     },
     "libs/util": {
       "name": "@atomcli/util",
-      "version": "3.4.2",
+      "version": "3.4.3",
       "dependencies": {
         "remeda": "2.39.0",
         "zod": "catalog:",

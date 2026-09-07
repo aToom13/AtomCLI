@@ -71,7 +71,7 @@ function Show-Help {
     Write-Host "Usage:" -ForegroundColor White
     Write-Host "  irm <url> | iex                        # Install (interactive)"
     Write-Host "  irm <url> | iex; Update-AtomCLI        # Update (version picker)"
-    Write-Host "  .\install.ps1 -Update -Version 3.4.2  # Non-interactive update"
+    Write-Host "  .\install.ps1 -Update -Version 3.4.3  # Non-interactive update"
     Write-Host "  irm <url> | iex; Uninstall-AtomCLI     # Uninstall"
     Write-Host "  irm <url> | iex; Install-AtomCLI -FromSource  # Build from source"
     Write-Host ""

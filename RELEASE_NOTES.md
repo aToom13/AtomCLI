@@ -1,88 +1,70 @@
-# AtomCLI v3.4.2
+# AtomCLI v3.4.3
 
-AtomCLI 3.4.2 improves installation, updates, browser portability, agent execution, and the redesigned Android Companion. Companion remains a beta product under active development: its mobile UI, protocol capabilities, background behavior, and platform integrations may change in later releases. Local-network access is intended for trusted networks; Tailscale remains the recommended remote path.
+AtomCLI 3.4.3 focuses on verified model routing, durable execution recovery, session integrity, and a more reliable beta Companion workflow. Companion remains a beta product under active development: mobile behavior, protocol capabilities, background execution, and platform integrations may change in later releases. Local-network access is intended for trusted networks; Tailscale remains the recommended remote path.
 
-## Installation and Updates
+## Verified Auto and Free Routing
 
-- Reworked the Bash and PowerShell installers with dependency discovery, automatic repair where supported, progress bars, activity indicators, checksum verification, and clearer failure recovery.
-- Added the same dependency and browser-health repair path to `atomcli update`; retained `atomcli upgrade` as a compatible alias and added explicit-version updates.
-- Added `atomcli setup --check` for a non-mutating health probe and `atomcli setup --yes` for unattended dependency repair.
-- Kept release archives, generated binaries, local configuration, runtime state, and signing material outside tracked source.
+- Changed AtomCLI Auto and AtomCLI Free to select concrete routes only after capability-specific verification with the effective endpoint, credentials, adapter parameters, and reasoning variant.
+- Kept AtomCLI Free restricted to explicitly zero-cost routes across retries, fallback, helper calls, and child sessions; unknown pricing is not treated as free.
+- Added separate opt-ins for paid Auto routes and paid verification probes so model discovery cannot silently incur cost.
+- Added bounded text and tool-call probes, expiring evidence, cooldowns, and visible failures when no verified route is currently eligible.
+- Fixed ChatGPT OAuth verification to use the streaming Responses path required by normal dispatch.
+- Preserved root union tool schemas while supplying the object metadata required by stricter providers.
 
-## Browser Reliability
+## Adaptive Model Control and TUI
 
-- Fixed Playwright discovery in compiled `atomcli` binaries so an installation is rechecked after repair instead of remaining stuck behind a failed import cache.
-- Added release-matched Playwright installation and a real Chromium launch probe rather than treating file presence as a successful browser setup.
-- Added dependency handling and diagnostics for Arch/CachyOS, Debian/Ubuntu, and Fedora/RHEL families, plus the portable Windows and macOS installation path.
-- Improved headless fallback and Chromium channel selection for systems without an active X11 or Wayland display.
+- Added the `model_control` tool for connected-model discovery and explicit model, reasoning, or bounded expert-route proposals.
+- Added independent `off`, `ask`, and `auto` policies for model and reasoning recommendations. Automatic application requires an exact trusted grant and a safe execution boundary.
+- Added adaptive routing controls under the model slash-command tree and Ctrl+P model settings, including direct Auto and Free selection.
+- Kept manual model and reasoning choices pinned above later automatic proposals.
+- Added visible route, reasoning, stage, pin, and execution-call information near the prompt.
+- Fixed Ctrl+C confirmation navigation with arrow keys and H/J/K/L while retaining Cancel as the safe default.
+- Made rejected prompts and uncertain transport acknowledgements visible without automatically resending potentially side-effecting requests.
 
-## Long-running Task Continuity
+## Durable Execution and Recovery
 
-- Added session-scoped taskflow checkpoints after every five tool calls or five minutes, evaluated on the next active model turn without waking idle sessions.
-- Included a bounded snapshot of recorded step states and an explicit stale-status reminder when work continues without a taskflow update.
-- Kept reminders advisory: AtomCLI never marks a task complete merely because tools ran or time elapsed.
-- Reset reminder cadence when a plan starts or clears and kept reviewer, checker, explorer, and planner sessions outside the progress-injection path.
+- Added a SQLite/WAL execution ledger with persistent call, step, duration, execution-cost, session-cost, and project-cost admission.
+- Added renewable owner leases, monotonic fencing, takeover recovery, exact cancellation targets, and conservative accounting for dispatched requests whose result is unknown.
+- Added durable work and blocker records for tools, child sessions, workflows, taskflow plans, verification, and review obligations.
+- Bound completion candidates to workspace mutation, plan, review-policy, and streamed-content revisions so stale review results cannot commit newer work.
+- Added immutable completed, failed, cancelled, budget-exhausted, and review-blocked outcomes with restart-safe delivery projection.
+- Added bounded completion recovery, projector leases and tokens, session-generation checks, and visible recovery-required records for invalid or missing projection targets.
+- Added session-scoped execution list, detail, snapshot, event replay, cancellation, and unknown-work reconciliation endpoints.
+- Bounded global and instance SSE queues by event count and bytes and cleaned up subscribers on abort, overflow, and write failure.
 
-## Android Companion Beta
+## Session and Storage Integrity
 
-- Rebuilt the mobile experience around Deck, Sessions, Inbox, and Link instead of decorative placeholder screens.
-- Reorganized the interface into clearer control, chat, request, file, and settings surfaces; added selectable accent themes and adaptive layouts for larger screens.
-- Added live session history, streamed assistant text, reasoning state, tool state, sub-agent activity, task progress, and session status.
-- Kept sub-agent activity inside a bounded, internally scrolling message card instead of allowing long-running work to grow the entire conversation indefinitely.
-- Added searchable recent sessions, working-directory selection from a folder tree, and continuation of existing AtomCLI conversations from Android.
-- Scoped task, chat, cache, transfer, and connection state by machine, project, process, and session so concurrent AtomCLI instances do not merge their work.
-- Added model selection with recent and favorite ordering, provider grouping, free-text filtering, capability filters, reasoning variants, and persistence of the last used model, variant, agent, and directory.
-- Added expandable tool details so command input, output, errors, and completion state can be inspected from the phone.
-- Added optimistic message delivery states, failure recovery, conversation deletion, session abort controls, and explicit Android-origin context in prompts sent from the phone.
-- Added a risk-proportionate Companion execution profile to reduce unnecessary sub-agent fan-out and verification latency for routine mobile requests while retaining stronger review for sensitive work.
-- Fixed Android 16 Live Update eligibility by declaring promoted-notification access and posting every active primary task through the public promoted-ongoing contract used by Samsung Now Bar. Promoted status, task title, progress, and lock-screen placement were validated on a Samsung SM-S938B running Android 16 and One UI 8.5.
+- Added a SQLite/WAL storage manifest, content-addressed records, cross-process compare-and-swap updates, session tombstones, and cache revision checks.
+- Added verified cutover backups and lazy legacy migration recovery without silently discarding malformed records.
+- Preserved cumulative budgets and the original deadline when a terminal execution is explicitly resumed.
+- Fixed retry exhaustion, stale run cleanup, final-step tool disabling, and workflow double-execution ownership.
+- Rejected empty, unfinished, or non-shrinking compaction summaries before hiding older context.
+- Preserved completed tool evidence when a later provider or post-processing failure occurs and prevented unsafe automatic replay of already-applied operations.
+- Added bounded base64 and percent-encoded text data URL decoding.
+- Moved session-bound memory work behind the main response and accounted helper model calls against the same execution budget.
 
-## Remote Approvals
+## Companion Beta
 
-- Added a mobile inbox for permission requests and structured questions.
-- Added Allow once, Always allow, and confirmed Full autonomous decisions from Android.
-- Kept Always allow aligned with the reviewed permission pattern rather than granting an unrelated broader rule.
-- Added mutex handling so a request accepted on one client cannot be resolved again by another client or the TUI.
-- Added high-priority Android notifications while the app is hidden and a pending approval or question is waiting.
+- Started the Companion listener alongside normal TUI startup when paired-device state or explicit options require it, without reserving the preferred port for an unnecessary control listener.
+- Preserved the invoking project directory when the root development wrapper starts AtomBase, preventing saved Companion endpoints from appearing to belong to another project.
+- Kept automatic port fallback for normal startup while making explicit Companion port collisions fail visibly.
+- Added durable execution events and terminal outcomes to the Companion protocol and mobile state.
+- Added encrypted local cache records, a bounded plain-text safe outbox, bridge-epoch checks, and idempotent delivery handling.
+- Improved provider failure cards, connection diagnostics, optimistic message recovery, and cached-state labeling.
+- Kept authentication, permission decisions, stop controls, session creation, and temporary attachments outside offline replay.
 
-## File Transfer and Previews
+## API, SDK, ACP, and PTY
 
-- Added PC-to-phone sharing through the `companion_send` tool, including image previews, download, open, and Android share actions.
-- Added phone-to-session uploads for images and arbitrary files, with multi-file staging, removable attachments, upload progress, and model-compatibility fallback messaging.
-- Replaced fragile single-request uploads with resumable chunks, authoritative offsets, idempotent ticket recovery, app-private staging, and whole-file checksum validation to prevent picker handoff timeouts from losing the transfer.
-- Added `companion_preview` for managed development servers, discoverable LAN and Tailscale URLs, captured logs, browser launch, and remote stop controls.
-- Added machine-grouped received items in Deck, persistent empty states, bounded transfer history, and 24-hour artifact retention.
-- Added transfer notifications for shared artifacts and preview activity where Android permits them.
-
-## Connectivity and Reliability
-
-- Added QR pairing with an Ed25519 device identity, signed and sequenced mutations, replay rejection, and secure local credential storage.
-- Added automatic endpoint selection that prefers private LAN addresses and falls back to Tailscale routes.
-- Added foreground/background WebSocket ownership handoff backed by an Android foreground service.
-- Added restart-safe bridge epochs so event replay works after AtomCLI exits and starts again.
-- Fixed companion listener fallback behavior when the requested port is unavailable.
-- Reduced false upload failures by using direct HTTP transfer semantics with bounded connection timeouts.
-- Prevented background file indexing from leaking an unhandled error when a project directory is moved or removed during a scan.
-
-## Security Boundaries
-
-- Stored uploaded files inside the selected project workspace and validated resolved paths before writing.
-- Bounded upload sizes, artifact counts, preview counts, log tails, ticket lifetimes, and artifact retention.
-- Used unguessable artifact tokens and authenticated WebSocket mutations for companion actions.
-- Required normal read, bash, external-directory, and preview permissions before AtomCLI accesses or executes user content.
-- Documented that plain local-network traffic is intended only for a trusted development LAN and that Tailscale is preferred across untrusted networks.
-
-## Platform Scope
-
-- Android is the current companion delivery target; iOS remains outside this release's supported scope.
-- Added a signed Android Companion APK to the GitHub release assets and checksum manifest.
-- Companion is distributed as beta software even though AtomCLI 3.4.2 uses stable CLI version metadata.
-- Synced AtomCLI workspace versions and the Flutter application version through one release-version command.
-- Version `3.4.2` is stable release metadata; the exact release tag is `v3.4.2`.
+- Regenerated the JavaScript SDK for the execution lifecycle and replay endpoints.
+- Mapped durable terminal outcomes to ACP stop reasons and tightened ACP authentication handling.
+- Added cleanup coverage for PTY subscribers and bounded retained shell output to the newest 2 MiB.
+- Updated canonical documentation and the bundled AtomCLI guide for the new routing, execution, storage, TUI, and Companion behavior.
 
 ## Validation
 
-- AtomBase and workspace typechecks passed.
-- Deterministic Bun test suites and focused companion security, transfer, bridge, permission, and Flutter widget tests passed.
-- Flutter analysis and tests passed.
-- Release metadata was checked against the exact `v3.4.2` tag contract.
+- Workspace and AtomBase typechecks passed.
+- The fixture-backed AtomBase suite passed 1,617 tests with 10 opt-in tests skipped and no failures.
+- Workspace Turbo tests, generated SDK checks, Companion protocol generation checks, bundled-guide tests, formatting checks, and repository hygiene checks passed.
+- Live provider checks and physical-device behavior remain opt-in and environment-dependent.
+
+Version `3.4.3` is stable AtomCLI release metadata; the exact release tag is `v3.4.3`. Companion remains beta.
