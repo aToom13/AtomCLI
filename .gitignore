@@ -122,6 +122,12 @@ benchmark-results/
 eval-results/
 scratch/
 
+# Local analysis and model-handoff notes
+/analizraporu.md
+/astra-*.md
+/calisma-plani.md
+/model-gorev-dagilimi.md
+
 # Local release helper (never commit)
 .local-release-*.sh
 dependabot-open.jsonl
