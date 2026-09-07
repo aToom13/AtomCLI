@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import "../preload"
 import { MessageV2 } from "@/core/session/message-v2"
 
 const sessionID = "session"
@@ -460,6 +461,40 @@ describe("session.message-v2.toModelMessage", () => {
     ]
 
     expect(await MessageV2.toModelMessage(input)).toStrictEqual([])
+  })
+
+  test("preserves completed tool evidence when the provider fails afterward", async () => {
+    const assistantID = "m-assistant-tool-then-error"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: assistantInfo(
+          assistantID,
+          "m-parent",
+          new MessageV2.APIError({ message: "provider failed", isRetryable: true }).toObject() as MessageV2.APIError,
+        ),
+        parts: [
+          {
+            ...basePart(assistantID, "tool-completed"),
+            type: "tool",
+            callID: "call-completed",
+            tool: "write",
+            state: {
+              status: "completed",
+              input: { filePath: "done.txt", content: "done" },
+              output: "Wrote done.txt",
+              title: "done.txt",
+              metadata: {},
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const output = JSON.stringify(await MessageV2.toModelMessage(input))
+    expect(output).toContain("call-completed")
+    expect(output).toContain("Wrote done.txt")
+    expect(output).toContain("must not be repeated automatically")
   })
 
   test("includes aborted assistant messages only when they have non-step-start/reasoning content", async () => {

@@ -11,12 +11,64 @@ const {
   hasFailedDependency,
   preferredModel,
   canonicalReference,
+  executionReference,
   dependencyIds,
   buildDependencyContext,
   requiresTaskQA,
   WORKFLOWS,
+  ACTIVE_EXECUTIONS,
+  claimWorkflowExecution,
+  releaseWorkflowExecution,
+  markInterruptedTasksUnknown,
 } = orchestrateInternals
 const { scoreModel } = routerInternals
+
+describe("orchestrate - execution ownership", () => {
+  test("only one live execution can claim a workflow", () => {
+    const workflowID = "wf-single-owner"
+    const first = claimWorkflowExecution(workflowID)
+
+    expect(first).toBeDefined()
+    expect(claimWorkflowExecution(workflowID)).toBeUndefined()
+
+    releaseWorkflowExecution(workflowID, Symbol("stale-owner"))
+    expect(claimWorkflowExecution(workflowID)).toBeUndefined()
+
+    releaseWorkflowExecution(workflowID, first!)
+    const replacement = claimWorkflowExecution(workflowID)
+    expect(replacement).toBeDefined()
+    releaseWorkflowExecution(workflowID, replacement!)
+    expect(ACTIVE_EXECUTIONS.has(workflowID)).toBe(false)
+  })
+
+  test("preserves interrupted task outcomes as unknown instead of retrying them", () => {
+    const workflow = {
+      id: "wf-interrupted",
+      tasks: [
+        { id: "done", prompt: "", agent: "coder", category: "general" as TaskCategory, dependsOn: [] },
+        { id: "in-flight", prompt: "", agent: "coder", category: "general" as TaskCategory, dependsOn: [] },
+        { id: "not-started", prompt: "", agent: "coder", category: "general" as TaskCategory, dependsOn: [] },
+      ],
+      results: {
+        done: { status: "completed" as const },
+        "in-flight": { status: "running" as const, startedAt: 123 },
+        "not-started": { status: "pending" as const },
+      },
+      status: "running" as const,
+      createdAt: Date.now(),
+      sessionMapKeys: [],
+    }
+
+    expect(markInterruptedTasksUnknown(workflow)).toBe(true)
+    expect((workflow as { status: string }).status).toBe("resumable")
+    expect(workflow.results["in-flight"]).toMatchObject({
+      status: "unknown",
+      startedAt: 123,
+    })
+    expect(workflow.results["not-started"].status).toBe("pending")
+    expect(getReadyTasks(workflow).map((task) => task.id)).toEqual(["not-started"])
+  })
+})
 
 // ─── DAG Tests ───────────────────────────────────────────────
 
@@ -257,6 +309,14 @@ describe("orchestrate - sub-agent model precedence", () => {
     expect(() => canonicalReference({ providerID: "atomcli", modelID: "atomcli-free" }, { options: {} })).toThrow(
       "did not resolve to a usable model",
     )
+  })
+
+  test("preserves a virtual AtomCLI reference after validating its current concrete model", () => {
+    const requested = { providerID: "atomcli", modelID: "atomcli-free" }
+    const canonical = { providerID: "openai", modelID: "gpt-5-nano" }
+
+    expect(executionReference(requested, canonical)).toEqual(requested)
+    expect(executionReference({ providerID: "custom", modelID: "alias" }, canonical)).toEqual(canonical)
   })
 })
 

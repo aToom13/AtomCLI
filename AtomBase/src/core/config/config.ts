@@ -1240,6 +1240,18 @@ export namespace Config {
         .passthrough()
         .optional()
         .describe("Automatic reviewer gate configuration for the main agent"),
+      execution_budget: z
+        .object({
+          max_calls: z.number().int().positive().optional(),
+          max_steps: z.number().int().positive().optional(),
+          max_duration_ms: z.number().int().positive().optional(),
+          max_cost_usd: z.number().finite().positive().optional(),
+          session_max_cost_usd: z.number().finite().positive().optional(),
+          project_max_cost_usd: z.number().finite().positive().optional(),
+          unknown_price: z.enum(["block", "allow"]).optional().default("block"),
+        })
+        .optional()
+        .describe("Shared call, step, duration, and cost limits for a root execution and its child agents"),
       provider: z
         .record(z.string(), Provider)
         .optional()
@@ -1272,6 +1284,24 @@ export namespace Config {
           ),
         ])
         .optional(),
+      adaptive_routing: z
+        .object({
+          mode: z.enum(["off", "ask", "auto"]).optional().default("ask"),
+          thinking: z
+            .object({ mode: z.enum(["off", "ask", "auto"]).optional().default("ask") })
+            .optional()
+            .default({ mode: "ask" }),
+          base_models: z.array(z.string()).optional().default([]),
+          expert_models: z.array(z.string()).optional().default([]),
+          max_expert_episodes: z.number().int().min(0).optional().default(2),
+          max_expert_calls: z.number().int().min(0).optional().default(3),
+          max_expert_steps: z.number().int().min(0).optional().default(3),
+          cooldown_steps: z.number().int().min(0).optional().default(3),
+          proposal_ttl_ms: z.number().int().positive().optional().default(120_000),
+          return_to_base: z.boolean().optional().default(true),
+        })
+        .optional()
+        .describe("User policy for model and thinking-level proposals; auto mode still requires a trusted grant"),
       lsp: z
         .union([
           z.literal(false),
@@ -1372,6 +1402,20 @@ export namespace Config {
             .describe("Routing mode for automatic model selection"),
           auto_router: z
             .object({
+              allowed_providers: z
+                .array(z.string())
+                .optional()
+                .describe("Providers that AtomCLI Auto may consider; defaults to all connected providers"),
+              allow_paid_models: z
+                .boolean()
+                .optional()
+                .default(false)
+                .describe("Allow AtomCLI Auto to select verified models that are not explicitly free"),
+              allow_paid_probes: z
+                .boolean()
+                .optional()
+                .default(false)
+                .describe("Allow automatic verification probes for models that are not explicitly free"),
               excluded_models: z.array(z.string()).optional().describe("Models to exclude from auto-routing selection"),
               model_ratings: z
                 .record(

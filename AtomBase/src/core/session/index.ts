@@ -207,7 +207,8 @@ export namespace Session {
       },
     }
     log.info("created", result)
-    await Storage.write(["session", Instance.project.id, result.id], result)
+    const guard = await Storage.activateSession(result.id)
+    await Storage.writeGuarded(["session", Instance.project.id, result.id], result.id, result, guard.generation)
     Bus.publish(Event.Created, {
       info: result,
     })
@@ -263,7 +264,7 @@ export namespace Session {
 
   export async function update(id: string, editor: (session: Info) => void) {
     const project = Instance.project
-    const result = await Storage.update<Info>(["session", project.id, id], (draft) => {
+    const result = await Storage.updateGuarded<Info>(["session", project.id, id], id, (draft) => {
       editor(draft)
       draft.time.updated = Date.now()
     })
@@ -348,6 +349,31 @@ export namespace Session {
 
   const removeSemaphore = createSemaphore(200) // Limit concurrent Storage.remove calls (increased for deep trees)
 
+  async function removeStoredPrefix(prefix: string[]) {
+    const keys = await Storage.list(prefix)
+    await Promise.all(keys.map((key) => removeSemaphore(() => Storage.remove(key))))
+  }
+
+  async function removeSessionData(projectID: string, sessionID: string) {
+    const messageIDs = await Storage.list(["message", sessionID])
+    await Promise.all(
+      messageIDs.map(async (messageKey) => {
+        await removeStoredPrefix(["part", messageKey.at(-1)!])
+        await removeSemaphore(() => Storage.remove(messageKey))
+      }),
+    )
+    await Promise.all([
+      removeStoredPrefix(["request", sessionID]),
+      removeStoredPrefix(["session_event", sessionID]),
+      removeStoredPrefix(["compaction_transaction", sessionID]),
+    ])
+    await Promise.all([
+      removeSemaphore(() => Storage.remove(["todo", sessionID])),
+      removeSemaphore(() => Storage.remove(["session_diff", sessionID])),
+      removeSemaphore(() => Storage.remove(["session", projectID, sessionID])),
+    ])
+  }
+
   // Collect all descendant session IDs recursively (no semaphore for collection)
   async function collectAllDescendantIds(sessionID: string): Promise<string[]> {
     const childrenList = await children(sessionID)
@@ -366,20 +392,20 @@ export namespace Session {
       const session = await get(sessionID)
       // Collect all descendant IDs first (no semaphore needed for reads)
       const allDescendants = await collectAllDescendantIds(sessionID)
-      // Batch remove all descendants in parallel with semaphore
-      await Promise.all(allDescendants.map((id) => removeSemaphore(() => Storage.remove(["session", project.id, id]))))
-      // Batch remove messages and parts in parallel with semaphore
-      const messageIDs = await Storage.list(["message", sessionID])
-      await Promise.all(
-        messageIDs.map(async (msg) => {
-          const partIDs = await Storage.list(["part", msg.at(-1)!])
-          await Promise.all(partIDs.map((part) => removeSemaphore(() => Storage.remove(part))))
-          await removeSemaphore(() => Storage.remove(msg))
-        }),
+      const removedIDs = [sessionID, ...allDescendants]
+      const tombstones = await Storage.tombstoneSessions(removedIDs)
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      ExecutionRuntime.deleteSessions(
+        removedIDs,
+        Object.fromEntries(tombstones.map((item) => [item.sessionID, item.generation])),
       )
-      await unshare(sessionID).catch((e) => log.warn("unshare failed", { sessionID, error: (e as Error).message }))
-      // Remove the session itself
-      await Storage.remove(["session", project.id, sessionID])
+      await Promise.all(removedIDs.map((id) => removeSessionData(project.id, id)))
+      const { ShareNext } = await import("@/util/share/share-next")
+      await Promise.all(
+        removedIDs.map((id) =>
+          ShareNext.remove(id).catch((e) => log.warn("unshare failed", { sessionID: id, error: (e as Error).message })),
+        ),
+      )
       // Free in-memory harness state (taskflow steps, edited files, execution
       // logs, review verdicts, reviewer session mappings) for the session and
       // every descendant removed above — prevents unbounded memory growth.
@@ -391,11 +417,11 @@ export namespace Session {
       // A main session (no parent) has no gate to preserve — its edits die
       // with it.
       if (session.parentID) {
-        for (const id of [sessionID, ...allDescendants]) {
+        for (const id of removedIDs) {
           HarnessState.mergeEditedFiles(session.parentID, id)
         }
       }
-      for (const id of [sessionID, ...allDescendants]) {
+      for (const id of removedIDs) {
         HarnessState.reset(id)
         HarnessState.clearAllQASessions(id)
       }
@@ -409,12 +435,19 @@ export namespace Session {
   })
 
   export const updateMessage = fn(MessageV2.Info, async (msg) => {
-    await Storage.write(["message", msg.sessionID, msg.id], msg)
+    await Storage.writeGuarded(["message", msg.sessionID, msg.id], msg.sessionID, msg)
     Bus.publish(MessageV2.Event.Updated, {
       info: msg,
     })
     return msg
   })
+
+  export async function updateMessageGuarded(msg: MessageV2.Info, expectedGeneration: number) {
+    const parsed = MessageV2.Info.parse(msg)
+    await Storage.writeGuarded(["message", parsed.sessionID, parsed.id], parsed.sessionID, parsed, expectedGeneration)
+    Bus.publish(MessageV2.Event.Updated, { info: parsed })
+    return parsed
+  }
 
   export const removeMessage = fn(
     z.object({
@@ -422,7 +455,7 @@ export namespace Session {
       messageID: Identifier.schema("message"),
     }),
     async (input) => {
-      await Storage.remove(["message", input.sessionID, input.messageID])
+      await Storage.removeGuarded(["message", input.sessionID, input.messageID], input.sessionID)
       Bus.publish(MessageV2.Event.Removed, {
         sessionID: input.sessionID,
         messageID: input.messageID,
@@ -438,7 +471,7 @@ export namespace Session {
       partID: Identifier.schema("part"),
     }),
     async (input) => {
-      await Storage.remove(["part", input.messageID, input.partID])
+      await Storage.removeGuarded(["part", input.messageID, input.partID], input.sessionID)
       Bus.publish(MessageV2.Event.PartRemoved, {
         sessionID: input.sessionID,
         messageID: input.messageID,
@@ -463,13 +496,22 @@ export namespace Session {
   export const updatePart = fn(UpdatePartInput, async (input) => {
     const part = "delta" in input ? input.part : input
     const delta = "delta" in input ? input.delta : undefined
-    await Storage.write(["part", part.messageID, part.id], part)
+    await Storage.writeGuarded(["part", part.messageID, part.id], part.sessionID, part)
     Bus.publish(MessageV2.Event.PartUpdated, {
       part,
       delta,
     })
     return part
   })
+
+  export async function updatePartGuarded(input: z.infer<typeof UpdatePartInput>, expectedGeneration: number) {
+    const parsed = UpdatePartInput.parse(input)
+    const part = "delta" in parsed ? parsed.part : parsed
+    const delta = "delta" in parsed ? parsed.delta : undefined
+    await Storage.writeGuarded(["part", part.messageID, part.id], part.sessionID, part, expectedGeneration)
+    Bus.publish(MessageV2.Event.PartUpdated, { part, delta })
+    return part
+  }
 
   export const getUsage = fn(
     z.object({

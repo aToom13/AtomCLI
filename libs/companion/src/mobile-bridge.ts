@@ -28,6 +28,14 @@ export interface PendingPermission {
   metadata: Record<string, unknown>
 }
 
+export interface RouteProposalState {
+  id: string
+  executionID: string
+  state: string
+  expiresAt: number
+  [key: string]: unknown
+}
+
 export interface DagStep {
   stepId?: string
   workflowId?: string
@@ -118,6 +126,8 @@ const STATE_BUFFER_MAX = 200
 const _buffer: BridgeEvent[] = []
 const _dagSteps = new Map<string, DagStep>()
 const _pendingPermissions = new Map<string, PendingPermission>()
+const _routeProposals = new Map<string, RouteProposalState>()
+const _activeRoutes = new Map<string, Record<string, unknown>>()
 const _subAgentSessions = new Map<string, SubAgentSession>()
 const _subAgentActivityBroadcastAt = new Map<string, number>()
 const _pendingQuestions = new Map<string, PendingQuestion>()
@@ -280,6 +290,16 @@ export namespace MobileBridge {
     for (const permission of permissions) _pendingPermissions.set(permission.req_id, permission)
   }
 
+  export function replaceRouteState(
+    proposals: RouteProposalState[],
+    routes: Array<Record<string, unknown> & { executionID: string }>,
+  ): void {
+    _routeProposals.clear()
+    for (const proposal of proposals) _routeProposals.set(proposal.id, proposal)
+    _activeRoutes.clear()
+    for (const route of routes) _activeRoutes.set(route.executionID, route)
+  }
+
   export function replacePendingQuestions(questions: PendingQuestion[]): void {
     _pendingQuestions.clear()
     for (const question of questions) _pendingQuestions.set(question.req_id, question)
@@ -321,6 +341,8 @@ export namespace MobileBridge {
             cursor: { bridge_epoch: _epoch, seq_id: _seq },
             dag: Array.from(_dagSteps.values()),
             pending_permissions: Array.from(_pendingPermissions.values()),
+            route_proposals: Array.from(_routeProposals.values()),
+            active_routes: Array.from(_activeRoutes.values()),
             sub_agents: Array.from(_subAgentSessions.values()),
             pending_questions: Array.from(_pendingQuestions.values()),
             artifacts: Array.from(_artifacts.values()),
@@ -352,6 +374,32 @@ export namespace MobileBridge {
       if (!type || !p) return
 
       switch (type) {
+        case "execution.route.proposal": {
+          const proposal = { ...(p.proposal as unknown as RouteProposalState), directory, sessionID: p.sessionID }
+          if (!proposal?.id) break
+          if (["pending", "accepted"].includes(proposal.state)) _routeProposals.set(proposal.id, proposal)
+          else _routeProposals.delete(proposal.id)
+          const event: BridgeEvent = {
+            seq_id: nextSeq(),
+            type: "route_proposal",
+            payload: { ...p, directory, proposal },
+          }
+          bufferEvent(event)
+          broadcast(event)
+          break
+        }
+
+        case "execution.route.changed": {
+          const executionID = p.executionID as string
+          if (!executionID) break
+          const route = { ...p, directory }
+          _activeRoutes.set(executionID, route)
+          const event: BridgeEvent = { seq_id: nextSeq(), type: "route_changed", payload: route }
+          bufferEvent(event)
+          broadcast(event)
+          break
+        }
+
         case "companion.artifact.shared": {
           const artifact = p as unknown as CompanionArtifact
           boundedSet(_artifacts, artifact.id, artifact)

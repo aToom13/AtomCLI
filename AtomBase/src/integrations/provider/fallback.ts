@@ -10,8 +10,13 @@
 import { Log } from "@/util/util/log"
 import { Provider } from "../provider/provider"
 import { ModelAvailability } from "./availability"
+import { ModelVerification } from "./verification"
 import { LLM } from "@/core/session/llm"
 import type { StreamTextResult, ToolSet } from "ai"
+import z from "zod"
+import { ExecutionRuntime } from "@/core/execution/runtime"
+import { ProviderTransform } from "./transform"
+import { Auth } from "@/services/auth"
 
 export namespace ModelFallback {
   const log = Log.create({ service: "fallback" })
@@ -149,6 +154,33 @@ export namespace ModelFallback {
     available: boolean
     latencyMs?: number
     error?: string
+    verification?: ModelVerification.Status
+    capability?: ModelVerification.Capability
+    checkedAt?: number
+    verifiedUntil?: number
+  }
+
+  function validateProbeText(result: unknown) {
+    const response =
+      result && typeof result === "object" ? (result as { text?: unknown; finishReason?: unknown }) : undefined
+    const text = response?.text
+    if (typeof text !== "string" || !text.trim()) {
+      if (response?.finishReason === "length") throw new Error("Probe output limit reached before visible text")
+      throw new Error("Probe returned empty output")
+    }
+  }
+
+  function validateProbeTool(result: unknown) {
+    const calls = result && typeof result === "object" ? (result as { toolCalls?: unknown }).toolCalls : undefined
+    if (!Array.isArray(calls) || calls.length === 0) throw new Error("Probe returned no valid tool call")
+    const valid = calls.some(
+      (call) =>
+        call &&
+        typeof call === "object" &&
+        (call as { toolName?: unknown }).toolName === "verification" &&
+        (call as { input?: { value?: unknown } }).input?.value === "ok",
+    )
+    if (!valid) throw new Error("Probe returned an invalid tool call")
   }
 
   /**
@@ -156,49 +188,196 @@ export namespace ModelFallback {
    */
   export async function probeModels(
     models: string[],
-    options?: { timeoutMs?: number; concurrency?: number },
+    options?: {
+      timeoutMs?: number
+      totalTimeoutMs?: number
+      concurrency?: number
+      capability?: "text" | "tool"
+      force?: boolean
+      /** Bind real verification requests to the originating root execution budget. */
+      sessionID?: string
+      signal?: AbortSignal
+      execution?: ExecutionRuntime.Context
+      /** Verify the same reasoning/thinking variant that the real request will use. */
+      variant?: string
+      agent?: any
+      user?: any
+      /** Already prepared dispatch parameters; do not rerun stateful parameter plugins. */
+      effectiveParams?: Awaited<ReturnType<typeof LLM.prepareRouteParams>>["params"]
+    },
   ): Promise<ModelProbeResult[]> {
     const timeoutMs = options?.timeoutMs ?? 7000
+    const totalDeadline = Date.now() + (options?.totalTimeoutMs ?? timeoutMs * Math.ceil(models.length / 3))
     const concurrency = options?.concurrency ?? 3
+    const capability = options?.capability ?? "text"
+    const maxOutputTokens = capability === "tool" ? 512 : 256
     const results: ModelProbeResult[] = []
 
-    const { getGenerateText } = await import("@/util/util/ai-compat")
+    const { getGenerateText, getTool } = await import("@/util/util/ai-compat")
     const generateText = await getGenerateText()
+    const probeTool =
+      capability === "tool"
+        ? (await getTool())({
+            description: "Return the supplied verification value without side effects.",
+            inputSchema: z.object({ value: z.literal("ok") }),
+          })
+        : undefined
 
     const probeSingle = async (modelSpec: string): Promise<ModelProbeResult> => {
       const parsed = Provider.parseModel(modelSpec)
       const start = Date.now()
+      const remaining = Math.min(timeoutMs, totalDeadline - start)
+      if (remaining <= 0) {
+        return {
+          model: modelSpec,
+          providerID: parsed.providerID,
+          modelID: parsed.modelID,
+          available: false,
+          error: "Probe total deadline exceeded",
+        }
+      }
       try {
         const model = await Provider.getModel(parsed.providerID, parsed.modelID)
-        const language = await Provider.getLanguage(model)
+        const provider = await Provider.getProvider(model.providerID)
+        if (!provider) throw new Error(`Provider not found: ${model.providerID}`)
+        const isCodex = provider.id === "openai" && (await Auth.get(provider.id))?.type === "oauth"
+        const concreteUser = options?.user
+          ? { ...options.user, variant: options.variant ?? options.user.variant }
+          : undefined
+        const prepared = options?.effectiveParams
+          ? { params: options.effectiveParams }
+          : options?.agent && concreteUser
+            ? await LLM.prepareRouteParams({
+                model,
+                sessionID: options.sessionID ?? concreteUser.sessionID,
+                agent: options.agent,
+                user: concreteUser,
+                provider,
+              })
+            : undefined
+        const key = await ModelVerification.identity(model, provider, {
+          variant: options?.variant,
+          effectiveParams: prepared?.params,
+        })
         const abortController = new AbortController()
-        const timeout = setTimeout(() => abortController.abort(), timeoutMs)
+        let deadline: ReturnType<typeof setTimeout> | undefined
 
         try {
-          const result = await Promise.race([
-            generateText({
-              model: language,
-              messages: [{ role: "user", content: "ping" }],
-              abortSignal: abortController.signal,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`Probe timed out after ${timeoutMs}ms`)), timeoutMs),
-            ),
-          ])
+          const evidence = await ModelVerification.probe(
+            {
+              key,
+              providerID: model.providerID,
+              modelID: model.id,
+              capability,
+              force: options?.force,
+            },
+            async () => {
+              const probePrompt =
+                capability === "tool" ? 'Call the verification tool with {"value":"ok"}.' : "Reply with OK."
+              const executionAttempt = options?.sessionID
+                ? await ExecutionRuntime.admitModelCall({
+                    sessionID: options.sessionID,
+                    purpose: `verification:${capability}`,
+                    estimateMicrousd: ExecutionRuntime.estimateMicrousd(model, probePrompt, maxOutputTokens),
+                    execution: options.execution,
+                  })
+                : undefined
+              let usageSettled = false
+              try {
+                const request = (async () => {
+                  try {
+                    const language = await Provider.getLanguage(model)
+                    const base = ProviderTransform.options(
+                      model,
+                      options?.sessionID ?? "model-verification",
+                      provider.options,
+                    )
+                    const requestOptions =
+                      prepared?.params.options ??
+                      ProviderTransform.applyVariant(model, options?.variant, base, model.options)
+                    if (isCodex && !prepared) {
+                      const { SystemPrompt } = await import("@/core/session/system")
+                      requestOptions.instructions = SystemPrompt.instructions()
+                      requestOptions.store = false
+                    }
+                    const signals = [abortController.signal]
+                    if (options?.signal) signals.push(options.signal)
+                    if (executionAttempt) signals.push(executionAttempt.signal)
+                    const requestParams = {
+                      model: language,
+                      messages: [{ role: "user" as const, content: probePrompt }],
+                      abortSignal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+                      maxOutputTokens: isCodex ? undefined : maxOutputTokens,
+                      maxRetries: 0,
+                      temperature: prepared?.params.temperature,
+                      topP: prepared?.params.topP,
+                      topK: prepared?.params.topK,
+                      providerOptions: ProviderTransform.providerOptions(model, requestOptions),
+                      ...(probeTool
+                        ? {
+                            tools: { verification: probeTool },
+                            toolChoice: { type: "tool" as const, toolName: "verification" as const },
+                          }
+                        : {}),
+                    }
+                    // ChatGPT OAuth accepts only streaming Responses requests, just like normal dispatch.
+                    const response = isCodex
+                      ? await (async () => {
+                          const { getStreamText } = await import("@/util/util/ai-compat")
+                          const stream = (await getStreamText())(requestParams)
+                          const [text, toolCalls, usage, finishReason] = await Promise.all([
+                            stream.text,
+                            stream.toolCalls,
+                            stream.usage,
+                            stream.finishReason,
+                          ])
+                          return { text, toolCalls, usage, finishReason }
+                        })()
+                      : await generateText(requestParams)
+                    executionAttempt?.settle(ExecutionRuntime.usageCostUsd(model, response.usage))
+                    usageSettled = true
+                    if (capability === "tool") validateProbeTool(response)
+                    else validateProbeText(response)
+                    return response
+                  } catch (error) {
+                    if (!usageSettled) executionAttempt?.uncertain()
+                    throw error
+                  }
+                })()
+                const result = await Promise.race([
+                  request,
+                  new Promise<never>((_, reject) => {
+                    deadline = setTimeout(() => {
+                      abortController.abort()
+                      reject(new Error(`Probe timed out after ${remaining}ms`))
+                    }, remaining)
+                  }),
+                ])
+                return { capabilities: [capability] }
+              } catch (error) {
+                throw error
+              }
+            },
+          )
 
           const latencyMs = Date.now() - start
-          const hasText = result && typeof (result as any).text === "string"
           return {
             model: modelSpec,
-            providerID: parsed.providerID,
-            modelID: parsed.modelID,
-            available: hasText,
+            providerID: model.providerID,
+            modelID: model.id,
+            available: ModelVerification.isVerified(evidence, capability),
             latencyMs,
+            verification: evidence.status,
+            capability,
+            checkedAt: evidence.checkedAt,
+            verifiedUntil: evidence.capabilities[capability],
+            error: evidence.status === "verified" ? undefined : evidence.reason,
           }
         } finally {
-          clearTimeout(timeout)
+          if (deadline) clearTimeout(deadline)
         }
       } catch (err: any) {
+        if (err?.name === "ExecutionBudgetExceededError") throw err
         return {
           model: modelSpec,
           providerID: parsed.providerID,
@@ -218,6 +397,11 @@ export namespace ModelFallback {
     }
 
     return results
+  }
+
+  export const _internals = {
+    validateProbeText,
+    validateProbeTool,
   }
 
   /**

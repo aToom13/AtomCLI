@@ -1,11 +1,59 @@
-import { test, expect } from "bun:test"
+import "../preload"
+import { test, expect, spyOn } from "bun:test"
 import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "@/services/project/instance"
 import { Provider } from "@/integrations/provider/provider"
+import { ModelVerification } from "@/integrations/provider/verification"
 import { ProviderTransform } from "@/integrations/provider/transform"
 import { Env } from "@/core/env"
 import { Config } from "@/core/config/config"
+import { ModelFallback } from "@/integrations/provider/fallback"
+
+test("Auto and Free complete text and tool verification for one batch before probing more models", async () => {
+  await using tmp = await tmpdir()
+  const previousEvidence = await Bun.file(ModelVerification._internals.filepath)
+    .text()
+    .catch(() => '{"version":1,"entries":{}}')
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const provider = await Provider.getProvider("atomcli")
+        for (const alias of ["atomcli-auto", "atomcli-free"]) {
+          for (const model of Object.values(provider!.models)) {
+            const key = await ModelVerification.identity(model, provider!)
+            await ModelVerification.begin({ key, providerID: model.providerID, modelID: model.id })
+          }
+          const calls: string[] = []
+          const probe = spyOn(ModelFallback, "probeModels").mockImplementation(async (specs, options) => {
+            calls.push(options!.capability!)
+            expect(specs.length).toBeLessThanOrEqual(2)
+            for (const spec of specs) {
+              const parsed = Provider.parseModel(spec)
+              const model = await Provider.getModel(parsed.providerID, parsed.modelID)
+              const key = await ModelVerification.identity(model, provider!)
+              const attempt = await ModelVerification.begin({ key, providerID: model.providerID, modelID: model.id })
+              await ModelVerification.verified(attempt, [options!.capability!])
+            }
+            return []
+          })
+          try {
+            const selected = await Provider.getModel("atomcli", alias, {
+              prompt: "Read the files and edit the code to fix a bug",
+            })
+            expect(selected.id).not.toBe(alias)
+            expect(calls).toEqual(["text", "tool"])
+          } finally {
+            probe.mockRestore()
+          }
+        }
+      },
+    })
+  } finally {
+    await Bun.write(ModelVerification._internals.filepath, previousEvidence)
+  }
+})
 
 test("provider requests have a finite default timeout", () => {
   expect(Provider.requestTimeout({})).toBe(300_000)
@@ -15,12 +63,19 @@ test("provider requests have a finite default timeout", () => {
 
 test("AtomCLI public catalog excludes deprecated and paid models", () => {
   const model = {
-    cost: { input: 0, output: 0 },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
     status: "active",
   } as unknown as Provider.Model
 
   expect(Provider._internals.isPublicAtomCLIModel(model)).toBe(true)
   expect(Provider._internals.isPublicAtomCLIModel({ ...model, status: "deprecated" })).toBe(false)
+  expect(Provider._internals.isPublicAtomCLIModel({ ...model, cost: { input: 0, output: 0 } } as any)).toBe(false)
+  expect(
+    Provider._internals.isPublicAtomCLIModel({
+      ...model,
+      cost: { input: 0, output: 0, cache: { read: 0.01, write: 0 } },
+    }),
+  ).toBe(false)
   expect(
     Provider._internals.isPublicAtomCLIModel({
       ...model,
@@ -148,6 +203,17 @@ test("atomcli-auto persists the selected provider catalog key", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
+      const provider = await Provider.getProvider("atomcli")
+      expect(provider).toBeDefined()
+      const candidate = Object.entries(provider!.models).find(
+        ([id, model]) => id !== "atomcli-auto" && id !== "atomcli-free" && Provider.isExplicitlyFree(model),
+      )
+      expect(candidate).toBeDefined()
+      const [candidateID, candidateModel] = candidate!
+      const key = await ModelVerification.identity(candidateModel, provider!)
+      const attempt = await ModelVerification.begin({ key, providerID: "atomcli", modelID: candidateID })
+      await ModelVerification.verified(attempt, ["text"])
+
       const model = await Provider.getModel("atomcli", "atomcli-auto", {
         session: { id: "ses_alias_resolution" },
         prompt: "",
@@ -157,6 +223,143 @@ test("atomcli-auto persists the selected provider catalog key", async () => {
       expect(primary).toBeDefined()
       expect({ providerID: model.providerID, modelID: model.id }).toEqual(primary)
       expect(model.id).not.toContain("atomcli-auto /")
+    },
+  })
+})
+
+test("atomcli-free execution selects only a model with fresh verification evidence", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = await Provider.getProvider("atomcli")
+      expect(provider).toBeDefined()
+      const candidate = Object.entries(provider!.models).find(
+        ([id, model]) => id !== "atomcli-auto" && id !== "atomcli-free" && Provider.isExplicitlyFree(model),
+      )
+      expect(candidate).toBeDefined()
+      const [candidateID, candidateModel] = candidate!
+      const key = await ModelVerification.identity(candidateModel, provider!)
+      const attempt = await ModelVerification.begin({ key, providerID: "atomcli", modelID: candidateID })
+      await ModelVerification.verified(attempt, ["text"])
+
+      const selected = await Provider.getModel("atomcli", "atomcli-free", {
+        session: { id: "ses_verified_alias" },
+        prompt: "",
+        verify: true,
+      })
+
+      expect(selected.id).toBe(candidateID)
+      expect((selected.options as any)._routePolicy).toEqual({
+        requested: "atomcli/atomcli-free",
+        mode: "free",
+        allowedProviders: ["atomcli"],
+        excluded: [],
+        requiredCapabilities: ["text"],
+        freeOnly: true,
+        requireVerification: true,
+      })
+    },
+  })
+})
+
+test("atomcli-auto considers a verified paid model only with explicit paid routing permission", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      experimental: {
+        auto_router: {
+          allowed_providers: ["paid-test"],
+          allow_paid_models: true,
+          allow_paid_probes: false,
+        },
+      },
+      provider: {
+        "paid-test": {
+          name: "Paid Test",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "paid-model": {
+              name: "Paid Model",
+              tool_call: true,
+              reasoning: true,
+              cost: { input: 1, output: 2, cache_read: 0.1, cache_write: 0.2 },
+              limit: { context: 128_000, output: 16_000 },
+            },
+          },
+          options: { apiKey: "fake-paid-test-key", baseURL: "https://paid.invalid/v1" },
+        },
+      },
+    } as any,
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = await Provider.getProvider("paid-test")
+      const candidate = provider?.models["paid-model"]
+      expect(candidate).toBeDefined()
+      expect(Provider.isExplicitlyFree(candidate!)).toBe(false)
+
+      const key = await ModelVerification.identity(candidate!, provider!)
+      const attempt = await ModelVerification.begin({ key, providerID: "paid-test", modelID: "paid-model" })
+      await ModelVerification.verified(attempt, ["text"])
+
+      const selected = await Provider.getModel("atomcli", "atomcli-auto", {
+        session: { id: "ses_verified_paid_alias" },
+        prompt: "Explain this architecture.",
+      })
+
+      expect({ providerID: selected.providerID, modelID: selected.id }).toEqual({
+        providerID: "paid-test",
+        modelID: "paid-model",
+      })
+      expect((selected.options as any)._routePolicy).toMatchObject({
+        mode: "auto",
+        allowedProviders: ["paid-test"],
+        freeOnly: false,
+        requireVerification: true,
+      })
+    },
+  })
+})
+
+test("atomcli-free never inherits AtomCLI Auto's paid model permission", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      experimental: {
+        auto_router: {
+          allowed_providers: ["paid-test"],
+          allow_paid_models: true,
+          allow_paid_probes: true,
+        },
+      },
+      provider: {
+        "paid-test": {
+          name: "Paid Test",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "paid-model": {
+              name: "Paid Model",
+              tool_call: true,
+              cost: { input: 1, output: 2 },
+              limit: { context: 128_000, output: 16_000 },
+            },
+          },
+          options: { apiKey: "fake-paid-test-key", baseURL: "https://paid.invalid/v1" },
+        },
+      },
+    } as any,
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      await expect(
+        Provider.getModel("atomcli", "atomcli-free", {
+          session: { id: "ses_paid_free_alias" },
+          prompt: "Say hello.",
+        }),
+      ).rejects.toThrow("atomcli-free: no eligible model is configured")
     },
   })
 })
@@ -676,6 +879,7 @@ test("model cost defaults to zero when not specified", async () => {
       expect(model.cost.output).toBe(0)
       expect(model.cost.cache.read).toBe(0)
       expect(model.cost.cache.write).toBe(0)
+      expect(Provider.isExplicitlyFree(model)).toBe(false)
     },
   })
 })

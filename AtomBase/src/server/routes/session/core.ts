@@ -56,7 +56,8 @@ export const SessionCoreRoute = new Hono()
     "/status",
     describeRoute({
       summary: "Get session status",
-      description: "Retrieve the current status of all sessions, including active, idle, and completed states.",
+      description:
+        "Retrieve transient session activity (busy, retry, or idle). Durable completion and failure outcomes are available from the execution endpoints.",
       operationId: "session.status",
       responses: {
         200: {

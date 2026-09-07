@@ -11,6 +11,7 @@ import {
   type NewSessionRequest,
   type PermissionOption,
   type PlanEntry,
+  type PromptResponse,
   type PromptRequest,
   type SetSessionModelRequest,
   type SetSessionModeRequest,
@@ -24,6 +25,7 @@ import type { ACPConfig, ACPSessionState } from "./types"
 import { Provider } from "../provider/provider"
 import { Agent as AgentModule } from "../agent/agent"
 import { Installation } from "@/services/installation"
+import { Auth } from "@/services/auth"
 import { MessageV2 } from "@/core/session/message-v2"
 import { Config } from "@/core/config/config"
 import { Todo } from "@/core/session/todo"
@@ -354,7 +356,7 @@ export namespace ACP {
       const authMethod: AuthMethod = {
         description: "Run `atomcli auth login` in the terminal",
         name: "Login with atomcli",
-        id: "atomcli-login",
+        id: AUTH_METHOD_ID,
       }
 
       // If client supports terminal-auth capability, use that instead.
@@ -389,8 +391,18 @@ export namespace ACP {
       }
     }
 
-    async authenticate(_params: AuthenticateRequest) {
-      throw new Error("Authentication not implemented")
+    async authenticate(params: AuthenticateRequest) {
+      if (params.methodId !== AUTH_METHOD_ID) {
+        throw RequestError.invalidParams({ methodId: params.methodId }, "Unknown AtomCLI authentication method")
+      }
+      const credentials = await Auth.all()
+      if (Object.keys(credentials).length === 0) {
+        throw RequestError.authRequired(
+          { methodId: params.methodId },
+          "No AtomCLI credentials were found after the login command completed",
+        )
+      }
+      return { _meta: { authenticated: true } }
     }
 
     async newSession(params: NewSessionRequest) {
@@ -901,38 +913,43 @@ export namespace ACP {
         return { name, args: rest.join(" ").trim() }
       })()
 
-      const done = {
-        stopReason: "end_turn" as const,
-        _meta: {},
-      }
-
       if (!cmd) {
-        await this.sdk.session.prompt({
-          sessionID,
-          model: {
-            providerID: model.providerID,
-            modelID: model.modelID,
-          },
-          parts,
-          agent,
-          directory,
-        })
-        return done
+        const response = await this.sdk.session
+          .prompt(
+            {
+              sessionID,
+              model: {
+                providerID: model.providerID,
+                modelID: model.modelID,
+              },
+              parts,
+              agent,
+              directory,
+            },
+            { throwOnError: true },
+          )
+          .then((result) => result.data!)
+        return this.promptResult(sessionID, directory, response.info.parentID)
       }
 
       const command = await this.config.sdk.command
         .list({ directory }, { throwOnError: true })
         .then((x) => x.data!.find((c) => c.name === cmd.name))
       if (command) {
-        await this.sdk.session.command({
-          sessionID,
-          command: command.name,
-          arguments: cmd.args,
-          model: model.providerID + "/" + model.modelID,
-          agent,
-          directory,
-        })
-        return done
+        const response = await this.sdk.session
+          .command(
+            {
+              sessionID,
+              command: command.name,
+              arguments: cmd.args,
+              model: model.providerID + "/" + model.modelID,
+              agent,
+              directory,
+            },
+            { throwOnError: true },
+          )
+          .then((result) => result.data!)
+        return this.promptResult(sessionID, directory, response.info.parentID)
       }
 
       switch (cmd.name) {
@@ -949,7 +966,20 @@ export namespace ACP {
           break
       }
 
-      return done
+      return { stopReason: "end_turn" as const, _meta: {} }
+    }
+
+    private async promptResult(sessionID: string, directory: string, userMessageID?: string): Promise<PromptResponse> {
+      if (!userMessageID) return { stopReason: "end_turn", _meta: {} }
+      const snapshot = await this.sdk.session.executions
+        .snapshot({ sessionID, directory }, { throwOnError: true })
+        .then((result) => result.data)
+        .catch((error) => {
+          log.error("failed to load execution outcome for ACP", { error, sessionID })
+          return undefined
+        })
+      const execution = snapshot?.executions.find((item) => item.userMessageID === userMessageID)
+      return executionPromptResponse(execution)
     }
 
     async cancel(params: CancelNotification) {
@@ -962,6 +992,44 @@ export namespace ACP {
         { throwOnError: true },
       )
     }
+  }
+
+  const AUTH_METHOD_ID = "atomcli-login"
+
+  type TerminalExecution = {
+    id: string
+    lifecycle: "active" | "draining" | "terminal"
+    outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
+    reason?: { code: string; message: string; retryable: boolean }
+  }
+
+  function executionPromptResponse(execution?: TerminalExecution): PromptResponse {
+    if (!execution || execution.lifecycle !== "terminal" || execution.outcome === null) {
+      return { stopReason: "end_turn", _meta: {} }
+    }
+    const stopReason = (() => {
+      if (execution.outcome === "completed") return "end_turn" as const
+      if (execution.outcome === "cancelled") return "cancelled" as const
+      if (execution.outcome === "budget_exhausted") {
+        return execution.reason?.code === "call_limit" || execution.reason?.code === "step_limit"
+          ? ("max_turn_requests" as const)
+          : ("max_tokens" as const)
+      }
+      return "refusal" as const
+    })()
+    return {
+      stopReason,
+      _meta: {
+        executionID: execution.id,
+        executionOutcome: execution.outcome,
+        reasonCode: execution.reason?.code,
+        retryable: execution.reason?.retryable ?? false,
+      },
+    }
+  }
+
+  export const _internals = {
+    executionPromptResponse,
   }
 
   function toToolKind(toolName: string): ToolKind {

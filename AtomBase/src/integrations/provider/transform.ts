@@ -428,7 +428,15 @@ export namespace ProviderTransform {
     small = false,
   ): Record<string, any> {
     const variant = !small && variantName ? model.variants?.[variantName] : undefined
-    const withModel = mergeDeep(base, modelOptions) as Record<string, any>
+    if (!small && variantName && !variant) {
+      const available = Object.keys(model.variants ?? {})
+      throw new Error(
+        `Unsupported variant "${variantName}" for ${model.providerID}/${model.id}` +
+          (available.length ? `. Available variants: ${available.join(", ")}` : ". This model has no variants."),
+      )
+    }
+    const { _routePolicy, _catalogCostKnown, ...wireModelOptions } = modelOptions
+    const withModel = mergeDeep(base, wireModelOptions) as Record<string, any>
     const withAgent = mergeDeep(withModel, agentOptions) as Record<string, any>
     return mergeDeep(withAgent, variant ?? {}) as Record<string, any>
   }
@@ -766,6 +774,10 @@ export namespace ProviderTransform {
   }
 
   export function schema(model: Provider.Model, schema: JSONSchema.BaseSchema) {
+    const root = schema as JSONSchema.BaseSchema & { anyOf?: JSONSchema.BaseSchema[]; oneOf?: JSONSchema.BaseSchema[] }
+    const alternatives = root.anyOf ?? root.oneOf
+    if (!root.type && alternatives?.length && alternatives.every((item) => item.type === "object")) root.type = "object"
+
     /*
     if (["openai", "azure"].includes(providerID)) {
       if (schema.type === "object" && schema.properties) {

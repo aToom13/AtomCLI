@@ -42,14 +42,42 @@ const options = {
 
 export type NetworkOptions = InferredOptionTypes<typeof options>
 
+export function needsControlListener(input: {
+  portSet: boolean
+  hostnameSet: boolean
+  mdnsSet: boolean
+  mdns: boolean
+  port: number
+  hostname: string
+}) {
+  return (
+    input.portSet ||
+    input.hostnameSet ||
+    input.mdnsSet ||
+    input.mdns ||
+    input.port !== 0 ||
+    input.hostname !== "127.0.0.1"
+  )
+}
+
 export function withNetworkOptions<T>(yargs: Argv<T>) {
   return yargs.options(options)
 }
 
-export async function resolveNetworkOptions(args: NetworkOptions) {
+export function companionIntent(input: {
+  value: boolean
+  explicitlySet: boolean
+  pairedDevices: boolean
+  autoStart: boolean
+}) {
+  const enabled = input.explicitlySet ? input.value : input.autoStart || input.pairedDevices
+  return { enabled, pairing: input.explicitlySet && input.value }
+}
+
+export async function resolveNetworkOptions(args: NetworkOptions, options?: { autoStartCompanion?: boolean }) {
   const config = await Config.global()
   const explicitlySet = (name: string) =>
-    process.argv.some((arg) => arg === `--${name}` || arg.startsWith(`--${name}=`))
+    process.argv.some((arg) => arg === `--${name}` || arg.startsWith(`--${name}=`) || arg === `--no-${name}`)
   const portExplicitlySet = explicitlySet("port")
   const hostnameExplicitlySet = explicitlySet("hostname")
   const mdnsExplicitlySet = explicitlySet("mdns")
@@ -61,8 +89,14 @@ export async function resolveNetworkOptions(args: NetworkOptions) {
   const hasPairedDevices = CompanionAuth.listDevices().length > 0
 
   const mdns = mdnsExplicitlySet ? args.mdns : (config?.server?.mdns ?? args.mdns)
-  const pairing = companionExplicitlySet ? args.companion : false
-  const companion = pairing || hasPairedDevices
+  const companionState = companionIntent({
+    value: args.companion,
+    explicitlySet: companionExplicitlySet,
+    pairedDevices: hasPairedDevices,
+    autoStart: options?.autoStartCompanion === true,
+  })
+  const pairing = companionState.pairing
+  const companion = companionState.enabled
 
   const port = portExplicitlySet ? args.port : (config?.server?.port ?? args.port)
   const hostname = hostnameExplicitlySet

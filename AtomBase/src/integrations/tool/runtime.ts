@@ -3,8 +3,32 @@ import { Log } from "@/util/util/log"
 import type { Tool } from "./tool"
 import { SessionReplay } from "@/core/session/replay"
 
+const READ_ONLY_TOOLS = new Set([
+  "find",
+  "grep",
+  "invalid",
+  "question",
+  "model_control",
+  "read",
+  "skill",
+  "webfetch",
+  "websearch",
+])
+
 export namespace ToolRuntime {
   const log = Log.create({ service: "tool.runtime" })
+
+  export class AppliedError extends Error {
+    readonly applied = true
+
+    constructor(tool: string, cause: unknown) {
+      super(
+        `Tool ${tool} completed its operation, but post-processing failed. The operation may have side effects; do not retry it automatically. ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      )
+      this.name = "ToolAppliedError"
+    }
+  }
 
   export type Result = {
     title: string
@@ -53,6 +77,18 @@ export namespace ToolRuntime {
       ...input.context,
       abort: combinedSignal(input.context.abort, input.timeoutMs),
     }
+    const execution = context.extra?.execution
+    const assertExecutionActive = async () => {
+      if (!execution) return
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      await ExecutionRuntime.assertActive({ sessionID: context.sessionID, execution })
+    }
+    const ask = context.ask.bind(context)
+    context.ask = async (request) => {
+      await ask(request)
+      if (context.abort.aborted) throw context.abort.reason ?? new Error(`Tool ${input.tool} was aborted`)
+      await assertExecutionActive()
+    }
     let args = input.args
 
     args = (
@@ -70,8 +106,9 @@ export namespace ToolRuntime {
 
     await input.permission?.(args, context)
     if (context.abort.aborted) throw context.abort.reason ?? new Error(`Tool ${input.tool} was aborted`)
+    await assertExecutionActive()
 
-    const callID = context.callID ?? `runtime-${Date.now()}`
+    const callID = context.callID ?? `runtime-${crypto.randomUUID()}`
     await SessionReplay.append({
       type: "tool.call",
       sessionID: context.sessionID,
@@ -79,15 +116,66 @@ export namespace ToolRuntime {
       tool: input.tool,
       args,
     })
+    const operationID = execution
+      ? `${execution.executionID}:${execution.invocationID}:${context.messageID}:${callID}:0`
+      : undefined
+    const mutating = !READ_ONLY_TOOLS.has(input.tool)
+    let workVersion: number | undefined
+    if (execution && operationID) {
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      const registered = await ExecutionRuntime.registerWork({
+        sessionID: context.sessionID,
+        execution,
+        operationID,
+        kind: `tool:${input.tool}`,
+        mutating,
+      })
+      workVersion = registered.version
+    }
 
-    let invoke = (nextArgs: Args, nextContext: Tool.Context) => input.execute(nextArgs, nextContext)
+    let bodyClaimed = false
+    let bodyBegan = false
+    let invoke = async (nextArgs: Args, nextContext: Tool.Context) => {
+      if (bodyClaimed) throw new Error(`Tool ${input.tool} middleware attempted to invoke the operation more than once`)
+      bodyClaimed = true
+      if (nextContext.abort.aborted) throw nextContext.abort.reason ?? new Error(`Tool ${input.tool} was aborted`)
+      await assertExecutionActive()
+      if (execution && operationID && workVersion !== undefined) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const began = await ExecutionRuntime.beginWork({
+          sessionID: context.sessionID,
+          execution,
+          operationID,
+          expectedVersion: workVersion,
+        })
+        workVersion = began.version
+        bodyBegan = true
+      }
+      return input.execute(nextArgs, nextContext)
+    }
     for (const middleware of [...(input.middleware ?? [])].reverse()) {
       if (!middleware.around) continue
       const next = invoke
       invoke = (nextArgs, nextContext) =>
         middleware.around!({ tool: input.tool, args: nextArgs, context: nextContext }, next)
     }
-    for (const hook of [...(await Plugin.list())].reverse()) {
+    let hooks
+    try {
+      hooks = await Plugin.list()
+    } catch (error) {
+      if (execution && operationID) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        await ExecutionRuntime.finishWork({
+          sessionID: context.sessionID,
+          execution,
+          operationID,
+          expectedVersion: workVersion!,
+          state: "failed",
+        }).catch((workError) => log.warn("failed to close prepared tool work", { workError, operationID }))
+      }
+      throw error
+    }
+    for (const hook of [...hooks].reverse()) {
       const around = hook["tool.execute.around"]
       if (!around) continue
       const next = invoke
@@ -107,35 +195,88 @@ export namespace ToolRuntime {
     try {
       result = normalize(input.tool, await invoke(args, context))
     } catch (error) {
+      if (execution && operationID) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        await ExecutionRuntime.finishWork({
+          sessionID: context.sessionID,
+          execution,
+          operationID,
+          expectedVersion: workVersion!,
+          state: mutating && bodyBegan ? "unknown" : context.abort.aborted ? "cancelled" : "failed",
+        }).catch((workError) => log.warn("failed to persist tool work failure", { workError, operationID }))
+      }
       await SessionReplay.append({
         type: "tool.error",
         sessionID: context.sessionID,
         callID,
         tool: input.tool,
         error: error instanceof Error ? error.message : String(error),
-      })
+        applied: mutating && bodyBegan,
+      }).catch((replayError) => log.warn("failed to record tool execution error", { replayError }))
       throw error
     }
-    if (input.redact) result = normalize(input.tool, await input.redact(result))
 
-    for (const middleware of [...(input.middleware ?? [])].reverse()) {
-      const replacement = await middleware.after?.({ tool: input.tool, args, context, result })
-      if (replacement !== undefined) result = replacement as Output
-      result = normalize(input.tool, result)
+    await SessionReplay.append({
+      type: "tool.applied",
+      sessionID: context.sessionID,
+      callID,
+      tool: input.tool,
+    }).catch((replayError) => log.warn("failed to record applied tool operation", { replayError }))
+
+    try {
+      if (input.redact) result = normalize(input.tool, await input.redact(result))
+
+      for (const middleware of [...(input.middleware ?? [])].reverse()) {
+        const replacement = await middleware.after?.({ tool: input.tool, args, context, result })
+        if (replacement !== undefined) result = replacement as Output
+        result = normalize(input.tool, result)
+      }
+
+      result = await Plugin.trigger(
+        "tool.execute.after",
+        { tool: input.tool, sessionID: context.sessionID, callID: context.callID ?? "" },
+        result,
+      )
+    } catch (error) {
+      if (execution && operationID) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        await ExecutionRuntime.finishWork({
+          sessionID: context.sessionID,
+          execution,
+          operationID,
+          expectedVersion: workVersion!,
+          state: "completed",
+        }).catch((workError) => log.warn("failed to close applied tool work", { workError, operationID }))
+      }
+      const appliedError = new AppliedError(input.tool, error)
+      await SessionReplay.append({
+        type: "tool.error",
+        sessionID: context.sessionID,
+        callID,
+        tool: input.tool,
+        error: appliedError.message,
+        applied: true,
+      }).catch((replayError) => log.warn("failed to record tool post-processing error", { replayError }))
+      throw appliedError
     }
 
-    result = await Plugin.trigger(
-      "tool.execute.after",
-      { tool: input.tool, sessionID: context.sessionID, callID: context.callID ?? "" },
-      result,
-    )
     await SessionReplay.append({
       type: "tool.result",
       sessionID: context.sessionID,
       callID,
       tool: input.tool,
       result,
-    })
+    }).catch((replayError) => log.warn("failed to record tool result", { replayError }))
+    if (execution && operationID) {
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      await ExecutionRuntime.finishWork({
+        sessionID: context.sessionID,
+        execution,
+        operationID,
+        expectedVersion: workVersion!,
+        state: "completed",
+      })
+    }
     log.info("executed", { tool: input.tool, sessionID: context.sessionID, duration: Date.now() - started })
     return normalize(input.tool, result)
   }

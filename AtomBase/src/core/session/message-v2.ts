@@ -13,6 +13,7 @@ import { ProviderTransform } from "@/integrations/provider/transform"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/util/iife"
 import { type SystemError } from "bun"
+import { CompactionTransaction } from "./compaction-transaction"
 
 export namespace MessageV2 {
   export const OutputLengthError = NamedError.create("MessageOutputLengthError", z.object({}))
@@ -320,6 +321,9 @@ export namespace MessageV2 {
     system: z.string().optional(),
     tools: z.record(z.string(), z.boolean()).optional(),
     variant: z.string().optional(),
+    modelPinned: z.boolean().optional(),
+    thinkingPinned: z.boolean().optional(),
+    resumesExecutionID: z.string().optional(),
   }).meta({
     ref: "UserMessage",
   })
@@ -472,8 +476,10 @@ export namespace MessageV2 {
       }
 
       if (msg.info.role === "assistant") {
+        const completedTool = msg.parts.some((part) => part.type === "tool" && part.state.status === "completed")
         if (
           msg.info.error &&
+          !completedTool &&
           !(
             MessageV2.AbortedError.isInstance(msg.info.error) &&
             msg.parts.some((part) => part.type !== "step-start" && part.type !== "reasoning")
@@ -543,6 +549,12 @@ export namespace MessageV2 {
               providerMetadata: part.metadata,
             })
           }
+        }
+        if (msg.info.error && completedTool) {
+          assistantMessage.parts.push({
+            type: "text",
+            text: "The provider failed after the completed tool result above. The completed tool must not be repeated automatically.",
+          })
         }
         if (assistantMessage.parts.length > 0) {
           result.push(assistantMessage)
@@ -621,7 +633,13 @@ export namespace MessageV2 {
         msg.parts.some((part) => part.type === "compaction")
       )
         break
-      if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish) completed.add(msg.info.parentID)
+      if (
+        msg.info.role === "assistant" &&
+        msg.info.summary &&
+        msg.info.finish &&
+        (await CompactionTransaction.isCommittedSummary(msg.info.sessionID, msg.info.id))
+      )
+        completed.add(msg.info.parentID)
     }
     result.reverse()
     return result
@@ -676,7 +694,7 @@ export namespace MessageV2 {
           if (errMsg && typeof errMsg === "string") {
             return `${msg}: ${errMsg}`
           }
-        } catch { }
+        } catch {}
 
         return `${msg}: ${apiErr.responseBody}`
       }).trim()

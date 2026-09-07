@@ -149,6 +149,20 @@ import type {
   SessionDeleteResponses,
   SessionDiffErrors,
   SessionDiffResponses,
+  SessionExecutionsCancelErrors,
+  SessionExecutionsCancelResponses,
+  SessionExecutionsEventsErrors,
+  SessionExecutionsEventsResponses,
+  SessionExecutionsGetErrors,
+  SessionExecutionsGetResponses,
+  SessionExecutionsListErrors,
+  SessionExecutionsListResponses,
+  SessionExecutionsReconcileErrors,
+  SessionExecutionsReconcileResponses,
+  SessionExecutionsRouteProposalDecideErrors,
+  SessionExecutionsRouteProposalDecideResponses,
+  SessionExecutionsSnapshotErrors,
+  SessionExecutionsSnapshotResponses,
   SessionForkResponses,
   SessionGetErrors,
   SessionGetResponses,
@@ -742,6 +756,15 @@ export class Config extends HeyApiClient {
         high_risk_patterns?: Array<string>
         [key: string]: unknown
       }
+      execution_budget?: {
+        max_calls?: number
+        max_steps?: number
+        max_duration_ms?: number
+        max_cost_usd?: number
+        session_max_cost_usd?: number
+        project_max_cost_usd?: number
+        unknown_price?: "block" | "allow"
+      }
       provider?: {
         [key: string]: ProviderConfig
       }
@@ -765,6 +788,20 @@ export class Config extends HeyApiClient {
               extensions?: Array<string>
             }
           }
+      adaptive_routing?: {
+        mode?: "off" | "ask" | "auto"
+        thinking?: {
+          mode?: "off" | "ask" | "auto"
+        }
+        base_models?: Array<string>
+        expert_models?: Array<string>
+        max_expert_episodes?: number
+        max_expert_calls?: number
+        max_expert_steps?: number
+        cooldown_steps?: number
+        proposal_ttl_ms?: number
+        return_to_base?: boolean
+      }
       lsp?:
         | false
         | {
@@ -857,6 +894,18 @@ export class Config extends HeyApiClient {
          */
         auto_router?: {
           /**
+           * Providers that AtomCLI Auto may consider; defaults to all connected providers
+           */
+          allowed_providers?: Array<string>
+          /**
+           * Allow AtomCLI Auto to select verified models that are not explicitly free
+           */
+          allow_paid_models?: boolean
+          /**
+           * Allow automatic verification probes for models that are not explicitly free
+           */
+          allow_paid_probes?: boolean
+          /**
            * Models to exclude from auto-routing selection
            */
           excluded_models?: Array<string>
@@ -928,9 +977,11 @@ export class Config extends HeyApiClient {
             { in: "body", key: "agent_mode" },
             { in: "body", key: "agent_retry" },
             { in: "body", key: "review" },
+            { in: "body", key: "execution_budget" },
             { in: "body", key: "provider" },
             { in: "body", key: "mcp" },
             { in: "body", key: "formatter" },
+            { in: "body", key: "adaptive_routing" },
             { in: "body", key: "lsp" },
             { in: "body", key: "instructions" },
             { in: "body", key: "layout" },
@@ -1683,6 +1734,322 @@ export class Vcs extends HeyApiClient {
   }
 }
 
+export class RouteProposal extends HeyApiClient {
+  /**
+   * Decide a route proposal
+   *
+   * Accept or reject a durable route proposal with proposal-version and route-revision CAS.
+   */
+  public decide<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      executionID: string
+      proposalID: string
+      directory?: string
+      requestID: string
+      expectedProposalVersion: number
+      expectedRouteRevision: number
+      decision: "accept" | "reject"
+      acceptScope?: "episode" | "execution"
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<
+    SessionExecutionsRouteProposalDecideResponses,
+    SessionExecutionsRouteProposalDecideErrors,
+    ThrowOnError
+  > {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "executionID" },
+            { in: "path", key: "proposalID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "requestID" },
+            { in: "body", key: "expectedProposalVersion" },
+            { in: "body", key: "expectedRouteRevision" },
+            { in: "body", key: "decision" },
+            { in: "body", key: "acceptScope" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionExecutionsRouteProposalDecideResponses,
+      SessionExecutionsRouteProposalDecideErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/executions/{executionID}/route-proposals/{proposalID}/decision",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Executions extends HeyApiClient {
+  /**
+   * List session executions
+   *
+   * List durable execution outcomes and active work for a session using a scope-bound cursor.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      cursor?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionExecutionsListResponses, SessionExecutionsListErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionExecutionsListResponses,
+      SessionExecutionsListErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/executions",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session execution snapshot
+   *
+   * Get a transaction-consistent execution snapshot and durable event cursor for reconnect.
+   */
+  public snapshot<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionExecutionsSnapshotResponses, SessionExecutionsSnapshotErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionExecutionsSnapshotResponses,
+      SessionExecutionsSnapshotErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/execution-snapshot",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Replay session execution events
+   *
+   * Replay durable execution events after a cursor or request an explicit snapshot resync.
+   */
+  public events<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      epoch?: string
+      sequence?: number
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionExecutionsEventsResponses, SessionExecutionsEventsErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "epoch" },
+            { in: "query", key: "sequence" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionExecutionsEventsResponses,
+      SessionExecutionsEventsErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/execution-events",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session execution
+   *
+   * Get one durable execution after verifying its project and root-session scope.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      executionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionExecutionsGetResponses, SessionExecutionsGetErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "executionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionExecutionsGetResponses,
+      SessionExecutionsGetErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/executions/{executionID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Cancel a session execution
+   *
+   * Request an idempotent root or child-invocation cancellation with execution-version CAS.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      executionID: string
+      directory?: string
+      requestID: string
+      expectedVersion: number
+      invocationID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionExecutionsCancelResponses, SessionExecutionsCancelErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "executionID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "requestID" },
+            { in: "body", key: "expectedVersion" },
+            { in: "body", key: "invocationID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionExecutionsCancelResponses,
+      SessionExecutionsCancelErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/executions/{executionID}/cancel",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Reconcile uncertain execution work
+   *
+   * Resolve one unknown physical operation with bounded evidence and execution/work CAS versions.
+   */
+  public reconcile<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      executionID: string
+      directory?: string
+      requestID: string
+      operationID: string
+      state: "completed" | "failed" | "cancelled"
+      expectedVersion: number
+      expectedWorkVersion: number
+      evidence: string
+      resolutionCode: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionExecutionsReconcileResponses, SessionExecutionsReconcileErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "executionID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "requestID" },
+            { in: "body", key: "operationID" },
+            { in: "body", key: "state" },
+            { in: "body", key: "expectedVersion" },
+            { in: "body", key: "expectedWorkVersion" },
+            { in: "body", key: "evidence" },
+            { in: "body", key: "resolutionCode" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionExecutionsReconcileResponses,
+      SessionExecutionsReconcileErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/executions/{executionID}/reconcile",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _routeProposal?: RouteProposal
+  get routeProposal(): RouteProposal {
+    return (this._routeProposal ??= new RouteProposal({ client: this.client }))
+  }
+}
+
 export class Session extends HeyApiClient {
   /**
    * List sessions
@@ -1760,7 +2127,7 @@ export class Session extends HeyApiClient {
   /**
    * Get session status
    *
-   * Retrieve the current status of all sessions, including active, idle, and completed states.
+   * Retrieve transient session activity (busy, retry, or idle). Durable completion and failure outcomes are available from the execution endpoints.
    */
   public status<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2162,6 +2529,9 @@ export class Session extends HeyApiClient {
       }
       system?: string
       variant?: string
+      modelPinned?: boolean
+      thinkingPinned?: boolean
+      resumesExecutionID?: string
       parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
     options?: Options<never, ThrowOnError>,
@@ -2180,6 +2550,9 @@ export class Session extends HeyApiClient {
             { in: "body", key: "tools" },
             { in: "body", key: "system" },
             { in: "body", key: "variant" },
+            { in: "body", key: "modelPinned" },
+            { in: "body", key: "thinkingPinned" },
+            { in: "body", key: "resumesExecutionID" },
             { in: "body", key: "parts" },
           ],
         },
@@ -2250,6 +2623,9 @@ export class Session extends HeyApiClient {
       }
       system?: string
       variant?: string
+      modelPinned?: boolean
+      thinkingPinned?: boolean
+      resumesExecutionID?: string
       parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
     options?: Options<never, ThrowOnError>,
@@ -2268,6 +2644,9 @@ export class Session extends HeyApiClient {
             { in: "body", key: "tools" },
             { in: "body", key: "system" },
             { in: "body", key: "variant" },
+            { in: "body", key: "modelPinned" },
+            { in: "body", key: "thinkingPinned" },
+            { in: "body", key: "resumesExecutionID" },
             { in: "body", key: "parts" },
           ],
         },
@@ -2373,6 +2752,8 @@ export class Session extends HeyApiClient {
       arguments: string
       command: string
       variant?: string
+      modelPinned?: boolean
+      thinkingPinned?: boolean
       parts?: Array<{
         id?: string
         type: "file"
@@ -2397,6 +2778,8 @@ export class Session extends HeyApiClient {
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
             { in: "body", key: "variant" },
+            { in: "body", key: "modelPinned" },
+            { in: "body", key: "thinkingPinned" },
             { in: "body", key: "parts" },
           ],
         },
@@ -2423,6 +2806,7 @@ export class Session extends HeyApiClient {
     parameters: {
       sessionID: string
       directory?: string
+      messageID?: string
       agent: string
       model?: {
         providerID: string
@@ -2439,6 +2823,7 @@ export class Session extends HeyApiClient {
           args: [
             { in: "path", key: "sessionID" },
             { in: "query", key: "directory" },
+            { in: "body", key: "messageID" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },
             { in: "body", key: "command" },
@@ -2525,6 +2910,11 @@ export class Session extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _executions?: Executions
+  get executions(): Executions {
+    return (this._executions ??= new Executions({ client: this.client }))
   }
 }
 

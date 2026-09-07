@@ -92,8 +92,12 @@ export namespace ModelDialog {
       model.name,
       model.family,
       model.status,
-      ModelAvailability.active(model.availability)?.status === "rate_limited" ? "rate limited kota limit sınırlı" : undefined,
-      ModelAvailability.active(model.availability)?.status === "unavailable" ? "unavailable kullanılamaz erişilemiyor" : undefined,
+      ModelAvailability.active(model.availability)?.status === "rate_limited"
+        ? "rate limited kota limit sınırlı"
+        : undefined,
+      ModelAvailability.active(model.availability)?.status === "unavailable"
+        ? "unavailable kullanılamaz erişilemiyor"
+        : undefined,
       ...capabilities(model),
       kind === "free"
         ? "free ücretsiz"
@@ -153,10 +157,10 @@ function ModelDetails(props: { value?: ModelDialog.Value }) {
                 ModelAvailability.active(selected().model.availability)
                   ? theme.warning
                   : ModelDialog.billing(selected().provider, selected().model) === "free"
-                  ? theme.success
-                  : ModelDialog.billing(selected().provider, selected().model) === "subscription"
-                    ? theme.secondary
-                    : theme.textMuted
+                    ? theme.success
+                    : ModelDialog.billing(selected().provider, selected().model) === "subscription"
+                      ? theme.secondary
+                      : theme.textMuted
               }
             >
               {ModelDialog.statusLabel(selected().provider, selected().model)}
@@ -170,7 +174,8 @@ function ModelDetails(props: { value?: ModelDialog.Value }) {
             <text fg={theme.warning}>
               {selected().model.availability?.status === "rate_limited"
                 ? "Temporarily rate limited by the upstream gateway"
-                : "The upstream gateway reports this model as unavailable"} · {ModelAvailability.retryLabel(selected().model.availability)}
+                : "The upstream gateway reports this model as unavailable"}{" "}
+              · {ModelAvailability.retryLabel(selected().model.availability)}
             </text>
           </Show>
           <box flexDirection="row" flexWrap="wrap" gap={2}>
@@ -277,7 +282,7 @@ export function DialogModel(props: { providerID?: string }) {
       footer: badges.join("  "),
       onSelect() {
         dialog.clear()
-        local.model.set(value, { recent: true })
+        local.model.set(value, { recent: true, manual: true })
       },
     }
   }

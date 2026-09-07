@@ -55,6 +55,8 @@ export interface ReviewVerdict {
   reason?: string
   /** Edited file set that was reviewed (snapshot at review time) */
   fileSet: string[]
+  /** Monotonic content revision covered by this verdict/claim. */
+  revision: number
   /** Consecutive fail attempts so far (resets when the file set changes) */
   attempts: number
   /** Lifetime fail attempts across file-set changes — never resets, prevents reset-shopping */
@@ -67,6 +69,12 @@ export interface ReviewVerdict {
 export interface SessionHarness {
   /** TaskFlow state machine */
   steps: TaskFlowStep[]
+  /** Durable execution blockers backing the current visual taskflow, when available. */
+  planBinding?: {
+    executionID: string
+    revision: number
+    items: Record<string, { blockerID: string; version: number; state: string }>
+  }
   /** Cadence and revision state for bounded taskflow prompt reminders. */
   taskflowReminder?: {
     lastToolCallCount?: number
@@ -77,6 +85,10 @@ export interface SessionHarness {
   }
   /** Files modified via edit/write tools in this session */
   editedFiles: Set<string>
+  /** Increments for every observed applied mutation, including repeat edits to the same path. */
+  revision: number
+  /** Last child revision merged into this session, preventing duplicate aggregation. */
+  mergedSourceRevisions: Map<string, number>
   /** Ring buffer of last N bash executions */
   executionLogs: ExecutionLog[]
   /** Reviewer verdict for the main agent's edits, if a review ran */
@@ -127,7 +139,7 @@ function getSession(sessionID: string): SessionHarness {
   const map = store()
   let session = map.get(sessionID)
   if (!session) {
-    session = { steps: [], editedFiles: new Set(), executionLogs: [] }
+    session = { steps: [], editedFiles: new Set(), revision: 0, mergedSourceRevisions: new Map(), executionLogs: [] }
     map.set(sessionID, session)
   }
   return session
@@ -149,10 +161,15 @@ export namespace HarnessState {
   /**
    * Register a new plan, resetting any existing state for this session.
    */
-  export function startPlan(sessionID: string, steps: { id: string; name: string }[]): void {
+  export function startPlan(
+    sessionID: string,
+    steps: { id: string; name: string }[],
+    binding?: SessionHarness["planBinding"],
+  ): void {
     const s = getSession(sessionID)
     const now = Date.now()
     s.steps = steps.map((step) => ({ ...step, status: "pending" as const }))
+    s.planBinding = binding
     s.taskflowReminder = {
       lastReminderAt: now,
       lastReminderRevision: 0,
@@ -176,8 +193,28 @@ export namespace HarnessState {
       return
     }
 
+    assertStepTransition(sessionID, stepId, to)
     const from = step.status
 
+    if (to === "running") {
+      step.status = "running"
+    } else if (to === "completed" || to === "failed") {
+      step.status = to
+    }
+
+    recordPlanStatusUpdate(sessionID)
+    log.info("taskflow step transition", { sessionID, stepId, from, to: step.status })
+  }
+
+  export function assertStepTransition(
+    sessionID: string,
+    stepId: string,
+    to: "running" | "completed" | "failed",
+  ): void {
+    const s = getSession(sessionID)
+    const step = s.steps.find((x) => x.id === stepId)
+    if (!step) return
+    const from = step.status
     if (to === "running") {
       if (from !== "pending") {
         throw new Error(
@@ -185,7 +222,6 @@ export namespace HarnessState {
             `Only pending steps can be set to running.`,
         )
       }
-      // Enforce single running step at a time
       const alreadyRunning = s.steps.find((x) => x.status === "running")
       if (alreadyRunning && alreadyRunning.id !== stepId) {
         throw new Error(
@@ -193,19 +229,25 @@ export namespace HarnessState {
             `Complete or fail the current step first.`,
         )
       }
-      step.status = "running"
-    } else if (to === "completed" || to === "failed") {
-      if (from !== "running") {
-        throw new Error(
-          `[HarnessState] Cannot ${to === "completed" ? "complete" : "fail"} step "${stepId}" — ` +
-            `current status is "${from}". You must call taskflow update with status="running" for this step first.`,
-        )
-      }
-      step.status = to
+      return
     }
+    if (from !== "running") {
+      throw new Error(
+        `[HarnessState] Cannot ${to === "completed" ? "complete" : "fail"} step "${stepId}" — ` +
+          `current status is "${from}". You must call taskflow update with status="running" for this step first.`,
+      )
+    }
+  }
 
-    recordPlanStatusUpdate(sessionID)
-    log.info("taskflow step transition", { sessionID, stepId, from, to: step.status })
+  export function getPlanBinding(sessionID: string) {
+    return getSession(sessionID).planBinding
+  }
+
+  export function updatePlanItemBinding(sessionID: string, stepID: string, update: { version: number; state: string }) {
+    const item = getSession(sessionID).planBinding?.items[stepID]
+    if (!item) return
+    item.version = update.version
+    item.state = update.state
   }
 
   /** Record a taskflow status/todo update that is not represented by a step transition. */
@@ -276,6 +318,7 @@ export namespace HarnessState {
     }
 
     s.steps = []
+    s.planBinding = undefined
     s.taskflowReminder = undefined
     log.info("taskflow plan cleared", { sessionID, hadWarnings: warnings.length > 0 })
     return { warnings }
@@ -304,8 +347,28 @@ export namespace HarnessState {
    */
   export function addEditedFile(sessionID: string, filePath: string): void {
     const s = getSession(sessionID)
+    s.revision++
     if (s.editedFiles.size >= MAX_EDITED_FILES_TRACKED && !s.editedFiles.has(filePath)) {
       log.warn("edited file tracking cap reached — ignoring new file", {
+        sessionID,
+        filePath,
+        cap: MAX_EDITED_FILES_TRACKED,
+      })
+      invalidateReviewVerdict(sessionID)
+      return
+    }
+    s.editedFiles.add(filePath)
+    // A new edit makes any previous PASS stale — force re-review.
+    invalidateReviewVerdict(sessionID)
+    log.info("file edit tracked", { sessionID, filePath, total: s.editedFiles.size, revision: s.revision })
+  }
+
+  /** Restore persisted edit evidence without representing the read itself as a new mutation. */
+  export function restoreEditedFile(sessionID: string, filePath: string): void {
+    const s = getSession(sessionID)
+    if (s.editedFiles.has(filePath)) return
+    if (s.editedFiles.size >= MAX_EDITED_FILES_TRACKED) {
+      log.warn("edited file tracking cap reached while restoring evidence", {
         sessionID,
         filePath,
         cap: MAX_EDITED_FILES_TRACKED,
@@ -313,9 +376,8 @@ export namespace HarnessState {
       return
     }
     s.editedFiles.add(filePath)
-    // A new edit makes any previous PASS stale — force re-review.
+    s.revision++
     invalidateReviewVerdict(sessionID)
-    log.info("file edit tracked", { sessionID, filePath, total: s.editedFiles.size })
   }
 
   /** How many distinct files have been modified in this session. */
@@ -336,6 +398,10 @@ export namespace HarnessState {
     return Array.from(getSession(sessionID).editedFiles)
   }
 
+  export function getRevision(sessionID: string): number {
+    return getSession(sessionID).revision
+  }
+
   /**
    * Merge edited files from a child/descendant session into a target session's
    * tracker. Sub-agent edits are tracked under the sub-agent's OWN session ID
@@ -350,6 +416,8 @@ export namespace HarnessState {
     const source = getSession(sourceSessionID)
     if (source.editedFiles.size === 0) return 0
     const target = getSession(targetSessionID)
+    const mergedRevision = target.mergedSourceRevisions.get(sourceSessionID) ?? 0
+    if (source.revision <= mergedRevision) return 0
     let added = 0
     for (const f of source.editedFiles) {
       if (!target.editedFiles.has(f)) {
@@ -358,11 +426,17 @@ export namespace HarnessState {
         added++
       }
     }
-    if (added > 0) {
-      invalidateReviewVerdict(targetSessionID)
-      log.info("merged edited files across sessions", { targetSessionID, sourceSessionID, added })
-    }
-    return added
+    target.mergedSourceRevisions.set(sourceSessionID, source.revision)
+    target.revision++
+    invalidateReviewVerdict(targetSessionID)
+    log.info("merged edited files across sessions", {
+      targetSessionID,
+      sourceSessionID,
+      added,
+      sourceRevision: source.revision,
+      revision: target.revision,
+    })
+    return added || 1
   }
 
   // ── ReviewVerdictRegistry ────────────────────────────────────────────────
@@ -393,6 +467,7 @@ export namespace HarnessState {
     s.reviewVerdict = {
       status: "pending",
       fileSet: getEditedFiles(sessionID),
+      revision: s.revision,
       attempts: prev ? prev.attempts : 0,
       totalFailAttempts: prev ? prev.totalFailAttempts : 0,
       reviewedAt: Date.now(),
@@ -435,10 +510,12 @@ export namespace HarnessState {
     // Record against the beginReview snapshot when a claim exists, otherwise
     // the current file set (direct calls in tests / simple flows).
     const fileSet = prev ? prev.fileSet : getEditedFiles(sessionID)
+    const revision = prev ? prev.revision : s.revision
     s.reviewVerdict = {
       status: verdict.status,
       reason: verdict.reason,
       fileSet,
+      revision,
       attempts: verdict.status === "fail" ? (prev ? prev.attempts + 1 : 1) : 0,
       totalFailAttempts:
         verdict.status === "fail" ? (prev?.totalFailAttempts ?? 0) + 1 : (prev?.totalFailAttempts ?? 0),
@@ -469,7 +546,7 @@ export namespace HarnessState {
     if (!verdict) return true
     if (verdict.status !== "pass") return true
     // PASS is stale if new edits landed after the review snapshot
-    return !sameFileSet(verdict.fileSet, files)
+    return verdict.revision !== getSession(sessionID).revision || !sameFileSet(verdict.fileSet, files)
   }
 
   /**
@@ -499,12 +576,9 @@ export namespace HarnessState {
       return
     }
     if (s.reviewVerdict.status === "fail") {
-      const fileSet = getEditedFiles(sessionID)
-      if (!sameFileSet(s.reviewVerdict.fileSet, fileSet)) {
-        s.reviewVerdict.attempts = 0
-        s.reviewVerdict.reason = "Invalidated: edited file set changed after failed review"
-        log.info("fail verdict invalidated by changed file set", { sessionID })
-      }
+      s.reviewVerdict.attempts = 0
+      s.reviewVerdict.reason = "Invalidated: content changed after failed review"
+      log.info("fail verdict invalidated by content revision", { sessionID })
     }
   }
 

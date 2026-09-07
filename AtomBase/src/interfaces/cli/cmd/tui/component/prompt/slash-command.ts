@@ -27,6 +27,7 @@ export namespace SlashCommand {
     | "mode.safe"
     | "autoconf.open"
     | "smart-model.toggle"
+    | "adaptive-routing.set"
     | "think.set"
     | "group.help"
 
@@ -160,8 +161,23 @@ export namespace SlashCommand {
     },
   ]
 
+  const adaptiveRoutingOptions: Info[] = ["off", "ask", "auto"].map((mode) => ({
+    name: mode,
+    description: `${mode} adaptive model and thinking proposals`,
+    action: "adaptive-routing.set",
+    presetArguments: mode,
+  }))
+
   const modelChildren: Info[] = [
     { name: "select", aliases: ["list"], description: "choose a model", action: "model.list" },
+    {
+      name: "adaptive-routing",
+      aliases: ["adaptive"],
+      description: "configure adaptive model proposals",
+      action: "adaptive-routing.set",
+      acceptsArguments: true,
+      children: adaptiveRoutingOptions,
+    },
     {
       name: "think",
       aliases: ["reasoning"],
@@ -367,6 +383,14 @@ export namespace SlashCommand {
       aliases: ["smart_model"],
       description: "toggle smart model routing",
       action: "smart-model.toggle",
+    },
+    {
+      name: "adaptive-routing",
+      aliases: ["adaptive"],
+      description: "set adaptive route approval mode",
+      action: "adaptive-routing.set",
+      acceptsArguments: true,
+      children: adaptiveRoutingOptions,
     },
     {
       name: "think",

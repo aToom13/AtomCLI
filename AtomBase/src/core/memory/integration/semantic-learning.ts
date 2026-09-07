@@ -10,6 +10,8 @@ import { ModelPurpose } from "@/core/routing/model-purpose"
 import { getStreamText } from "@/util/util/ai-compat"
 import { z } from "zod"
 import { Provider } from "@/integrations/provider/provider"
+import { ModelVerification } from "@/integrations/provider/verification"
+import { ExecutionRuntime } from "@/core/execution/runtime"
 
 const log = Log.create({ service: "memory.semantic-learning" })
 
@@ -64,10 +66,17 @@ export type AssistantResponseAnalysis = z.infer<typeof AssistantResponseAnalysis
 // ============================================================================
 
 export class SemanticLearningService {
-  private static async language(prompt: string, model?: { providerID: string; modelID: string }) {
-    if (!model) return ModelPurpose.language("analysis", prompt)
-    const selected = await Provider.getModel(model.providerID, model.modelID)
-    return Provider.getLanguage(selected)
+  private static async language(prompt: string, model?: { providerID: string; modelID: string }, sessionID?: string) {
+    if (!model) return ModelPurpose.resolve("analysis", prompt, undefined, sessionID)
+    const session = sessionID ? await import("@/core/session").then(({ Session }) => Session.get(sessionID)) : undefined
+    const selected = await Provider.getModel(model.providerID, model.modelID, { prompt, verify: true, session })
+    return { model: selected, language: await Provider.getLanguage(selected) }
+  }
+
+  private static async observe(model: Provider.Model, text: string) {
+    if (!text.trim()) return
+    const provider = await Provider.getProvider(model.providerID)
+    if (provider) await ModelVerification.observe(model, provider, ["text"])
   }
 
   /**
@@ -104,9 +113,11 @@ export class SemanticLearningService {
       recentMessages?: string[]
     },
     model?: { providerID: string; modelID: string },
+    sessionID?: string,
   ): Promise<UserInformation> {
     try {
-      const language = await this.language(message, model)
+      const execution = await this.language(message, model, sessionID)
+      const language = execution.language
       const streamText = await getStreamText()
 
       const systemPrompt = `You are a memory extraction assistant. Your job is to analyze user messages and extract personal information, preferences, and corrections.
@@ -146,20 +157,31 @@ ${context?.recentMessages ? `\nRECENT CONVERSATION:\n${context.recentMessages.jo
 
 Now analyze this message:`
 
-      const result = await streamText({
-        model: language,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        temperature: 0.1, // Low temperature for consistent extraction
-        maxOutputTokens: 500,
-      })
-
+      const executionAttempt = sessionID
+        ? await ExecutionRuntime.admitModelCall({
+            sessionID,
+            purpose: "memory:extract-user",
+            estimateMicrousd: ExecutionRuntime.estimateMicrousd(execution.model, `${systemPrompt}\n${message}`, 500),
+          })
+        : undefined
       let responseText = ""
-      for await (const chunk of result.textStream) {
-        responseText += chunk
+      try {
+        const result = await streamText({
+          model: language,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message },
+          ],
+          temperature: 0.1,
+          maxOutputTokens: 500,
+        })
+        for await (const chunk of result.textStream) responseText += chunk
+        executionAttempt?.settle(ExecutionRuntime.usageCostUsd(execution.model, await result.usage))
+      } catch (error) {
+        executionAttempt?.uncertain()
+        throw error
       }
+      await this.observe(execution.model, responseText)
 
       // Try to parse as JSON
       const parsed = this.parseJsonPayload(responseText)
@@ -188,12 +210,14 @@ Now analyze this message:`
     response: string,
     userMessage: string,
     model?: { providerID: string; modelID: string },
+    sessionID?: string,
   ): Promise<{
     confirmedName?: string
     acknowledgedPreferences?: string[]
   }> {
     try {
-      const language = await this.language(`${userMessage}\n${response}`, model)
+      const execution = await this.language(`${userMessage}\n${response}`, model, sessionID)
+      const language = execution.language
       const streamText = await getStreamText()
 
       const systemPrompt = `You are analyzing an AI assistant's response to determine what information it acknowledged or confirmed about the user.
@@ -221,23 +245,32 @@ Assistant: "Your name is Alice."
 
 Now analyze:`
 
-      const result = await streamText({
-        model: language,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: `User said: "${userMessage}"\nAssistant replied: "${response}"\n\nWhat did the assistant confirm?`,
-          },
-        ],
-        temperature: 0.1,
-        maxOutputTokens: 200,
-      })
-
+      const prompt = `User said: "${userMessage}"\nAssistant replied: "${response}"\n\nWhat did the assistant confirm?`
+      const executionAttempt = sessionID
+        ? await ExecutionRuntime.admitModelCall({
+            sessionID,
+            purpose: "memory:verify-response",
+            estimateMicrousd: ExecutionRuntime.estimateMicrousd(execution.model, `${systemPrompt}\n${prompt}`, 200),
+          })
+        : undefined
       let responseText = ""
-      for await (const chunk of result.textStream) {
-        responseText += chunk
+      try {
+        const result = await streamText({
+          model: language,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0.1,
+          maxOutputTokens: 200,
+        })
+        for await (const chunk of result.textStream) responseText += chunk
+        executionAttempt?.settle(ExecutionRuntime.usageCostUsd(execution.model, await result.usage))
+      } catch (error) {
+        executionAttempt?.uncertain()
+        throw error
       }
+      await this.observe(execution.model, responseText)
 
       const parsed = this.parseJsonPayload(responseText)
       if (!parsed) {

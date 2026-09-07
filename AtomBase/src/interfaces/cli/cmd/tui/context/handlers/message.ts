@@ -1,52 +1,60 @@
-import { produce, reconcile, type SetStoreFunction } from "solid-js/store"
+import { produce, type SetStoreFunction } from "solid-js/store"
 import { Binary } from "@atomcli/util/binary"
 
+const MAX_CACHED_MESSAGES = 100
 
-export function handleMessageEvent(
-    event: any,
-    store: any,
-    setStore: SetStoreFunction<any>
-) {
-    switch (event.type) {
-        case "message.updated": {
-            // ACK received from server, clear optimistic queues
-            if (event.properties.info.role === "user") {
-                setStore("optimistic_message", event.properties.info.sessionID, [])
+export function handleMessageEvent(event: any, store: any, setStore: SetStoreFunction<any>) {
+  switch (event.type) {
+    case "message.updated": {
+      const info = event.properties.info
+      setStore(
+        produce((draft: any) => {
+          if (info.role === "user") {
+            const optimistic = draft.optimistic_message[info.sessionID] ?? []
+            const acknowledged = Binary.search(optimistic, info.id, (message: any) => message.id)
+            if (acknowledged.found) optimistic.splice(acknowledged.index, 1)
+            const delivery = draft.delivery?.[info.id]
+            if (delivery) {
+              delivery.state = "sent"
+              delivery.error = undefined
+              delivery.updatedAt = Date.now()
             }
-            const messages = store.message[event.properties.info.sessionID]
-            if (!messages) {
-                setStore("message", event.properties.info.sessionID, [event.properties.info])
-                break
-            }
-            const result = Binary.search(messages, event.properties.info.id, (m: any) => m.id)
-            if (result.found) {
-                setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
-                break
-            }
-            setStore(
-                "message",
-                event.properties.info.sessionID,
-                produce((draft: any[]) => {
-                    draft.splice(result.index, 0, event.properties.info)
-                    if (draft.length > 100) draft.shift()
-                }),
-            )
-            break
-        }
-        case "message.removed": {
-            const messages = store.message[event.properties.sessionID]
-            if (!messages) break
-            const result = Binary.search(messages, event.properties.messageID, (m: any) => m.id)
-            if (result.found) {
-                setStore(
-                    "message",
-                    event.properties.sessionID,
-                    produce((draft: any[]) => {
-                        draft.splice(result.index, 1)
-                    }),
-                )
-            }
-            break
-        }
+          }
+
+          const messages = draft.message[info.sessionID]
+          if (!messages) {
+            draft.message[info.sessionID] = [info]
+            return
+          }
+          const result = Binary.search(messages, info.id, (message: any) => message.id)
+          if (result.found) {
+            messages[result.index] = info
+            return
+          }
+          messages.splice(result.index, 0, info)
+          while (messages.length > MAX_CACHED_MESSAGES) {
+            const evicted = messages.shift()
+            if (evicted) delete draft.part[evicted.id]
+            if (evicted && draft.delivery) delete draft.delivery[evicted.id]
+          }
+        }),
+      )
+      break
     }
+    case "message.removed": {
+      const { sessionID, messageID } = event.properties
+      const messages = store.message[sessionID]
+      if (!messages) break
+      const result = Binary.search(messages, messageID, (message: any) => message.id)
+      if (!result.found) break
+      setStore(
+        produce((draft: any) => {
+          draft.message[sessionID].splice(result.index, 1)
+          delete draft.part[messageID]
+          if (draft.delivery) delete draft.delivery[messageID]
+        }),
+      )
+      break
+    }
+  }
 }

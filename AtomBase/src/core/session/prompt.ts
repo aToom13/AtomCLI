@@ -56,13 +56,41 @@ import { Skill } from "@/integrations/skill"
 import { escapeXmlText, HarnessState } from "./harness-state"
 import { SessionExecutionProfile } from "./execution-profile"
 import { AgentEval } from "@/core/eval/harness"
+import { DataUrl } from "./data-url"
+import { Storage } from "@/core/storage/storage"
+import { Config } from "@/core/config/config"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
-  export const OUTPUT_TOKEN_MAX = LLM.OUTPUT_TOKEN_MAX
+  // Keep this compatibility export independent from LLM module initialization:
+  // prompt/reviewer lazy imports can form a valid runtime cycle, and eagerly
+  // dereferencing LLM here makes that cycle fail during ESM linking.
+  export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  const MAX_COMPLETION_DESCENDANT_DEPTH = 32
+  const MAX_COMPLETION_DESCENDANT_SESSIONS = 500
+  const SHELL_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024
+  const SHELL_UPDATE_INTERVAL_MS = 50
+  const SHELL_TRUNCATION_MARKER = "[earlier shell output truncated]\n"
+
+  function appendShellOutput(current: string, chunk: string, limitBytes = SHELL_OUTPUT_LIMIT_BYTES) {
+    const alreadyTruncated = current.startsWith(SHELL_TRUNCATION_MARKER)
+    const previous = alreadyTruncated ? current.slice(SHELL_TRUNCATION_MARKER.length) : current
+    const combined = previous + chunk
+    if (!alreadyTruncated && new TextEncoder().encode(combined).byteLength <= limitBytes) return combined
+    const markerBytes = new TextEncoder().encode(SHELL_TRUNCATION_MARKER).byteLength
+    const tailBudget = Math.max(0, limitBytes - markerBytes)
+    let low = 0
+    let high = combined.length
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2)
+      if (new TextEncoder().encode(combined.slice(middle)).byteLength <= tailBudget) high = middle
+      else low = middle + 1
+    }
+    return SHELL_TRUNCATION_MARKER + combined.slice(low)
+  }
 
   function prepareTurnContext<T>(system: string[], messages: T[], isLastStep: boolean) {
     return {
@@ -101,10 +129,448 @@ export namespace SessionPrompt {
     return !casual.has(normalized)
   }
 
+  function shouldResolveTools(isLastStep: boolean) {
+    return !isLastStep
+  }
+
+  function isSyntheticContinuation(message: MessageV2.WithParts) {
+    return (
+      message.info.role === "user" &&
+      message.parts.length > 0 &&
+      message.parts.every((part) => "synthetic" in part && part.synthetic === true)
+    )
+  }
+
+  function reviewRetryText(reason?: string) {
+    return [
+      "The final response was withheld because the independent review did not pass.",
+      "Address the review findings, verify the current workspace revision, and then produce a new final response.",
+      reason ? `Review result:\n${reason}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+  }
+
+  async function returnExpertHandoff(input: {
+    sessionID: string
+    execution: import("@/core/execution/runtime").ExecutionRuntime.Context
+    lastUser: MessageV2.User
+    routeRevision: number
+    route: {
+      base: { providerID: string; modelID: string; variant?: string }
+      activeEpisodeID?: string
+    }
+    text: string
+    status: "completed" | "inconclusive"
+    messageID: string
+  }) {
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    const episodeID = input.route.activeEpisodeID!
+    const baseModel = await Provider.getModel(input.route.base.providerID, input.route.base.modelID).catch(
+      () => undefined,
+    )
+    const basePolicy = baseModel ? Provider.routePolicy(baseModel) : undefined
+    const eligible =
+      baseModel &&
+      basePolicy &&
+      (await Provider.isRouteEligible(baseModel, { ...basePolicy, requireVerification: true }, "text"))
+    if (!eligible) {
+      const part: MessageV2.TextPart = {
+        id: Identifier.ascending("part"),
+        messageID: input.messageID,
+        sessionID: input.sessionID,
+        type: "text",
+        text: "The expert analysis stopped, but no verified eligible base model remains to continue the execution.",
+      }
+      const completion = ExecutionRuntime.finalizeOutcome({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        parts: [part],
+        execution: input.execution,
+        failure: {
+          outcome: "blocked",
+          reasonCode: "no_verified_model",
+          reasonMessage: part.text,
+          retryable: true,
+        },
+      })
+      await projectAndAckCompletion(completion)
+      return "blocked" as const
+    }
+    const message: MessageV2.User = {
+      id: Identifier.ascending("message"),
+      sessionID: input.sessionID,
+      role: "user",
+      time: { created: Date.now() },
+      agent: input.lastUser.agent,
+      model: { providerID: input.route.base.providerID, modelID: input.route.base.modelID },
+      variant: input.route.base.variant,
+    }
+    const part: MessageV2.TextPart = {
+      id: Identifier.ascending("part"),
+      messageID: message.id,
+      sessionID: input.sessionID,
+      type: "text",
+      text: JSON.stringify({
+        kind: "expert_handoff",
+        status: input.status,
+        episodeID,
+        evidenceBasedAnalysis: input.text.slice(0, 20_000),
+        instruction: "Use this advisory evidence, verify it, and complete the root task with the base model.",
+      }),
+      synthetic: true,
+    }
+    const continuation = await ExecutionRuntime.returnFromExpert({
+      sessionID: input.sessionID,
+      execution: input.execution,
+      episodeID,
+      expectedRouteRevision: input.routeRevision,
+      message,
+      part,
+    })
+    await Session.updateMessage(continuation.message)
+    await Session.updatePart(continuation.part)
+    ExecutionRuntime.projectContinuation(continuation.id)
+    return "returned" as const
+  }
+
+  function reviewBlockedText(reason?: string) {
+    return [
+      "Completion is blocked: the required independent review could not approve the current workspace revision.",
+      reason || "Retry the review or ask the user how to proceed.",
+    ].join("\n\n")
+  }
+
+  async function recordModelResolutionError(input: {
+    sessionID: string
+    user: MessageV2.User
+    messages: MessageV2.WithParts[]
+    error: unknown
+  }) {
+    const existing = input.messages.find(
+      (message) =>
+        message.info.role === "assistant" && message.info.parentID === input.user.id && Boolean(message.info.error),
+    )
+    if (existing) return existing.info as MessageV2.Assistant
+    const error = await MessageV2.fromError(input.error, { providerID: input.user.model.providerID })
+    const now = Date.now()
+    const assistant = (await Session.updateMessage({
+      id: Identifier.ascending("message"),
+      sessionID: input.sessionID,
+      parentID: input.user.id,
+      role: "assistant",
+      agent: input.user.agent,
+      path: {
+        cwd: Instance.directory,
+        root: Instance.worktree,
+      },
+      cost: 0,
+      tokens: {
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+      modelID: input.user.model.modelID,
+      providerID: input.user.model.providerID,
+      time: { created: now },
+      error,
+    })) as MessageV2.Assistant
+    Bus.publish(Session.Event.Error, { sessionID: input.sessionID, error })
+    return assistant
+  }
+
+  class CompletionProjectionError extends Error {
+    constructor(readonly reasonCode: "missing_message") {
+      super("Completion message is missing")
+      this.name = "CompletionProjectionError"
+    }
+  }
+
+  async function projectCompletion(candidate: import("@/core/execution/runtime").ExecutionRuntime.CompletionClaim) {
+    const messages = await Session.messages({ sessionID: candidate.sessionID, excludePatches: false })
+    let existing = messages.find((item) => item.info.id === candidate.messageID)
+    let message = existing?.info
+    if (!message && candidate.parentUserID) {
+      const parent = messages.find((item) => item.info.id === candidate.parentUserID)?.info
+      if (parent?.role === "user") {
+        message = await Session.updateMessageGuarded(
+          {
+            id: candidate.messageID,
+            parentID: parent.id,
+            sessionID: candidate.sessionID,
+            role: "assistant",
+            agent: parent.agent,
+            path: { cwd: Instance.directory, root: Instance.worktree },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: parent.model.modelID,
+            providerID: parent.model.providerID,
+            time: { created: Date.now() },
+          },
+          candidate.sessionGeneration,
+        )
+        existing = { info: message, parts: [] }
+      }
+    }
+    if (!message || message.role !== "assistant" || !existing) throw new CompletionProjectionError("missing_message")
+    const existingParts = new Map(existing.parts.map((part) => [part.id, part]))
+    for (const part of candidate.parts) {
+      if (Bun.deepEquals(existingParts.get(part.id), part)) continue
+      await Session.updatePartGuarded(part, candidate.sessionGeneration)
+    }
+    if (message.finish !== candidate.finish || message.time.completed === undefined) {
+      await Session.updateMessageGuarded(
+        {
+          ...message,
+          finish: candidate.finish,
+          time: { ...message.time, completed: message.time.completed ?? Date.now() },
+        },
+        candidate.sessionGeneration,
+      )
+    }
+  }
+
+  async function projectAndAckCompletion(candidate: import("@/core/execution/runtime").ExecutionRuntime.Completion) {
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    const initialGuard = await Storage.sessionGuard(candidate.sessionID)
+    if (!initialGuard || initialGuard.tombstone) {
+      ExecutionRuntime.deleteSessions(
+        [candidate.sessionID],
+        initialGuard ? { [candidate.sessionID]: initialGuard.generation } : undefined,
+      )
+      return "abandoned" as const
+    }
+    const claim =
+      "projectionToken" in candidate
+        ? (candidate as import("@/core/execution/runtime").ExecutionRuntime.CompletionClaim)
+        : ExecutionRuntime.claimCompletion(candidate.sessionID, candidate.executionID)
+    if (!claim || claim.digest !== candidate.digest) {
+      if (ExecutionRuntime.view(candidate.executionID)?.completion?.projection === "recovery_required") {
+        return "recovery_required" as const
+      }
+      throw new Error("Committed completion could not be claimed for projection")
+    }
+    const abandonDeletedSession = () => {
+      ExecutionRuntime.deleteSessions([claim.sessionID], guard ? { [claim.sessionID]: guard.generation } : undefined)
+      return "abandoned" as const
+    }
+    const guard = await Storage.sessionGuard(claim.sessionID)
+    if (!guard || guard.tombstone || guard.generation !== claim.sessionGeneration) return abandonDeletedSession()
+    try {
+      await projectCompletion(claim)
+    } catch (error) {
+      if (Storage.isSessionDeletedError(error)) return abandonDeletedSession()
+      if (error instanceof CompletionProjectionError) {
+        const recorded = ExecutionRuntime.markProjectionRecovery(claim, error.reasonCode)
+        if (recorded.recorded) return "recovery_required" as const
+      }
+      throw error
+    }
+    const projected = ExecutionRuntime.ackCompletion(claim)
+    if (!projected.projected) {
+      if (projected.reason === "abandoned") return "abandoned" as const
+      throw new Error("Committed completion projection could not be acknowledged")
+    }
+    return "projected" as const
+  }
+
+  async function restoreReviewEvidence(sessionID: string): Promise<void> {
+    if (HarnessState.getEditedFileCount(sessionID) === 0) {
+      const messages = await Session.messages({ sessionID, excludePatches: false })
+      for (const message of messages) {
+        for (const part of message.parts) {
+          if (part.type !== "patch") continue
+          for (const filepath of part.files) HarnessState.restoreEditedFile(sessionID, filepath)
+        }
+      }
+    }
+  }
+
+  async function completionSessionTree(sessionID: string) {
+    const result: string[] = [sessionID]
+    const visited = new Set(result)
+    const queue = [{ sessionID, depth: 0 }]
+    for (let head = 0; head < queue.length; head++) {
+      const current = queue[head]
+      if (current.depth >= MAX_COMPLETION_DESCENDANT_DEPTH) continue
+      for (const child of await Session.children(current.sessionID)) {
+        if (visited.has(child.id)) continue
+        if (result.length >= MAX_COMPLETION_DESCENDANT_SESSIONS) {
+          throw new Error(`Completion session tree exceeds ${MAX_COMPLETION_DESCENDANT_SESSIONS} sessions`)
+        }
+        visited.add(child.id)
+        result.push(child.id)
+        queue.push({ sessionID: child.id, depth: current.depth + 1 })
+      }
+    }
+    return result
+  }
+
+  async function reviewFiles(sessionID: string): Promise<string[]> {
+    const files = new Set<string>()
+    for (const current of await completionSessionTree(sessionID)) {
+      await restoreReviewEvidence(current)
+      for (const filepath of HarnessState.getEditedFiles(current)) files.add(filepath)
+    }
+    return [...files]
+  }
+
+  async function resolveCompletion(input: {
+    sessionID: string
+    lastUser: MessageV2.User
+    execution: import("@/core/execution/runtime").ExecutionRuntime.Context
+    candidate: import("@/core/execution/runtime").ExecutionRuntime.Completion
+    abort: AbortSignal
+  }): Promise<"committed" | "blocked" | "retry"> {
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    input.abort.throwIfAborted()
+    if (input.candidate.state === "committed") {
+      await projectAndAckCompletion(input.candidate)
+      return input.candidate.outcome === "blocked" ? "blocked" : "committed"
+    }
+    const retry = async (reason?: string) => {
+      const retryMessage: MessageV2.User = {
+        id: Identifier.ascending("message"),
+        sessionID: input.sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: input.lastUser.agent,
+        model: input.lastUser.model,
+      }
+      const retryPart: MessageV2.TextPart = {
+        id: Identifier.ascending("part"),
+        messageID: retryMessage.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: reviewRetryText(reason),
+        synthetic: true,
+      }
+      const continuation = await ExecutionRuntime.retryCompletion({
+        sessionID: input.sessionID,
+        execution: input.execution,
+        digest: input.candidate.digest,
+        message: retryMessage,
+        part: retryPart,
+      })
+      await Session.updateMessage(continuation.message)
+      await Session.updatePart(continuation.part)
+      ExecutionRuntime.projectContinuation(continuation.id)
+      return "retry" as const
+    }
+    const blockers: string[] = []
+    if (HarnessState.hasActivePlan(input.sessionID)) blockers.push("the taskflow plan is still open")
+    const workflowID = HarnessState.getActiveWorkflowId(input.sessionID)
+    if (workflowID) blockers.push(`workflow ${workflowID} is still running`)
+    const { SubAgentLifecycle } = await import("@/integrations/tool/subagent-lifecycle")
+    for (const childID of (await completionSessionTree(input.sessionID)).slice(1)) {
+      if (SubAgentLifecycle.status(childID).status === "running") {
+        blockers.push(`child session ${childID} is running`)
+      }
+    }
+    if (blockers.length) return retry(`Completion preconditions failed: ${blockers.join("; ")}.`)
+    for (const filepath of input.candidate.editedFiles) HarnessState.restoreEditedFile(input.sessionID, filepath)
+    await restoreReviewEvidence(input.sessionID)
+    const { runBlockingReview } = await import("@/integrations/tool/review-gate")
+    const reviewClaim = input.candidate.requiresReview
+      ? await ExecutionRuntime.claimReview({
+          sessionID: input.sessionID,
+          execution: input.execution,
+          digest: input.candidate.digest,
+          revision: input.candidate.revision,
+        })
+      : undefined
+    const review = await runBlockingReview(input.sessionID, {
+      signal: input.abort,
+      decision: {
+        policyVersion: input.candidate.policyVersion,
+        policyDigest: input.candidate.policyDigest,
+        requirement: input.candidate.reviewRequirement,
+        reasonCode: input.candidate.reviewReasonCode,
+        requiredReviewers: input.candidate.requiredReviewers,
+        attemptLimit: input.candidate.attemptLimit,
+      },
+      authorizeSession: reviewClaim
+        ? (reviewerSessionID) =>
+            ExecutionRuntime.authorizeReviewSession({
+              sessionID: input.sessionID,
+              reviewerSessionID,
+              execution: input.execution,
+              reviewID: reviewClaim.id,
+            })
+        : undefined,
+    })
+    input.abort.throwIfAborted()
+    if (reviewClaim) {
+      await ExecutionRuntime.recordReview({
+        sessionID: input.sessionID,
+        execution: input.execution,
+        reviewID: reviewClaim.id,
+        state: review.passed ? "passed" : review.error ? "inconclusive" : "rejected",
+      })
+    }
+    if (review.passed) {
+      if (HarnessState.needsReview(input.sessionID)) {
+        return retry("The workspace changed after review; the current revision must be reviewed again.")
+      }
+      const committed = await ExecutionRuntime.commitCompletion({
+        sessionID: input.sessionID,
+        execution: input.execution,
+        digest: input.candidate.digest,
+      }).catch(async (error) => {
+        if (error instanceof ExecutionRuntime.BudgetExceededError && error.reason === "stale_revision") {
+          return retry("The workspace changed after review; the current revision must be reviewed again.")
+        }
+        throw error
+      })
+      if (committed === "retry") return committed
+      await projectAndAckCompletion(committed)
+      return "committed"
+    }
+    if (!review.error && !review.exhausted) {
+      return retry(review.reason)
+    }
+    const original = input.candidate.parts[0]
+    const blockedText = reviewBlockedText(review.reason)
+    const blocked = await ExecutionRuntime.finalizeBlocked({
+      sessionID: input.sessionID,
+      digest: input.candidate.digest,
+      parts: [
+        {
+          ...(original ?? {
+            id: Identifier.ascending("part"),
+            messageID: input.candidate.messageID,
+            sessionID: input.sessionID,
+            type: "text" as const,
+            time: { start: Date.now(), end: Date.now() },
+          }),
+          text: blockedText,
+          synthetic: true,
+          metadata: { ...original?.metadata, reviewGate: "blocked" },
+        },
+      ],
+      execution: input.execution,
+      reasonCode: review.error ? "review_unavailable" : "review_rejected",
+      reasonMessage: "Independent review could not approve this completion.",
+    })
+    await projectAndAckCompletion(blocked)
+    return "blocked"
+  }
+
   export const _internals = {
     prepareTurnContext,
     shouldLoadTools,
+    shouldResolveTools,
+    isSyntheticContinuation,
+    reviewRetryText,
+    reviewBlockedText,
+    projectCompletion,
+    projectAndAckCompletion,
+    recordModelResolutionError,
+    appendShellOutput,
     lastModel,
+    start,
+    finish,
   }
 
   const state = Instance.state(
@@ -113,6 +579,7 @@ export namespace SessionPrompt {
         string,
         {
           abort: AbortController
+          execution?: import("@/core/execution/runtime").ExecutionRuntime.Context
           callbacks: {
             resolve(input: MessageV2.WithParts): void
             reject(): void
@@ -155,6 +622,9 @@ export namespace SessionPrompt {
       ),
     system: z.string().optional(),
     variant: z.string().optional(),
+    modelPinned: z.boolean().optional(),
+    thinkingPinned: z.boolean().optional(),
+    resumesExecutionID: z.string().optional(),
     parts: z.array(
       z.discriminatedUnion("type", [
         MessageV2.TextPart.omit({
@@ -304,7 +774,27 @@ export namespace SessionPrompt {
       abort: controller,
       callbacks: [],
     }
-    return controller.signal
+    return controller
+  }
+
+  function finish(sessionID: string, owner: AbortController) {
+    const s = state()
+    const match = s[sessionID]
+    if (match?.abort !== owner) return
+    for (const item of match.callbacks) item.reject()
+    delete s[sessionID]
+    SessionStatus.set(sessionID, { type: "idle" })
+  }
+
+  function trackExecution(
+    sessionID: string,
+    owner: AbortController,
+    execution: import("@/core/execution/runtime").ExecutionRuntime.Context,
+  ) {
+    const match = state()[sessionID]
+    if (match?.abort !== owner) return false
+    match.execution = execution
+    return true
   }
 
   export function cancel(sessionID: string) {
@@ -312,7 +802,17 @@ export namespace SessionPrompt {
     const s = state()
     const match = s[sessionID]
     if (!match) return
+    const execution = match.execution
     match.abort.abort()
+    if (execution) {
+      void import("@/core/execution/runtime")
+        .then(({ ExecutionRuntime }) =>
+          execution.rootSessionID === sessionID
+            ? ExecutionRuntime.cancelExecution(execution)
+            : ExecutionRuntime.cancelInvocation(execution),
+        )
+        .catch((error) => log.warn("failed to persist execution cancellation", { sessionID, error }))
+    }
     for (const item of match.callbacks) {
       item.reject()
     }
@@ -322,19 +822,44 @@ export namespace SessionPrompt {
   }
 
   export const loop = fn(Identifier.schema("session"), async (sessionID) => {
-    const abort = start(sessionID)
-    if (!abort) {
+    const owner = start(sessionID)
+    if (!owner) {
       return new Promise<MessageV2.WithParts>((resolve, reject) => {
         const callbacks = state()[sessionID].callbacks
         callbacks.push({ resolve, reject })
       })
     }
+    let abort: AbortSignal = owner.signal
+    let releaseExecutionLease: (() => void) | undefined
+    let executionContext: import("@/core/execution/runtime").ExecutionRuntime.Context | undefined
+    let finishExecutionInvocation: ((state: "completed" | "failed" | "cancelled" | "unknown") => boolean) | undefined
+    let invocationExitState: "completed" | "failed" | "cancelled" | "unknown" = "unknown"
 
-    using _ = defer(() => cancel(sessionID))
+    using _ = defer(() => {
+      finishExecutionInvocation?.(owner.signal.aborted ? "cancelled" : invocationExitState)
+      releaseExecutionLease?.()
+      finish(sessionID, owner)
+    })
 
     let step = 0
+    let activeModel: Provider.Model | undefined
+    let activeVariant: string | undefined
+    let fallbackActive = false
     const session = await Session.get(sessionID)
     while (true) {
+      const { ExecutionRuntime: RecoveryRuntime } = await import("@/core/execution/runtime")
+      while (true) {
+        const pendingCompletions = RecoveryRuntime.claimCompletions(sessionID)
+        if (pendingCompletions.length === 0) break
+        for (const completion of pendingCompletions) {
+          await projectAndAckCompletion(completion)
+        }
+      }
+      for (const continuation of RecoveryRuntime.pendingContinuations(sessionID)) {
+        await Session.updateMessage(continuation.payload.message)
+        await Session.updatePart(continuation.payload.part)
+        RecoveryRuntime.projectContinuation(continuation.id)
+      }
       SessionStatus.set(sessionID, { type: "busy" })
       log.info("loop", { step, sessionID })
       if (abort.aborted) break
@@ -358,6 +883,68 @@ export namespace SessionPrompt {
       }
 
       if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+      const lastUserMessage = msgs.find((message) => message.info.id === lastUser.id)
+      if (!executionContext) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        executionContext = await ExecutionRuntime.resolveInvocation({
+          sessionID,
+          invocationID: lastUser.id,
+          kind: session.parentID ? (/^(reviewer|checker)$/.test(lastUser.agent) ? "reviewer" : "child") : "root",
+          acceptedMessageID: lastUser.id,
+          resumesExecutionID: lastUser.resumesExecutionID,
+        })
+        finishExecutionInvocation = (state) => ExecutionRuntime.finishInvocation(executionContext!, state)
+      } else if (executionContext.invocationID !== lastUser.id) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        ExecutionRuntime.finishInvocation(executionContext, "completed")
+        if (lastUserMessage && isSyntheticContinuation(lastUserMessage)) {
+          executionContext = await ExecutionRuntime.bindContinuation({
+            sessionID,
+            invocationID: lastUser.id,
+            execution: executionContext,
+          })
+        } else {
+          releaseExecutionLease?.()
+          releaseExecutionLease = undefined
+          executionContext = await ExecutionRuntime.resolveInvocation({
+            sessionID,
+            invocationID: lastUser.id,
+            kind: session.parentID ? (/^(reviewer|checker)$/.test(lastUser.agent) ? "reviewer" : "child") : "root",
+            acceptedMessageID: lastUser.id,
+            resumesExecutionID: lastUser.resumesExecutionID,
+          })
+        }
+        finishExecutionInvocation = (state) => ExecutionRuntime.finishInvocation(executionContext!, state)
+      }
+      {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (!trackExecution(sessionID, owner, executionContext)) {
+          if (executionContext.rootSessionID === sessionID) ExecutionRuntime.cancelExecution(executionContext)
+          else ExecutionRuntime.cancelInvocation(executionContext)
+          break
+        }
+        releaseExecutionLease ??= ExecutionRuntime.holdLease(executionContext)
+        abort = AbortSignal.any([owner.signal, ExecutionRuntime.leaseSignal(executionContext)])
+      }
+      if (!session.parentID) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const pendingCompletion = ExecutionRuntime.completion(executionContext.executionID)
+        if (pendingCompletion && pendingCompletion.state !== "discarded") {
+          const outcome = await resolveCompletion({
+            sessionID,
+            lastUser,
+            execution: executionContext,
+            candidate: pendingCompletion,
+            abort,
+          })
+          if (outcome !== "retry") break
+          continue
+        }
+      }
+      {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        await ExecutionRuntime.waitForRouteDecision(executionContext.rootSessionID, executionContext, abort)
+      }
       if (
         lastAssistant?.finish &&
         !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
@@ -374,7 +961,211 @@ export namespace SessionPrompt {
           history: msgs,
         })
 
-      const model = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID)
+      const routingPrompt = msgs
+        .findLast((message) => message.info.id === lastUser.id)
+        ?.parts.filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+        .map((part) => part.text)
+        .join("\n")
+      const { ExecutionRuntime: RouteRuntime } = await import("@/core/execution/runtime")
+      const executionView = RouteRuntime.view(executionContext.executionID)
+      let activeRoute = executionView?.route?.active ?? {
+        providerID: lastUser.model.providerID,
+        modelID: lastUser.model.modelID,
+        variant: activeVariant ?? lastUser.variant,
+      }
+      const acceptedProposal = RouteRuntime.snapshot(executionContext.rootSessionID).pendingProposals.find(
+        (proposal) =>
+          proposal.executionID === executionContext.executionID &&
+          proposal.invocationID === executionContext.invocationID &&
+          proposal.state === "accepted",
+      )
+      if (acceptedProposal) {
+        try {
+          const target = await Provider.getModel(
+            acceptedProposal.toRoute.providerID,
+            acceptedProposal.toRoute.modelID,
+          ).catch(() => undefined)
+          if (target) {
+            const { LLM } = await import("@/core/session/llm")
+            const inheritedPolicy = Provider.routePolicy(activeModel ?? target)
+            const explicitRequest = acceptedProposal.scope === "model"
+            const requestedAlias = acceptedProposal.evidenceRefs
+              .find((ref) => ref.startsWith("requested-route:"))
+              ?.slice(16)
+            const autoRouter = (await Config.get()).experimental?.auto_router
+            const routePolicy: Provider.RoutePolicy = {
+              requested: requestedAlias ?? `${acceptedProposal.toRoute.providerID}/${acceptedProposal.toRoute.modelID}`,
+              mode: requestedAlias?.endsWith("/atomcli-free")
+                ? "free"
+                : requestedAlias
+                  ? "auto"
+                  : explicitRequest
+                    ? "explicit"
+                    : "auto",
+              allowedProviders: requestedAlias
+                ? (autoRouter?.allowed_providers ?? [target.providerID])
+                : [target.providerID],
+              excluded: requestedAlias
+                ? (autoRouter?.excluded_models ?? [])
+                : explicitRequest
+                  ? []
+                  : inheritedPolicy.excluded,
+              requiredCapabilities: ["text", "tool"],
+              freeOnly: requestedAlias
+                ? requestedAlias.endsWith("/atomcli-free") || !autoRouter?.allow_paid_models
+                : explicitRequest
+                  ? false
+                  : inheritedPolicy.freeOnly || lastUser.model.modelID === "atomcli-free",
+              requireVerification: true,
+              variant: acceptedProposal.toRoute.variant,
+            }
+            const { ModelVerification } = await import("@/integrations/provider/verification")
+            const targetProvider = await Provider.getProvider(target.providerID)
+            if (!targetProvider) throw new Error(`Provider not found: ${target.providerID}`)
+            const targetUser = { ...lastUser, variant: acceptedProposal.toRoute.variant }
+            const targetParams = (
+              await LLM.prepareRouteParams({
+                model: target,
+                provider: targetProvider,
+                agent: await Agent.get(lastUser.agent),
+                user: targetUser,
+                sessionID,
+              })
+            ).params
+            const paramsDigest = await ModelVerification.paramsDigest(targetParams)
+            if (paramsDigest !== acceptedProposal.paramsDigest)
+              throw new Error("Model change parameters changed after approval; request approval again")
+            const identity = await ModelVerification.identity(target, targetProvider, {
+              variant: acceptedProposal.toRoute.variant,
+              effectiveParams: targetParams,
+            })
+            if (identity !== acceptedProposal.credentialRevision)
+              throw new Error("Model credentials changed after approval; request approval again")
+            const verifiedTarget = Provider.applyRoutePolicy(target, routePolicy)
+            const dispatchCapabilities = routePolicy.requiredCapabilities.filter(
+              (capability): capability is "text" | "tool" => capability === "text" || capability === "tool",
+            )
+            await LLM.verifyDispatch(
+              { model: verifiedTarget, sessionID, abort, execution: executionContext },
+              targetParams,
+              dispatchCapabilities,
+            )
+            const eligible = await Promise.all(
+              routePolicy.requiredCapabilities.map((capability) =>
+                Provider.isRouteEligible(target, routePolicy, capability, { effectiveParams: targetParams }),
+              ),
+            )
+            if (eligible.every(Boolean) && paramsDigest === acceptedProposal.paramsDigest) {
+              const applied = await RouteRuntime.applyRouteProposal({
+                sessionID,
+                execution: executionContext,
+                proposalID: acceptedProposal.id,
+                executionID: executionContext.executionID,
+                invocationID: executionContext.invocationID,
+                expectedProposalVersion: acceptedProposal.version,
+                expectedRouteRevision: acceptedProposal.routeRevision,
+                paramsDigest,
+                expertLimits:
+                  acceptedProposal.scope === "expert"
+                    ? {
+                        maxEpisodes: (await Config.get()).adaptive_routing?.max_expert_episodes ?? 2,
+                        maxCalls: (await Config.get()).adaptive_routing?.max_expert_calls ?? 3,
+                        maxSteps: (await Config.get()).adaptive_routing?.max_expert_steps ?? 3,
+                      }
+                    : undefined,
+              })
+              if (applied.applied) {
+                activeRoute = acceptedProposal.toRoute
+                activeModel = verifiedTarget
+                fallbackActive = false
+                if (acceptedProposal.scope !== "expert") {
+                  if (acceptedProposal.scope === "model")
+                    lastUser.model = requestedAlias
+                      ? { providerID: "atomcli", modelID: requestedAlias.slice("atomcli/".length) }
+                      : { providerID: target.providerID, modelID: target.id }
+                  lastUser.variant = acceptedProposal.toRoute.variant
+                  if (acceptedProposal.scope === "model") lastUser.modelPinned = true
+                  if (acceptedProposal.scope === "thinking") lastUser.thinkingPinned = true
+                  await Session.updateMessage(lastUser)
+                }
+              } else {
+                throw new Error(`Approved model change could not be applied: ${applied.reason}`)
+              }
+            } else throw new Error("Approved model failed dispatch verification")
+          } else throw new Error("Approved model is no longer available")
+        } catch (error) {
+          const assistant = await recordModelResolutionError({ sessionID, user: lastUser, messages: msgs, error })
+          const completion = RouteRuntime.finalizeOutcome({
+            sessionID,
+            messageID: assistant.id,
+            execution: executionContext,
+            failure: RouteRuntime.classifyTerminalFailure(error, abort.aborted),
+          })
+          await projectAndAckCompletion(completion)
+          break
+        }
+      }
+      activeVariant = activeRoute.variant
+      const routeAfterApply = RouteRuntime.view(executionContext.executionID)
+      if (
+        routeAfterApply?.route?.stage === "expert" &&
+        routeAfterApply.route.activeEpisodeID &&
+        routeAfterApply.route.expert &&
+        (routeAfterApply.route.expert.calls >= routeAfterApply.route.expert.maxCalls ||
+          routeAfterApply.route.expert.steps >= routeAfterApply.route.expert.maxSteps)
+      ) {
+        const returned = await returnExpertHandoff({
+          sessionID,
+          execution: executionContext,
+          lastUser,
+          routeRevision: routeAfterApply.routeRevision,
+          route: routeAfterApply.route,
+          text: "The configured expert episode call or step limit was reached before a conclusive handoff.",
+          status: "inconclusive",
+          messageID: Identifier.ascending("message"),
+        })
+        if (returned === "blocked") break
+        activeModel = undefined
+        activeVariant = routeAfterApply.route.base.variant
+        continue
+      }
+      let model: Provider.Model
+      try {
+        model =
+          (activeModel?.providerID === activeRoute.providerID && activeModel.id === activeRoute.modelID
+            ? activeModel
+            : undefined) ??
+          (await Provider.getModel(activeRoute.providerID, activeRoute.modelID, {
+            session,
+            prompt: routingPrompt ?? "",
+            verify: true,
+            signal: abort,
+            execution: executionContext,
+            variant: activeVariant,
+            agent: await Agent.get(lastUser.agent),
+            user: lastUser,
+          }))
+      } catch (error) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        log.error("model resolution failed", {
+          sessionID,
+          providerID: lastUser.model.providerID,
+          modelID: lastUser.model.modelID,
+          error: error instanceof Error ? error.name : "UnknownError",
+        })
+        const assistant = await recordModelResolutionError({ sessionID, user: lastUser, messages: msgs, error })
+        const failure = ExecutionRuntime.classifyTerminalFailure(error, abort.aborted)
+        const completion = ExecutionRuntime.finalizeOutcome({
+          sessionID,
+          messageID: assistant.id,
+          execution: executionContext,
+          failure,
+        })
+        await projectAndAckCompletion(completion)
+        break
+      }
+      activeModel = model
+
       const task = tasks.pop()
 
       // pending subtask
@@ -438,7 +1229,7 @@ export namespace SessionPrompt {
           sessionID: sessionID,
           abort,
           callID: part.callID,
-          extra: { bypassAgentCheck: true },
+          extra: { bypassAgentCheck: true, execution: executionContext },
           async metadata(input) {
             await Session.updatePart({
               ...part,
@@ -569,9 +1360,7 @@ export namespace SessionPrompt {
         step,
       })
 
-      // Track fallback model within this turn - if fallback occurred, continue with fallback model
-      let currentModel = model
-      let fallbackModel: Provider.Model | undefined
+      const currentModel = model
 
       const processor = SessionProcessor.create({
         assistantMessage: (await Session.updateMessage({
@@ -600,7 +1389,7 @@ export namespace SessionPrompt {
         sessionID: sessionID,
         model: currentModel,
         abort,
-        initialFallbackModel: fallbackModel,
+        initialFallbackModel: fallbackActive ? activeModel : undefined,
       })
 
       // Check if user explicitly invoked an agent via @ in this turn
@@ -611,20 +1400,28 @@ export namespace SessionPrompt {
       )
       const loadedMcpNames = new Set<string>()
 
-      const tools = await resolveTools({
-        agent,
-        session,
-        model,
-        tools: lastUser.tools,
-        processor,
-        bypassAgentCheck,
-        hasPriorToolActivity,
-        loadedMcpNames,
-        prompt: (lastUserMsg?.parts ?? [])
-          .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
-          .map((part) => part.text)
-          .join("\n"),
-      })
+      const resolvedTools = shouldResolveTools(isLastStep)
+        ? await resolveTools({
+            agent,
+            session,
+            model,
+            tools: lastUser.tools,
+            processor,
+            bypassAgentCheck,
+            hasPriorToolActivity,
+            loadedMcpNames,
+            prompt: (lastUserMsg?.parts ?? [])
+              .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+              .map((part) => part.text)
+              .join("\n"),
+            execution: executionContext,
+          })
+        : {}
+      const routeState = RouteRuntime.view(executionContext.executionID)?.route
+      const expertEpisodeID = routeState?.stage === "expert" ? routeState.activeEpisodeID : undefined
+      const tools = expertEpisodeID
+        ? Object.fromEntries(Object.entries(resolvedTools).filter(([name]) => ["read", "grep", "find"].includes(name)))
+        : resolvedTools
 
       if (step === 1 && AgentEval.executionPolicy(sessionID).allowAuxiliarySummaries) {
         SessionSummary.summarize({
@@ -678,31 +1475,135 @@ export namespace SessionPrompt {
         SystemPrompt.environment(userText, loadedMcpNames),
         SystemPrompt.custom(),
         userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
-        userText ? recallCoreMemories(userText, 3, { skipRerank: fastProfile }) : Promise.resolve(""),
+        userText
+          ? recallCoreMemories(userText, 3, { skipRerank: fastProfile, routeModel: lastUser?.model, sessionID })
+          : Promise.resolve(""),
         userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
       ])
 
       const system = [...environment, ...custom]
+      if (tools.model_control)
+        system.push(
+          "For conversation model or thinking-level changes, use model_control (list then request), never repository searches or configuration edits. You can recommend a better model for difficult work using the same tool. Explain the reason in the user's language. A proposal is not a completed switch. Respect rejected requests; only claim a switch after the runtime confirms it. Current dispatch: " +
+            currentModel.providerID +
+            "/" +
+            currentModel.id +
+            " (thinking: " +
+            (activeVariant ?? "default") +
+            ").",
+        )
+      const routeDecision = RouteRuntime.routeProposalHistory(executionContext.executionID)
+        .filter((proposal) => proposal.invocationID === executionContext.invocationID)
+        .at(-1)
+      if (routeDecision)
+        system.push(
+          `Model change result: ${routeDecision.state}; target: ${routeDecision.toRoute.providerID}/${routeDecision.toRoute.modelID}. Rejected or expired proposals did not change the model; do not repeat them without a new user request.`,
+        )
+      if (expertEpisodeID) {
+        system.push(
+          "You are in a bounded read-only expert episode. Analyze or review only; do not claim to mutate files, run commands, or finish the user's root task. Return a concise evidence-based handoff for the base model. Do not include hidden chain-of-thought.",
+        )
+      }
       if (memoryContext) system.push(memoryContext)
       if (coreMemoryContext) system.push(`<core_memory>\n${coreMemoryContext}\n</core_memory>`)
       if (autoSkillContext) system.push(autoSkillContext)
       const turnContext = prepareTurnContext(system, await MessageV2.toModelMessage(sessionMessages), isLastStep)
 
-      const result = await processor.process({
-        user: lastUser,
-        agent,
-        abort,
+      const requiresFinalGate = !session.parentID
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      await ExecutionRuntime.admitStep({
         sessionID,
-        system: turnContext.system,
-        messages: turnContext.messages,
-        tools,
-        model: currentModel,
+        stepID: processor.message.id,
+        execution: executionContext,
       })
+      const result = await processor.process(
+        {
+          user: activeVariant === lastUser.variant ? lastUser : { ...lastUser, variant: activeVariant },
+          agent,
+          abort,
+          sessionID,
+          system: turnContext.system,
+          messages: turnContext.messages,
+          tools,
+          model: currentModel,
+          execution: executionContext,
+        },
+        { deferText: requiresFinalGate },
+      )
       // Update fallback model if it was set during processing
       if (result.fallbackModel) {
-        fallbackModel = result.fallbackModel
+        activeModel = result.fallbackModel
+        fallbackActive = true
       }
-      if (result.status === "stop") break
+      if (
+        RouteRuntime.snapshot(executionContext.rootSessionID).pendingProposals.some(
+          (proposal) =>
+            proposal.executionID === executionContext.executionID &&
+            proposal.invocationID === executionContext.invocationID,
+        )
+      ) {
+        // Even providers reporting stop after a tool call must pass the approval boundary.
+        processor.message.finish = "tool-calls"
+        await Session.updateMessage(processor.message)
+        continue
+      }
+      const terminalCandidate =
+        result.status === "continue" &&
+        processor.message.finish &&
+        !["tool-calls", "unknown"].includes(processor.message.finish)
+      if (terminalCandidate && expertEpisodeID && routeState) {
+        const expertText = (result.deferredTextParts ?? []).map((part) => part.text).join("\n")
+        const returned = await returnExpertHandoff({
+          sessionID,
+          execution: executionContext,
+          lastUser,
+          routeRevision: RouteRuntime.view(executionContext.executionID)!.routeRevision,
+          route: routeState,
+          text: expertText,
+          status: expertText.trim() ? "completed" : "inconclusive",
+          messageID: processor.message.id,
+        })
+        if (returned === "blocked") break
+        activeModel = undefined
+        activeVariant = routeState.base.variant
+        continue
+      }
+      if (requiresFinalGate && terminalCandidate) {
+        const editedFiles = await reviewFiles(sessionID)
+        const { evaluateReviewDecision } = await import("@/integrations/tool/review-gate")
+        const reviewDecision = (await evaluateReviewDecision(sessionID)).decision
+        const candidate = await ExecutionRuntime.stageCompletion({
+          sessionID,
+          messageID: processor.message.id,
+          finish: processor.message.finish!,
+          parts: result.deferredTextParts ?? [],
+          editedFiles,
+          requiresReview: reviewDecision.requirement === "required",
+          reviewDecision,
+          execution: executionContext,
+        })
+        const outcome = await resolveCompletion({ sessionID, lastUser, execution: executionContext, candidate, abort })
+        if (outcome === "retry") {
+          continue
+        }
+        break
+      }
+      if (result.status === "stop") {
+        if (requiresFinalGate && processor.message.error) {
+          const failure = ExecutionRuntime.classifyTerminalFailure(
+            result.terminalError ?? processor.message.error,
+            abort.aborted,
+          )
+          const completion = ExecutionRuntime.finalizeOutcome({
+            sessionID,
+            messageID: processor.message.id,
+            execution: executionContext,
+            failure,
+          })
+          await projectAndAckCompletion(completion)
+        }
+        break
+      }
       if (result.status === "compact") {
         await SessionCompaction.create({
           sessionID,
@@ -722,6 +1623,7 @@ export namespace SessionPrompt {
     MemoryLifecycle.schedule(sessionID, completedMessages)
     for (const item of completedMessages) {
       if (item.info.role === "user") continue
+      invocationExitState = item.info.error ? "failed" : "completed"
       const queued = state()[sessionID]?.callbacks ?? []
       for (const q of queued) {
         q.resolve(item)
@@ -754,20 +1656,16 @@ export namespace SessionPrompt {
     hasPriorToolActivity: boolean
     loadedMcpNames: Set<string>
     prompt: string
+    execution?: import("@/core/execution/runtime").ExecutionRuntime.Context
   }) {
     using _ = log.time("resolveTools")
     const explicitTools = Object.values(input.tools ?? {}).some((enabled) => enabled === true)
-    if (
-      !shouldLoadTools({
-        prompt: input.prompt,
-        explicitTools,
-        bypassAgentCheck: input.bypassAgentCheck,
-        hasPriorToolActivity: input.hasPriorToolActivity,
-      })
-    ) {
-      log.debug("casual turn does not require tools; omitting tool schemas")
-      return {}
-    }
+    const loadAll = shouldLoadTools({
+      prompt: input.prompt,
+      explicitTools,
+      bypassAgentCheck: input.bypassAgentCheck,
+      hasPriorToolActivity: input.hasPriorToolActivity,
+    })
     const tools: Record<string, AITool> = {}
 
     const context = (args: any, options: ToolCallOptions): Tool.Context => ({
@@ -775,7 +1673,7 @@ export namespace SessionPrompt {
       abort: options.abortSignal!,
       messageID: input.processor.message.id,
       callID: options.toolCallId,
-      extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck },
+      extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, execution: input.execution },
       agent: input.agent.name,
       metadata: async (val: { title?: string; metadata?: any }) => {
         const match = input.processor.partFromToolCall(options.toolCallId)
@@ -808,7 +1706,12 @@ export namespace SessionPrompt {
     const tool = await getTool()
     const jsonSchema = await getJsonSchema()
 
-    for (const item of await ToolRegistry.tools(input.model.providerID, input.agent)) {
+    for (const item of await ToolRegistry.tools(
+      input.model.providerID,
+      input.agent,
+      loadAll ? undefined : new Set(["model_control"]),
+    )) {
+      if (item.id === "model_control" && input.session.parentID) continue
       const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
       tools[item.id] = tool({
         id: item.id as any,
@@ -832,6 +1735,7 @@ export namespace SessionPrompt {
       })
     }
 
+    if (!loadAll) return tools
     // Timeout MCP tools loading to prevent hanging when MCP servers are slow/unreachable
     const mcpAbort = new AbortController()
     const mcpTimer = setTimeout(() => {
@@ -911,6 +1815,9 @@ export namespace SessionPrompt {
       model: input.model ?? agent.model ?? (await lastModel(input.sessionID)),
       system: input.system,
       variant: input.variant,
+      modelPinned: input.modelPinned,
+      thinkingPinned: input.thinkingPinned,
+      resumesExecutionID: input.resumesExecutionID,
     }
 
     const parts = await Promise.all(
@@ -1007,7 +1914,7 @@ export namespace SessionPrompt {
                     sessionID: input.sessionID,
                     type: "text",
                     synthetic: true,
-                    text: Buffer.from(part.url, "base64url").toString(),
+                    text: DataUrl.decodeText(part.url),
                   },
                   {
                     ...part,
@@ -1309,25 +2216,6 @@ export namespace SessionPrompt {
       await Session.updatePart(part)
     }
 
-    // Learn from user message (non-blocking to prevent hanging the prompt response)
-    try {
-      // F13: static import — no dynamic import() in hot path
-      const textParts = parts.filter((p) => p.type === "text" && !("synthetic" in p && p.synthetic))
-      const userText = textParts.map((p) => (p as any).text).join(" ")
-      if (
-        userText &&
-        SessionMemoryIntegration.hasExplicitMemorySignal(userText) &&
-        AgentEval.executionPolicy(input.sessionID).allowMemoryLearning
-      ) {
-        // Fire-and-forget: don't block prompt processing on memory learning
-        SessionMemoryIntegration.learnFromMessage(userText, info.model).catch((error) => {
-          log.error("Failed to learn from user message", { error })
-        })
-      }
-    } catch (error) {
-      log.error("Failed to import SessionMemoryIntegration", { error })
-    }
-
     return {
       info,
       parts,
@@ -1516,6 +2404,7 @@ export namespace SessionPrompt {
 
   export const ShellInput = z.object({
     sessionID: Identifier.schema("session"),
+    messageID: Identifier.schema("message").optional(),
     agent: z.string(),
     model: z
       .object({
@@ -1527,11 +2416,12 @@ export namespace SessionPrompt {
   })
   export type ShellInput = z.infer<typeof ShellInput>
   export async function shell(input: ShellInput) {
-    const abort = start(input.sessionID)
-    if (!abort) {
+    const owner = start(input.sessionID)
+    if (!owner) {
       throw new Session.BusyError(input.sessionID)
     }
-    using _ = defer(() => cancel(input.sessionID))
+    const abort = owner.signal
+    using _ = defer(() => finish(input.sessionID, owner))
 
     const session = await Session.get(input.sessionID)
     if (session.revert) {
@@ -1540,7 +2430,7 @@ export namespace SessionPrompt {
     const agent = await Agent.get(input.agent)
     const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
     const userMsg: MessageV2.User = {
-      id: Identifier.ascending("message"),
+      id: input.messageID ?? Identifier.ascending("message"),
       sessionID: input.sessionID,
       time: {
         created: Date.now(),
@@ -1668,27 +2558,37 @@ export namespace SessionPrompt {
     })
 
     let output = ""
+    let outputUpdateTimer: ReturnType<typeof setTimeout> | undefined
+    let outputUpdate = Promise.resolve()
+
+    const flushOutput = () => {
+      outputUpdateTimer = undefined
+      const snapshot = output
+      outputUpdate = outputUpdate
+        .then(async () => {
+          if (part.state.status !== "running") return
+          part.state.metadata = { output: snapshot, description: "" }
+          await Session.updatePart(part)
+        })
+        .catch((error) => {
+          log.warn("failed to publish batched shell output", {
+            sessionID: input.sessionID,
+            error: error instanceof Error ? error.name : "UnknownError",
+          })
+        })
+    }
+
+    const appendOutput = (chunk: unknown) => {
+      output = appendShellOutput(output, String(chunk))
+      if (!outputUpdateTimer) outputUpdateTimer = setTimeout(flushOutput, SHELL_UPDATE_INTERVAL_MS)
+    }
 
     proc.stdout?.on("data", (chunk) => {
-      output += chunk.toString()
-      if (part.state.status === "running") {
-        part.state.metadata = {
-          output: output,
-          description: "",
-        }
-        Session.updatePart(part)
-      }
+      appendOutput(chunk)
     })
 
     proc.stderr?.on("data", (chunk) => {
-      output += chunk.toString()
-      if (part.state.status === "running") {
-        part.state.metadata = {
-          output: output,
-          description: "",
-        }
-        Session.updatePart(part)
-      }
+      appendOutput(chunk)
     })
 
     let aborted = false
@@ -1716,8 +2616,14 @@ export namespace SessionPrompt {
       })
     })
 
+    if (outputUpdateTimer) {
+      clearTimeout(outputUpdateTimer)
+      outputUpdateTimer = undefined
+    }
+    await outputUpdate
+
     if (aborted) {
-      output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
+      output = appendShellOutput(output, "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n"))
     }
     msg.time.completed = Date.now()
     await Session.updateMessage(msg)
@@ -1749,6 +2655,8 @@ export namespace SessionPrompt {
     arguments: z.string(),
     command: z.string(),
     variant: z.string().optional(),
+    modelPinned: z.boolean().optional(),
+    thinkingPinned: z.boolean().optional(),
     parts: z
       .array(
         z.discriminatedUnion("type", [
@@ -1921,6 +2829,8 @@ export namespace SessionPrompt {
       agent: agentName,
       parts,
       variant: input.variant,
+      modelPinned: input.modelPinned,
+      thinkingPinned: input.thinkingPinned,
     })) as MessageV2.WithParts
 
     Bus.publish(Command.Event.Executed, {

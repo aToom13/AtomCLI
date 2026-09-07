@@ -909,6 +909,18 @@ export type Config = {
     [key: string]: unknown
   }
   /**
+   * Shared call, step, duration, and cost limits for a root execution and its child agents
+   */
+  execution_budget?: {
+    max_calls?: number
+    max_steps?: number
+    max_duration_ms?: number
+    max_cost_usd?: number
+    session_max_cost_usd?: number
+    project_max_cost_usd?: number
+    unknown_price?: "block" | "allow"
+  }
+  /**
    * Custom provider configurations and model overrides
    */
   provider?: {
@@ -937,6 +949,23 @@ export type Config = {
           extensions?: Array<string>
         }
       }
+  /**
+   * User policy for model and thinking-level proposals; auto mode still requires a trusted grant
+   */
+  adaptive_routing?: {
+    mode?: "off" | "ask" | "auto"
+    thinking?: {
+      mode?: "off" | "ask" | "auto"
+    }
+    base_models?: Array<string>
+    expert_models?: Array<string>
+    max_expert_episodes?: number
+    max_expert_calls?: number
+    max_expert_steps?: number
+    cooldown_steps?: number
+    proposal_ttl_ms?: number
+    return_to_base?: boolean
+  }
   lsp?:
     | false
     | {
@@ -1031,6 +1060,18 @@ export type Config = {
      * Auto router user preferences
      */
     auto_router?: {
+      /**
+       * Providers that AtomCLI Auto may consider; defaults to all connected providers
+       */
+      allowed_providers?: Array<string>
+      /**
+       * Allow AtomCLI Auto to select verified models that are not explicitly free
+       */
+      allow_paid_models?: boolean
+      /**
+       * Allow automatic verification probes for models that are not explicitly free
+       */
+      allow_paid_probes?: boolean
       /**
        * Models to exclude from auto-routing selection
        */
@@ -1534,6 +1575,9 @@ export type UserMessage = {
     [key: string]: boolean
   }
   variant?: string
+  modelPinned?: boolean
+  thinkingPinned?: boolean
+  resumesExecutionID?: string
 }
 
 export type ProviderAuthError = {
@@ -2123,6 +2167,8 @@ export type Event =
   | EventPtyUpdated
   | EventPtyExited
   | EventPtyDeleted
+  | EventExecutionRouteProposal
+  | EventExecutionRouteChanged
   | EventFileEdited
   | EventFileChanged
   | EventFileCreated
@@ -2344,6 +2390,66 @@ export type Command = {
   template: string
   subtask?: boolean
   hints: Array<string>
+}
+
+export type EventExecutionRouteProposal = {
+  type: "execution.route.proposal"
+  properties: {
+    sessionID: string
+    proposal: {
+      id: string
+      executionID: string
+      invocationID: string
+      stepID: string
+      routeRevision: number
+      sessionGeneration: number
+      fromRoute: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      toRoute: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      paramsDigest: string
+      scope: "thinking" | "model" | "expert"
+      reasonCode: string
+      evidenceRefs: Array<string>
+      estimatedUsage: {
+        [key: string]: unknown
+      }
+      uncertainty: boolean
+      expiresAt: number
+      policyVersion: number
+      consentVersion: number
+      credentialRevision: string
+      state: "pending" | "accepted" | "rejected" | "expired" | "applied" | "superseded"
+      version: number
+      decisionID?: string
+      actorID?: string
+      acceptScope?: "episode" | "execution"
+      createdAt: number
+      decidedAt?: number
+      appliedAt?: number
+    }
+  }
+}
+
+export type EventExecutionRouteChanged = {
+  type: "execution.route.changed"
+  properties: {
+    sessionID: string
+    executionID: string
+    routeRevision: number
+    route: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+    stage: "base" | "expert"
+  }
 }
 
 export type EventFileEdited = {
@@ -3153,6 +3259,18 @@ export type ConfigUpdateData = {
       [key: string]: unknown
     }
     /**
+     * Shared call, step, duration, and cost limits for a root execution and its child agents
+     */
+    execution_budget?: {
+      max_calls?: number
+      max_steps?: number
+      max_duration_ms?: number
+      max_cost_usd?: number
+      session_max_cost_usd?: number
+      project_max_cost_usd?: number
+      unknown_price?: "block" | "allow"
+    }
+    /**
      * Custom provider configurations and model overrides
      */
     provider?: {
@@ -3181,6 +3299,23 @@ export type ConfigUpdateData = {
             extensions?: Array<string>
           }
         }
+    /**
+     * User policy for model and thinking-level proposals; auto mode still requires a trusted grant
+     */
+    adaptive_routing?: {
+      mode?: "off" | "ask" | "auto"
+      thinking?: {
+        mode?: "off" | "ask" | "auto"
+      }
+      base_models?: Array<string>
+      expert_models?: Array<string>
+      max_expert_episodes?: number
+      max_expert_calls?: number
+      max_expert_steps?: number
+      cooldown_steps?: number
+      proposal_ttl_ms?: number
+      return_to_base?: boolean
+    }
     lsp?:
       | false
       | {
@@ -3275,6 +3410,18 @@ export type ConfigUpdateData = {
        * Auto router user preferences
        */
       auto_router?: {
+        /**
+         * Providers that AtomCLI Auto may consider; defaults to all connected providers
+         */
+        allowed_providers?: Array<string>
+        /**
+         * Allow AtomCLI Auto to select verified models that are not explicitly free
+         */
+        allow_paid_models?: boolean
+        /**
+         * Allow automatic verification probes for models that are not explicitly free
+         */
+        allow_paid_probes?: boolean
         /**
          * Models to exclude from auto-routing selection
          */
@@ -4447,6 +4594,9 @@ export type SessionPromptData = {
     }
     system?: string
     variant?: string
+    modelPinned?: boolean
+    thinkingPinned?: boolean
+    resumesExecutionID?: string
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -4634,6 +4784,9 @@ export type SessionPromptAsyncData = {
     }
     system?: string
     variant?: string
+    modelPinned?: boolean
+    thinkingPinned?: boolean
+    resumesExecutionID?: string
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -4755,6 +4908,8 @@ export type SessionCommandData = {
     arguments: string
     command: string
     variant?: string
+    modelPinned?: boolean
+    thinkingPinned?: boolean
     parts?: Array<{
       id?: string
       type: "file"
@@ -4803,6 +4958,7 @@ export type SessionCommandResponse = SessionCommandResponses[keyof SessionComman
 
 export type SessionShellData = {
   body?: {
+    messageID?: string
     agent: string
     model?: {
       providerID: string
@@ -4915,6 +5071,1053 @@ export type SessionUnrevertResponses = {
 }
 
 export type SessionUnrevertResponse = SessionUnrevertResponses[keyof SessionUnrevertResponses]
+
+export type SessionExecutionsListData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    cursor?: string
+    limit?: number
+  }
+  url: "/session/{sessionID}/executions"
+}
+
+export type SessionExecutionsListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsListError = SessionExecutionsListErrors[keyof SessionExecutionsListErrors]
+
+export type SessionExecutionsListResponses = {
+  /**
+   * Execution page
+   */
+  200: {
+    items: Array<{
+      id: string
+      projectID: string
+      rootSessionID: string
+      resumesExecutionID?: string
+      budgetScopeID: string
+      rootInvocationID: string
+      userMessageID: string
+      sessionGeneration: number
+      turnSequence: number
+      version: number
+      routeRevision: number
+      route?: {
+        active: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        base: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        stage: "base" | "expert"
+        activeEpisodeID?: string
+        manualModelPin: boolean
+        manualThinkingPin: boolean
+        expert?: {
+          episodes: number
+          maxEpisodes: number
+          calls: number
+          maxCalls: number
+          steps: number
+          maxSteps: number
+        }
+      }
+      lifecycle: "active" | "draining" | "terminal"
+      phase:
+        | "queued"
+        | "preparing"
+        | "model"
+        | "tools"
+        | "waiting_permission"
+        | "waiting_children"
+        | "awaiting_route_approval"
+        | "reviewing"
+        | "finalizing"
+        | "awaiting_reconciliation"
+        | "draining"
+        | "idle"
+      outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
+      reason?: {
+        code:
+          | "user_cancelled"
+          | "invocation_cancelled"
+          | "provider_unavailable"
+          | "verification_required"
+          | "no_verified_model"
+          | "unsupported_variant"
+          | "deadline"
+          | "call_limit"
+          | "step_limit"
+          | "cost_limit"
+          | "unknown_price"
+          | "review_rejected"
+          | "review_unavailable"
+          | "active_work"
+          | "recovery_required"
+          | "stale_owner"
+          | "storage_error"
+          | "resource_limit"
+          | "approval_required"
+          | "deleted"
+        message: string
+        retryable: boolean
+      }
+      createdAt: number
+      updatedAt: number
+      terminalAt?: number
+      budget: {
+        execution: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+          calls: {
+            used: number
+            limit?: number
+          }
+          steps: {
+            used: number
+            limit?: number
+          }
+          deadlineAt?: number
+        }
+        rootSession: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+        project: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+      }
+      blockers: {
+        pending: number
+        running: number
+        unknown: number
+        failed: number
+      }
+      recoveryRequired: boolean
+      completion?: {
+        id: string
+        messageID: string
+        digest: string
+        projection: "pending" | "projected" | "recovery_required" | "abandoned"
+      }
+    }>
+    nextCursor?: string
+    sessionGeneration: number
+    activeExecutionID?: string
+    sessionVersion: number
+  }
+}
+
+export type SessionExecutionsListResponse = SessionExecutionsListResponses[keyof SessionExecutionsListResponses]
+
+export type SessionExecutionsSnapshotData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/execution-snapshot"
+}
+
+export type SessionExecutionsSnapshotErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsSnapshotError = SessionExecutionsSnapshotErrors[keyof SessionExecutionsSnapshotErrors]
+
+export type SessionExecutionsSnapshotResponses = {
+  /**
+   * Execution snapshot
+   */
+  200: {
+    cursor: {
+      epoch: string
+      sequence: number
+    }
+    sessionGeneration: number
+    sessionVersion: number
+    activeExecutionID?: string
+    activeInvocations: Array<{
+      id: string
+      executionID: string
+      sessionID: string
+      parentInvocationID?: string
+      kind: "root" | "child" | "reviewer" | "compaction" | "expert" | "auxiliary"
+      state: "accepted" | "running" | "waiting" | "draining" | "completed" | "failed" | "cancelled" | "unknown"
+      revision: number
+      createdAt: number
+    }>
+    executions: Array<{
+      id: string
+      projectID: string
+      rootSessionID: string
+      resumesExecutionID?: string
+      budgetScopeID: string
+      rootInvocationID: string
+      userMessageID: string
+      sessionGeneration: number
+      turnSequence: number
+      version: number
+      routeRevision: number
+      route?: {
+        active: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        base: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        stage: "base" | "expert"
+        activeEpisodeID?: string
+        manualModelPin: boolean
+        manualThinkingPin: boolean
+        expert?: {
+          episodes: number
+          maxEpisodes: number
+          calls: number
+          maxCalls: number
+          steps: number
+          maxSteps: number
+        }
+      }
+      lifecycle: "active" | "draining" | "terminal"
+      phase:
+        | "queued"
+        | "preparing"
+        | "model"
+        | "tools"
+        | "waiting_permission"
+        | "waiting_children"
+        | "awaiting_route_approval"
+        | "reviewing"
+        | "finalizing"
+        | "awaiting_reconciliation"
+        | "draining"
+        | "idle"
+      outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
+      reason?: {
+        code:
+          | "user_cancelled"
+          | "invocation_cancelled"
+          | "provider_unavailable"
+          | "verification_required"
+          | "no_verified_model"
+          | "unsupported_variant"
+          | "deadline"
+          | "call_limit"
+          | "step_limit"
+          | "cost_limit"
+          | "unknown_price"
+          | "review_rejected"
+          | "review_unavailable"
+          | "active_work"
+          | "recovery_required"
+          | "stale_owner"
+          | "storage_error"
+          | "resource_limit"
+          | "approval_required"
+          | "deleted"
+        message: string
+        retryable: boolean
+      }
+      createdAt: number
+      updatedAt: number
+      terminalAt?: number
+      budget: {
+        execution: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+          calls: {
+            used: number
+            limit?: number
+          }
+          steps: {
+            used: number
+            limit?: number
+          }
+          deadlineAt?: number
+        }
+        rootSession: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+        project: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+      }
+      blockers: {
+        pending: number
+        running: number
+        unknown: number
+        failed: number
+      }
+      recoveryRequired: boolean
+      completion?: {
+        id: string
+        messageID: string
+        digest: string
+        projection: "pending" | "projected" | "recovery_required" | "abandoned"
+      }
+    }>
+    pendingProposals: Array<{
+      id: string
+      executionID: string
+      invocationID: string
+      stepID: string
+      routeRevision: number
+      sessionGeneration: number
+      fromRoute: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      toRoute: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      paramsDigest: string
+      scope: "thinking" | "model" | "expert"
+      reasonCode: string
+      evidenceRefs: Array<string>
+      estimatedUsage: {
+        [key: string]: unknown
+      }
+      uncertainty: boolean
+      expiresAt: number
+      policyVersion: number
+      consentVersion: number
+      credentialRevision: string
+      state: "pending" | "accepted" | "rejected" | "expired" | "applied" | "superseded"
+      version: number
+      decisionID?: string
+      actorID?: string
+      acceptScope?: "episode" | "execution"
+      createdAt: number
+      decidedAt?: number
+      appliedAt?: number
+    }>
+    blockers: Array<{
+      id: string
+      executionID: string
+      invocationID: string
+      kind: "child" | "workflow" | "plan_item" | "verification_job"
+      resourceScope: string
+      state:
+        | "pending"
+        | "running"
+        | "draining"
+        | "unknown"
+        | "resumable"
+        | "resolved"
+        | "failed"
+        | "cancelled"
+        | "waived"
+      version: number
+      planRevision?: number
+      resolutionCode?: string
+      createdAt: number
+      updatedAt: number
+    }>
+  }
+}
+
+export type SessionExecutionsSnapshotResponse =
+  SessionExecutionsSnapshotResponses[keyof SessionExecutionsSnapshotResponses]
+
+export type SessionExecutionsEventsData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    epoch?: string
+    sequence?: number
+    limit?: number
+  }
+  url: "/session/{sessionID}/execution-events"
+}
+
+export type SessionExecutionsEventsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsEventsError = SessionExecutionsEventsErrors[keyof SessionExecutionsEventsErrors]
+
+export type SessionExecutionsEventsResponses = {
+  /**
+   * Execution event page
+   */
+  200: {
+    epoch: string
+    cursor: {
+      epoch: string
+      sequence: number
+    }
+    items: Array<{
+      eventID: string
+      cursor: {
+        epoch: string
+        sequence: number
+      }
+      projectID: string
+      sessionID: string
+      sessionGeneration: number
+      executionID?: string
+      resourceVersion: number
+      type:
+        | "execution.updated"
+        | "execution.deleted"
+        | "execution.route.changed"
+        | "execution.budget.warning"
+        | "execution.blocker.updated"
+        | "route.proposal.updated"
+      properties: {
+        [key: string]: unknown
+      }
+    }>
+    resyncRequired: boolean
+    reason?: "epoch_changed" | "cursor_ahead" | "retention_gap"
+  }
+}
+
+export type SessionExecutionsEventsResponse = SessionExecutionsEventsResponses[keyof SessionExecutionsEventsResponses]
+
+export type SessionExecutionsGetData = {
+  body?: never
+  path: {
+    sessionID: string
+    executionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/executions/{executionID}"
+}
+
+export type SessionExecutionsGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsGetError = SessionExecutionsGetErrors[keyof SessionExecutionsGetErrors]
+
+export type SessionExecutionsGetResponses = {
+  /**
+   * Execution detail
+   */
+  200: {
+    id: string
+    projectID: string
+    rootSessionID: string
+    resumesExecutionID?: string
+    budgetScopeID: string
+    rootInvocationID: string
+    userMessageID: string
+    sessionGeneration: number
+    turnSequence: number
+    version: number
+    routeRevision: number
+    route?: {
+      active: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      base: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      stage: "base" | "expert"
+      activeEpisodeID?: string
+      manualModelPin: boolean
+      manualThinkingPin: boolean
+      expert?: {
+        episodes: number
+        maxEpisodes: number
+        calls: number
+        maxCalls: number
+        steps: number
+        maxSteps: number
+      }
+    }
+    lifecycle: "active" | "draining" | "terminal"
+    phase:
+      | "queued"
+      | "preparing"
+      | "model"
+      | "tools"
+      | "waiting_permission"
+      | "waiting_children"
+      | "awaiting_route_approval"
+      | "reviewing"
+      | "finalizing"
+      | "awaiting_reconciliation"
+      | "draining"
+      | "idle"
+    outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
+    reason?: {
+      code:
+        | "user_cancelled"
+        | "invocation_cancelled"
+        | "provider_unavailable"
+        | "verification_required"
+        | "no_verified_model"
+        | "unsupported_variant"
+        | "deadline"
+        | "call_limit"
+        | "step_limit"
+        | "cost_limit"
+        | "unknown_price"
+        | "review_rejected"
+        | "review_unavailable"
+        | "active_work"
+        | "recovery_required"
+        | "stale_owner"
+        | "storage_error"
+        | "resource_limit"
+        | "approval_required"
+        | "deleted"
+      message: string
+      retryable: boolean
+    }
+    createdAt: number
+    updatedAt: number
+    terminalAt?: number
+    budget: {
+      execution: {
+        limitMicrousd?: number
+        spentMicrousd: number
+        reservedMicrousd: number
+        uncertainMicrousd: number
+        unpricedCalls: number
+        calls: {
+          used: number
+          limit?: number
+        }
+        steps: {
+          used: number
+          limit?: number
+        }
+        deadlineAt?: number
+      }
+      rootSession: {
+        limitMicrousd?: number
+        spentMicrousd: number
+        reservedMicrousd: number
+        uncertainMicrousd: number
+        unpricedCalls: number
+      }
+      project: {
+        limitMicrousd?: number
+        spentMicrousd: number
+        reservedMicrousd: number
+        uncertainMicrousd: number
+        unpricedCalls: number
+      }
+    }
+    blockers: {
+      pending: number
+      running: number
+      unknown: number
+      failed: number
+    }
+    recoveryRequired: boolean
+    completion?: {
+      id: string
+      messageID: string
+      digest: string
+      projection: "pending" | "projected" | "recovery_required" | "abandoned"
+    }
+  }
+}
+
+export type SessionExecutionsGetResponse = SessionExecutionsGetResponses[keyof SessionExecutionsGetResponses]
+
+export type SessionExecutionsCancelData = {
+  body?: {
+    requestID: string
+    expectedVersion: number
+    invocationID?: string
+  }
+  path: {
+    sessionID: string
+    executionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/executions/{executionID}/cancel"
+}
+
+export type SessionExecutionsCancelErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsCancelError = SessionExecutionsCancelErrors[keyof SessionExecutionsCancelErrors]
+
+export type SessionExecutionsCancelResponses = {
+  /**
+   * Cancellation accepted
+   */
+  202: {
+    requestID: string
+    idempotent: boolean
+    execution: {
+      id: string
+      projectID: string
+      rootSessionID: string
+      resumesExecutionID?: string
+      budgetScopeID: string
+      rootInvocationID: string
+      userMessageID: string
+      sessionGeneration: number
+      turnSequence: number
+      version: number
+      routeRevision: number
+      route?: {
+        active: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        base: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        stage: "base" | "expert"
+        activeEpisodeID?: string
+        manualModelPin: boolean
+        manualThinkingPin: boolean
+        expert?: {
+          episodes: number
+          maxEpisodes: number
+          calls: number
+          maxCalls: number
+          steps: number
+          maxSteps: number
+        }
+      }
+      lifecycle: "active" | "draining" | "terminal"
+      phase:
+        | "queued"
+        | "preparing"
+        | "model"
+        | "tools"
+        | "waiting_permission"
+        | "waiting_children"
+        | "awaiting_route_approval"
+        | "reviewing"
+        | "finalizing"
+        | "awaiting_reconciliation"
+        | "draining"
+        | "idle"
+      outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
+      reason?: {
+        code:
+          | "user_cancelled"
+          | "invocation_cancelled"
+          | "provider_unavailable"
+          | "verification_required"
+          | "no_verified_model"
+          | "unsupported_variant"
+          | "deadline"
+          | "call_limit"
+          | "step_limit"
+          | "cost_limit"
+          | "unknown_price"
+          | "review_rejected"
+          | "review_unavailable"
+          | "active_work"
+          | "recovery_required"
+          | "stale_owner"
+          | "storage_error"
+          | "resource_limit"
+          | "approval_required"
+          | "deleted"
+        message: string
+        retryable: boolean
+      }
+      createdAt: number
+      updatedAt: number
+      terminalAt?: number
+      budget: {
+        execution: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+          calls: {
+            used: number
+            limit?: number
+          }
+          steps: {
+            used: number
+            limit?: number
+          }
+          deadlineAt?: number
+        }
+        rootSession: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+        project: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+      }
+      blockers: {
+        pending: number
+        running: number
+        unknown: number
+        failed: number
+      }
+      recoveryRequired: boolean
+      completion?: {
+        id: string
+        messageID: string
+        digest: string
+        projection: "pending" | "projected" | "recovery_required" | "abandoned"
+      }
+    }
+  }
+}
+
+export type SessionExecutionsCancelResponse = SessionExecutionsCancelResponses[keyof SessionExecutionsCancelResponses]
+
+export type SessionExecutionsReconcileData = {
+  body?: {
+    requestID: string
+    operationID: string
+    state: "completed" | "failed" | "cancelled"
+    expectedVersion: number
+    expectedWorkVersion: number
+    evidence: string
+    resolutionCode: string
+  }
+  path: {
+    sessionID: string
+    executionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/executions/{executionID}/reconcile"
+}
+
+export type SessionExecutionsReconcileErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsReconcileError = SessionExecutionsReconcileErrors[keyof SessionExecutionsReconcileErrors]
+
+export type SessionExecutionsReconcileResponses = {
+  /**
+   * Reconciliation accepted
+   */
+  200: {
+    requestID: string
+    idempotent: boolean
+    execution: {
+      id: string
+      projectID: string
+      rootSessionID: string
+      resumesExecutionID?: string
+      budgetScopeID: string
+      rootInvocationID: string
+      userMessageID: string
+      sessionGeneration: number
+      turnSequence: number
+      version: number
+      routeRevision: number
+      route?: {
+        active: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        base: {
+          providerID: string
+          modelID: string
+          variant?: string
+        }
+        stage: "base" | "expert"
+        activeEpisodeID?: string
+        manualModelPin: boolean
+        manualThinkingPin: boolean
+        expert?: {
+          episodes: number
+          maxEpisodes: number
+          calls: number
+          maxCalls: number
+          steps: number
+          maxSteps: number
+        }
+      }
+      lifecycle: "active" | "draining" | "terminal"
+      phase:
+        | "queued"
+        | "preparing"
+        | "model"
+        | "tools"
+        | "waiting_permission"
+        | "waiting_children"
+        | "awaiting_route_approval"
+        | "reviewing"
+        | "finalizing"
+        | "awaiting_reconciliation"
+        | "draining"
+        | "idle"
+      outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
+      reason?: {
+        code:
+          | "user_cancelled"
+          | "invocation_cancelled"
+          | "provider_unavailable"
+          | "verification_required"
+          | "no_verified_model"
+          | "unsupported_variant"
+          | "deadline"
+          | "call_limit"
+          | "step_limit"
+          | "cost_limit"
+          | "unknown_price"
+          | "review_rejected"
+          | "review_unavailable"
+          | "active_work"
+          | "recovery_required"
+          | "stale_owner"
+          | "storage_error"
+          | "resource_limit"
+          | "approval_required"
+          | "deleted"
+        message: string
+        retryable: boolean
+      }
+      createdAt: number
+      updatedAt: number
+      terminalAt?: number
+      budget: {
+        execution: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+          calls: {
+            used: number
+            limit?: number
+          }
+          steps: {
+            used: number
+            limit?: number
+          }
+          deadlineAt?: number
+        }
+        rootSession: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+        project: {
+          limitMicrousd?: number
+          spentMicrousd: number
+          reservedMicrousd: number
+          uncertainMicrousd: number
+          unpricedCalls: number
+        }
+      }
+      blockers: {
+        pending: number
+        running: number
+        unknown: number
+        failed: number
+      }
+      recoveryRequired: boolean
+      completion?: {
+        id: string
+        messageID: string
+        digest: string
+        projection: "pending" | "projected" | "recovery_required" | "abandoned"
+      }
+    }
+  }
+}
+
+export type SessionExecutionsReconcileResponse =
+  SessionExecutionsReconcileResponses[keyof SessionExecutionsReconcileResponses]
+
+export type SessionExecutionsRouteProposalDecideData = {
+  body?: {
+    requestID: string
+    expectedProposalVersion: number
+    expectedRouteRevision: number
+    decision: "accept" | "reject"
+    acceptScope?: "episode" | "execution"
+  }
+  path: {
+    sessionID: string
+    executionID: string
+    proposalID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/executions/{executionID}/route-proposals/{proposalID}/decision"
+}
+
+export type SessionExecutionsRouteProposalDecideErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionExecutionsRouteProposalDecideError =
+  SessionExecutionsRouteProposalDecideErrors[keyof SessionExecutionsRouteProposalDecideErrors]
+
+export type SessionExecutionsRouteProposalDecideResponses = {
+  /**
+   * Route proposal decision recorded
+   */
+  200: {
+    requestID: string
+    idempotent: boolean
+    proposal: {
+      id: string
+      executionID: string
+      invocationID: string
+      stepID: string
+      routeRevision: number
+      sessionGeneration: number
+      fromRoute: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      toRoute: {
+        providerID: string
+        modelID: string
+        variant?: string
+      }
+      paramsDigest: string
+      scope: "thinking" | "model" | "expert"
+      reasonCode: string
+      evidenceRefs: Array<string>
+      estimatedUsage: {
+        [key: string]: unknown
+      }
+      uncertainty: boolean
+      expiresAt: number
+      policyVersion: number
+      consentVersion: number
+      credentialRevision: string
+      state: "pending" | "accepted" | "rejected" | "expired" | "applied" | "superseded"
+      version: number
+      decisionID?: string
+      actorID?: string
+      acceptScope?: "episode" | "execution"
+      createdAt: number
+      decidedAt?: number
+      appliedAt?: number
+    }
+  }
+}
+
+export type SessionExecutionsRouteProposalDecideResponse =
+  SessionExecutionsRouteProposalDecideResponses[keyof SessionExecutionsRouteProposalDecideResponses]
 
 export type TuiSelectSessionData = {
   body?: {

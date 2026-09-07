@@ -23,12 +23,12 @@ describe("model availability", () => {
     })
   })
 
-  test("derives the next UTC daily window when Zen omits reset headers", () => {
+  test("uses a bounded default backoff when reset headers are absent", () => {
     const response = new Response(null, { status: 429 })
     expect(ModelAvailability.fromResponse(response, now)).toEqual({
       status: "rate_limited",
-      retryAt: Date.UTC(2026, 7, 21),
-      source: "daily-window",
+      retryAt: now + 60_000,
+      source: "provider-response",
     })
   })
 
@@ -55,10 +55,7 @@ describe("model availability", () => {
       "upstream model unavailable, retry time unknown",
     )
     expect(
-      ModelAvailability.retryLabel(
-        { status: "unavailable", retryAt: now + 300_000, source: "provider-response" },
-        now,
-      ),
+      ModelAvailability.retryLabel({ status: "unavailable", retryAt: now + 300_000, source: "provider-response" }, now),
     ).toBe("upstream model unavailable, retry in ~5m")
   })
 

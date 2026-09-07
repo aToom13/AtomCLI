@@ -42,6 +42,7 @@ export namespace SubAgentLifecycle {
     sessionID: string,
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<Status> {
+    options.signal?.throwIfAborted()
     const current = status(sessionID)
     if (current.status !== "running") return current
     const timeoutMs = Math.min(Math.max(options.timeoutMs ?? 30_000, 1), 10 * 60_000)

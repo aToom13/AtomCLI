@@ -153,6 +153,12 @@ export function Home() {
           </Show>
         </box>
         <box flexGrow={1} />
+        <Show when={dimensions().width >= 76 && args.services}>
+          <text fg={args.services?.controlError || args.services?.companionError ? theme.warning : theme.textMuted}>
+            API {args.services?.controlPort ? `:${args.services.controlPort}` : "error"} · Companion{" "}
+            {args.services?.companionPort ? `:${args.services.companionPort}` : "off/error"}
+          </text>
+        </Show>
         <Show when={dimensions().width >= 50}>
           <box flexShrink={0}>
             <text fg={theme.textMuted}>{Installation.VERSION}</text>

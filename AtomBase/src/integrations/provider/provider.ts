@@ -41,11 +41,26 @@ import { createOllama, detectOllama, toProviderModels } from "./ollama"
 import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
 import { createAntigravity } from "./antigravity"
 import { ModelAvailability } from "./availability"
+import { ModelVerification } from "./verification"
 import { Bus } from "@/core/bus"
+import type { ExecutionRuntime } from "@/core/execution/runtime"
+import { RouteEligibility } from "@/core/routing/route-eligibility"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
   export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000
+
+  export const RoutePolicy = z.object({
+    requested: z.string(),
+    mode: z.enum(["explicit", "auto", "free"]),
+    allowedProviders: z.array(z.string()),
+    excluded: z.array(z.string()).default([]),
+    requiredCapabilities: z.array(ModelVerification.Capability).default(["text"]),
+    freeOnly: z.boolean(),
+    requireVerification: z.boolean(),
+    variant: z.string().optional(),
+  })
+  export type RoutePolicy = z.infer<typeof RoutePolicy>
 
   export function requestTimeout(options: Record<string, any>): number | false {
     return options.timeout === false ? false : (options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS)
@@ -682,7 +697,10 @@ export namespace Provider {
       },
       status: model.status ?? "active",
       headers: model.headers ?? {},
-      options: model.options ?? {},
+      options: {
+        ...model.options,
+        _catalogCostKnown: model.cost !== undefined,
+      },
       cost: {
         input: model.cost?.input ?? 0,
         output: model.cost?.output ?? 0,
@@ -747,10 +765,88 @@ export namespace Provider {
     }
   }
 
+  export function isExplicitlyFree(model: Pick<Model, "cost">): boolean {
+    const cost = model.cost
+    if (!cost) return false
+    if ((model as Model).options?._catalogCostKnown === false) return false
+    const values = [cost.input, cost.output, cost.cache?.read, cost.cache?.write]
+    if (cost.experimentalOver200K) {
+      values.push(
+        cost.experimentalOver200K.input,
+        cost.experimentalOver200K.output,
+        cost.experimentalOver200K.cache?.read,
+        cost.experimentalOver200K.cache?.write,
+      )
+    }
+    return values.every((value) => typeof value === "number" && Number.isFinite(value) && value === 0)
+  }
+
+  export function routePolicy(model: Model): RoutePolicy {
+    const parsed = RoutePolicy.safeParse((model.options as any)?._routePolicy)
+    if (parsed.success) return parsed.data
+    return {
+      requested: `${model.providerID}/${model.id}`,
+      mode: "explicit",
+      allowedProviders: [model.providerID],
+      excluded: [],
+      requiredCapabilities: ["text"],
+      freeOnly: false,
+      requireVerification: false,
+    }
+  }
+
+  export function applyRoutePolicy(model: Model, policy: RoutePolicy): Model {
+    return {
+      ...model,
+      options: { ...model.options, _routePolicy: policy },
+    }
+  }
+
+  export async function isRouteEligible(
+    model: Model,
+    policy: RoutePolicy,
+    capability: ModelVerification.Capability,
+    context?: { effectiveParams?: unknown },
+  ) {
+    const provider = await getProvider(model.providerID)
+    const effectiveParams =
+      context?.effectiveParams ??
+      ({
+        modelOptions: model.options,
+        variantOptions: policy.variant ? model.variants?.[policy.variant] : undefined,
+      } as const)
+    const paramsDigest = await ModelVerification.paramsDigest(effectiveParams)
+    if (!provider) return false
+    const key = await ModelVerification.identity(model, provider, {
+      variant: policy.variant,
+      ...(context?.effectiveParams !== undefined ? { effectiveParams: context.effectiveParams } : {}),
+    })
+    const evidence = await ModelVerification.get(key)
+    const price =
+      !model.cost || model.options?._catalogCostKnown === false ? "unknown" : isExplicitlyFree(model) ? "free" : "paid"
+    return (
+      RouteEligibility.evaluate({
+        model,
+        connected: Boolean(provider),
+        available: model.status !== "deprecated" && !ModelAvailability.active(model.availability),
+        providerAllowed: policy.allowedProviders.includes(model.providerID),
+        modelExcluded:
+          policy.excluded.includes(model.id) || policy.excluded.includes(`${model.providerID}/${model.id}`),
+        freeOnly: policy.freeOnly,
+        price,
+        requiredCapabilities: [capability],
+        variant: policy.variant,
+        paramsDigest,
+        verificationKey: key,
+        verification: evidence,
+        requireVerification: policy.requireVerification,
+      }).decision === "eligible"
+    )
+  }
+
   function isPublicAtomCLIModel(model: Model): boolean {
     if (model.status === "deprecated") return false
-    if (!model.cost || model.cost.input === undefined || model.cost.output === undefined) return false
-    return model.cost.input === 0 && model.cost.output === 0
+    return isExplicitlyFree(model)
   }
 
   type InputModality = "image" | "pdf" | "audio" | "video"
@@ -1047,7 +1143,13 @@ export namespace Provider {
               write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
             },
           },
-          options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
+          options: {
+            ...(mergeDeep(existingModel?.options ?? {}, model.options ?? {}) as Record<string, any>),
+            // Zero-filled defaults are not proof that a configured model is
+            // actually free. Preserve catalog evidence, or require the user
+            // configuration to declare a cost explicitly.
+            _catalogCostKnown: model.cost !== undefined || existingModel?.options?._catalogCostKnown === true,
+          },
           limit: {
             context: model.limit?.context ?? existingModel?.limit?.context ?? 0,
             output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
@@ -1343,7 +1445,9 @@ export namespace Provider {
           const availability =
             ModelAvailability.fromResponse(response) ?? (await ModelAvailability.unavailableFromResponse(response))
           const current = ModelAvailability.active(requestModel.availability)
-          const next = availability ?? (response.ok ? undefined : current)
+          // A 2xx response only proves HTTP transport success. Keep a still-active
+          // cooldown until its reset time; completed model output updates verification separately.
+          const next = availability ?? current
           if (JSON.stringify(current) !== JSON.stringify(next)) {
             requestModel.availability = next
             void Bus.publish(ModelAvailability.Event.Updated, {
@@ -1351,6 +1455,31 @@ export namespace Provider {
               modelID: requestModel.id,
               availability: next,
             })
+          }
+
+          const reason = availability
+            ? availability.status === "rate_limited"
+              ? "rate_limited"
+              : "model_unavailable"
+            : response.status === 401 || response.status === 403
+              ? "authentication"
+              : undefined
+          if (reason) {
+            void (async () => {
+              const verificationKey = await ModelVerification.identity(requestModel, provider)
+              const attempt = await ModelVerification.begin({
+                key: verificationKey,
+                providerID: requestModel.providerID,
+                modelID: requestModel.id,
+              })
+              await ModelVerification.failed(attempt, reason, { retryAt: availability?.retryAt })
+            })().catch((error) =>
+              log.warn("failed to persist provider response evidence", {
+                providerID: requestModel.providerID,
+                modelID: requestModel.id,
+                error: error instanceof Error ? error.name : "UnknownError",
+              }),
+            )
           }
         }
 
@@ -1397,7 +1526,20 @@ export namespace Provider {
     return state().then((s) => s.providers[providerID])
   }
 
-  export async function getModel(providerID: string, modelID: string, context?: { session?: any; prompt?: string }) {
+  export async function getModel(
+    providerID: string,
+    modelID: string,
+    context?: {
+      session?: any
+      prompt?: string
+      verify?: boolean
+      signal?: AbortSignal
+      execution?: ExecutionRuntime.Context
+      variant?: string
+      agent?: any
+      user?: any
+    },
+  ) {
     const s = await state()
     const provider = s.providers[providerID]
     if (!provider) {
@@ -1415,27 +1557,29 @@ export namespace Provider {
       throw new ModelNotFoundError({ providerID, modelID, suggestions })
     }
 
-    // AtomCLI Auto / Free: resolve to the best available free model
+    // AtomCLI Auto / Free: resolve to a concrete model with fresh capability evidence.
     // Returns the REAL model entry so the entire pipeline uses correct metadata
     if (providerID === "atomcli" && (modelID === "atomcli-auto" || modelID === "atomcli-free")) {
       const isAuto = modelID === "atomcli-auto"
-      const availableFreeModels = Object.entries(provider.models).filter(
-        ([id, m]) =>
-          id !== "atomcli-auto" && id !== "atomcli-free" && (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0,
-      )
+      const config = await Config.get()
+      const mode = config.experimental?.auto_mode ?? "quality"
+      const autoRouterConfig = config.experimental?.auto_router
+      const allowedProviders = new Set(autoRouterConfig?.allowed_providers ?? Object.keys(s.providers))
+      const allowPaidModels = isAuto && autoRouterConfig?.allow_paid_models === true
+      const allowPaidProbes = isAuto && allowPaidModels && autoRouterConfig?.allow_paid_probes === true
+      const availableModels = Object.entries(s.providers).flatMap(([candidateProviderID, candidateProvider]) => {
+        if (!allowedProviders.has(candidateProviderID)) return []
+        return Object.entries(candidateProvider.models).filter(([id, model]) => {
+          if (candidateProviderID === "atomcli" && (id === "atomcli-auto" || id === "atomcli-free")) return false
+          return isExplicitlyFree(model) || allowPaidModels
+        })
+      })
 
       let activeSession: any = context?.session
       let promptText = context?.prompt ?? ""
       let requiredModalities = new Set<InputModality>()
       try {
         const { Session } = await import("@/core/session")
-        if (!activeSession) {
-          for await (const s of Session.list()) {
-            if (!activeSession || s.time.updated > activeSession.time.updated) {
-              activeSession = s
-            }
-          }
-        }
         if (activeSession && !promptText && context?.prompt === undefined) {
           const messages = await Session.messages({ sessionID: activeSession.id, limit: 20, excludePatches: true })
           const lastUser = [...messages].reverse().find((m) => m.info.role === "user")
@@ -1451,15 +1595,14 @@ export namespace Provider {
         log.warn("failed to resolve active session", { error: (err as Error).message })
       }
 
-      const modalityModels = availableFreeModels.filter(([, model]) =>
-        supportsInputModalities(model, requiredModalities),
-      )
+      const modalityModels = availableModels.filter(([, model]) => supportsInputModalities(model, requiredModalities))
       if (requiredModalities.size > 0 && modalityModels.length === 0) {
         throw new Error(
-          `No free AtomCLI model supports the required input modalities: ${Array.from(requiredModalities).join(", ")}`,
+          `No eligible ${modelID} model supports the required input modalities: ${Array.from(requiredModalities).join(", ")}`,
         )
       }
-      const freeModels = requiredModalities.size > 0 ? modalityModels : availableFreeModels
+      const candidateModels = requiredModalities.size > 0 ? modalityModels : availableModels
+      if (candidateModels.length === 0) throw new Error(`${modelID}: no eligible model is configured`)
       if (requiredModalities.size > 0) {
         log.info("atomcli-auto constrained by input modalities", {
           required: Array.from(requiredModalities).join(","),
@@ -1468,7 +1611,7 @@ export namespace Provider {
       }
 
       const {
-        selectModelInternal,
+        selectModel,
         estimateComplexity,
         inferCategoryMulti,
         estimateRequiredContext,
@@ -1483,16 +1626,29 @@ export namespace Provider {
         : { category: "general" as const, confidence: 1.0 }
       const category = categoryRes.category
       const complexity = promptText ? estimateComplexity(promptText) : 0
-
-      const config = await Config.get()
-      const mode = config.experimental?.auto_mode ?? "quality"
-      const autoRouterConfig = config.experimental?.auto_router
+      const { TaskProfile } = await import("@/core/routing/task-profile")
+      const taskProfile = TaskProfile.infer(promptText, category === "general" ? undefined : category)
+      const requiredCapabilities: Array<"text" | "tool"> = taskProfile.needsTools ? ["text", "tool"] : ["text"]
+      const effectiveParams = async (model: Model) => {
+        if (!context?.agent || !context?.user) return undefined
+        const { LLM } = await import("@/core/session/llm")
+        const concreteUser = { ...context.user, variant: context.variant ?? context.user.variant }
+        return (
+          await LLM.prepareRouteParams({
+            model,
+            sessionID: activeSession?.id ?? context.user.sessionID,
+            agent: context.agent,
+            user: concreteUser,
+            provider: s.providers[model.providerID],
+          })
+        ).params
+      }
 
       // For complex tasks in quality/reasoning modes, use meta-router
       const { selectMetaRouter } = await import("@/integrations/tool/meta-router")
       let metaRouterInfo = undefined
       if ((mode === "reasoning" || mode === "quality") && complexity >= 5) {
-        const mrResult = selectMetaRouter(freeModels)
+        const mrResult = selectMetaRouter(candidateModels)
         metaRouterInfo = mrResult
         log.info("meta-router selected for complex task", {
           mode,
@@ -1501,9 +1657,85 @@ export namespace Provider {
         })
       }
 
-      const { selected, ranked } = selectModelInternal(
+      const preliminary = await selectModel(
         category,
-        freeModels,
+        candidateModels,
+        mode,
+        complexity,
+        activeSession,
+        promptText,
+        autoRouterConfig,
+      )
+
+      let eligibleModels = candidateModels
+      {
+        const verifiedModels = async () => {
+          const checks = await Promise.all(
+            candidateModels.map(async ([id, model]) => {
+              const routePolicy: RoutePolicy = {
+                requested: `${providerID}/${modelID}`,
+                mode: isAuto ? "auto" : "free",
+                allowedProviders: Array.from(allowedProviders),
+                excluded: autoRouterConfig?.excluded_models ?? [],
+                requiredCapabilities,
+                freeOnly: !allowPaidModels,
+                requireVerification: true,
+                variant: context?.variant,
+              }
+              const params = await effectiveParams(model)
+              const eligible = await Promise.all(
+                requiredCapabilities.map((capability) =>
+                  isRouteEligible(model, routePolicy, capability, { effectiveParams: params }),
+                ),
+              )
+              return eligible.every(Boolean) ? `${model.providerID}/${id}` : undefined
+            }),
+          )
+          const ids = new Set(checks.filter((id): id is string => Boolean(id)))
+          return candidateModels.filter(([id, model]) => ids.has(`${model.providerID}/${id}`))
+        }
+
+        eligibleModels = await verifiedModels()
+        if (eligibleModels.length === 0) {
+          const probeCandidates = preliminary.ranked
+            .filter(({ m }) => isExplicitlyFree(m) || allowPaidProbes)
+            .map(({ m }) => `${m.providerID}/${m.id}`)
+          const { ModelFallback } = await import("./fallback")
+          const deadline = Date.now() + 30_000
+          // Complete every required capability for a small batch before moving
+          // on; probing all text candidates first can starve tool verification.
+          for (let i = 0; i < probeCandidates.length && Date.now() < deadline; i += 2) {
+            for (const capability of requiredCapabilities) {
+              const remaining = deadline - Date.now()
+              if (remaining <= 0) break
+              await ModelFallback.probeModels(probeCandidates.slice(i, i + 2), {
+                timeoutMs: Math.min(7000, remaining),
+                totalTimeoutMs: remaining,
+                concurrency: 2,
+                capability,
+                sessionID: activeSession?.id,
+                signal: context?.signal,
+                execution: context?.execution,
+                variant: context?.variant,
+                agent: context?.agent,
+                user: context?.user,
+              })
+            }
+            eligibleModels = await verifiedModels()
+            if (eligibleModels.length > 0) break
+          }
+          eligibleModels = await verifiedModels()
+        }
+        if (eligibleModels.length === 0) {
+          throw new Error(
+            `${modelID}: no verified eligible model is currently available; retry after the reported cooldown`,
+          )
+        }
+      }
+
+      const { selected, ranked } = await selectModel(
+        category,
+        eligibleModels,
         mode,
         complexity,
         activeSession,
@@ -1553,6 +1785,16 @@ export namespace Provider {
             ...selected.m.options,
             _fallbackChain: fallbackChain,
             _metaRouter: metaRouterInfo,
+            _routePolicy: {
+              requested: `${providerID}/${modelID}`,
+              mode: isAuto ? "auto" : "free",
+              allowedProviders: Array.from(allowedProviders),
+              excluded: autoRouterConfig?.excluded_models ?? [],
+              requiredCapabilities,
+              freeOnly: !allowPaidModels,
+              requireVerification: true,
+              ...(context?.variant ? { variant: context.variant } : {}),
+            },
           },
         }
       }

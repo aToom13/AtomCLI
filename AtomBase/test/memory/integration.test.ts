@@ -34,8 +34,8 @@ describe("SessionMemoryIntegration", () => {
     try {
       await SessionMemoryIntegration.learnFromMessage("I prefer concise answers", model)
       await SessionMemoryIntegration.learnFromResponse("Understood", "I prefer concise answers", model)
-      expect(extract).toHaveBeenCalledWith("I prefer concise answers", expect.any(Object), model)
-      expect(analyze).toHaveBeenCalledWith("Understood", "I prefer concise answers", model)
+      expect(extract).toHaveBeenCalledWith("I prefer concise answers", expect.any(Object), model, undefined)
+      expect(analyze).toHaveBeenCalledWith("Understood", "I prefer concise answers", model, undefined)
     } finally {
       extract.mockRestore()
       analyze.mockRestore()

@@ -1,5 +1,6 @@
 import { createMemo, createSignal, onMount } from "solid-js"
 import { useSync } from "@tui/context/sync"
+import { useLocal } from "@tui/context/local"
 import { useDialog } from "@tui/ui/dialog"
 import { DialogSelect } from "@tui/ui/dialog-select"
 import { useSDK } from "@tui/context/sdk"
@@ -12,6 +13,7 @@ type CategoryRatings = Record<TaskCategory, number>
 
 const CATEGORIES: TaskCategory[] = ["coding", "documentation", "analysis", "general"]
 const MODES: AutoMode[] = ["speed", "balanced", "quality", "reasoning"]
+const APPROVAL_MODES = ["off", "ask", "auto"] as const
 const RATING_MIN = -3
 const RATING_MAX = 3
 
@@ -31,6 +33,7 @@ function avgRating(r: CategoryRatings): number {
 
 export function DialogAutoConf() {
   const sync = useSync()
+  const local = useLocal()
   const sdk = useSDK()
   const toast = useToast()
   const dialog = useDialog()
@@ -58,6 +61,10 @@ export function DialogAutoConf() {
   const [overrides, setOverrides] = createSignal<Record<string, string>>({ ...(router().category_overrides ?? {}) })
   const [mode, setMode] = createSignal<AutoMode>(cfg().auto_mode ?? "quality")
   const [routing, setRouting] = createSignal<boolean>(cfg().smart_model_routing ?? false)
+  const [adaptive, setAdaptive] = createSignal(sync.data.config.adaptive_routing?.mode ?? "ask")
+  const [thinking, setThinking] = createSignal(sync.data.config.adaptive_routing?.thinking?.mode ?? "ask")
+  const [paid, setPaid] = createSignal(router().allow_paid_models === true)
+  const [paidProbes, setPaidProbes] = createSignal(router().allow_paid_probes === true)
   const [saving, setSaving] = createSignal(false)
   // Which model is expanded to show per-category ratings (Shift+E toggle)
   const [expanded, setExpanded] = createSignal<string | null>(null)
@@ -112,7 +119,12 @@ export function DialogAutoConf() {
 
   function cycleOverride(category: TaskCategory, dir: -1 | 1) {
     const cur = overrides()[category] ?? ""
-    const list = ["", ...models().filter((m) => !excluded().has(m.id)).map((m) => m.id)]
+    const list = [
+      "",
+      ...models()
+        .filter((m) => !excluded().has(m.id))
+        .map((m) => m.id),
+    ]
     const idx = list.indexOf(cur)
     const next = list[(idx + dir + list.length) % list.length]
     const o = { ...overrides() }
@@ -135,10 +147,18 @@ export function DialogAutoConf() {
       }
 
       const payload = {
+        adaptive_routing: {
+          ...sync.data.config.adaptive_routing,
+          mode: adaptive(),
+          thinking: { ...sync.data.config.adaptive_routing?.thinking, mode: thinking() },
+        },
         experimental: {
           smart_model_routing: routing(),
           auto_mode: mode(),
           auto_router: {
+            ...router(),
+            allow_paid_models: paid(),
+            allow_paid_probes: paidProbes(),
             excluded_models: [...excluded()],
             model_ratings: ratingsObj,
             category_overrides: cleanOverrides,
@@ -146,18 +166,11 @@ export function DialogAutoConf() {
         },
       }
 
-      const res = await fetch(`${sdk.url}/config`, {
-        method: "PATCH",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-atomcli-directory": sync.data.path.directory || ""
-        },
-        body: JSON.stringify(payload),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      await sdk.client.config.update(payload, { throwOnError: true })
 
       const currentExp = (sync.data.config as any)?.experimental || {}
       sync.set("config", "experimental" as any, { ...currentExp, ...payload.experimental })
+      sync.set("config", "adaptive_routing", payload.adaptive_routing)
       toast.show({ title: "Auto Router", message: "Saved", variant: "success" })
       dialog.clear()
     } catch (e) {
@@ -171,27 +184,23 @@ export function DialogAutoConf() {
     const payload = {
       experimental: {
         smart_model_routing: false,
-        auto_mode: "quality",
-        auto_router: { excluded_models: [], model_ratings: {}, category_overrides: {} },
+        auto_mode: "quality" as const,
+        auto_router: { ...router(), excluded_models: [], model_ratings: {}, category_overrides: {} },
       },
     }
     try {
-      await fetch(`${sdk.url}/config`, {
-        method: "PATCH",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-atomcli-directory": sync.data.path.directory || ""
-        },
-        body: JSON.stringify(payload),
-      })
+      await sdk.client.config.update(payload, { throwOnError: true })
       const currentExp = (sync.data.config as any)?.experimental || {}
       sync.set("config", "experimental" as any, { ...currentExp, ...payload.experimental })
       toast.show({ title: "Auto Router", message: "Reset", variant: "success" })
-    } catch { /* ignore */ }
+    } catch (error) {
+      toast.show({ title: "Auto Router", message: `Reset failed: ${(error as Error).message}`, variant: "error" })
+      return
+    }
     setExcluded(new Set<string>())
     setRatings({})
     setOverrides({})
-    setMode("balanced")
+    setMode("quality")
     setRouting(false)
     setExpanded(null)
     dialog.clear()
@@ -201,7 +210,45 @@ export function DialogAutoConf() {
   const options = createMemo(() => {
     const list: any[] = []
 
+    for (const modelID of ["atomcli-auto", "atomcli-free"]) {
+      if (!sync.data.provider.find((provider) => provider.id === "atomcli")?.models[modelID]) continue
+      list.push({
+        title: modelID === "atomcli-auto" ? "Use AtomCLI Auto" : "Use AtomCLI Free",
+        value: `select-${modelID}`,
+        category: "Select model (save settings first)",
+        onSelect: () => {
+          local.model.set({ providerID: "atomcli", modelID }, { recent: true, manual: true })
+          dialog.clear()
+        },
+      })
+    }
+
     // Settings
+    for (const [value, label, current, set] of [
+      ["adaptive", "Adaptive model proposals", adaptive, setAdaptive],
+      ["thinking", "Thinking proposals", thinking, setThinking],
+    ] as const) {
+      list.push({
+        title: `${label}  ◀ ${current()} ▶`,
+        value,
+        category: "Adaptive routing (auto requires a grant)",
+        onSelect: () => set(APPROVAL_MODES[(APPROVAL_MODES.indexOf(current()) + 1) % APPROVAL_MODES.length]),
+      })
+    }
+    list.push(
+      {
+        title: `Auto: allow paid models  ${paid() ? "[ON]" : "[OFF]"}`,
+        value: "paid",
+        category: "Auto / Free (Free always uses verified zero-cost models)",
+        onSelect: () => setPaid(!paid()),
+      },
+      {
+        title: `Auto: allow paid verification requests  ${paidProbes() ? "[ON]" : "[OFF]"}`,
+        value: "paid-probes",
+        category: "Auto / Free (Free always uses verified zero-cost models)",
+        onSelect: () => setPaidProbes(!paidProbes()),
+      },
+    )
     list.push({
       title: `Smart Routing  ${routing() ? "[ON]" : "[OFF]"}`,
       value: "routing",
@@ -260,9 +307,11 @@ export function DialogAutoConf() {
       title: saving() ? "  Saving..." : "  Save",
       value: "save",
       category: "─",
-      onSelect: () => { if (!saving()) save() },
+      onSelect: () => {
+        if (!saving()) save()
+      },
     })
-    list.push({ title: "  Reset", value: "reset", category: "─", onSelect: () => resetAll() })
+    list.push({ title: "  Reset model preferences", value: "reset", category: "─", onSelect: () => resetAll() })
     list.push({ title: "  Cancel", value: "cancel", category: "─", onSelect: () => dialog.clear() })
 
     return list
@@ -281,7 +330,7 @@ export function DialogAutoConf() {
 
   return (
     <DialogSelect
-      title="Auto Model Router"
+      title="Auto / Free Model Settings"
       options={options()}
       skipFilter={true}
       keybind={[
@@ -290,6 +339,13 @@ export function DialogAutoConf() {
           title: "◀",
           onTrigger: (opt) => {
             const v = opt.value as string
+            if (v === "adaptive" || v === "thinking") {
+              const current = v === "adaptive" ? adaptive : thinking
+              const set = v === "adaptive" ? setAdaptive : setThinking
+              set(
+                APPROVAL_MODES[(APPROVAL_MODES.indexOf(current()) + APPROVAL_MODES.length - 1) % APPROVAL_MODES.length],
+              )
+            } else if (v === "paid" || v === "paid-probes") opt.onSelect?.(dialog)
             if (v === "routing") setRouting(!routing())
             else if (v === "mode") cycleMode(-1)
             else if (v.startsWith("ov-")) cycleOverride(v.slice(3) as TaskCategory, -1)
@@ -304,6 +360,7 @@ export function DialogAutoConf() {
           title: "▶",
           onTrigger: (opt) => {
             const v = opt.value as string
+            if (["adaptive", "thinking", "paid", "paid-probes"].includes(v)) opt.onSelect?.(dialog)
             if (v === "routing") setRouting(!routing())
             else if (v === "mode") cycleMode(1)
             else if (v.startsWith("ov-")) cycleOverride(v.slice(3) as TaskCategory, 1)
@@ -318,6 +375,7 @@ export function DialogAutoConf() {
           title: "toggle",
           onTrigger: (opt) => {
             const v = opt.value as string
+            if (["adaptive", "thinking", "paid", "paid-probes"].includes(v)) opt.onSelect?.(dialog)
             if (v === "routing") setRouting(!routing())
             else if (v === "mode") cycleMode(1)
             else if (v.startsWith("ov-")) cycleOverride(v.slice(3) as TaskCategory, 1)
@@ -325,8 +383,7 @@ export function DialogAutoConf() {
             else if (v.startsWith("r-")) {
               const p = parseRatingValue(v)
               if (p) adjustCategoryRating(p.modelId, p.cat, 1)
-            }
-            else if (v === "save" && !saving()) save()
+            } else if (v === "save" && !saving()) save()
             else if (v === "reset") resetAll()
             else if (v === "cancel") dialog.clear()
           },

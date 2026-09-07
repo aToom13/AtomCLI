@@ -86,7 +86,7 @@ export namespace CodeReview {
         const agent = await Agent.get("reviewer")
         if (!agent) throw new Error("Reviewer agent not found")
         const fallback = await Provider.defaultModel()
-        const model = await Provider.getModel(fallback.providerID, fallback.modelID)
+        await Provider.getModel(fallback.providerID, fallback.modelID, { verify: true })
         execute = async (assignment, index) => {
           const prompt = ReviewV2.formatPrompt({
             target: `${input.provider} change #${input.pr}, chunk ${assignment.id}, files: ${assignment.files.join(", ")}`,
@@ -97,7 +97,7 @@ export namespace CodeReview {
           const result = await SubAgent.spawn({
             parentSessionID: parent!.id,
             agent,
-            model: { providerID: model.providerID, modelID: model.id },
+            model: fallback,
             permissions: SubAgent.buildFromAgent(agent),
             parts: [{ type: "text", text: prompt }],
             description: `Review V2 ${assignment.id}`,

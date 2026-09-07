@@ -12,11 +12,18 @@ export namespace CompactionTransaction {
     summaryTokens: z.number().int().nonnegative().optional(),
     ratio: z.number().nonnegative().optional(),
     retry: z.number().int().nonnegative(),
+    parentID: z.string().optional(),
+    summaryMessageID: z.string().optional(),
     error: z.string().optional(),
   })
   export type Info = z.infer<typeof Info>
 
-  export async function start(sessionID: string, sourceTokens: number, retry: number) {
+  export async function start(
+    sessionID: string,
+    sourceTokens: number,
+    retry: number,
+    link?: { parentID: string; summaryMessageID: string },
+  ) {
     const value = Info.parse({
       id: `compaction-${crypto.randomUUID()}`,
       sessionID,
@@ -24,6 +31,7 @@ export namespace CompactionTransaction {
       startedAt: Date.now(),
       sourceTokens,
       retry,
+      ...link,
     })
     await Storage.write(["compaction_transaction", sessionID, value.id], value)
     return value
@@ -65,5 +73,17 @@ export namespace CompactionTransaction {
       recovered++
     }
     return recovered
+  }
+
+  export async function isCommittedSummary(sessionID: string, summaryMessageID: string) {
+    const keys = await Storage.list(["compaction_transaction", sessionID])
+    let linked = false
+    for (const key of keys) {
+      const value = Info.parse(await Storage.read(key))
+      if (value.summaryMessageID !== summaryMessageID) continue
+      linked = true
+      if (value.status === "completed") return true
+    }
+    return !linked
   }
 }

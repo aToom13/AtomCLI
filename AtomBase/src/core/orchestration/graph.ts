@@ -5,7 +5,7 @@ export namespace OrchestrationGraph {
   }
 
   export interface Result {
-    status: "pending" | "running" | "completed" | "failed" | "skipped"
+    status: "pending" | "running" | "unknown" | "completed" | "failed" | "skipped"
   }
 
   export function topologicalSort(tasks: Node[]): string[] {
@@ -41,15 +41,20 @@ export namespace OrchestrationGraph {
   }
 
   export function ready<T extends Node>(tasks: T[], results: Record<string, Result>): T[] {
-    return tasks.filter((task) =>
-      results[task.id]?.status === "pending" && task.dependsOn.every((dependency) => results[dependency]?.status === "completed"),
+    return tasks.filter(
+      (task) =>
+        results[task.id]?.status === "pending" &&
+        task.dependsOn.every((dependency) => results[dependency]?.status === "completed"),
     )
   }
 
   export function hasFailedDependency(task: Node, results: Record<string, Result>) {
-    return task.dependsOn.length > 0 && task.dependsOn.some((dependency) => {
-      const status = results[dependency]?.status
-      return status === "failed" || status === "skipped"
-    })
+    return (
+      task.dependsOn.length > 0 &&
+      task.dependsOn.some((dependency) => {
+        const status = results[dependency]?.status
+        return status === "failed" || status === "skipped"
+      })
+    )
   }
 }

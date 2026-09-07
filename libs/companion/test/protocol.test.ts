@@ -143,4 +143,25 @@ describe("CompanionProtocol", () => {
     })
     expect(deletion.type).toBe("artifact_delete")
   })
+
+  test("validates signed route decisions with optimistic concurrency", () => {
+    expect(CompanionProtocol.CAPABILITIES).toContain("routes.decide")
+    const message = CompanionProtocol.InboundMessage.parse({
+      type: "route_decision",
+      session_id: "session_test",
+      execution_id: "execution_test",
+      proposal_id: "proposal_test",
+      expected_proposal_version: 2,
+      expected_route_revision: 3,
+      decision: "accept",
+      accept_scope: "episode",
+      directory: "/code/project",
+      signature: "signature",
+      device_name: "Galaxy",
+      connection_id: crypto.randomUUID(),
+      counter: 5,
+      timestamp: Date.now(),
+    })
+    expect(message).toMatchObject({ type: "route_decision", expected_route_revision: 3 })
+  })
 })

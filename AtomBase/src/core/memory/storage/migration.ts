@@ -1,6 +1,6 @@
 /**
  * Storage Migration Script
- * 
+ *
  * Handles data migration between storage versions.
  * Ensures backward compatibility when storage format changes.
  */
@@ -8,7 +8,7 @@
 import fs from "fs/promises"
 import path from "path"
 
-import type { MemoryItem, MemoryType } from "../types"
+import { MemoryItem, type MemoryType } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -51,10 +51,7 @@ interface LegacyItem {
 /**
  * Migrate from legacy format (description-based) to new format (content-based)
  */
-export async function migrateLegacyToV1(
-  legacyPath: string,
-  newPath: string
-): Promise<MigrationResult> {
+export async function migrateLegacyToV1(legacyPath: string, newPath: string): Promise<MigrationResult> {
   const result: MigrationResult = {
     success: false,
     migratedItems: 0,
@@ -70,7 +67,7 @@ export async function migrateLegacyToV1(
     log.info("Found legacy items", { count: legacyItems.length })
 
     // Convert to new format
-    const newItems: MemoryItem[] = legacyItems.map(item => ({
+    const newItems: MemoryItem[] = legacyItems.map((item) => ({
       id: item.id,
       type: mapLegacyType(item.type),
       title: item.title,
@@ -116,9 +113,7 @@ export async function migrateLegacyToV1(
  * Migrate from v1 (JSON) to v2 (Hybrid storage)
  * This is a virtual migration - v2 reads v1 format directly
  */
-export async function ensureHybridCompatibility(
-  jsonPath: string
-): Promise<MigrationResult> {
+export async function ensureHybridCompatibility(jsonPath: string): Promise<MigrationResult> {
   const result: MigrationResult = {
     success: true,
     migratedItems: 0,
@@ -177,7 +172,7 @@ export async function ensureHybridCompatibility(
 export async function cleanupExpiredMemories(
   storagePath: string,
   ttlDays: number = 365,
-  maxItems: number = 10000
+  maxItems: number = 10000,
 ): Promise<{
   removed: number
   remaining: number
@@ -191,9 +186,9 @@ export async function cleanupExpiredMemories(
     const originalCount = items.length
 
     // Remove expired items
-    items = items.filter(item => {
+    items = items.filter((item) => {
       const created = new Date(item.metadata.createdAt).getTime()
-      return (now - created) < ttlMs
+      return now - created < ttlMs
     })
 
     // Remove low-usage, old items if over max
@@ -230,35 +225,59 @@ export async function cleanupExpiredMemories(
 /**
  * Export memories to a portable format
  */
-export async function exportMemories(
-  storagePath: string,
-  format: "json" | "csv" = "json"
-): Promise<string> {
+export async function exportMemories(storagePath: string, format: "json" | "csv" = "json"): Promise<string> {
   const content = await fs.readFile(storagePath, "utf-8")
-  const items: MemoryItem[] = JSON.parse(content)
+  const items = MemoryItem.array().parse(JSON.parse(content))
 
   if (format === "csv") {
-    const headers = ["id", "type", "title", "content", "context", "tags", "createdAt"]
-    const rows = items.map(item => [
-      item.id,
-      item.type,
-      `"${item.title.replace(/"/g, '""')}"`,
-      `"${item.content.replace(/"/g, '""')}"`,
-      item.context,
-      `"${item.tags.join(",")}"`,
-      item.metadata.createdAt,
-    ])
-
-    return [headers.join(","), ...rows.map(r => r.join(","))].join("\n")
+    const headers = [
+      "id",
+      "type",
+      "title",
+      "content",
+      "context",
+      "problem",
+      "solution",
+      "codeBefore",
+      "codeAfter",
+      "tags",
+      "metadata",
+      "relationships",
+      "strength",
+      "embedding",
+    ]
+    const rows = items.map((item) =>
+      [
+        item.id,
+        item.type,
+        item.title,
+        item.content,
+        item.context,
+        item.problem ?? "",
+        item.solution ?? "",
+        item.codeBefore ?? "",
+        item.codeAfter ?? "",
+        JSON.stringify(item.tags),
+        JSON.stringify(item.metadata),
+        JSON.stringify(item.relationships),
+        String(item.strength),
+        item.embedding ? JSON.stringify(item.embedding) : "",
+      ].map(csvCell),
+    )
+    return [headers.map(csvCell).join(","), ...rows.map((row) => row.join(","))].join("\r\n")
   }
 
   // JSON format
-  return JSON.stringify({
-    exportDate: new Date().toISOString(),
-    version: "1.0",
-    itemCount: items.length,
-    items,
-  }, null, 2)
+  return JSON.stringify(
+    {
+      exportDate: new Date().toISOString(),
+      version: "1.0",
+      itemCount: items.length,
+      items,
+    },
+    null,
+    2,
+  )
 }
 
 /**
@@ -266,7 +285,7 @@ export async function exportMemories(
  */
 export async function importMemories(
   data: string,
-  targetPath: string
+  targetPath: string,
 ): Promise<{
   imported: number
   skipped: number
@@ -286,40 +305,56 @@ export async function importMemories(
       const parsed = JSON.parse(data)
 
       if (Array.isArray(parsed)) {
-        items = parsed
+        items = MemoryItem.array().parse(parsed)
       } else if (parsed.items) {
-        items = parsed.items
+        items = MemoryItem.array().parse(parsed.items)
       } else {
         throw new Error("Unknown JSON format")
       }
-    } catch {
-      // Try CSV format (basic parsing)
-      result.errors.push("CSV import not implemented yet")
-      return result
+    } catch (jsonError) {
+      try {
+        items = parseMemoryCsv(data)
+      } catch (csvError) {
+        throw new Error(
+          `Input is neither valid memory JSON nor CSV: ${csvError instanceof Error ? csvError.message : String(csvError)}`,
+          { cause: jsonError },
+        )
+      }
     }
 
     // Read existing items
     let existing: MemoryItem[] = []
     try {
       const existingContent = await fs.readFile(targetPath, "utf-8")
-      existing = JSON.parse(existingContent)
-    } catch {
-      // File doesn't exist, start fresh
+      existing = MemoryItem.array().parse(JSON.parse(existingContent))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error(
+          `Cannot import memories because the existing target is invalid: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
 
     // Merge items (avoid duplicates)
-    const existingIds = new Set(existing.map(i => i.id))
-    const newItems = items.filter(item => {
+    const existingIds = new Set(existing.map((i) => i.id))
+    const newItems = items.filter((item) => {
       if (existingIds.has(item.id)) {
         result.skipped++
         return false
       }
+      existingIds.add(item.id)
       return true
     })
 
     // Save combined
     const combined = [...existing, ...newItems]
-    await fs.writeFile(targetPath, JSON.stringify(combined, null, 2))
+    await fs.mkdir(path.dirname(targetPath), { recursive: true })
+    const temporary = `${targetPath}.${process.pid}.${crypto.randomUUID()}.tmp`
+    await fs.writeFile(temporary, JSON.stringify(combined, null, 2))
+    await fs.rename(temporary, targetPath).catch(async (error) => {
+      await fs.unlink(temporary).catch(() => {})
+      throw error
+    })
 
     result.imported = newItems.length
 
@@ -336,6 +371,103 @@ export async function importMemories(
   return result
 }
 
+function csvCell(value: string) {
+  return `"${value.replaceAll('"', '""')}"`
+}
+
+function parseCsv(data: string) {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ""
+  let quoted = false
+  for (let index = 0; index < data.length; index++) {
+    const char = data[index]
+    if (quoted) {
+      if (char === '"' && data[index + 1] === '"') {
+        cell += '"'
+        index++
+      } else if (char === '"') {
+        quoted = false
+      } else {
+        cell += char
+      }
+      continue
+    }
+    if (char === '"' && cell.length === 0) quoted = true
+    else if (char === ",") {
+      row.push(cell)
+      cell = ""
+    } else if (char === "\n") {
+      row.push(cell.endsWith("\r") ? cell.slice(0, -1) : cell)
+      rows.push(row)
+      row = []
+      cell = ""
+    } else cell += char
+  }
+  if (quoted) throw new Error("Unterminated quoted CSV field")
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell)
+    rows.push(row)
+  }
+  return rows
+}
+
+function parseMemoryCsv(data: string): MemoryItem[] {
+  const rows = parseCsv(data)
+  const header = rows.shift()
+  if (!header?.length) throw new Error("CSV header is missing")
+  const expected = [
+    "id",
+    "type",
+    "title",
+    "content",
+    "context",
+    "problem",
+    "solution",
+    "codeBefore",
+    "codeAfter",
+    "tags",
+    "metadata",
+    "relationships",
+    "strength",
+    "embedding",
+  ]
+  if (header.length !== expected.length || header.some((value, index) => value !== expected[index])) {
+    throw new Error(`Unsupported CSV schema; expected columns: ${expected.join(", ")}`)
+  }
+  const optional = (value: string) => (value === "" ? undefined : value)
+  const json = (value: string, column: string) => {
+    try {
+      return JSON.parse(value)
+    } catch {
+      throw new Error(`Invalid JSON in CSV column ${column}`)
+    }
+  }
+  return MemoryItem.array().parse(
+    rows
+      .filter((row) => row.some((value) => value !== ""))
+      .map((row, index) => {
+        if (row.length !== expected.length) throw new Error(`CSV row ${index + 2} has ${row.length} columns`)
+        return {
+          id: row[0],
+          type: row[1],
+          title: row[2],
+          content: row[3],
+          context: row[4],
+          problem: optional(row[5]),
+          solution: optional(row[6]),
+          codeBefore: optional(row[7]),
+          codeAfter: optional(row[8]),
+          tags: json(row[9], "tags"),
+          metadata: json(row[10], "metadata"),
+          relationships: json(row[11], "relationships"),
+          strength: Number(row[12]),
+          embedding: row[13] === "" ? undefined : json(row[13], "embedding"),
+        }
+      }),
+  )
+}
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -345,13 +477,13 @@ export async function importMemories(
  */
 function mapLegacyType(legacyType: string): MemoryType {
   const typeMap: Record<string, MemoryType> = {
-    "error": "error",
-    "pattern": "pattern",
-    "solution": "solution",
-    "research": "research",
-    "preference": "preference",
-    "context": "context",
-    "knowledge": "knowledge",
+    error: "error",
+    pattern: "pattern",
+    solution: "solution",
+    research: "research",
+    preference: "preference",
+    context: "context",
+    knowledge: "knowledge",
   }
 
   return typeMap[legacyType.toLowerCase()] || "knowledge"

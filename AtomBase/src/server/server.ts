@@ -54,7 +54,22 @@ export namespace Server {
   }
 
   export const Event = {
-    Connected: BusEvent.define("server.connected", z.object({})),
+    Connected: BusEvent.define(
+      "server.connected",
+      z.object({ epoch: z.string().optional(), sequence: z.number().int().nonnegative().optional() }),
+    ),
+    Heartbeat: BusEvent.define(
+      "server.heartbeat",
+      z.object({ epoch: z.string().optional(), sequence: z.number().int().nonnegative().optional() }),
+    ),
+    ResyncRequired: BusEvent.define(
+      "server.resync_required",
+      z.object({
+        reason: z.enum(["epoch_changed", "cursor_ahead", "buffer_gap", "legacy_cursor", "client_overflow"]),
+        epoch: z.string(),
+        sequence: z.number().int().nonnegative(),
+      }),
+    ),
     Disposed: BusEvent.define("global.disposed", z.object({})),
   }
 

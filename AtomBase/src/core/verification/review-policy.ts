@@ -1,6 +1,18 @@
 export namespace ReviewPolicy {
   type Impact = import("./change-impact").ChangeImpact.Report
   export type Risk = "low" | "medium" | "high"
+  export type Mode = "adaptive" | "always" | "off" | "fast"
+  export type Snapshot = {
+    policyVersion: 1
+    enabled: boolean
+    configuredPolicy: Exclude<Mode, "fast">
+    effectivePolicy: Mode
+    executionProfile: string
+    reviewerCount: number
+    attemptLimit: number
+    highRiskPatterns: string[]
+    policyDigest: string
+  }
   export interface Input {
     editedFiles?: string[]
     prompt?: string
@@ -55,7 +67,37 @@ export namespace ReviewPolicy {
     return "medium"
   }
 
-  export function requiresIndependentReview(policy: "adaptive" | "always" | "off" | "fast", input: Input) {
+  export function snapshot(input: {
+    enabled: boolean
+    configuredPolicy: Exclude<Mode, "fast">
+    executionProfile?: string
+    reviewerCount: number
+    attemptLimit: number
+    highRiskPatterns: string[]
+  }): Snapshot {
+    const executionProfile = input.executionProfile ?? "default"
+    const effectivePolicy: Mode = !input.enabled
+      ? "off"
+      : input.configuredPolicy === "adaptive" && executionProfile === "companion-fast"
+        ? "fast"
+        : input.configuredPolicy
+    const value = {
+      policyVersion: 1 as const,
+      enabled: input.enabled,
+      configuredPolicy: input.configuredPolicy,
+      effectivePolicy,
+      executionProfile,
+      reviewerCount: input.reviewerCount,
+      attemptLimit: input.attemptLimit,
+      highRiskPatterns: [...input.highRiskPatterns],
+    }
+    return {
+      ...value,
+      policyDigest: new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex"),
+    }
+  }
+
+  export function requiresIndependentReview(policy: Mode, input: Input) {
     if (policy === "off") return false
     if (policy === "always") return (input.editedFiles?.length ?? 0) > 0
     if (policy === "fast") {

@@ -1,14 +1,26 @@
 #!/usr/bin/env bun
 
-const dir = new URL("..", import.meta.url).pathname
-process.chdir(dir)
-
 import { $ } from "bun"
+import fs from "node:fs/promises"
+import os from "node:os"
 import path from "path"
+import { fileURLToPath } from "node:url"
 
 import { createClient } from "@hey-api/openapi-ts"
 
-await $`bun dev generate > ${dir}/openapi.json`.cwd(path.resolve(dir, "../../../AtomBase"))
+const dir = fileURLToPath(new URL("..", import.meta.url))
+process.chdir(dir)
+
+const generateHome = await fs.mkdtemp(path.join(os.tmpdir(), "atomcli-sdk-build-"))
+try {
+  const openapi = await $`bun dev generate`
+    .cwd(path.resolve(dir, "../../../AtomBase"))
+    .env({ ...process.env, ATOMCLI_TEST_HOME: generateHome })
+    .text()
+  await fs.writeFile(path.join(dir, "openapi.json"), openapi)
+} finally {
+  await fs.rm(generateHome, { recursive: true, force: true })
+}
 
 await createClient({
   input: "./openapi.json",
@@ -38,7 +50,9 @@ await createClient({
 })
 
 await $`bun prettier --write src/v2`
-await $`sed -i 's/@ts-expect-error/@ts-ignore/g' src/v2/gen/client/client.gen.ts`
-await $`rm -rf dist`
+const generatedClient = path.join(dir, "src/v2/gen/client/client.gen.ts")
+const generatedSource = await fs.readFile(generatedClient, "utf8")
+await fs.writeFile(generatedClient, generatedSource.replaceAll("@ts-expect-error", "@ts-ignore"))
+await fs.rm(path.join(dir, "dist"), { recursive: true, force: true })
 await $`bun tsc`
-await $`rm openapi.json`
+await fs.rm(path.join(dir, "openapi.json"), { force: true })

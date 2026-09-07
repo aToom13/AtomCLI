@@ -6,115 +6,129 @@ import { Log } from "@/util/util/log"
 import { Bus } from "@/core/bus"
 import { BusEvent } from "@/core/bus/bus-event"
 import { errors } from "../error"
+import { SseQueue } from "../sse-queue"
 
 const log = Log.create({ service: "server" })
 
 export const SystemRoute = new Hono()
-    .post(
-        "/log",
-        describeRoute({
-            summary: "Write log",
-            description: "Write a log entry to the server logs with specified level and metadata.",
-            operationId: "app.log",
-            responses: {
-                200: {
-                    description: "Log entry written successfully",
-                    content: {
-                        "application/json": {
-                            schema: resolver(z.boolean()),
-                        },
-                    },
-                },
-                ...errors(400),
+  .post(
+    "/log",
+    describeRoute({
+      summary: "Write log",
+      description: "Write a log entry to the server logs with specified level and metadata.",
+      operationId: "app.log",
+      responses: {
+        200: {
+          description: "Log entry written successfully",
+          content: {
+            "application/json": {
+              schema: resolver(z.boolean()),
             },
-        }),
-        validator(
-            "json",
-            z.object({
-                service: z.string().meta({ description: "Service name for the log entry" }),
-                level: z.enum(["debug", "info", "error", "warn"]).meta({ description: "Log level" }),
-                message: z.string().meta({ description: "Log message" }),
-                extra: z
-                    .record(z.string(), z.any())
-                    .optional()
-                    .meta({ description: "Additional metadata for the log entry" }),
+          },
+        },
+        ...errors(400),
+      },
+    }),
+    validator(
+      "json",
+      z.object({
+        service: z.string().meta({ description: "Service name for the log entry" }),
+        level: z.enum(["debug", "info", "error", "warn"]).meta({ description: "Log level" }),
+        message: z.string().meta({ description: "Log message" }),
+        extra: z.record(z.string(), z.any()).optional().meta({ description: "Additional metadata for the log entry" }),
+      }),
+    ),
+    async (c) => {
+      const { service, level, message, extra } = c.req.valid("json")
+      const logger = Log.create({ service })
+
+      switch (level) {
+        case "debug":
+          logger.debug(message, extra)
+          break
+        case "info":
+          logger.info(message, extra)
+          break
+        case "error":
+          logger.error(message, extra)
+          break
+        case "warn":
+          logger.warn(message, extra)
+          break
+      }
+
+      return c.json(true)
+    },
+  )
+  .get(
+    "/event",
+    describeRoute({
+      summary: "Subscribe to events",
+      description: "Get events",
+      operationId: "event.subscribe",
+      responses: {
+        200: {
+          description: "Event stream",
+          content: {
+            "text/event-stream": {
+              schema: resolver(BusEvent.payloads()),
+            },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      log.info("event connected")
+      return streamSSE(c, async (stream) => {
+        let closed = false
+        let heartbeat: ReturnType<typeof setInterval> | undefined
+        let unsub = () => {}
+        let resolveDone = () => {}
+        const done = new Promise<void>((resolve) => {
+          resolveDone = resolve
+        })
+        const finish = () => {
+          if (closed) return
+          closed = true
+          if (heartbeat) clearInterval(heartbeat)
+          unsub()
+          writer.stop()
+          try {
+            stream.close()
+          } catch {}
+          resolveDone()
+        }
+        const writer = SseQueue.create<{ data: string }>({
+          write: (value) => stream.writeSSE(value),
+          bytes: (value) => new TextEncoder().encode(value.data).byteLength,
+          failed: finish,
+        })
+        stream.onAbort(finish)
+        try {
+          writer.push({
+            data: JSON.stringify({
+              type: "server.connected",
+              properties: {},
             }),
-        ),
-        async (c) => {
-            const { service, level, message, extra } = c.req.valid("json")
-            const logger = Log.create({ service })
+          })
+          unsub = Bus.subscribeAll(async (event) => {
+            writer.push({ data: JSON.stringify(event) })
+            if (event.type === Bus.InstanceDisposed.type) finish()
+          })
 
-            switch (level) {
-                case "debug":
-                    logger.debug(message, extra)
-                    break
-                case "info":
-                    logger.info(message, extra)
-                    break
-                case "error":
-                    logger.error(message, extra)
-                    break
-                case "warn":
-                    logger.warn(message, extra)
-                    break
-            }
-
-            return c.json(true)
-        },
-    )
-    .get(
-        "/event",
-        describeRoute({
-            summary: "Subscribe to events",
-            description: "Get events",
-            operationId: "event.subscribe",
-            responses: {
-                200: {
-                    description: "Event stream",
-                    content: {
-                        "text/event-stream": {
-                            schema: resolver(BusEvent.payloads()),
-                        },
-                    },
-                },
-            },
-        }),
-        async (c) => {
-            log.info("event connected")
-            return streamSSE(c, async (stream) => {
-                stream.writeSSE({
-                    data: JSON.stringify({
-                        type: "server.connected",
-                        properties: {},
-                    }),
-                })
-                const unsub = Bus.subscribeAll(async (event) => {
-                    await stream.writeSSE({
-                        data: JSON.stringify(event),
-                    })
-                    if (event.type === Bus.InstanceDisposed.type) {
-                        stream.close()
-                    }
-                })
-
-                // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
-                const heartbeat = setInterval(() => {
-                    stream.writeSSE({
-                        data: JSON.stringify({
-                            type: "server.heartbeat",
-                            properties: {},
-                        }),
-                    })
-                }, 30000)
-
-                // Keep the stream open until client disconnects
-                await new Promise<void>((resolve) => {
-                    stream.onAbort(() => {
-                        clearInterval(heartbeat)
-                        unsub()
-                        resolve()
-                    })
-                })
+          heartbeat = setInterval(() => {
+            writer.push({
+              data: JSON.stringify({
+                type: "server.heartbeat",
+                properties: {},
+              }),
             })
-        },
-    )
+          }, 30000)
+          await writer.flush()
+          if (!closed) await done
+        } finally {
+          finish()
+        }
+      })
+    },
+  )

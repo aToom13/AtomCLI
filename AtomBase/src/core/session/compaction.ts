@@ -6,7 +6,7 @@ import { Instance } from "@/services/project/instance"
 import { Provider } from "@/integrations/provider/provider"
 import { MessageV2 } from "./message-v2"
 import z from "zod"
-import { SessionPrompt } from "./prompt"
+import { LLM } from "./llm"
 import { Token } from "@/util/util/token"
 import { Log } from "@/util/util/log"
 import { SessionProcessor } from "./processor"
@@ -19,6 +19,12 @@ import { CompactionTransaction } from "./compaction-transaction"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
+
+  function isAcceptableSummary(input: { sourceTokens: number; summaryTokens: number; summaryText: string }) {
+    return input.summaryText.trim().length > 0 && (input.sourceTokens === 0 || input.summaryTokens < input.sourceTokens)
+  }
+
+  export const _internals = { isAcceptableSummary }
 
   export const Event = {
     Compacted: BusEvent.define(
@@ -35,7 +41,7 @@ export namespace SessionCompaction {
     const context = input.model.limit.context
     if (context === 0) return false
     const count = input.tokens.input + input.tokens.cache.read + input.tokens.output
-    const output = Math.min(input.model.limit.output, SessionPrompt.OUTPUT_TOKEN_MAX) || SessionPrompt.OUTPUT_TOKEN_MAX
+    const output = Math.min(input.model.limit.output, LLM.OUTPUT_TOKEN_MAX) || LLM.OUTPUT_TOKEN_MAX
     const usable = context - output
     return count > usable
   }
@@ -101,18 +107,43 @@ export namespace SessionCompaction {
   }) {
     await CompactionTransaction.recover(input.sessionID)
     const sourceTokens = Token.estimate(JSON.stringify(await MessageV2.toModelMessage(input.messages)))
-    const transaction = await CompactionTransaction.start(input.sessionID, sourceTokens, input.retry ?? 0)
     const userMessageMatch = input.messages.findLast((m) => m.info.id === input.parentID)
     if (!userMessageMatch) {
       throw new Error(`Parent user message with id "${input.parentID}" not found for compaction`)
     }
     const userMessage = userMessageMatch.info as MessageV2.User
+    const summaryMessageID = Identifier.ascending("message")
+    const transaction = await CompactionTransaction.start(input.sessionID, sourceTokens, input.retry ?? 0, {
+      parentID: input.parentID,
+      summaryMessageID,
+    })
     const agent = await Agent.get("compaction")
-    const model = agent.model
-      ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
-      : await Provider.getModel(userMessage.model.providerID, userMessage.model.modelID)
+    const parentModel = await Provider.getModel(userMessage.model.providerID, userMessage.model.modelID, {
+      prompt: "",
+      verify: true,
+    })
+    const parentPolicy = Provider.routePolicy(parentModel)
+    let model = parentModel
+    if (agent.model) {
+      const candidate = await Provider.getModel(agent.model.providerID, agent.model.modelID, {
+        prompt: "",
+        verify: true,
+      })
+      const eligible = await Promise.all(
+        parentPolicy.requiredCapabilities.map((capability) =>
+          Provider.isRouteEligible(candidate, parentPolicy, capability),
+        ),
+      )
+      if (parentPolicy.mode === "explicit") model = candidate
+      else if (eligible.every(Boolean)) model = Provider.applyRoutePolicy(candidate, parentPolicy)
+      else
+        log.warn("compaction model override rejected by parent route policy", {
+          requested: `${agent.model.providerID}/${agent.model.modelID}`,
+          policy: parentPolicy.requested,
+        })
+    }
     const msg = (await Session.updateMessage({
-      id: Identifier.ascending("message"),
+      id: summaryMessageID,
       role: "assistant",
       parentID: input.parentID,
       sessionID: input.sessionID,
@@ -180,13 +211,12 @@ export namespace SessionCompaction {
     const summaryParts = await MessageV2.parts(msg.id)
     const summaryText = summaryParts
       .map((part) => {
-        if (part.type === "text" || part.type === "reasoning") return part.text
-        if (part.type === "tool" && part.state.status === "completed") return part.state.output
+        if (part.type === "text") return part.text
         return ""
       })
       .join("\n")
     const summaryTokens = Token.estimate(summaryText)
-    const accepted = sourceTokens === 0 || summaryTokens < sourceTokens
+    const accepted = isAcceptableSummary({ sourceTokens, summaryTokens, summaryText })
     await CompactionTransaction.finish(transaction, summaryTokens, accepted)
     log.info("compaction metrics", {
       sessionID: input.sessionID,

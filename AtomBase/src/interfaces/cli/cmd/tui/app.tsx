@@ -180,7 +180,7 @@ function App() {
             message: `Invalid model format: ${args.model}`,
             duration: 3000,
           })
-        local.model.set({ providerID, modelID }, { recent: true })
+        local.model.set({ providerID, modelID }, { recent: true, manual: true })
       }
       if (args.sessionID) {
         route.navigate({

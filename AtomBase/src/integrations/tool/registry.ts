@@ -1,4 +1,5 @@
 import { QuestionTool } from "./question"
+import { ModelControl } from "./model-control"
 import { BashTool } from "./bash"
 import { SshTool } from "./ssh"
 import { EditTool } from "./edit"
@@ -102,6 +103,7 @@ export namespace ToolRegistry {
     return [
       ...(Flag.ATOMCLI_CLIENT === "cli" ? [QuestionTool] : []),
       InvalidTool,
+      ModelControl.Info,
       BashTool,
       SshTool,
       ReadTool,

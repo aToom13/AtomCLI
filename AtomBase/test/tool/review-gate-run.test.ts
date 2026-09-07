@@ -18,8 +18,11 @@ const { HarnessState } = await import("@/core/session/harness-state")
 const { Config } = await import("@/core/config/config")
 const { Instance } = await import("@/services/project/instance")
 const { Session } = await import("@/core/session")
+const { Identifier } = await import("@/core/id/id")
+const { Provider } = await import("@/integrations/provider/provider")
+const { ModelVerification } = await import("@/integrations/provider/verification")
 const { tmpdir } = await import("../fixture/fixture")
-const { runBlockingReview } = await import("@/integrations/tool/review-gate")
+const { evaluateReviewDecision, runBlockingReview } = await import("@/integrations/tool/review-gate")
 
 function resetSpawn() {
   spawnMock.mockReset()
@@ -37,6 +40,40 @@ beforeEach(() => {
 })
 
 describe("ReviewGate - runBlockingReview", () => {
+  test("records policy skip as not_required rather than a reviewer PASS", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        review: {
+          enabled: false,
+          policy: "off",
+          reviewer_count: 2,
+          max_attempts: 3,
+          high_risk_patterns: [],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-policy-skip"
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+
+        const assessment = await evaluateReviewDecision(sessionID)
+        const result = await runBlockingReview(sessionID, { decision: assessment.decision })
+
+        expect(assessment.decision).toMatchObject({
+          requirement: "not_required",
+          reasonCode: "review_disabled",
+          requiredReviewers: 0,
+        })
+        expect(result).toMatchObject({ passed: true, skipped: true })
+        expect(spawnMock).not.toHaveBeenCalled()
+        expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
+      },
+    })
+  })
+
   test("PASS verdict records pass and returns passed", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -53,6 +90,158 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(result.skipped).toBe(false)
         expect(spawnMock).toHaveBeenCalledTimes(2)
         expect(HarnessState.getReviewVerdict(sessionID)?.status).toBe("pass")
+      },
+    })
+  })
+
+  test("pins reviewers to the parent's verified AtomCLI Free route", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const user: any = {
+          id: Identifier.ascending("message"),
+          sessionID: session.id,
+          role: "user",
+          time: { created: Date.now() },
+          agent: "build",
+          model: { providerID: "atomcli", modelID: "atomcli-free" },
+        }
+        await Session.updateMessage(user)
+        await Session.updatePart({
+          id: Identifier.ascending("part"),
+          messageID: user.id,
+          sessionID: session.id,
+          type: "text",
+          text: "Review this authentication change",
+        })
+        const provider = await Provider.getProvider("atomcli")
+        const selected = Object.values(provider!.models).find(
+          (model) =>
+            !["atomcli-free", "atomcli-auto"].includes(model.id) &&
+            model.capabilities.toolcall &&
+            model.cost?.input === 0 &&
+            model.cost?.output === 0,
+        )!
+        const key = await ModelVerification.identity(selected, provider!)
+        const attempt = await ModelVerification.begin({ key, providerID: selected.providerID, modelID: selected.id })
+        await ModelVerification.verified(attempt, ["text", "tool"])
+        HarnessState.addEditedFile(session.id, "src/auth/a.ts")
+
+        const result = await runBlockingReview(session.id)
+
+        expect(result.passed).toBe(true)
+        const reviewerModel = (spawnMock.mock.calls[0]?.[0] as any)?.model
+        expect(reviewerModel.providerID).toBe("atomcli")
+        expect(reviewerModel.modelID).not.toBe("atomcli-free")
+        expect(reviewerModel.modelID).not.toBe("atomcli-auto")
+        expect(spawnMock.mock.calls.every((call) => (call[0] as any).model.modelID === reviewerModel.modelID)).toBe(
+          true,
+        )
+
+        await Session.remove(session.id)
+      },
+    })
+  })
+
+  test("PASS is rejected when the same file changes while review is running", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        const target = path.join(dir, "src/auth/a.ts")
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, "export const auth = true\n")
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-stale-pass"
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        spawnMock.mockImplementation(async () => {
+          HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+          return {
+            sessionId: "reviewer-session-stale",
+            isNewSession: true,
+            output: "",
+            parts: [],
+            structuredOutput: { verdict: "passed", summary: "Checked the earlier revision.", findings: [] },
+          }
+        })
+
+        const result = await runBlockingReview(sessionID)
+
+        expect(result.passed).toBe(false)
+        expect(result.reason).toContain("changed while review was running")
+        expect(HarnessState.needsReview(sessionID)).toBe(true)
+      },
+    })
+  })
+
+  test("PASS is rejected when a descendant changes during review", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        const target = path.join(dir, "src/auth/child.ts")
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, "export const child = true\n")
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const parent = await Session.create({})
+        const child = await Session.create({ parentID: parent.id })
+        HarnessState.addEditedFile(child.id, "src/auth/child.ts")
+        let changed = false
+        spawnMock.mockImplementation(async () => {
+          if (!changed) {
+            changed = true
+            HarnessState.addEditedFile(child.id, "src/auth/child.ts")
+          }
+          return {
+            sessionId: "reviewer-session-child-stale",
+            isNewSession: true,
+            output: "",
+            parts: [],
+            structuredOutput: { verdict: "passed", summary: "Checked the earlier child revision.", findings: [] },
+          }
+        })
+
+        const result = await runBlockingReview(parent.id)
+
+        expect(result.passed).toBe(false)
+        expect(result.reason).toContain("changed while review was running")
+        expect(HarnessState.needsReview(parent.id)).toBe(true)
+      },
+    })
+  })
+
+  test("does not return PASS after its parent operation is cancelled", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-cancelled"
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        const controller = new AbortController()
+        spawnMock.mockImplementation(async () => {
+          controller.abort(new Error("parent cancelled"))
+          return {
+            sessionId: "reviewer-session-cancelled",
+            isNewSession: true,
+            output: "",
+            parts: [],
+            structuredOutput: { verdict: "passed", summary: "Late review result.", findings: [] },
+          }
+        })
+
+        const result = await runBlockingReview(sessionID, { signal: controller.signal })
+        expect(result).toMatchObject({ passed: false, error: true })
+        expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
       },
     })
   })
@@ -298,7 +487,7 @@ describe("ReviewGate - runBlockingReview", () => {
     })
   })
 
-  test("reviewer agent disabled via config skips without leaking a pending claim (wedge fix)", async () => {
+  test("reviewer agent disabled via config fails closed without leaking a pending claim", async () => {
     await using tmp = await tmpdir({
       config: { agent: { reviewer: { disable: true } } },
     })
@@ -311,9 +500,11 @@ describe("ReviewGate - runBlockingReview", () => {
 
         const result = await runBlockingReview(sessionID)
 
-        // Reviewer-not-found is a skip, not a pass-through review
-        expect(result.passed).toBe(true)
+        // A required reviewer that cannot run must never approve unreviewed edits.
+        expect(result.passed).toBe(false)
         expect(result.skipped).toBe(true)
+        expect(result.error).toBe(true)
+        expect(result.reason?.toLowerCase()).toContain("reviewer")
         expect(spawnMock).not.toHaveBeenCalled()
 
         // The claim taken by beginReview must have been released — otherwise

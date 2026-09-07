@@ -321,9 +321,9 @@ export function useCommands() {
       },
     },
     {
-      title: "Auto Model Configuration",
+      title: "Auto / Free Model Settings",
       value: "autoconf.open",
-      category: "Agent",
+      category: "Model",
       suggested: (sync.data.config as any)?.experimental?.smart_model_routing === true,
       onSelect: () => {
         dialog.replace(() => <DialogAutoConf />)

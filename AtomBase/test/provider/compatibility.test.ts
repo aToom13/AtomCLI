@@ -6,6 +6,7 @@ import { ModelsDev } from "@/integrations/provider/models"
 import { Provider } from "@/integrations/provider/provider"
 import { ProviderTransform } from "@/integrations/provider/transform"
 import { ModelAvailability } from "@/integrations/provider/availability"
+import { ModelVerification } from "@/integrations/provider/verification"
 import { Plugin } from "@/integrations/plugin"
 import { AuthLogin } from "@/interfaces/cli/cmd/auth"
 import { Auth } from "@/services/auth"
@@ -426,6 +427,42 @@ describe("anonymous provider functionality", () => {
 
 describe("AtomCLI model functionality", () => {
   test.skipIf(!atomcliAudit)(
+    "AtomCLI Auto and Free resolve through verified concrete models and generate text",
+    async () => {
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const { streamText } = await import("ai")
+          expect(await Auth.all()).toEqual({})
+
+          for (const alias of ["atomcli-auto", "atomcli-free"]) {
+            const selected = await Provider.getModel("atomcli", alias, {
+              prompt: "Selam",
+              verify: true,
+            })
+            expect(selected.id).not.toBe(alias)
+            const provider = await Provider.getProvider(selected.providerID)
+            expect(provider).toBeDefined()
+            const key = await ModelVerification.identity(selected, provider!)
+            expect(ModelVerification.isVerified(await ModelVerification.get(key), "text")).toBe(true)
+
+            const result = streamText({
+              model: await Provider.getLanguage(selected),
+              prompt: "Reply with exactly ATOMCLI_OK",
+              maxOutputTokens: 256,
+              maxRetries: 0,
+              abortSignal: providerAbortSignal(provider!),
+            })
+            expect((await result.text).trim()).not.toBe("")
+          }
+        },
+      })
+    },
+    2 * 60_000,
+  )
+
+  test.skipIf(!atomcliAudit)(
     "every advertised anonymous AtomCLI model exists upstream and generates text",
     async () => {
       const requested = new Set(
@@ -494,6 +531,7 @@ describe("AtomCLI model functionality", () => {
                 throw streamError ?? error
               }
               if (!text.trim()) throw streamError ?? new Error("provider returned empty text")
+              await ModelVerification.observe(selected, provider, ["text"])
               passed.push(model.id)
             } catch (error) {
               const message = formatProviderError(error)
@@ -510,6 +548,9 @@ describe("AtomCLI model functionality", () => {
             `AtomCLI models that generated text: ${passed.join(", ") || "none"}; rate limited: ${limited.join(", ") || "none"}`,
           ).toEqual([])
           expect(passed.length + limited.length).toBe(concrete.length)
+          expect(passed.length, "all AtomCLI candidates were limited; no model produced verified text").toBeGreaterThan(
+            0,
+          )
           console.info(
             `AtomCLI model audit: ${passed.length}/${concrete.length} generated text (${passed.join(", ")}); ${limited.length} rate limited (${limited.join(", ")})`,
           )

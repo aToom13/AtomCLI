@@ -6,7 +6,12 @@ import path from "path"
 import { UI } from "@/interfaces/cli/ui"
 import { iife } from "@/util/util/iife"
 import { Log } from "@/util/util/log"
-import { withNetworkOptions, resolveNetworkOptions, authenticatedFetch } from "@/interfaces/cli/network"
+import {
+  withNetworkOptions,
+  resolveNetworkOptions,
+  authenticatedFetch,
+  needsControlListener,
+} from "@/interfaces/cli/network"
 import type { Event } from "@atomcli/sdk/v2"
 import type { EventSource } from "./context/sdk"
 
@@ -123,7 +128,7 @@ export const TuiThreadCommand = cmd({
   handler: async (args) => {
     // Resolve relative paths against PWD to preserve behavior when using --cwd flag
     const baseCwd = process.env.PWD ?? process.cwd()
-    const cwd = args.project ? path.resolve(baseCwd, args.project) : process.cwd()
+    const cwd = args.project ? path.resolve(baseCwd, args.project) : baseCwd
     const localWorker = new URL("./worker.ts", import.meta.url)
     const distWorker = new URL("./cli/cmd/tui/worker.js", import.meta.url)
     const workerPath = await iife(async () => {
@@ -166,23 +171,22 @@ export const TuiThreadCommand = cmd({
       return piped ? piped + "\n" + args.prompt : args.prompt
     })
 
-    // Check if server should be started (port or hostname explicitly set in CLI or config)
-    const networkOpts = await resolveNetworkOptions(args)
-    const companion = networkOpts.companion
-      ? await client.call("companion", {
-          port: networkOpts.companionPort,
-          directory: cwd,
-          pairing: networkOpts.pairing,
-        })
-      : undefined
+    // Normal TUI startup keeps both listeners ready. Pairing remains explicit:
+    // merely opening the Companion listener never issues a pairing token.
+    const networkOpts = await resolveNetworkOptions(args, { autoStartCompanion: true })
     const optionSet = (name: string) => process.argv.some((arg) => arg === `--${name}` || arg.startsWith(`--${name}=`))
-    const shouldStartServer =
-      optionSet("port") ||
-      optionSet("hostname") ||
-      optionSet("mdns") ||
-      networkOpts.mdns ||
-      networkOpts.port !== 0 ||
-      networkOpts.hostname !== "127.0.0.1"
+    const shouldStartServer = needsControlListener({
+      portSet: optionSet("port"),
+      hostnameSet: optionSet("hostname"),
+      mdnsSet: optionSet("mdns"),
+      mdns: networkOpts.mdns,
+      port: networkOpts.port,
+      hostname: networkOpts.hostname,
+    })
+
+    const services = await client.call("services", { ...networkOpts, control: shouldStartServer, directory: cwd })
+    if (services.errors.server) UI.error(`Control API could not start: ${services.errors.server}`)
+    if (services.errors.companion) UI.error(`Companion listener could not start: ${services.errors.companion}`)
 
     // Subscribe to events from worker
     await client.call("subscribe", { directory: cwd })
@@ -193,10 +197,14 @@ export const TuiThreadCommand = cmd({
 
     if (shouldStartServer) {
       // Start HTTP server for external access
-      const server = await client.call("server", networkOpts)
-      url = server.url
-
-      customFetch = authenticatedFetch(networkOpts.auth)
+      if (services.server) {
+        url = services.server.url
+        customFetch = authenticatedFetch(networkOpts.auth)
+      } else {
+        url = "http://atomcli.internal"
+        customFetch = createWorkerFetch(client)
+        events = createEventSource(client, cwd)
+      }
     } else {
       // Use direct RPC communication (no HTTP)
       url = "http://atomcli.internal"
@@ -204,9 +212,9 @@ export const TuiThreadCommand = cmd({
       events = createEventSource(client, cwd)
     }
 
-    if (companion?.pairingToken) {
+    if (services.companion?.pairingToken) {
       const { CompanionDiscovery } = await import("@atomcli/companion")
-      await CompanionDiscovery.printCompanionInfo(companion.port, companion.pairingToken)
+      await CompanionDiscovery.printCompanionInfo(services.companion.port, services.companion.pairingToken)
     }
 
     const tuiPromise = tui({
@@ -220,6 +228,12 @@ export const TuiThreadCommand = cmd({
         agent: args.agent,
         model: args.model,
         prompt,
+        services: {
+          controlPort: services.server?.port,
+          companionPort: services.companion?.port,
+          controlError: services.errors.server,
+          companionError: services.errors.companion,
+        },
       },
       onExit: async () => {
         await client.call("shutdown", undefined)

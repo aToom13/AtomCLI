@@ -113,7 +113,7 @@ async function selectedModelSupportsInput(modelSpec: string | undefined, mime: s
   const slash = modelSpec.indexOf("/")
   if (slash <= 0 || slash === modelSpec.length - 1) return false
   try {
-    const model = await Provider.getModel(modelSpec.slice(0, slash), modelSpec.slice(slash + 1))
+    const model = await Provider.getModel(modelSpec.slice(0, slash), modelSpec.slice(slash + 1), { verify: true })
     return model.capabilities.input[modality]
   } catch {
     return false

@@ -6,6 +6,12 @@ export interface Args {
   prompt?: string
   continue?: boolean
   sessionID?: string
+  services?: {
+    controlPort?: number
+    companionPort?: number
+    controlError?: string
+    companionError?: string
+  }
 }
 
 export const { use: useArgs, provider: ArgsProvider } = createSimpleContext({

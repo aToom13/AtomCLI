@@ -104,6 +104,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           modelID: string
         }[]
         variant: Record<string, string | undefined>
+        pinned: Record<string, boolean>
+        variantPinned: Record<string, boolean>
         projects: Record<
           string,
           {
@@ -122,6 +124,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         recent: [],
         favorite: [],
         variant: {},
+        pinned: {},
+        variantPinned: {},
         projects: {},
       })
 
@@ -272,7 +276,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (next >= recent.length) next = 0
           const val = recent[next]
           if (!val) return
-          modelApi.set(val, { recent: true })
+          modelApi.set(val, { recent: true, manual: true })
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -298,9 +302,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
           const next = favorites[index]
           if (!next) return
-          modelApi.set(next, { recent: true })
+          modelApi.set(next, { recent: true, manual: true })
         },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
+        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean; manual?: boolean }) {
           batch(() => {
             if (!isModelValid(model)) {
               toast.show({
@@ -311,6 +315,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               return
             }
             setModelStore("model", agent.current().name, model)
+            if (options?.manual !== undefined) setModelStore("pinned", agent.current().name, options.manual)
             const dir = sync.data.path.directory
             if (dir) {
               if (!modelStore.projects[dir]) {
@@ -328,6 +333,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             save()
           })
+        },
+        pinned() {
+          return modelStore.pinned[agent.current().name] ?? false
         },
         removeRecent(model: { providerID: string; modelID: string }) {
           batch(() => {
@@ -388,28 +396,33 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             if (!info?.variants) return []
             return Object.keys(info.variants)
           },
-          set(value: string | undefined) {
+          set(value: string | undefined, options?: { manual?: boolean }) {
             const m = currentModel()
             if (!m) return
             const key = `${m.providerID}/${m.modelID}`
             const next = value && this.list().includes(value) ? value : undefined
             setModelStore("variant", key, next)
+            if (options?.manual !== undefined) setModelStore("variantPinned", key, options.manual)
             save()
+          },
+          pinned() {
+            const m = currentModel()
+            return m ? (modelStore.variantPinned[`${m.providerID}/${m.modelID}`] ?? false) : false
           },
           cycle() {
             const variants = this.list()
             if (variants.length === 0) return
             const current = this.current()
             if (!current) {
-              this.set(variants[0])
+              this.set(variants[0], { manual: true })
               return
             }
             const index = variants.indexOf(current)
             if (index === -1 || index === variants.length - 1) {
-              this.set(undefined)
+              this.set(undefined, { manual: true })
               return
             }
-            this.set(variants[index + 1])
+            this.set(variants[index + 1], { manual: true })
           },
         },
       }

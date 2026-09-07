@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import "../preload"
 import path from "path"
 import { SessionCompaction } from "@/core/session/compaction"
 import { Token } from "@/util/util/token"
@@ -101,6 +102,34 @@ describe("session.compaction.isOverflow", () => {
         expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(false)
       },
     })
+  })
+})
+
+describe("session.compaction summary acceptance", () => {
+  test("rejects empty and whitespace-only summaries", () => {
+    expect(
+      SessionCompaction._internals.isAcceptableSummary({ sourceTokens: 100, summaryTokens: 0, summaryText: "" }),
+    ).toBe(false)
+    expect(
+      SessionCompaction._internals.isAcceptableSummary({ sourceTokens: 100, summaryTokens: 1, summaryText: "  \n" }),
+    ).toBe(false)
+  })
+
+  test("requires a non-empty summary smaller than the source", () => {
+    expect(
+      SessionCompaction._internals.isAcceptableSummary({
+        sourceTokens: 100,
+        summaryTokens: 20,
+        summaryText: "Useful continuation context",
+      }),
+    ).toBe(true)
+    expect(
+      SessionCompaction._internals.isAcceptableSummary({
+        sourceTokens: 20,
+        summaryTokens: 20,
+        summaryText: "Same-sized context",
+      }),
+    ).toBe(false)
   })
 })
 

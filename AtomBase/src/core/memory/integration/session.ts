@@ -142,7 +142,11 @@ export class SessionMemoryIntegration {
     ].some((pattern) => pattern.test(text))
   }
 
-  static async learnFromMessage(message: string, model?: { providerID: string; modelID: string }): Promise<void> {
+  static async learnFromMessage(
+    message: string,
+    model?: { providerID: string; modelID: string },
+    sessionID?: string,
+  ): Promise<void> {
     try {
       await this.initialize()
 
@@ -163,6 +167,7 @@ export class SessionMemoryIntegration {
           currentName: profile.name,
         },
         model,
+        sessionID,
       )
 
       if (!extracted.hasInformation) {
@@ -223,6 +228,7 @@ export class SessionMemoryIntegration {
     response: string,
     userMessage?: string,
     model?: { providerID: string; modelID: string },
+    sessionID?: string,
   ): Promise<void> {
     try {
       await this.initialize()
@@ -233,7 +239,7 @@ export class SessionMemoryIntegration {
       }
 
       // Analyze what the assistant confirmed
-      const analysis = await SemanticLearningService.analyzeAssistantResponse(response, userMessage, model)
+      const analysis = await SemanticLearningService.analyzeAssistantResponse(response, userMessage, model, sessionID)
 
       if (analysis.confirmedName) {
         await this.userProfile.learnName(analysis.confirmedName)

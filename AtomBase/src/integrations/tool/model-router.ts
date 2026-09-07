@@ -342,7 +342,6 @@ export function estimateRequiredContext(session: any, currentPrompt: string): nu
 
 export function categoryHardOk(m: Provider.Model, category: TaskCategory): boolean {
   if (category === "coding" && !m.capabilities.toolcall) return false
-  if (category === "analysis" && !m.capabilities.reasoning) return false
   return true
 }
 
@@ -364,39 +363,18 @@ export function selectCandidates(
   category: TaskCategory,
   autoRouterConfig?: { excluded_models?: string[] },
 ): Array<[string, Provider.Model]> {
-  const routableModels = freeModels.filter(([, model]) => modelIsRoutable(model))
+  const excluded = new Set(autoRouterConfig?.excluded_models ?? [])
+  const routableModels = freeModels.filter(
+    ([id, model]) =>
+      modelIsRoutable(model) &&
+      !excluded.has(id) &&
+      !excluded.has(`${model.providerID}/${id}`) &&
+      categoryHardOk(model, category),
+  )
   if (routableModels.length === 0) {
-    throw new Error("NoFreeModelsError: Kullanılabilir hiçbir ücretsiz model bulunamadı!")
+    throw new Error("NoFreeModelsError: No model satisfies the required availability, exclusion, and capability rules")
   }
-
-  const tiers = [
-    // Tier 0: Görev kategorisi tam karşılanıyor VE model sağlıklı (hata yok)
-    (id: string, m: Provider.Model) =>
-      categoryHardOk(m, category) && (runtimeState(id, m.providerID)?.consecutiveFailures ?? 0) === 0,
-
-    // Tier 1: Görev kategorisi tam karşılanıyor (sağlık durumu ne olursa olsun)
-    (id: string, m: Provider.Model) => categoryHardOk(m, category),
-
-    // Tier 2: Görev kategorisi "general" olarak gevşetiliyor VE model sağlıklı
-    (id: string, m: Provider.Model) =>
-      categoryHardOk(m, "general") && (runtimeState(id, m.providerID)?.consecutiveFailures ?? 0) === 0,
-
-    // Tier 3: Elimizde kalan ne varsa (Tier 3 her zaman true döner)
-    (id: string, m: Provider.Model) => true,
-  ]
-
-  for (const check of tiers) {
-    let candidates = routableModels.filter(([id, m]) => check(id, m))
-    // Kullanıcı exclude ettiyse, adaylardan çıkar
-    if (candidates.length > 0 && autoRouterConfig?.excluded_models?.length) {
-      const filtered = candidates.filter(([id]) => !autoRouterConfig.excluded_models!.includes(id))
-      if (filtered.length > 0) candidates = filtered
-      // Tüm modeller exclude edildiyse exclude'u yok say (kullanıcı hepsini engelleyemez)
-    }
-    if (candidates.length > 0) return candidates
-  }
-
-  return routableModels // Fallback
+  return routableModels
 }
 
 export const MODE_WEIGHTS = {
@@ -498,26 +476,19 @@ export function selectModelInternal(
 ): ModelSelectionResult {
   const profile = TaskProfile.infer(prompt ?? "", category === "general" && prompt ? undefined : category)
   const routingCategory = category === "general" && prompt ? profile.category : category
-  // Category override: kullanıcı belirli bir model sabitlemişse direkt onu seç
-  const override = autoRouterConfig?.category_overrides?.[routingCategory]
-  if (override) {
-    const model = allFreeModels.find(([id, candidate]) => id === override && modelIsRoutable(candidate))
-    if (model) {
-      return {
-        selected: { id: model[0], m: model[1], score: 999 },
-        ranked: [{ id: model[0], m: model[1], score: 999 }],
-      }
-    }
-  }
 
   let filtered = allFreeModels.filter(([, model]) => modelIsRoutable(model))
   if (session && prompt) {
     const requiredContext = estimateRequiredContext(session, prompt)
     filtered = filtered.filter(([, m]) => (m.limit?.context ?? 0) >= requiredContext)
+    if (filtered.length === 0) {
+      throw new Error(`No routable model satisfies the required context window (${requiredContext} tokens)`)
+    }
   }
 
-  const pool = filtered.length > 0 ? filtered : allFreeModels.filter(([, model]) => modelIsRoutable(model))
-  const candidates = selectCandidates(pool, routingCategory, autoRouterConfig)
+  const candidates = selectCandidates(filtered, routingCategory, autoRouterConfig)
+  // An override changes ranking, never eligibility.
+  const override = autoRouterConfig?.category_overrides?.[routingCategory]
 
   const expectedTools = profile.needsBrowser ? ["browser"] : profile.needsTools ? ["read", "grep", "edit", "bash"] : []
   const ranked = candidates
@@ -530,24 +501,19 @@ export function selectModelInternal(
         TaskProfile.modelBonus(profile, m) +
         ToolReliability.modelBonus(m.providerID, id, expectedTools),
     }))
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => {
+      const preferred = (item: typeof a) => item.id === override || `${item.m.providerID}/${item.id}` === override
+      return Number(preferred(b)) - Number(preferred(a)) || b.score - a.score
+    })
 
-  // A stale/incomplete catalog must not make routing impossible. The regular
-  // candidate list remains a safe fallback when a requested modality has no match.
   if (ranked.length === 0) {
-    if (profile.needsTools || profile.needsVision) {
-      throw new Error("No routable model supports the task's required tools or input modalities")
-    }
-    const fallbackRanked = candidates
-      .map(([id, m]) => ({ id, m, score: finalScore(id, m, routingCategory, mode, complexity, autoRouterConfig) }))
-      .sort((a, b) => b.score - a.score)
-    return {
-      selected: pickWithLoadBalancing(fallbackRanked, candidates.length, autoRouterConfig?.exploration_rate ?? 0),
-      ranked: fallbackRanked,
-    }
+    throw new Error("No routable model supports the task's required tools or input modalities")
   }
 
-  const selected = pickWithLoadBalancing(ranked, candidates.length, autoRouterConfig?.exploration_rate ?? 0)
+  const selected =
+    ranked[0].id === override || `${ranked[0].m.providerID}/${ranked[0].id}` === override
+      ? ranked[0]
+      : pickWithLoadBalancing(ranked, candidates.length, autoRouterConfig?.exploration_rate ?? 0)
 
   return { selected, ranked }
 }
@@ -581,12 +547,12 @@ export function buildFallbackChainFromSelection(
   ranked: Array<{ id: string; m: Provider.Model; score: number }>,
 ) {
   const fallbacks = ranked
-    .filter((x) => x.id !== selected.id)
+    .filter((x) => x.id !== selected.id || x.m.providerID !== selected.m.providerID)
     .slice(0, 2)
-    .map((x) => ({ providerID: x.m.providerID, modelID: x.id }))
+    .map((x) => ({ providerID: x.m.providerID, modelID: x.m.id }))
 
   return {
-    primary: { providerID: selected.m.providerID, modelID: selected.id },
+    primary: { providerID: selected.m.providerID, modelID: selected.m.id },
     fallbacks,
     reason: `category=${category}, mode=${mode}, finalScore=${selected.score.toFixed(1)}`,
   }
@@ -605,6 +571,7 @@ export async function selectModel(
   complexity = 0,
   session?: any,
   prompt?: string,
+  autoRouterConfig?: any,
 ): Promise<any> {
   await Promise.all([ModelQuality.initialize(), ToolReliability.initialize()])
   if (!Array.isArray(allFreeModelsOrFallback)) {
@@ -684,7 +651,7 @@ export async function selectModel(
     }
   } else {
     // New signature: selectModel(category, allFreeModels, mode, complexity, session, prompt)
-    return selectModelInternal(category, allFreeModelsOrFallback, mode, complexity, session, prompt)
+    return selectModelInternal(category, allFreeModelsOrFallback, mode, complexity, session, prompt, autoRouterConfig)
   }
 }
 

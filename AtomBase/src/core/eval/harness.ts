@@ -4,6 +4,7 @@ import { Instance } from "@/services/project/instance"
 import { ModelQuality } from "@/core/routing/model-quality"
 import type { MessageV2 } from "@/core/session/message-v2"
 import { TaskProfile } from "@/core/routing/task-profile"
+import { ExecutionRuntime } from "@/core/execution/runtime"
 
 export namespace AgentEval {
   export const Category = z.enum(["coding", "documentation", "analysis", "general"])
@@ -26,6 +27,15 @@ export namespace AgentEval {
     outputTokens: z.number().int().nonnegative().default(0),
     cost: z.number().nonnegative().default(0),
     durationMs: z.number().nonnegative().default(0),
+    routingMode: z.enum(["fixed-base", "fixed-expert", "adaptive"]).optional(),
+    modelCalls: z.number().int().nonnegative().default(0),
+    expertEpisodes: z.number().int().nonnegative().default(0),
+    unpricedCalls: z.number().int().nonnegative().default(0),
+    ttftMs: z.number().nonnegative().default(0),
+    routeProposals: z.number().int().nonnegative().default(0),
+    rejectedProposals: z.number().int().nonnegative().default(0),
+    repeatedQuestions: z.number().int().nonnegative().default(0),
+    baseReturns: z.number().int().nonnegative().default(0),
     timestamp: z.number().default(() => Date.now()),
     automatic: z.boolean().default(false),
   })
@@ -103,6 +113,8 @@ export namespace AgentEval {
     suite: string
     caseID: string
     runID: string
+    routingMode?: "fixed-base" | "fixed-expert" | "adaptive"
+    expertModel?: string
   }
 
   const automaticState = Instance.state(() => ({
@@ -120,6 +132,14 @@ export namespace AgentEval {
 
   export function isBenchmarkSession(sessionID: string) {
     return automaticState().benchmarks.has(sessionID)
+  }
+
+  export function benchmarkRoutingMode(sessionID: string) {
+    return automaticState().benchmarks.get(sessionID)?.routingMode
+  }
+
+  export function benchmarkContext(sessionID: string) {
+    return automaticState().benchmarks.get(sessionID)
   }
 
   export function executionPolicy(sessionID: string) {
@@ -231,6 +251,17 @@ export namespace AgentEval {
           }),
           { input: 0, output: 0, cost: 0 },
         )
+        const execution = ExecutionRuntime.snapshot(sessionID).executions.find(
+          (item) => item.userMessageID === parentID,
+        )
+        const proposals = execution ? ExecutionRuntime.routeProposalHistory(execution.id) : []
+        const firstOutputAt = turnParts
+          .filter(
+            (part): part is MessageV2.TextPart | MessageV2.ReasoningPart =>
+              (part.type === "text" || part.type === "reasoning") && !!part.time?.start,
+          )
+          .map((part) => part.time!.start)
+          .sort((a, b) => a - b)[0]
 
         // A correction is evidence about the previous answer, not the model now
         // attempting the repair. Attribute it once to the preceding assistant.
@@ -295,6 +326,18 @@ export namespace AgentEval {
             message.info.time.completed -
               (parent?.info.time.created ?? turnMessages[0]?.info.time.created ?? message.info.time.created),
           ),
+          routingMode: benchmark?.routingMode,
+          modelCalls: execution?.budget.execution.calls.used ?? 0,
+          expertEpisodes: execution?.route?.expert?.episodes ?? 0,
+          unpricedCalls: execution?.budget.execution.unpricedCalls ?? 0,
+          ttftMs: firstOutputAt ? Math.max(0, firstOutputAt - (parent?.info.time.created ?? firstOutputAt)) : 0,
+          routeProposals: proposals.length,
+          rejectedProposals: proposals.filter((proposal) => proposal.state === "rejected").length,
+          repeatedQuestions: /\b(again|still|repeat)\b|tekrar|hala/i.test(prompt) ? 1 : 0,
+          baseReturns:
+            execution?.route?.stage === "base"
+              ? proposals.filter((proposal) => proposal.scope === "expert" && proposal.state === "applied").length
+              : 0,
           timestamp: message.info.time.completed,
           automatic: true,
         })
@@ -328,6 +371,14 @@ export namespace AgentEval {
       totalToolErrors: sum((item) => item.toolErrors),
       totalRetries: sum((item) => item.retries),
       totalUserCorrections: sum((item) => item.userCorrections),
+      totalModelCalls: sum((item) => item.modelCalls),
+      totalExpertEpisodes: sum((item) => item.expertEpisodes),
+      totalUnpricedCalls: sum((item) => item.unpricedCalls),
+      averageTtftMs: count ? sum((item) => item.ttftMs) / count : 0,
+      totalRouteProposals: sum((item) => item.routeProposals),
+      totalRejectedProposals: sum((item) => item.rejectedProposals),
+      totalRepeatedQuestions: sum((item) => item.repeatedQuestions),
+      totalBaseReturns: sum((item) => item.baseReturns),
     }
   }
 }

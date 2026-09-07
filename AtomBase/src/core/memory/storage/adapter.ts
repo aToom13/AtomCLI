@@ -244,7 +244,7 @@ export class HybridStorage implements MemoryStorage {
         score: 0,
       }))
 
-      const reranked = await rerank(query, rerankCandidates, limit)
+      const reranked = await rerank(query, rerankCandidates, limit, options?.routeModel, options?.sessionID)
 
       // Map reranked IDs back to MemoryItems
       const itemMap = new Map(candidates.map((c) => [c.id, c]))

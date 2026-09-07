@@ -26,6 +26,8 @@ import { TaskProfile } from "@/core/routing/task-profile"
 import { SubAgentRuntime } from "./subagent-runtime"
 import { SubAgentIsolation } from "./subagent-isolation"
 import { Instance } from "@/services/project/instance"
+import { defer } from "@/util/util/defer"
+import type { ExecutionRuntime } from "@/core/execution/runtime"
 
 const DESCRIPTION = `Multi-agent workflow orchestration tool for running complex multi-step tasks with parallel execution.
 
@@ -115,10 +117,12 @@ interface WorkflowState {
   ownsTaskflowUI?: boolean
   /** Workflow-level failure not attributable to one task. */
   error?: string
+  /** Durable reference to the attempt that most recently dispatched this workflow. */
+  activeExecution?: { executionID: string; blockerID: string }
 }
 
 interface TaskResult {
-  status: "pending" | "running" | "completed" | "failed" | "skipped"
+  status: "pending" | "running" | "unknown" | "completed" | "failed" | "skipped"
   output?: string
   error?: string
   model?: { providerID: string; modelID: string }
@@ -140,6 +144,7 @@ interface TaskResult {
 
 // In-memory workflow store (per session)
 const WORKFLOWS: Map<string, WorkflowState> = new Map()
+const ACTIVE_EXECUTIONS = new Map<string, symbol>()
 const MAX_WORKFLOWS = 100
 const MAX_TASKS = 50
 const MAX_PARALLEL_TASKS = 4
@@ -156,6 +161,18 @@ const AGENT_SESSION_OWNER: Map<string, string> = new Map()
 
 // Cleanup completed/failed workflows older than 1 hour to prevent memory leaks
 const WORKFLOW_TTL_MS = 60 * 60 * 1000
+
+function claimWorkflowExecution(workflowID: string) {
+  if (ACTIVE_EXECUTIONS.has(workflowID)) return
+  const token = Symbol(workflowID)
+  ACTIVE_EXECUTIONS.set(workflowID, token)
+  return token
+}
+
+function releaseWorkflowExecution(workflowID: string, token: symbol) {
+  if (ACTIVE_EXECUTIONS.get(workflowID) !== token) return
+  ACTIVE_EXECUTIONS.delete(workflowID)
+}
 
 /**
  * Purge all AGENT_SESSION_MAP entries that belong to a workflow.
@@ -195,24 +212,99 @@ async function checkpoint(workflow: WorkflowState) {
   await WorkflowStore.save(workflow)
 }
 
+function markInterruptedTasksUnknown(workflow: WorkflowState) {
+  let changed = false
+  for (const result of Object.values(workflow.results)) {
+    if (result.status !== "running") continue
+    result.status = "unknown"
+    result.error = "Previous process stopped while this task was running; reconcile its outcome before retrying"
+    changed = true
+  }
+  if (changed || workflow.status === "running") {
+    workflow.status = "resumable"
+    workflow.error = "Workflow has tasks with an unknown outcome and requires reconciliation"
+  }
+  return changed
+}
+
 async function findWorkflow(id: string) {
   const active = WORKFLOWS.get(id)
   if (active) return active
   const stored = await WorkflowStore.load<WorkflowState>(id)
   if (!stored) return undefined
-  if (stored.status === "running") {
-    stored.status = "resumable"
-    for (const result of Object.values(stored.results)) {
-      if (result.status !== "running") continue
-      result.status = "pending"
-      result.error = "Previous process stopped with an unknown task outcome; safe retry required"
-      result.startedAt = undefined
-    }
-    await checkpoint(stored)
-  }
   WORKFLOWS.set(id, stored)
   cleanupOldWorkflows()
   return stored
+}
+
+async function refreshWorkflowRecovery(workflow: WorkflowState) {
+  if (workflow.status !== "running" || !workflow.activeExecution) return false
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  const blocker = ExecutionRuntime.blocker(workflow.activeExecution.blockerID)
+  if (!blocker || ["pending", "running", "resumable"].includes(blocker.state)) return false
+  if (!["draining", "unknown", "failed", "cancelled"].includes(blocker.state)) return false
+  markInterruptedTasksUnknown(workflow)
+  await checkpoint(workflow)
+  return true
+}
+
+type WorkflowBlockerHandle = {
+  execution: ExecutionRuntime.Context
+  id: string
+  version: number
+  state: string
+}
+
+async function activateWorkflowBlocker(workflow: WorkflowState, ctx: Tool.Context) {
+  const execution = ctx.extra?.execution as ExecutionRuntime.Context | undefined
+  if (!execution) return undefined
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  let blocker = await ExecutionRuntime.registerBlocker({
+    sessionID: ctx.sessionID,
+    execution,
+    blockerID: `workflow:${execution.executionID}:${workflow.id}`,
+    kind: "workflow",
+    producerID: workflow.id,
+    resourceScope: `workflow:${workflow.id}`,
+  })
+  if (blocker.state !== "pending" && blocker.state !== "resumable") {
+    throw new Error(`Workflow execution blocker is ${blocker.state}; reconciliation is required before dispatch`)
+  }
+  blocker = await ExecutionRuntime.transitionBlocker({
+    sessionID: ctx.sessionID,
+    execution,
+    blockerID: blocker.id,
+    expectedVersion: blocker.version,
+    state: "running",
+  })
+  return {
+    execution,
+    id: blocker.id,
+    version: blocker.version,
+    state: blocker.state,
+  } satisfies WorkflowBlockerHandle
+}
+
+async function settleWorkflowBlocker(
+  handle: WorkflowBlockerHandle | undefined,
+  ctx: Tool.Context,
+  state: "resolved" | "failed" | "cancelled" | "unknown",
+  evidence: string,
+  resolutionCode: string,
+) {
+  if (!handle) return
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  const blocker = await ExecutionRuntime.transitionBlocker({
+    sessionID: ctx.sessionID,
+    execution: handle.execution,
+    blockerID: handle.id,
+    expectedVersion: handle.version,
+    state,
+    evidence,
+    resolutionCode,
+  })
+  handle.version = blocker.version
+  handle.state = blocker.state
 }
 
 // Default retry configuration
@@ -257,16 +349,26 @@ function canonicalReference(requested: ModelReference, resolved: { options?: Rec
   return { providerID: primary.providerID, modelID: primary.modelID }
 }
 
-/** Resolve dynamic aliases once so one sub-agent cannot change models between turns. */
+function executionReference(requested: ModelReference, canonical: ModelReference): ModelReference {
+  // A virtual AtomCLI reference is the durable route policy. Replacing it with
+  // the current concrete winner would let later child turns silently escape
+  // Auto/Free verification and cost constraints.
+  if (requested.providerID === "atomcli" && ["atomcli-auto", "atomcli-free"].includes(requested.modelID)) {
+    return requested
+  }
+  return canonical
+}
+
+/** Validate dynamic aliases before spawn while preserving their route policy for every child turn. */
 async function canonicalModel(
   reference: ModelReference,
   session?: Session.Info,
   prompt?: string,
 ): Promise<ModelReference> {
-  const resolved = await Provider.getModel(reference.providerID, reference.modelID, { session, prompt })
+  const resolved = await Provider.getModel(reference.providerID, reference.modelID, { session, prompt, verify: true })
   const canonical = canonicalReference(reference, resolved)
   await validateModel(canonical)
-  return canonical
+  return executionReference(reference, canonical)
 }
 
 async function validateModel(reference: ModelReference) {
@@ -424,6 +526,7 @@ function formatWorkflowOutput(workflow: WorkflowState): string {
         completed: "✅",
         failed: "❌",
         skipped: "⏭️",
+        unknown: "❓",
       }[r.status] || "❓"
 
     parts.push(`### ${statusEmoji} ${task.id} (@${task.agent}) [${task.category}]`)
@@ -453,8 +556,11 @@ function formatWorkflowOutput(workflow: WorkflowState): string {
   const completed = workflow.tasks.filter((t) => workflow.results[t.id].status === "completed").length
   const failed = workflow.tasks.filter((t) => workflow.results[t.id].status === "failed").length
   const skipped = workflow.tasks.filter((t) => workflow.results[t.id].status === "skipped").length
+  const unknown = workflow.tasks.filter((t) => workflow.results[t.id].status === "unknown").length
 
-  parts.push(`**${completed} succeeded, ${failed} failed, ${skipped} skipped (${workflow.tasks.length} total)**`)
+  parts.push(
+    `**${completed} succeeded, ${failed} failed, ${skipped} skipped, ${unknown} unknown (${workflow.tasks.length} total)**`,
+  )
 
   return parts.join("\n")
 }
@@ -757,6 +863,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }
         }
 
+        await refreshWorkflowRecovery(workflow)
+
         if (workflow.status === "completed" || workflow.status === "failed") {
           return {
             title: `Workflow Already ${workflow.status === "completed" ? "Completed" : "Failed"}`,
@@ -769,25 +877,64 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }
         }
 
+        const executionToken = claimWorkflowExecution(workflow.id)
+        if (!executionToken) {
+          return {
+            title: "Workflow Already Running",
+            output: `Workflow "${workflow.id}" is already executing. Use the status action to inspect progress.`,
+            metadata: {
+              error: false,
+              workflowId: workflow.id,
+              status: "running",
+            },
+          }
+        }
+        using execution = defer(() => releaseWorkflowExecution(workflow.id, executionToken))
+
         if (workflow.status === "running") {
-          // ESC/interrupt recovery: reset interrupted workflow so it can be re-executed.
-          // Pending tasks stay pending; completed tasks stay completed — only running tasks
-          // are reset to pending so they can be retried from where things left off.
-          log.warn("workflow re-execute after interrupt: resetting running tasks to pending", {
-            workflowId: params.workflowId,
-          })
-          for (const task of workflow.tasks) {
-            const r = workflow.results[task.id]
-            if (r.status === "running") {
-              r.status = "pending"
-              r.error = undefined
-              r.startedAt = undefined
-            }
+          return {
+            title: "Workflow Already Running",
+            output:
+              `Workflow "${workflow.id}" still has a durable running attempt. ` +
+              "Its tasks will not be replayed until that attempt is cancelled or reconciled.",
+            metadata: { error: false, workflowId: workflow.id, status: workflow.status },
+          }
+        }
+
+        let workflowBlocker: WorkflowBlockerHandle | undefined
+        try {
+          workflowBlocker = await activateWorkflowBlocker(workflow, ctx)
+        } catch (error) {
+          return {
+            title: "Workflow Recovery Required",
+            output: (error as Error).message,
+            metadata: { error: true, workflowId: workflow.id, status: workflow.status },
+          }
+        }
+
+        if (Object.values(workflow.results).some((result) => result.status === "unknown")) {
+          await settleWorkflowBlocker(
+            workflowBlocker,
+            ctx,
+            "unknown",
+            `Workflow ${workflow.id} contains a task whose prior dispatch outcome is unknown`,
+            "workflow_task_reconciliation_required",
+          )
+          return {
+            title: "Workflow Recovery Required",
+            output: formatWorkflowOutput(workflow),
+            metadata: { error: true, workflowId: workflow.id, status: workflow.status },
           }
         }
 
         workflow.status = "running"
         workflow.error = undefined
+        if (workflowBlocker) {
+          workflow.activeExecution = {
+            executionID: workflowBlocker.execution.executionID,
+            blockerID: workflowBlocker.id,
+          }
+        }
         await checkpoint(workflow)
         // A taskflow may have been started after planning but before execute.
         // In that case relinquish UI ownership rather than overwriting it.
@@ -819,6 +966,15 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           }
         } catch (e) {
           HarnessState.unlockOrchestrator(ctx.sessionID)
+          await settleWorkflowBlocker(
+            workflowBlocker,
+            ctx,
+            "failed",
+            `Workflow ${workflow.id} failed during pre-flight: ${e instanceof Error ? e.message : String(e)}`,
+            "workflow_preflight_failed",
+          ).catch((transitionError) =>
+            log.warn("failed to persist workflow blocker pre-flight failure", { transitionError }),
+          )
           throw e
         }
         const assistantModel = {
@@ -931,6 +1087,11 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   qa: "reviewed" | "not-needed",
                 ) => {
                   if (isolation) {
+                    const execution = ctx.extra?.execution
+                    if (execution) {
+                      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+                      await ExecutionRuntime.assertActive({ sessionID: ctx.sessionID, execution })
+                    }
                     const applied = await isolation.apply(task.owns)
                     result.isolation = applied
                     for (const file of applied.changedFiles) {
@@ -1419,6 +1580,16 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           failed: failedTasks.length,
         })
 
+        const finalStatus = workflow.status as WorkflowState["status"]
+        const blockerState = finalStatus === "completed" ? "resolved" : finalStatus === "failed" ? "failed" : "unknown"
+        await settleWorkflowBlocker(
+          workflowBlocker,
+          ctx,
+          blockerState,
+          `Workflow ${workflow.id} finished with status ${finalStatus}; ${completedTasks.length} completed and ${failedTasks.length} failed in this invocation`,
+          `workflow_${finalStatus}`,
+        )
+
         // Build output from workflow results
         const output = formatWorkflowOutput(workflow)
         return {
@@ -1610,8 +1781,14 @@ export const _internals = {
   hasFailedDependency: shouldSkipDueToFailedDependency,
   preferredModel,
   canonicalReference,
+  executionReference,
   dependencyIds,
   buildDependencyContext,
   requiresTaskQA,
   WORKFLOWS,
+  ACTIVE_EXECUTIONS,
+  claimWorkflowExecution,
+  releaseWorkflowExecution,
+  markInterruptedTasksUnknown,
+  refreshWorkflowRecovery,
 }

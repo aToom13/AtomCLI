@@ -13,6 +13,7 @@ export namespace CompanionProtocol {
     "events.cursor",
     "actions.signed",
     "permissions.resolve",
+    "routes.decide",
     "questions.reply",
     "sessions.manage",
     "missions.control",
@@ -111,6 +112,18 @@ export namespace CompanionProtocol {
     resolution: z.enum(["allow", "allow_once", "allow_always", "autonomous", "deny", "intervene"]),
     directory: z.string().optional(),
     intervention_params: z.string().optional(),
+    ...SignedFields,
+  })
+  export const RouteDecisionMessage = z.object({
+    type: z.literal("route_decision"),
+    session_id: z.string().min(1),
+    execution_id: z.string().min(1),
+    proposal_id: z.string().min(1),
+    expected_proposal_version: z.number().int().positive(),
+    expected_route_revision: z.number().int().positive(),
+    decision: z.enum(["accept", "reject"]),
+    accept_scope: z.enum(["episode", "execution"]).optional(),
+    directory: z.string().optional(),
     ...SignedFields,
   })
   export const CommandMessage = z.object({
@@ -230,6 +243,7 @@ export namespace CompanionProtocol {
     PingMessage,
     SnapshotMessage,
     PermissionResolveMessage,
+    RouteDecisionMessage,
     CommandMessage,
     ChatMessage,
     CreateSessionMessage,

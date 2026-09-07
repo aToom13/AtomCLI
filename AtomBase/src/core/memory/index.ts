@@ -13,6 +13,8 @@
  * - Background learning
  */
 
+import type { ModelPurpose } from "@/core/routing/model-purpose"
+
 // Re-export everything from types
 export * from "./types"
 
@@ -118,7 +120,7 @@ import type {
 export async function recallCoreMemories(
   query: string,
   limit = 3,
-  options: { skipRerank?: boolean } = {},
+  options: { skipRerank?: boolean; routeModel?: ModelPurpose.ModelReference; sessionID?: string } = {},
 ): Promise<string> {
   if (!query.trim()) return ""
   try {
@@ -128,6 +130,8 @@ export async function recallCoreMemories(
       minRelevance: 0,
       tags: undefined,
       skipRerank: options.skipRerank,
+      routeModel: options.routeModel,
+      sessionID: options.sessionID,
     })
     return items.map((item) => `- ${item.title}: ${item.content}`).join("\n")
   } catch {

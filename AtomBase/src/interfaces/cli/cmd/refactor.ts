@@ -1,9 +1,9 @@
 /**
  * Refactoring Assistant Command
- * 
+ *
  * Detects code smells and suggests automated refactorings.
  * Supports extract function, inline variable, and other common refactorings.
- * 
+ *
  * Usage: atomcli refactor --target=performance
  */
 
@@ -254,15 +254,12 @@ export namespace RefactoringAssistant {
   /**
    * Generate refactoring suggestion using AI
    */
-  export async function generateRefactoring(
-    smell: CodeSmell,
-    fileContent: string
-  ): Promise<Refactoring | null> {
+  export async function generateRefactoring(smell: CodeSmell, fileContent: string): Promise<Refactoring | null> {
     const agent = await Agent.get("general")
     if (!agent) return null
 
     const defaultModel = await Provider.defaultModel()
-    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
+    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID, { verify: true })
 
     const lines = fileContent.split("\n")
     const contextStart = Math.max(0, smell.line - 5)
@@ -386,14 +383,7 @@ Return as JSON:
 
     // Find files to analyze
     const glob = new Bun.Glob("**/*.{ts,js,tsx,jsx}")
-    const excludePatterns = [
-      "node_modules",
-      "dist",
-      "build",
-      ".git",
-      "*.test.",
-      "*.spec.",
-    ]
+    const excludePatterns = ["node_modules", "dist", "build", ".git", "*.test.", "*.spec."]
 
     for await (const file of glob.scan(".")) {
       if (excludePatterns.some((p) => file.includes(p))) {
@@ -426,10 +416,13 @@ Return as JSON:
     const stats = {
       total: smells.length,
       autoFixable: smells.filter((s) => s.autoFixable).length,
-      byType: smells.reduce((acc, s) => {
-        acc[s.type] = (acc[s.type] || 0) + 1
-        return acc
-      }, {} as Record<string, number>),
+      byType: smells.reduce(
+        (acc, s) => {
+          acc[s.type] = (acc[s.type] || 0) + 1
+          return acc
+        },
+        {} as Record<string, number>,
+      ),
     }
 
     return { smells, refactorings, stats }
@@ -587,7 +580,7 @@ export const RefactorCommand = cmd({
           console.error("Error:", error instanceof Error ? error.message : error)
           process.exit(1)
         }
-      }
+      },
     })
   },
 })

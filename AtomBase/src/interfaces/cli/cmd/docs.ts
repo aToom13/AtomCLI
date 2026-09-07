@@ -206,7 +206,7 @@ export namespace DocsGen {
     if (!agent) throw new Error("General agent not found")
 
     const defaultModel = await Provider.defaultModel()
-    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
+    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID, { verify: true })
 
     const prompt = `Generate a JSDoc comment for this ${element.type}:
 
@@ -361,7 +361,7 @@ Return ONLY the JSDoc comment, no other text.`
     if (!agent) throw new Error("General agent not found")
 
     const defaultModel = await Provider.defaultModel()
-    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
+    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID, { verify: true })
 
     const exportedFunctions = projectInfo.elements
       .filter((e) => e.exported)

@@ -30,6 +30,14 @@ export namespace SessionReplay {
     }),
     z.object({
       id: z.string(),
+      type: z.literal("tool.applied"),
+      timestamp: z.number().int(),
+      sessionID: z.string(),
+      callID: z.string(),
+      tool: z.string(),
+    }),
+    z.object({
+      id: z.string(),
       type: z.literal("tool.result"),
       timestamp: z.number().int(),
       sessionID: z.string(),
@@ -45,6 +53,7 @@ export namespace SessionReplay {
       callID: z.string(),
       tool: z.string(),
       error: z.string(),
+      applied: z.boolean().optional(),
     }),
   ])
   export type Event = z.infer<typeof Event>

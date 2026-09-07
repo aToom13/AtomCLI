@@ -3,26 +3,30 @@ import { AgentEval } from "@/core/eval/harness"
 
 describe("AgentEval", () => {
   test("rewards verified completion and penalizes correction loops", () => {
-    const strong = AgentEval.score(AgentEval.Observation.parse({
-      id: "strong",
-      category: "coding",
-      providerID: "provider",
-      modelID: "model",
-      completed: true,
-      testsPassed: true,
-      reviewerVerdict: "passed",
-    }))
-    const weak = AgentEval.score(AgentEval.Observation.parse({
-      id: "weak",
-      category: "coding",
-      providerID: "provider",
-      modelID: "model",
-      completed: true,
-      testsPassed: false,
-      reviewerVerdict: "failed",
-      userCorrections: 2,
-      toolErrors: 3,
-    }))
+    const strong = AgentEval.score(
+      AgentEval.Observation.parse({
+        id: "strong",
+        category: "coding",
+        providerID: "provider",
+        modelID: "model",
+        completed: true,
+        testsPassed: true,
+        reviewerVerdict: "passed",
+      }),
+    )
+    const weak = AgentEval.score(
+      AgentEval.Observation.parse({
+        id: "weak",
+        category: "coding",
+        providerID: "provider",
+        modelID: "model",
+        completed: true,
+        testsPassed: false,
+        reviewerVerdict: "failed",
+        userCorrections: 2,
+        toolErrors: 3,
+      }),
+    )
 
     expect(strong.success).toBe(true)
     expect(strong.score).toBe(90)
@@ -32,8 +36,36 @@ describe("AgentEval", () => {
 
   test("summarizes outcome, cost and efficiency signals", () => {
     const results = [
-      AgentEval.score(AgentEval.Observation.parse({ id: "a", category: "analysis", providerID: "p", modelID: "m", completed: true, durationMs: 100, cost: 1, toolCalls: 2 })),
-      AgentEval.score(AgentEval.Observation.parse({ id: "b", category: "analysis", providerID: "p", modelID: "m", completed: false, durationMs: 300, cost: 2, toolErrors: 1 })),
+      AgentEval.score(
+        AgentEval.Observation.parse({
+          id: "a",
+          category: "analysis",
+          providerID: "p",
+          modelID: "m",
+          completed: true,
+          durationMs: 100,
+          cost: 1,
+          toolCalls: 2,
+          routingMode: "adaptive",
+          modelCalls: 3,
+          expertEpisodes: 1,
+          ttftMs: 20,
+          routeProposals: 1,
+          baseReturns: 1,
+        }),
+      ),
+      AgentEval.score(
+        AgentEval.Observation.parse({
+          id: "b",
+          category: "analysis",
+          providerID: "p",
+          modelID: "m",
+          completed: false,
+          durationMs: 300,
+          cost: 2,
+          toolErrors: 1,
+        }),
+      ),
     ]
     expect(AgentEval.summarize(results)).toMatchObject({
       count: 2,
@@ -42,6 +74,11 @@ describe("AgentEval", () => {
       totalCost: 3,
       totalToolCalls: 2,
       totalToolErrors: 1,
+      totalModelCalls: 3,
+      totalExpertEpisodes: 1,
+      averageTtftMs: 10,
+      totalRouteProposals: 1,
+      totalBaseReturns: 1,
     })
   })
 })

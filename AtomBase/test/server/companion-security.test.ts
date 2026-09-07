@@ -38,6 +38,23 @@ function messages(socket: WebSocket) {
 }
 
 describe("companion authentication", () => {
+  test("starts the control API before an automatically assigned companion listener", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const control = Server.listen({ hostname: "127.0.0.1", port: 0 })
+    const companion = Server.listenCompanion({ port: 0, directory: tmp.path })
+    try {
+      expect(control.port).not.toBe(companion.port)
+      const unauthorizedPair = await fetch(`http://127.0.0.1:${companion.port}/companion/pair`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      })
+      expect(unauthorizedPair.status).toBeGreaterThanOrEqual(400)
+    } finally {
+      await Promise.all([control.stop(true), companion.stop(true)])
+    }
+  })
+
   test("allows automatically assigned companion listeners to coexist", async () => {
     await using tmp = await tmpdir({ git: true })
     const first = Server.listenCompanion({ port: 0, directory: tmp.path })

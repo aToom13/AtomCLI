@@ -102,6 +102,8 @@ export const SearchOptions = z.object({
   minRelevance: z.number(),
   tags: z.array(z.string()).optional,
   skipRerank: z.boolean().optional(),
+  routeModel: z.object({ providerID: z.string(), modelID: z.string() }).optional(),
+  sessionID: z.string().optional(),
 })
 
 export type SearchOptions = z.infer<typeof SearchOptions>

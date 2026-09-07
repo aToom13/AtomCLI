@@ -258,7 +258,8 @@ export namespace Project {
 
       session.projectID = newProjectID
       log.info("migrating session", { sessionID, from: "global", to: newProjectID })
-      await Storage.write(["session", newProjectID, sessionID], session)
+      const guard = await Storage.activateSession(sessionID)
+      await Storage.writeGuarded(["session", newProjectID, sessionID], sessionID, session, guard.generation)
       await Storage.remove(key)
     }).catch((error) => {
       log.error("failed to migrate sessions from global to project", { error, projectId: newProjectID })

@@ -200,6 +200,11 @@ export const TaskTool = Tool.define("task", async (ctx) => {
             const preview = await isolation.preview()
             if (preview.patch)
               await WorkflowFS.writeArtifact(taskRunId, params.subagent_type!, "isolation.patch", preview.patch)
+            const execution = ctx.extra?.execution
+            if (execution) {
+              const { ExecutionRuntime } = await import("@/core/execution/runtime")
+              await ExecutionRuntime.assertActive({ sessionID: ctx.sessionID, execution })
+            }
             const applied = await isolation.apply()
             for (const file of applied.changedFiles) HarnessState.addEditedFile(ctx.sessionID, file)
           }

@@ -46,6 +46,7 @@ describe("active tool audit", () => {
             "invalid",
             "lsp",
             "memory",
+            "model_control",
             "question",
             "read",
             "skill",

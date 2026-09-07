@@ -83,6 +83,22 @@ export function Session() {
 
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef
+  let decidingProposalID: string | undefined
+  sdk.event.on("execution.route.proposal", (event) => {
+    const proposal = event.properties.proposal
+    if (event.properties.sessionID !== route.sessionID || proposal.state !== "applied" || proposal.scope === "expert")
+      return
+    const alias = proposal.evidenceRefs.find((ref) => ref.startsWith("requested-route:"))?.slice(16)
+    const model = alias ? { providerID: "atomcli", modelID: alias.slice("atomcli/".length) } : proposal.toRoute
+    local.model.set(model, { recent: true, manual: true })
+    local.model.variant.set(proposal.toRoute.variant, { manual: true })
+    toast.show({ title: "Model changed", message: `${model.providerID}/${model.modelID}`, variant: "success" })
+  })
+
+  const activeExecution = createMemo(() => {
+    const snapshot = sync.data.execution_snapshot[route.sessionID]
+    return snapshot?.executions.find((item) => item.id === snapshot.activeExecutionID)
+  })
 
   // Effects
   createEffect(async () => {
@@ -120,6 +136,69 @@ export function Session() {
     if (route.initialPrompt && prompt) {
       prompt.set(route.initialPrompt)
     }
+  })
+
+  createEffect(() => {
+    const proposal = sync.data.route_proposals[route.sessionID]?.find(
+      (item) => item.state === "pending" && item.expiresAt > Date.now(),
+    )
+    if (!proposal || decidingProposalID === proposal.id) return
+    decidingProposalID = proposal.id
+    const target = `${proposal.toRoute.providerID}/${proposal.toRoute.modelID}${proposal.toRoute.variant ? ` (${proposal.toRoute.variant})` : ""}`
+    const estimate = proposal.uncertainty
+      ? "estimated use: unknown"
+      : `estimated use: ${JSON.stringify(proposal.estimatedUsage)}`
+    void DialogConfirm.show(
+      dialog,
+      proposal.scope === "thinking"
+        ? "Change thinking?"
+        : proposal.scope === "model"
+          ? "Switch conversation model?"
+          : "Switch model for this episode?",
+      `${target}\nReason: ${proposal.evidenceRefs.find((ref) => ref.startsWith("reason:"))?.slice(7) ?? proposal.reasonCode}\nScope: ${proposal.scope}; ${estimate}`,
+    )
+      .then(async (confirmed) => {
+        const acceptScope =
+          confirmed &&
+          (await DialogConfirm.show(
+            dialog,
+            "Auto-accept this exact route?",
+            "Allow the same target and parameters automatically for the rest of this execution?",
+          ))
+            ? "execution"
+            : "episode"
+        return sdk.client.session.executions.routeProposal.decide({
+          sessionID: route.sessionID,
+          executionID: proposal.executionID,
+          proposalID: proposal.id,
+          requestID: crypto.randomUUID(),
+          expectedProposalVersion: proposal.version,
+          expectedRouteRevision: proposal.routeRevision,
+          decision: confirmed ? "accept" : "reject",
+          acceptScope,
+        })
+      })
+      .then((result) => {
+        if (result.error) throw new Error("The route proposal changed before your decision was applied")
+        toast.show({
+          title: "Adaptive routing",
+          message:
+            result.data?.proposal.state === "accepted"
+              ? `Approved ${target}; verifying before switching`
+              : "Kept the current route",
+          variant: result.data?.proposal.state === "accepted" ? "success" : "info",
+        })
+      })
+      .catch((error) =>
+        toast.show({
+          title: "Adaptive routing",
+          message: error instanceof Error ? error.message : String(error),
+          variant: "error",
+        }),
+      )
+      .finally(() => {
+        if (decidingProposalID === proposal.id) decidingProposalID = undefined
+      })
   })
 
   // Allow exit when in child session (prompt is hidden)
@@ -406,6 +485,11 @@ export function Session() {
                         message={message as any}
                         parts={sync.data.part[message.id] ?? []}
                         pending={pending()}
+                        delivery={sync.data.delivery[message.id]}
+                        onRecover={() => {
+                          const draft = sync.optimistic.recover(message.id)
+                          if (draft) prompt.set(draft)
+                        }}
                       />
                     </Match>
                     <Match when={message.role === "assistant"}>
@@ -420,6 +504,17 @@ export function Session() {
               />
             </scrollbox>
             <box flexShrink={0}>
+              <Show when={activeExecution()?.route}>
+                {(routeInfo) => (
+                  <text fg={theme.textMuted}>
+                    route {routeInfo().active.providerID}/{routeInfo().active.modelID}
+                    {routeInfo().active.variant ? ` · think ${routeInfo().active.variant}` : ""} · {routeInfo().stage}
+                    {routeInfo().manualModelPin || routeInfo().manualThinkingPin ? " · pinned" : ""} · budget{" "}
+                    {activeExecution()!.budget.execution.calls.used}/
+                    {activeExecution()!.budget.execution.calls.limit ?? "∞"} calls
+                  </text>
+                )}
+              </Show>
               <Show when={permissions().length > 0}>
                 <PermissionPrompt request={permissions()[0]} />
               </Show>
@@ -449,7 +544,11 @@ export function Session() {
 
         {/* Right: Sub-Agent Panel (auto-shows when agents are active, toggle with F9) */}
         <Show when={agentPanelWidth() > 0}>
-          <SubAgentPanel width={agentPanelWidth()} agents={subAgentCtx.agents()} onToggle={() => subAgentCtx.togglePanel()} />
+          <SubAgentPanel
+            width={agentPanelWidth()}
+            agents={subAgentCtx.agents()}
+            onToggle={() => subAgentCtx.togglePanel()}
+          />
         </Show>
 
         {/* Right: Code Panel (shows when panel is hidden OR no agents) */}

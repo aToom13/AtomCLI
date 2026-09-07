@@ -3,13 +3,13 @@ import { Session } from "@/core/session"
 import { Agent } from "../agent/agent"
 import { Config } from "@/core/config/config"
 import { ReviewPolicy } from "@/core/verification/review-policy"
-import { selectModel } from "./model-router"
 import { SubAgent } from "./subagent"
 import { escapeXmlText, HarnessState, REVIEW_TOTAL_ATTEMPT_MULTIPLIER } from "@/core/session/harness-state"
 import { ChangeImpact } from "@/core/verification/change-impact"
 import { ReviewV2 } from "@/core/verification/review-v2"
 import { Instance } from "@/services/project/instance"
 import { SessionExecutionProfile } from "@/core/session/execution-profile"
+import type { ExecutionRuntime } from "@/core/execution/runtime"
 
 const log = Log.create({ service: "review-gate" })
 
@@ -40,6 +40,15 @@ export interface ReviewResult {
   error?: boolean
   /** Validated structured review report when a review ran. */
   report?: ReviewV2.Report
+}
+
+type ReviewAssessment = {
+  decision: ExecutionRuntime.ReviewDecision
+  impact: ChangeImpact.Report
+  diff: string
+  originalPrompt: string
+  editedFiles: string[]
+  policy: ReviewPolicy.Mode
 }
 
 /** Cap the original user request injected into the reviewer prompt. */
@@ -189,6 +198,51 @@ export async function aggregateDescendantEdits(sessionID: string): Promise<numbe
   return total
 }
 
+export async function evaluateReviewDecision(sessionID: string): Promise<ReviewAssessment> {
+  const config = await Config.get()
+  const snapshot = ReviewPolicy.snapshot({
+    enabled: config.review?.enabled !== false,
+    configuredPolicy: config.review?.policy ?? "adaptive",
+    executionProfile: SessionExecutionProfile.get(sessionID),
+    reviewerCount: config.review?.reviewer_count ?? 2,
+    attemptLimit: config.review?.max_attempts ?? 3,
+    highRiskPatterns: config.review?.high_risk_patterns ?? [],
+  })
+  await aggregateDescendantEdits(sessionID)
+  const editedFiles = HarnessState.getEditedFiles(sessionID)
+  const originalPrompt = await findOriginalUserRequest(sessionID)
+  const diff = await ChangeImpact.diff(editedFiles).catch(() => "")
+  const impact = ChangeImpact.analyze({ files: editedFiles, diff, prompt: originalPrompt })
+  const required = ReviewPolicy.requiresIndependentReview(snapshot.effectivePolicy, {
+    editedFiles,
+    prompt: originalPrompt,
+    diff,
+    impact,
+    extraHighRiskPatterns: snapshot.highRiskPatterns,
+  })
+  return {
+    decision: {
+      policyVersion: snapshot.policyVersion,
+      policyDigest: snapshot.policyDigest,
+      requirement: required ? "required" : "not_required",
+      reasonCode: !snapshot.enabled
+        ? "review_disabled"
+        : editedFiles.length === 0
+          ? "no_mutations"
+          : required
+            ? "risk_requires_independent_review"
+            : "risk_below_review_threshold",
+      requiredReviewers: required ? snapshot.reviewerCount : 0,
+      attemptLimit: snapshot.attemptLimit,
+    },
+    impact,
+    diff,
+    originalPrompt,
+    editedFiles,
+    policy: snapshot.effectivePolicy,
+  }
+}
+
 /**
  * Run a blocking reviewer review of the main agent's edits.
  *
@@ -201,46 +255,41 @@ export async function aggregateDescendantEdits(sessionID: string): Promise<numbe
  * escalate to the user instead of looping forever. Once exhausted, subsequent
  * calls short-circuit — they do not re-spawn the reviewer (cost amplifier).
  */
-export async function runBlockingReview(sessionID: string): Promise<ReviewResult> {
+export async function runBlockingReview(
+  sessionID: string,
+  options: {
+    signal?: AbortSignal
+    authorizeSession?: (sessionID: string) => void | Promise<void>
+    decision?: ExecutionRuntime.ReviewDecision
+  } = {},
+): Promise<ReviewResult> {
+  options.signal?.throwIfAborted()
   const config = await Config.get()
-  const enabled = config.review?.enabled !== false
-  const maxAttempts = config.review?.max_attempts ?? 3
-  const reviewerCount = config.review?.reviewer_count ?? 2
-  const configuredPolicy = config.review?.policy ?? "adaptive"
-  const policy = enabled
-    ? configuredPolicy === "adaptive" && SessionExecutionProfile.get(sessionID) === "companion-fast"
-      ? "fast"
-      : configuredPolicy
-    : "off"
-
-  if (!enabled) {
-    log.info("review gate disabled via config", { sessionID })
-    return { passed: true, exhausted: false, skipped: true }
-  }
-
-  // Aggregate sub-agent edits first so needsReview sees the union of parent
-  // and descendant edits (prevents gate bypass via sub-agent delegation).
-  await aggregateDescendantEdits(sessionID)
-
-  const editedFiles = HarnessState.getEditedFiles(sessionID)
-  const originalPrompt = await findOriginalUserRequest(sessionID)
-  const diff = await ChangeImpact.diff(editedFiles).catch(() => "")
-  const impact = ChangeImpact.analyze({ files: editedFiles, diff, prompt: originalPrompt })
-
+  const assessment = await evaluateReviewDecision(sessionID)
+  const { decision, editedFiles, originalPrompt, impact, policy, diff } = assessment
   if (
-    !ReviewPolicy.requiresIndependentReview(policy, {
-      editedFiles,
-      prompt: originalPrompt,
-      diff,
-      impact,
-      extraHighRiskPatterns: config.review?.high_risk_patterns,
-    })
+    options.decision &&
+    (options.decision.policyDigest !== decision.policyDigest ||
+      options.decision.requirement !== decision.requirement ||
+      options.decision.reasonCode !== decision.reasonCode)
   ) {
-    log.info("review gate skipped by risk policy", { sessionID, policy, impact })
+    return {
+      passed: false,
+      reason: "Review policy changed after the completion candidate was staged.",
+      exhausted: false,
+      skipped: true,
+      error: true,
+    }
+  }
+  const maxAttempts = decision.attemptLimit
+  const reviewerCount = decision.requiredReviewers
+
+  if (decision.requirement !== "required") {
+    log.info("review gate not required by policy", { sessionID, policy, reasonCode: decision.reasonCode, impact })
     return { passed: true, exhausted: false, skipped: true }
   }
 
-  if (!HarnessState.needsReview(sessionID)) {
+  if (!options.decision && !HarnessState.needsReview(sessionID)) {
     return { passed: true, exhausted: false, skipped: true }
   }
 
@@ -280,19 +329,42 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
   try {
     const reviewerAgent = await Agent.get("reviewer")
     if (!reviewerAgent) {
-      log.warn("reviewer agent not found — skipping review", { sessionID })
+      log.warn("reviewer agent not found — blocking review", { sessionID })
       // Release the pending claim left by beginReview — otherwise the next
       // `taskflow clear` sees a stale `pending` verdict, beginReview refuses
       // to re-claim it, and clear is wedged forever with {error:true}.
       HarnessState.releaseReview(sessionID)
-      return { passed: true, exhausted: false, skipped: true }
+      return {
+        passed: false,
+        reason: "Reviewer agent is unavailable, so the required review could not run.",
+        exhausted: false,
+        skipped: true,
+        error: true,
+      }
     }
 
-    const fallbackModel = await (async () => {
+    const parentRoute = await (async () => {
+      const messages = await Session.messages({ sessionID, excludePatches: true })
+      const parentUser = messages.findLast((message) => message.info.role === "user")
+      if (parentUser?.info.role === "user") return { ref: parentUser.info.model, explicit: true }
       const { Provider } = await import("@/integrations/provider/provider")
-      return Provider.defaultModel()
+      return { ref: await Provider.defaultModel(), explicit: false }
     })()
-    const reviewerModel = await selectModel("analysis", fallbackModel)
+    // Resolve the parent's route (including AtomCLI Auto/Free) with the same
+    // verification gate, then pin reviewers to that concrete eligible model.
+    // This prevents smart routing from silently upgrading a Free execution to
+    // a paid reviewer or selecting an unverified candidate.
+    const reviewerModel = await (async () => {
+      if (!parentRoute.explicit) return parentRoute.ref
+      const { Provider } = await import("@/integrations/provider/provider")
+      const parentSession = await Session.get(sessionID).catch(() => undefined)
+      const parentModel = await Provider.getModel(parentRoute.ref.providerID, parentRoute.ref.modelID, {
+        session: parentSession,
+        prompt: originalPrompt,
+        verify: true,
+      })
+      return { providerID: parentModel.providerID, modelID: parentModel.id }
+    })()
 
     const reviewPrompt = await buildReviewPrompt(sessionID, impact)
     const existingReviewerSession = HarnessState.getReviewerSession(sessionID)
@@ -320,11 +392,14 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
           sessionId: index === 0 ? existingReviewerSession : undefined,
           outputSchema: ReviewV2.OutputSchema,
           validationMode: "strict",
+          signal: options.signal,
           onSession: ({ sessionId }) => {
-            if (!primarySessionRecorded && index === 0) {
-              HarnessState.setReviewerSession(sessionID, sessionId)
-              primarySessionRecorded = true
-            }
+            return Promise.resolve(options.authorizeSession?.(sessionId)).then(() => {
+              if (!primarySessionRecorded && index === 0) {
+                HarnessState.setReviewerSession(sessionID, sessionId)
+                primarySessionRecorded = true
+              }
+            })
           },
         }),
       ),
@@ -337,6 +412,8 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
             error: result.reason instanceof Error ? result.reason.message : String(result.reason),
           },
     )
+    options.signal?.throwIfAborted()
+    await aggregateDescendantEdits(sessionID)
     const workspaceSources = await ReviewV2.loadWorkspaceSources(Instance.directory, editedFiles)
     const diffSources = ReviewV2.parseUnifiedDiff(diff)
     const report = ReviewV2.aggregate({
@@ -347,6 +424,16 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
 
     if (report.verdict === "passed") {
       HarnessState.recordReviewVerdict(sessionID, { status: "pass" })
+      if (HarnessState.needsReview(sessionID)) {
+        log.warn("review gate: PASS became stale before commit", { sessionID })
+        return {
+          passed: false,
+          reason: "The workspace changed while review was running; review must run again for the current revision.",
+          exhausted: false,
+          skipped: false,
+          report,
+        }
+      }
       log.info("review gate: PASS", { sessionID })
       return { passed: true, exhausted: false, skipped: false, report }
     }
@@ -368,7 +455,13 @@ export async function runBlockingReview(sessionID: string): Promise<ReviewResult
       error: (error as Error).message,
     })
     HarnessState.releaseReview(sessionID)
-    return { passed: false, error: true, exhausted: false, skipped: true }
+    return {
+      passed: false,
+      reason: `Review infrastructure error: ${(error as Error).message}`,
+      error: true,
+      exhausted: false,
+      skipped: true,
+    }
   }
 }
 

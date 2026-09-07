@@ -17,6 +17,7 @@ import type {
   ProviderListResponse,
   ProviderAuthMethod,
   VcsInfo,
+  SessionExecutionsSnapshotResponse,
 } from "@atomcli/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
@@ -28,6 +29,14 @@ import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
 import { Log } from "@/util/util/log"
 import type { Path } from "@atomcli/sdk/v2"
+
+export type DeliveryRecord = {
+  sessionID: string
+  state: "sending" | "sent" | "failed" | "unknown"
+  draft: { input: string; mode?: "normal" | "shell"; parts: any[] }
+  error?: string
+  updatedAt: number
+}
 
 import { handleSessionEvent } from "./handlers/session"
 import { handleMessageEvent } from "./handlers/message"
@@ -59,6 +68,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_status: {
         [sessionID: string]: SessionStatus
       }
+      execution_snapshot: {
+        [sessionID: string]: SessionExecutionsSnapshotResponse
+      }
+      route_proposals: { [sessionID: string]: SessionExecutionsSnapshotResponse["pendingProposals"] }
       session_diff: {
         [sessionID: string]: Snapshot.FileDiff[]
       }
@@ -70,6 +83,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       optimistic_message: {
         [sessionID: string]: Message[]
+      }
+      delivery: {
+        [messageID: string]: DeliveryRecord
       }
       part: {
         [messageID: string]: Part[]
@@ -101,10 +117,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       provider_default: {},
       session: [],
       session_status: {},
+      execution_snapshot: {},
+      route_proposals: {},
       session_diff: {},
       todo: {},
       message: {},
       optimistic_message: {},
+      delivery: {},
       part: {},
       lsp: [],
       mcp: {},
@@ -115,6 +134,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const sdk = useSDK()
+    const fullSyncedSessions = new Set<string>()
+    const inflightSyncs = new Map<string, Promise<void>>()
+    let syncGeneration = 0
+
+    const invalidateSessionSync = () => {
+      syncGeneration++
+      fullSyncedSessions.clear()
+      inflightSyncs.clear()
+    }
 
     const actor = createActor(chatMachine, {
       input: { store, setStore },
@@ -134,6 +162,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
       switch (event.type) {
         case "server.instance.disposed":
+          invalidateSessionSync()
+          bootstrap()
+          break
+        case "server.connected":
+        case "server.resync_required":
+          invalidateSessionSync()
           bootstrap()
           break
         case "config.updated": {
@@ -144,6 +178,43 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "todo.updated":
           setStore("todo", event.properties.sessionID, event.properties.todos)
           break
+
+        case "execution.route.proposal": {
+          const properties = event.properties as any
+          setStore(
+            produce((draft) => {
+              const proposals = (draft.route_proposals[properties.sessionID] ??= [])
+              const index = proposals.findIndex((proposal) => proposal.id === properties.proposal.id)
+              if (index >= 0 && proposals[index].version > properties.proposal.version) return
+              if (index >= 0) proposals[index] = properties.proposal
+              else proposals.push(properties.proposal)
+              if (proposals.length > 100) proposals.splice(0, proposals.length - 100)
+              const snapshot = draft.execution_snapshot[properties.sessionID]
+              if (snapshot)
+                snapshot.pendingProposals = proposals.filter((p) => ["pending", "accepted"].includes(p.state))
+            }),
+          )
+          break
+        }
+
+        case "execution.route.changed": {
+          const properties = event.properties as any
+          const snapshot = store.execution_snapshot[properties.sessionID]
+          const execution = snapshot?.executions.find((item) => item.id === properties.executionID)
+          if (execution)
+            setStore("execution_snapshot", properties.sessionID, "executions", (item) => item.id === execution.id, {
+              ...execution,
+              routeRevision: properties.routeRevision,
+              route: execution.route
+                ? {
+                    ...execution.route,
+                    active: properties.route,
+                    stage: properties.stage,
+                  }
+                : execution.route,
+            })
+          break
+        }
 
         case "lsp.updated": {
           sdk.client.lsp.status().then((x) => setStore("lsp", x.data!))
@@ -220,8 +291,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       bootstrap()
     })
 
-    const fullSyncedSessions = new Set<string>()
-    const inflightSyncs = new Map<string, Promise<void>>()
     const result = {
       data: store,
       set: setStore,
@@ -253,12 +322,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (inflight) return inflight
 
           const request = (async () => {
-            const [session, messages, todo, diff] = await Promise.all([
+            const generation = syncGeneration
+            const [session, messages, todo, diff, executionSnapshot] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
               sdk.client.session.messages({ sessionID, limit: 100 }),
               sdk.client.session.todo({ sessionID }),
               sdk.client.session.diff({ sessionID }),
+              sdk.client.session.executions.snapshot({ sessionID }),
             ])
+            if (generation !== syncGeneration) return
             setStore(
               produce((draft) => {
                 const match = Binary.search(draft.session, sessionID, (s) => s.id)
@@ -270,9 +342,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                   draft.part[message.info.id] = message.parts
                 }
                 draft.session_diff[sessionID] = diff.data ?? []
+                if (executionSnapshot.data) draft.execution_snapshot[sessionID] = executionSnapshot.data
+                const proposals = (draft.route_proposals[sessionID] ??= [])
+                for (const proposal of executionSnapshot.data?.pendingProposals ?? []) {
+                  const index = proposals.findIndex((item) => item.id === proposal.id)
+                  if (index < 0) proposals.push(proposal)
+                  else if (proposals[index].version < proposal.version) proposals[index] = proposal
+                }
               }),
             )
-            fullSyncedSessions.add(sessionID)
+            if (generation === syncGeneration) fullSyncedSessions.add(sessionID)
           })()
           inflightSyncs.set(sessionID, request)
           try {
@@ -283,7 +362,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
       },
       optimistic: {
-        push(sessionID: string, msg: Message, parts: Part[]) {
+        push(sessionID: string, msg: Message, parts: Part[], deliveryDraft: DeliveryRecord["draft"]) {
           setStore(
             produce((draft) => {
               if (!draft.optimistic_message[sessionID]) {
@@ -291,11 +370,56 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               }
               draft.optimistic_message[sessionID].push(msg)
               draft.part[msg.id] = parts
+              draft.delivery[msg.id] = {
+                sessionID,
+                state: "sending",
+                draft: deliveryDraft,
+                updatedAt: Date.now(),
+              }
+              while (draft.optimistic_message[sessionID].length > 100) {
+                const evicted = draft.optimistic_message[sessionID].shift()
+                if (!evicted) continue
+                delete draft.part[evicted.id]
+                delete draft.delivery[evicted.id]
+              }
             }),
           )
         },
         clear(sessionID: string) {
-          setStore("optimistic_message", sessionID, [])
+          setStore(
+            produce((draft) => {
+              for (const message of draft.optimistic_message[sessionID] ?? []) {
+                delete draft.part[message.id]
+                delete draft.delivery[message.id]
+              }
+              draft.optimistic_message[sessionID] = []
+            }),
+          )
+        },
+        settle(messageID: string, state: "sent" | "failed" | "unknown", error?: string) {
+          setStore(
+            produce((draft) => {
+              const delivery = draft.delivery[messageID]
+              if (!delivery || delivery.state === "sent") return
+              delivery.state = state
+              delivery.error = error
+              delivery.updatedAt = Date.now()
+            }),
+          )
+        },
+        recover(messageID: string) {
+          const delivery = store.delivery[messageID]
+          if (!delivery || !["failed", "unknown"].includes(delivery.state)) return
+          setStore(
+            produce((draft) => {
+              const messages = draft.optimistic_message[delivery.sessionID] ?? []
+              const index = messages.findIndex((message) => message.id === messageID)
+              if (index >= 0) messages.splice(index, 1)
+              delete draft.part[messageID]
+              delete draft.delivery[messageID]
+            }),
+          )
+          return delivery.draft
         },
       },
       bootstrap,

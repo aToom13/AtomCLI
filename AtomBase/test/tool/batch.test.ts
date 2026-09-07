@@ -4,10 +4,11 @@ import path from "path"
 import { Identifier } from "@/core/id/id"
 import { BatchTool } from "@/integrations/tool/batch"
 import { Instance } from "@/services/project/instance"
+import { Session } from "@/core/session"
 import { tmpdir } from "../fixture/fixture"
 
-const context = () => ({
-  sessionID: Identifier.ascending("session"),
+const context = (sessionID = Identifier.ascending("session")) => ({
+  sessionID,
   messageID: Identifier.ascending("message"),
   callID: Identifier.ascending("part"),
   agent: "build",
@@ -38,6 +39,7 @@ describe("BatchTool", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        const session = await Session.create({})
         const tool = await BatchTool.init({})
         const result = await tool.execute(
           {
@@ -46,7 +48,7 @@ describe("BatchTool", () => {
               { tool: "find", parameters: { pattern: "**/*.txt" } },
             ],
           },
-          context(),
+          context(session.id),
         )
 
         expect(result.title).toBe("Batch execution (2/2 successful)")

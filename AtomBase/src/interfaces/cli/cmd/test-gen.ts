@@ -197,7 +197,7 @@ export namespace TestGen {
     }
 
     const defaultModel = await Provider.defaultModel()
-    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
+    const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID, { verify: true })
 
     // Generate tests using LLM
     const userMessage: MessageV2.User = {

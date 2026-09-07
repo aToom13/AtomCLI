@@ -6,6 +6,7 @@ import { parseJsonIfString } from "@/util/util/zod"
 import { Session } from "@/core/session"
 import { HarnessState } from "@/core/session/harness-state"
 import { Log } from "@/util/util/log"
+import type { ExecutionRuntime } from "@/core/execution/runtime"
 
 const log = Log.create({ service: "taskflow" })
 
@@ -46,7 +47,87 @@ const parameters = z.object({
     .describe(
       "User-approved force clear: bypass the review gate when action='clear'. Only use when the user explicitly instructed you to force-clear despite a blocked review.",
     ),
+  waive_reason: z
+    .string()
+    .min(3)
+    .max(1000)
+    .optional()
+    .describe("Required justification when force-clearing unfinished or failed plan items"),
 })
+
+function executionContext(ctx: Tool.Context) {
+  return ctx.extra?.execution as ExecutionRuntime.Context | undefined
+}
+
+async function createDurablePlan(ctx: Tool.Context, steps: Array<{ id: string; name: string }>) {
+  const execution = executionContext(ctx)
+  if (!execution) return undefined
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  const plan = await ExecutionRuntime.createPlan({
+    sessionID: ctx.sessionID,
+    execution,
+    items: steps.map((step) => ({ id: step.id, resourceScope: `plan-item:${step.id}:${step.name}` })),
+  })
+  return {
+    executionID: execution.executionID,
+    revision: plan.revision,
+    items: Object.fromEntries(
+      steps.map((step, index) => {
+        const blocker = plan.blockers[index]
+        return [step.id, { blockerID: blocker.id, version: blocker.version, state: blocker.state }]
+      }),
+    ),
+  }
+}
+
+async function transitionDurablePlanItem(
+  ctx: Tool.Context,
+  stepID: string,
+  state: "running" | "resolved" | "failed" | "waived",
+  evidence?: string,
+  resolutionCode?: string,
+) {
+  const binding = HarnessState.getPlanBinding(ctx.sessionID)
+  if (!binding) return
+  const execution = executionContext(ctx)
+  if (!execution || execution.executionID !== binding.executionID) {
+    throw new Error("The active taskflow belongs to another execution and must be reconciled before it can change")
+  }
+  const item = binding.items[stepID]
+  if (!item) throw new Error(`Taskflow step "${stepID}" has no durable plan item`)
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  const blocker = await ExecutionRuntime.transitionBlocker({
+    sessionID: ctx.sessionID,
+    execution,
+    blockerID: item.blockerID,
+    expectedVersion: item.version,
+    state,
+    evidence,
+    resolutionCode,
+    authority: state === "waived" ? "user" : undefined,
+    planRevision: state === "waived" ? binding.revision : undefined,
+  })
+  HarnessState.updatePlanItemBinding(ctx.sessionID, stepID, {
+    version: blocker.version,
+    state: blocker.state,
+  })
+}
+
+async function transitionTaskflowStep(ctx: Tool.Context, stepID: string, state: "running" | "completed" | "failed") {
+  HarnessState.assertStepTransition(ctx.sessionID, stepID, state)
+  await transitionDurablePlanItem(
+    ctx,
+    stepID,
+    state === "completed" ? "resolved" : state,
+    state === "completed"
+      ? `Taskflow step ${stepID} completed`
+      : state === "failed"
+        ? `Taskflow step ${stepID} failed`
+        : undefined,
+    state === "completed" ? "plan_item_completed" : state === "failed" ? "plan_item_failed" : undefined,
+  )
+  HarnessState.transitionStep(ctx.sessionID, stepID, state)
+}
 
 export const TaskFlowTool = Tool.define("taskflow", {
   description: [
@@ -71,20 +152,35 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
     switch (params.action) {
       case "start": {
-        await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-        await new Promise((resolve) => setTimeout(resolve, 10))
-
         if (params.plan && params.plan.length > 0) {
-          await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
-
-          // Register steps in the harness state machine
           const smSteps = params.plan
             .filter((step) => step.name && step.name.length >= 2)
             .map((step, idx) => ({
               id: step.id ?? String(idx),
               name: step.name,
             }))
-          HarnessState.startPlan(ctx.sessionID, smSteps)
+          if (new Set(smSteps.map((step) => step.id)).size !== smSteps.length) {
+            return {
+              title: "Invalid taskflow",
+              output: "Taskflow step IDs must be unique",
+              metadata: { steps: undefined, step_id: undefined, status: "error" },
+            }
+          }
+          let binding: Awaited<ReturnType<typeof createDurablePlan>>
+          try {
+            binding = await createDurablePlan(ctx, smSteps)
+          } catch (error) {
+            return {
+              title: "Taskflow start blocked",
+              output: error instanceof Error ? error.message : String(error),
+              metadata: { steps: undefined, step_id: undefined, status: "blocked" },
+            }
+          }
+
+          HarnessState.startPlan(ctx.sessionID, smSteps, binding)
+          await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
 
           for (let idx = 0; idx < params.plan.length; idx++) {
             const step = params.plan[idx]
@@ -144,8 +240,8 @@ export const TaskFlowTool = Tool.define("taskflow", {
           const transitionStepId = params.step_id ?? HarnessState.getRunningStep(ctx.sessionID)
           if (params.status !== "pending" && transitionStepId !== undefined) {
             try {
-              HarnessState.transitionStep(
-                ctx.sessionID,
+              await transitionTaskflowStep(
+                ctx,
                 transitionStepId,
                 params.status === "completed" ? "completed" : params.status === "failed" ? "failed" : "running",
               )
@@ -192,7 +288,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
         // Enforce state machine: step must be in running state
         if (params.step_id !== undefined) {
           try {
-            HarnessState.transitionStep(ctx.sessionID, params.step_id, "completed")
+            await transitionTaskflowStep(ctx, params.step_id, "completed")
           } catch (err) {
             return {
               title: "Taskflow state machine violation",
@@ -205,7 +301,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
           const runningId = HarnessState.getRunningStep(ctx.sessionID)
           if (runningId !== undefined) {
             try {
-              HarnessState.transitionStep(ctx.sessionID, runningId, "completed")
+              await transitionTaskflowStep(ctx, runningId, "completed")
             } catch (err) {
               return {
                 title: "Taskflow state machine violation",
@@ -231,7 +327,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
         // Enforce state machine: step must be in running state
         if (params.step_id !== undefined) {
           try {
-            HarnessState.transitionStep(ctx.sessionID, params.step_id, "failed")
+            await transitionTaskflowStep(ctx, params.step_id, "failed")
           } catch (err) {
             return {
               title: "Taskflow state machine violation",
@@ -244,7 +340,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
           const runningId = HarnessState.getRunningStep(ctx.sessionID)
           if (runningId !== undefined) {
             try {
-              HarnessState.transitionStep(ctx.sessionID, runningId, "failed")
+              await transitionTaskflowStep(ctx, runningId, "failed")
             } catch (err) {
               return {
                 title: "Taskflow state machine violation",
@@ -267,6 +363,46 @@ export const TaskFlowTool = Tool.define("taskflow", {
       }
 
       case "clear": {
+        const unresolved = HarnessState.getSteps(ctx.sessionID).filter((step) => step.status !== "completed")
+        let forceApproved = false
+        if (unresolved.length > 0) {
+          if (!params.force) {
+            return {
+              title: "Taskflow clear blocked",
+              output: `Complete all plan items before clearing. Unresolved: ${unresolved.map((step) => `${step.id} (${step.status})`).join(", ")}`,
+              metadata: { steps: undefined, step_id: undefined, status: "blocked" },
+            }
+          }
+          if (!params.waive_reason) {
+            return {
+              title: "Taskflow clear blocked",
+              output: "waive_reason is required to force-clear unfinished or failed plan items",
+              metadata: { steps: undefined, step_id: undefined, status: "blocked" },
+            }
+          }
+          await ctx.ask({
+            permission: "taskflow.force",
+            patterns: ["*"],
+            always: [],
+            metadata: { reason: params.waive_reason },
+          })
+          forceApproved = true
+          const binding = HarnessState.getPlanBinding(ctx.sessionID)
+          for (const step of unresolved) {
+            await transitionDurablePlanItem(
+              ctx,
+              step.id,
+              "waived",
+              JSON.stringify({
+                reason: params.waive_reason,
+                authority: "user",
+                planRevision: binding?.revision,
+              }),
+              "plan_item_user_waiver",
+            )
+          }
+        }
+
         // ── REVIEW GATE (primary) ─────────────────────────────────────────
         // Blocking reviewer sub-agent verifies the main agent's edits before
         // clear is allowed to complete. On FAIL the clear is NOT performed —
@@ -325,12 +461,15 @@ export const TaskFlowTool = Tool.define("taskflow", {
             // silently. always: [] makes the approval per-occurrence only — a
             // stored "always" grant would let the agent force-clear silently
             // for the rest of the project session. Throws if the user rejects.
-            await ctx.ask({
-              permission: "taskflow.force",
-              patterns: ["*"],
-              always: [],
-              metadata: {},
-            })
+            if (!forceApproved) {
+              await ctx.ask({
+                permission: "taskflow.force",
+                patterns: ["*"],
+                always: [],
+                metadata: {},
+              })
+              forceApproved = true
+            }
             reviewBypassed = true
             log.warn("taskflow clear: review gate bypassed by explicit force", {
               sessionID: ctx.sessionID,

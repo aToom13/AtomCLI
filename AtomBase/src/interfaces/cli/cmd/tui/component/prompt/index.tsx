@@ -506,7 +506,7 @@ export function Prompt(props: PromptProps) {
 
   async function updateMode(mode: "autonomous" | "safe") {
     try {
-      await sdk.client.config.update({ body: { agent_mode: mode } } as any)
+      await sdk.client.config.update({ agent_mode: mode }, { throwOnError: true })
       sync.set("config", "agent_mode" as any, mode)
       if (mode === "autonomous") process.env.ATOMCLI_AUTONOMOUS = "1"
       else delete process.env.ATOMCLI_AUTONOMOUS
@@ -559,7 +559,7 @@ export function Prompt(props: PromptProps) {
         const requested = argumentsText.toLowerCase()
         const enabled = requested === "on" ? true : requested === "off" ? false : !current
         try {
-          await sdk.client.config.update({ body: { experimental: { smart_model_routing: enabled } } } as any)
+          await sdk.client.config.update({ experimental: { smart_model_routing: enabled } }, { throwOnError: true })
           sync.set("config", "experimental" as any, {
             ...((sync.data.config as any).experimental || {}),
             smart_model_routing: enabled,
@@ -573,6 +573,26 @@ export function Prompt(props: PromptProps) {
           toast.show({
             title: "Smart model routing",
             message: error instanceof Error ? error.message : "Could not update model routing",
+            variant: "error",
+          })
+        }
+        return
+      }
+      case "adaptive-routing.set": {
+        const mode = (["off", "ask", "auto"] as const).find((item) => item === argumentsText.toLowerCase())
+        if (!mode) {
+          toast.show({ title: "Adaptive routing", message: "Use off, ask, or auto", variant: "warning" })
+          return
+        }
+        try {
+          const current = (sync.data.config as any).adaptive_routing ?? {}
+          await sdk.client.config.update({ adaptive_routing: { ...current, mode } }, { throwOnError: true })
+          sync.set("config", "adaptive_routing" as any, { ...current, mode })
+          toast.show({ title: "Adaptive routing", message: `Mode: ${mode}`, variant: "info" })
+        } catch (error) {
+          toast.show({
+            title: "Adaptive routing",
+            message: error instanceof Error ? error.message : "Could not update adaptive routing",
             variant: "error",
           })
         }
@@ -602,7 +622,7 @@ export function Prompt(props: PromptProps) {
           })
           return
         }
-        local.model.variant.set(level === "off" ? undefined : level)
+        local.model.variant.set(level === "off" ? undefined : level, { manual: true })
         toast.show({
           title: "Thinking level",
           message: level === "off" ? "Reset to the model default" : `Set to ${level.toUpperCase()}`,
@@ -685,17 +705,68 @@ export function Prompt(props: PromptProps) {
     // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
+    const deliveryDraft: PromptInfo = {
+      input: store.prompt.input,
+      mode: currentMode,
+      parts: store.prompt.parts.map((part) => ({ ...part })),
+    }
+
+    const trackDelivery = (request: Promise<{ data?: unknown; error?: unknown }>, title: string) => {
+      void request
+        .then((result) => {
+          const error = result.error ?? (result.data as { error?: unknown } | undefined)?.error
+          if (!error) {
+            sync.optimistic.settle(messageID, "sent")
+            return
+          }
+          const message = typeof error === "string" ? error : "The server rejected the request"
+          sync.optimistic.settle(messageID, "failed", message)
+          toast.show({ title, message, variant: "error" })
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          sync.optimistic.settle(messageID, "unknown", message)
+          toast.show({
+            title: `${title} (delivery unknown)`,
+            message: `${message}. Check the session before retrying.`,
+            variant: "error",
+          })
+        })
+    }
 
     if (store.mode === "shell") {
-      sdk.client.session.shell({
+      sync.optimistic.push(
         sessionID,
-        agent: local.agent.current().name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-        command: inputText,
-      })
+        {
+          id: messageID,
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+        } as any,
+        [
+          {
+            id: Identifier.ascending("part"),
+            messageID,
+            sessionID,
+            type: "text",
+            text: `!${inputText}`,
+          },
+        ] as any,
+        deliveryDraft,
+      )
+      trackDelivery(
+        sdk.client.session.shell({
+          sessionID,
+          messageID,
+          agent: local.agent.current().name,
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+          command: inputText,
+        }),
+        "Shell command failed",
+      )
       setStore("mode", "normal")
     } else if (
       inputText.startsWith("/") &&
@@ -722,18 +793,24 @@ export function Prompt(props: PromptProps) {
           time: { created: Date.now() },
         } as any,
         partsToSync as any,
+        deliveryDraft,
       )
 
-      sdk.client.session.command({
-        sessionID,
-        command: command.slice(1),
-        arguments: args.join(" "),
-        agent: local.agent.current().name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        messageID,
-        variant,
-        parts: partsToSync,
-      })
+      trackDelivery(
+        sdk.client.session.command({
+          sessionID,
+          command: command.slice(1),
+          arguments: args.join(" "),
+          agent: local.agent.current().name,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+          messageID,
+          variant,
+          modelPinned: local.model.pinned(),
+          thinkingPinned: local.model.variant.pinned(),
+          parts: partsToSync,
+        }),
+        "Command failed",
+      )
     } else {
       const partsToSync = [
         {
@@ -756,17 +833,23 @@ export function Prompt(props: PromptProps) {
           time: { created: Date.now() },
         } as any,
         partsToSync as any,
+        deliveryDraft,
       )
 
-      sdk.client.session.prompt({
-        sessionID,
-        ...selectedModel,
-        messageID,
-        agent: local.agent.current().name,
-        model: selectedModel,
-        variant,
-        parts: partsToSync,
-      })
+      trackDelivery(
+        sdk.client.session.prompt({
+          sessionID,
+          ...selectedModel,
+          messageID,
+          agent: local.agent.current().name,
+          model: selectedModel,
+          variant,
+          modelPinned: local.model.pinned(),
+          thinkingPinned: local.model.variant.pinned(),
+          parts: partsToSync,
+        }),
+        "Prompt failed",
+      )
     }
     history.append({
       ...store.prompt,

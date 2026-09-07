@@ -132,6 +132,8 @@ export namespace SubAgent {
     outputSchema?: SubAgentRuntime.OutputSchema
     /** Strict rejects unknown object keys; permissive accepts them unless the schema forbids them. */
     validationMode?: SubAgentRuntime.ValidationMode
+    /** Cancels the child prompt when its parent operation is cancelled. */
+    signal?: AbortSignal
   }
 
   export type SpawnResult = {
@@ -285,6 +287,8 @@ export namespace SubAgent {
     // and must not wait until spawn() returns to learn the session ID.
     await config.onSession?.({ sessionId: session.id, isNewSession })
     SessionExecutionProfile.inherit(config.parentSessionID, session.id)
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    await ExecutionRuntime.inheritSession(config.parentSessionID, session.id)
 
     const startedAt = Date.now()
     SubAgentLifecycle.update({
@@ -339,6 +343,9 @@ export namespace SubAgent {
     let result: Awaited<ReturnType<typeof SessionPrompt.prompt>>
     try {
       const executePrompt = async () => {
+        config.signal?.throwIfAborted()
+        const abortChild = () => SessionPrompt.cancel(session.id)
+        config.signal?.addEventListener("abort", abortChild, { once: true })
         const unsubscribe = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
           const part = event.properties.part
           if (part.sessionID !== session.id) return
@@ -386,6 +393,7 @@ export namespace SubAgent {
           })
         } finally {
           unsubscribe()
+          config.signal?.removeEventListener("abort", abortChild)
         }
       }
       result = config.workingDirectory

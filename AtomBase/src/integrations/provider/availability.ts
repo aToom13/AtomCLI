@@ -37,11 +37,6 @@ export namespace ModelAvailability {
     return now + parsed * 1000
   }
 
-  function nextUTCWindow(now: number) {
-    const date = new Date(now)
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1)
-  }
-
   export function fromResponse(response: Response, now = Date.now()): Info | undefined {
     if (response.status !== 429) return
 
@@ -51,8 +46,7 @@ export namespace ModelAvailability {
     const reset = rateLimitReset(response.headers.get("x-ratelimit-reset"), now)
     if (reset) return { status: "rate_limited", retryAt: reset, source: "rate-limit-reset" }
 
-    // Zen's free limiter uses a UTC-day bucket when it omits reset headers.
-    return { status: "rate_limited", retryAt: nextUTCWindow(now), source: "daily-window" }
+    return { status: "rate_limited", retryAt: now + 60_000, source: "provider-response" }
   }
 
   const UNAVAILABLE_RETRY_MS = 5 * 60 * 1000

@@ -34,9 +34,7 @@ export namespace Pty {
       cwd: z.string(),
       status: z.enum(["running", "exited"]),
       pid: z.number(),
-      execution: z
-        .object({ enforcement: z.enum(["full", "partial", "off"]), provider: z.string() })
-        .optional(),
+      execution: z.object({ enforcement: z.enum(["full", "partial", "off"]), provider: z.string() }).optional(),
     })
     .meta({ ref: "Pty" })
 
@@ -78,6 +76,15 @@ export namespace Pty {
     subscribers: Set<WSContext>
   }
 
+  function closeSubscribers(session: Pick<ActiveSession, "subscribers">) {
+    for (const ws of session.subscribers) {
+      try {
+        ws.close()
+      } catch {}
+    }
+    session.subscribers.clear()
+  }
+
   const state = Instance.state(
     () => new Map<string, ActiveSession>(),
     async (sessions) => {
@@ -85,9 +92,7 @@ export namespace Pty {
         try {
           session.process.kill()
         } catch {}
-        for (const ws of session.subscribers) {
-          ws.close()
-        }
+        closeSubscribers(session)
       }
       sessions.clear()
     },
@@ -178,6 +183,7 @@ export namespace Pty {
     ptyProcess.onExit(({ exitCode }) => {
       log.info("session exited", { id, exitCode })
       session.info.status = "exited"
+      closeSubscribers(session)
       Bus.publish(Event.Exited, { id, exitCode })
       state().delete(id)
     })
@@ -205,9 +211,7 @@ export namespace Pty {
     try {
       session.process.kill()
     } catch {}
-    for (const ws of session.subscribers) {
-      ws.close()
-    }
+    closeSubscribers(session)
     state().delete(id)
     Bus.publish(Event.Deleted, { id })
   }
@@ -258,4 +262,6 @@ export namespace Pty {
       },
     }
   }
+
+  export const _internals = { closeSubscribers }
 }

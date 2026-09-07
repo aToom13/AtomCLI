@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, test, expect } from "bun:test"
 import {
   _internals as routerInternals,
@@ -44,6 +45,21 @@ const baseModel: Provider.Model = {
   release_date: "2026-01-01",
   variants: {},
 }
+
+test("category overrides preserve alternative verification candidates and qualified exclusions", () => {
+  const models: Array<[string, Provider.Model]> = [
+    ["preferred", { ...baseModel, id: "preferred" }],
+    ["backup", { ...baseModel, id: "backup" }],
+  ]
+  const result = selectModelInternal("general", models, "quality", 0, undefined, undefined, {
+    category_overrides: { general: "atomcli/preferred" },
+  })
+  expect(result.selected.id).toBe("preferred")
+  expect(result.ranked.map((entry) => entry.id)).toEqual(["preferred", "backup"])
+  expect(selectCandidates(models, "general", { excluded_models: ["atomcli/preferred"] }).map(([id]) => id)).toEqual([
+    "backup",
+  ])
+})
 
 describe("model-router - inferCategoryMulti", () => {
   test("categorizes coding prompt with margin check", () => {
@@ -108,7 +124,7 @@ describe("model-router - ModelState and recordCallResult", () => {
   })
 })
 
-describe("model-router - selectCandidates (Degradation Ladder)", () => {
+describe("model-router - mandatory candidate filters", () => {
   const modelWithToolcall: Provider.Model = { ...baseModel }
   const modelWithReasoning: Provider.Model = {
     ...baseModel,
@@ -133,11 +149,14 @@ describe("model-router - selectCandidates (Degradation Ladder)", () => {
     expect(candidates[0][0]).toBe("test-model-1")
   })
 
-  test("relaxes criteria when no candidate matches (Tier 3 fallback)", () => {
-    const candidates = selectCandidates([["reasoning-model", modelWithReasoning]], "coding")
-    // No model satisfies coding, so fallback returns all models
-    expect(candidates).toHaveLength(1)
-    expect(candidates[0][0]).toBe("reasoning-model")
+  test("does not relax required capabilities when no candidate matches", () => {
+    expect(() => selectCandidates([["reasoning-model", modelWithReasoning]], "coding")).toThrow("NoFreeModelsError")
+  })
+
+  test("does not restore models when every candidate is explicitly excluded", () => {
+    expect(() =>
+      selectCandidates([["test-model-1", modelWithToolcall]], "coding", { excluded_models: ["test-model-1"] }),
+    ).toThrow("NoFreeModelsError")
   })
 
   test("never assigns models with missing limits", () => {

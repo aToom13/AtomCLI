@@ -45,6 +45,13 @@ GlobalBus.on("event", (event) => {
 let server: Bun.Server<BunWebSocketData> | undefined
 let companionServer: Bun.Server<BunWebSocketData> | undefined
 
+async function stopServers() {
+  await server?.stop(true)
+  await companionServer?.stop(true)
+  server = undefined
+  companionServer = undefined
+}
+
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
     const request = new Request(input.url, {
@@ -74,6 +81,46 @@ export const rpc = {
       port: companionServer.port,
       pairingToken: input.pairing ? CompanionAuth.issueToken() : undefined,
     }
+  },
+  async services(
+    input: Server.ListenOptions & {
+      control: boolean
+      companion: boolean
+      companionPort: number
+      directory: string
+      pairing: boolean
+    },
+  ) {
+    await stopServers()
+    const result: {
+      server?: { url: string; port: number }
+      companion?: { port: number; pairingToken?: string }
+      errors: { server?: string; companion?: string }
+    } = { errors: {} }
+
+    if (input.control) {
+      try {
+        server = Server.listen(input)
+        result.server = { url: server.url.toString(), port: server.port! }
+      } catch (error) {
+        result.errors.server = error instanceof Error ? error.message : String(error)
+      }
+    }
+
+    if (input.companion) {
+      try {
+        CompanionAuth.loadDevices()
+        MobileBridge.initialize(GlobalBus)
+        companionServer = Server.listenCompanion({ port: input.companionPort, directory: input.directory })
+        result.companion = {
+          port: companionServer.port!,
+          pairingToken: input.pairing ? CompanionAuth.issueToken() : undefined,
+        }
+      } catch (error) {
+        result.errors.companion = error instanceof Error ? error.message : String(error)
+      }
+    }
+    return result
   },
   async subscribe(input: { directory: string }) {
     return Instance.provide({
@@ -105,8 +152,7 @@ export const rpc = {
   async shutdown() {
     Log.Default.info("worker shutting down")
     await Instance.disposeAll()
-    if (server) server.stop(true)
-    if (companionServer) companionServer.stop(true)
+    await stopServers()
   },
 }
 

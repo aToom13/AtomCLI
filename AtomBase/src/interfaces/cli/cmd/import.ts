@@ -171,13 +171,14 @@ export const ImportCommand = cmd({
         projectID: Instance.project.id,
         directory: Instance.directory,
       }
-      await Storage.write(["session", Instance.project.id, info.id], info)
+      const guard = await Storage.activateSession(info.id)
+      await Storage.writeGuarded(["session", Instance.project.id, info.id], info.id, info, guard.generation)
 
       for (const msg of exportData.messages) {
-        await Storage.write(["message", exportData.info.id, msg.info.id], msg.info)
+        await Storage.writeGuarded(["message", info.id, msg.info.id], info.id, msg.info, guard.generation)
 
         for (const part of msg.parts) {
-          await Storage.write(["part", msg.info.id, part.id], part)
+          await Storage.writeGuarded(["part", msg.info.id, part.id], info.id, part, guard.generation)
         }
       }
 

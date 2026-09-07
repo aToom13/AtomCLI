@@ -25,6 +25,12 @@ export const EvalCommand = cmd({
         describe: "run benchmark cases in the current workspace before reporting",
       })
       .option("model", { type: "string", describe: "provider/model used for benchmark execution" })
+      .option("expert-model", { type: "string", describe: "provider/model used by fixed-expert benchmark runs" })
+      .option("routing", {
+        choices: ["fixed-base", "fixed-expert", "adaptive"] as const,
+        default: "fixed-base" as const,
+        describe: "routing policy under measurement",
+      })
       .option("agent", { type: "string", default: "build", describe: "agent used for benchmark execution" }),
   async handler(args) {
     await Instance.provide({
@@ -37,7 +43,9 @@ export const EvalCommand = cmd({
           return
         }
         if (args.action === "benchmark") {
-          const suitePath = args.file ? path.resolve(args.file) : path.join(import.meta.dir, "../../../../evals/atomcli.json")
+          const suitePath = args.file
+            ? path.resolve(args.file)
+            : path.join(import.meta.dir, "../../../../evals/atomcli.json")
           const suite = AgentBenchmark.Suite.parse(await Bun.file(suitePath).json())
           const suiteName = AgentBenchmark.bucket(suite)
           if (!args.execute) {
@@ -69,12 +77,20 @@ export const EvalCommand = cmd({
           // real terminal, offer the provider/model/agent menus; pipes fall back
           // to defaults so CI and scripted runs never hang on a prompt.
           const picked = !args.model && EvalPicker.enabled() ? await EvalPicker.select() : undefined
-          const model = picked
+          const selectedModel = picked
             ? picked.model
             : args.model
               ? Provider.parseModel(args.model)
               : await Provider.defaultModel()
+          const model =
+            args.routing === "fixed-expert"
+              ? args.expertModel
+                ? Provider.parseModel(args.expertModel)
+                : selectedModel
+              : selectedModel
           const agentName = picked?.agent ?? args.agent
+          if (args.routing === "fixed-expert" && !args.expertModel)
+            throw new Error("fixed-expert benchmark runs require --expert-model provider/model")
           const runID = crypto.randomUUID()
           const progress = EvalProgress.create({
             stream: process.stderr,
@@ -123,7 +139,13 @@ export const EvalCommand = cmd({
                       `setup failed for case ${testCase.id}: ${setup.output.slice(-400) || `exit code ${setup.exitCode}`}`,
                     )
                 }
-                AgentEval.registerBenchmark(session.id, { suite: suiteName, caseID: testCase.id, runID })
+                AgentEval.registerBenchmark(session.id, {
+                  suite: suiteName,
+                  caseID: testCase.id,
+                  runID,
+                  routingMode: args.routing,
+                  expertModel: args.expertModel,
+                })
                 let primaryError: unknown
                 let timedOutAt = 0
                 let poll: ReturnType<typeof setInterval> | undefined
@@ -144,6 +166,7 @@ export const EvalCommand = cmd({
                         sessionID: session.id,
                         agent: agentName,
                         model,
+                        modelPinned: args.routing !== "adaptive",
                         parts: [
                           {
                             type: "text",
@@ -216,9 +239,12 @@ export const EvalCommand = cmd({
                           env: verifyEnv,
                         })
                         verifierPassed = verdict.exitCode === 0
-                        if (!verifierPassed) verifierDetail = verdict.output.slice(-400) || `exit code ${verdict.exitCode}`
+                        if (!verifierPassed)
+                          verifierDetail = verdict.output.slice(-400) || `exit code ${verdict.exitCode}`
                       } finally {
-                        await fs.rm(path.join(sandboxRoot, testCase.id), { recursive: true, force: true }).catch(() => {})
+                        await fs
+                          .rm(path.join(sandboxRoot, testCase.id), { recursive: true, force: true })
+                          .catch(() => {})
                       }
                     }
                     return { sessionID: session.id, verifierPassed, verifierDetail }
@@ -254,7 +280,14 @@ export const EvalCommand = cmd({
           }
           console.log(
             JSON.stringify(
-              { mode: "execute", runID, bucket: suiteName, model: `${model.providerID}/${model.modelID}`, ...report },
+              {
+                mode: "execute",
+                routing: args.routing,
+                runID,
+                bucket: suiteName,
+                model: `${model.providerID}/${model.modelID}`,
+                ...report,
+              },
               null,
               2,
             ),

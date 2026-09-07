@@ -58,6 +58,16 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.promptCacheKey).toBeUndefined()
   })
 
+  test("does not send internal route metadata as provider options", () => {
+    const result = ProviderTransform.applyVariant(
+      mockModel,
+      undefined,
+      {},
+      { _routePolicy: { mode: "free" }, _catalogCostKnown: true, userOption: "kept" },
+    )
+    expect(result).toEqual({ userOption: "kept" })
+  })
+
   test("should set promptCacheKey for openai provider regardless of setCacheKey", () => {
     const openaiModel = {
       ...mockModel,
@@ -188,6 +198,19 @@ describe("ProviderTransform.schema - gemini array items", () => {
 
     expect(result.properties.nodes.items).toBeDefined()
     expect(result.properties.edges.items.type).toBe("string")
+  })
+})
+
+test("ProviderTransform.schema gives object unions the root type required by tool providers", () => {
+  const schema = {
+    anyOf: [
+      { type: "object", properties: { action: { const: "save" } } },
+      { type: "object", properties: { action: { const: "search" } } },
+    ],
+  } as any
+  expect(ProviderTransform.schema({ providerID: "kilocode", api: { id: "cohere/model" } } as any, schema)).toEqual({
+    ...schema,
+    type: "object",
   })
 })
 
@@ -1302,11 +1325,11 @@ describe("ProviderTransform.variants", () => {
       })
     })
 
-    test("ignores stale or unsupported variant names", () => {
+    test("rejects stale or unsupported variant names", () => {
       const model = createMockModel({ variants: { high: { reasoningEffort: "high" } } })
-      expect(ProviderTransform.applyVariant(model, "xhigh", { reasoningEffort: "low" })).toEqual({
-        reasoningEffort: "low",
-      })
+      expect(() => ProviderTransform.applyVariant(model, "xhigh", { reasoningEffort: "low" })).toThrow(
+        'Unsupported variant "xhigh"',
+      )
     })
   })
 

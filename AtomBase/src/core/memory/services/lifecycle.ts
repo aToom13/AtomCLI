@@ -43,11 +43,12 @@ export namespace MemoryLifecycle {
       AgentEval.executionPolicy(sessionID).allowMemoryLearning &&
       SessionMemoryIntegration.hasExplicitMemorySignal(userText)
     ) {
-      // Fire-and-forget: the assistant reply is the verified half of what the
-      // user just asked us to remember.
-      void SessionMemoryIntegration.learnFromResponse(assistantText, userText, model).catch((error) =>
-        log.error("Failed to learn from assistant response", { sessionID, error }),
-      )
+      // Keep auxiliary learning behind the main response so a tight shared
+      // call budget cannot let background work starve the user's request.
+      void (async () => {
+        await SessionMemoryIntegration.learnFromMessage(userText, model, sessionID)
+        await SessionMemoryIntegration.learnFromResponse(assistantText, userText, model, sessionID)
+      })().catch((error) => log.error("Failed to learn from completed turn", { sessionID, error }))
     }
 
     // Registered in the dependency-free RetrospectiveQueue so lightweight

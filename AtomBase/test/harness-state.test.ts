@@ -226,7 +226,7 @@ describe("HarnessState - ReviewVerdictRegistry", () => {
     })
   })
 
-  test("FAIL re-review after an in-set edit keeps attempts (no spurious reset)", async () => {
+  test("FAIL re-review after an in-set edit resets consecutive attempts for the new revision", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
       directory: tmp.path,
@@ -236,11 +236,11 @@ describe("HarnessState - ReviewVerdictRegistry", () => {
         HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason: "issue" })
         expect(HarnessState.getReviewVerdict(sessionID)?.attempts).toBe(1)
 
-        // Editing a file ALREADY in the reviewed set keeps the FAIL and attempts
+        // Editing the same path is still a new content revision and a legitimate fix attempt.
         HarnessState.addEditedFile(sessionID, "src/a.ts")
         const verdict = HarnessState.getReviewVerdict(sessionID)
         expect(verdict?.status).toBe("fail")
-        expect(verdict?.attempts).toBe(1)
+        expect(verdict?.attempts).toBe(0)
         expect(HarnessState.beginReview(sessionID)).toBe(true)
       },
     })
@@ -459,6 +459,25 @@ describe("HarnessState - beginReview double-spawn guard", () => {
       },
     })
   })
+
+  test("same-file edit while review is pending makes the later PASS stale", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-verdict-same-file-revision"
+        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        expect(HarnessState.beginReview(sessionID)).toBe(true)
+        const claimedRevision = HarnessState.getReviewVerdict(sessionID)?.revision
+
+        HarnessState.addEditedFile(sessionID, "src/a.ts")
+        HarnessState.recordReviewVerdict(sessionID, { status: "pass" })
+
+        expect(HarnessState.getRevision(sessionID)).toBeGreaterThan(claimedRevision ?? 0)
+        expect(HarnessState.needsReview(sessionID)).toBe(true)
+      },
+    })
+  })
 })
 describe("HarnessState - mergeEditedFiles", () => {
   test("merges child edited files into parent tracker", async () => {
@@ -515,6 +534,27 @@ describe("HarnessState - mergeEditedFiles", () => {
         expect(HarnessState.getReviewVerdict(parent)?.attempts).toBe(0)
         // The invalidated verdict must stay claimable — never "pending"
         expect(HarnessState.beginReview(parent)).toBe(true)
+      },
+    })
+  })
+
+  test("merges a later child revision even when it edits an existing parent path", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const parent = "session-merge-same-path-parent"
+        const child = "session-merge-same-path-child"
+        HarnessState.addEditedFile(parent, "src/shared.ts")
+        HarnessState.addEditedFile(child, "src/shared.ts")
+        expect(HarnessState.mergeEditedFiles(parent, child)).toBe(1)
+        HarnessState.recordReviewVerdict(parent, { status: "pass" })
+        expect(HarnessState.needsReview(parent)).toBe(false)
+
+        HarnessState.addEditedFile(child, "src/shared.ts")
+        expect(HarnessState.mergeEditedFiles(parent, child)).toBe(1)
+        expect(HarnessState.needsReview(parent)).toBe(true)
+        expect(HarnessState.mergeEditedFiles(parent, child)).toBe(0)
       },
     })
   })
@@ -647,6 +687,28 @@ describe("HarnessState - bounded registries evict by oldest timestamp", () => {
 
         HarnessState.setReviewerSession(sessionID, "r2")
         expect(HarnessState.getReviewerSession(sessionID)).toBe("r2")
+      },
+    })
+  })
+})
+
+describe("HarnessState - restored edit evidence", () => {
+  test("does not invalidate an unchanged PASS when the same evidence is restored", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-restored-review-evidence"
+        HarnessState.addEditedFile(sessionID, "src/security.ts")
+        HarnessState.beginReview(sessionID)
+        HarnessState.recordReviewVerdict(sessionID, { status: "pass" })
+        expect(HarnessState.needsReview(sessionID)).toBe(false)
+
+        HarnessState.restoreEditedFile(sessionID, "src/security.ts")
+        expect(HarnessState.needsReview(sessionID)).toBe(false)
+
+        HarnessState.addEditedFile(sessionID, "src/security.ts")
+        expect(HarnessState.needsReview(sessionID)).toBe(true)
       },
     })
   })

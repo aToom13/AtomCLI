@@ -18,6 +18,7 @@ export function DialogStatus() {
     const config = sync.data.config as any
     return config?.experimental?.smart_model_routing === true
   })
+  const adaptiveMode = createMemo(() => (sync.data.config as any)?.adaptive_routing?.mode ?? "ask")
 
   const enabledFormatters = createMemo(() => (sync.data.formatter ?? []).filter((f) => f.enabled))
 
@@ -86,6 +87,13 @@ export function DialogStatus() {
           ? "Auto-selects optimal model per task category (coding→reasoning, docs→long-context)."
           : "All tasks use the same selected model."}
       </text>
+      <box flexDirection="row" gap={1}>
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>
+          Adaptive:
+        </text>
+        <text fg={adaptiveMode() === "off" ? theme.textMuted : theme.primary}>{adaptiveMode().toUpperCase()}</text>
+        <text fg={theme.textMuted}>(/adaptive-routing off|ask|auto)</text>
+      </box>
 
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>
         <box>

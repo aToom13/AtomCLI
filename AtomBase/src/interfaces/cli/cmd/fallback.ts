@@ -61,6 +61,17 @@ export const FallbackCommand = cmd({
         type: "boolean",
         describe: "Test free fallback models to see which ones are responding and available",
       })
+      .option("capability", {
+        type: "string",
+        choices: ["text", "tool"] as const,
+        default: "text" as const,
+        describe: "Capability to verify with --probe",
+      })
+      .option("force", {
+        type: "boolean",
+        default: false,
+        describe: "Ignore fresh evidence and cooldowns when probing",
+      })
       .option("reset", {
         type: "boolean",
         describe: "Reset to default fallback models",
@@ -72,17 +83,25 @@ export const FallbackCommand = cmd({
 
     // Probe free fallback models
     if (args.probe) {
-      UI.println("Probing free fallback models...")
+      UI.println(`Probing free fallback models for ${args.capability} capability (real requests may consume quota)...`)
       const candidates = Array.from(new Set([...dynamicDefaults, ...ModelFallback.DEFAULT_FALLBACK_MODELS]))
-      const results = await ModelFallback.probeModels(candidates)
+      const results = await ModelFallback.probeModels(candidates, {
+        capability: args.capability,
+        force: args.force,
+      })
 
       UI.println("")
       UI.println("Model Probe Results:")
       for (const res of results) {
         if (res.available) {
-          UI.println(`  ✓ ${res.model.padEnd(32)} [Available] (${res.latencyMs}ms)`)
+          const validUntil = res.verifiedUntil ? new Date(res.verifiedUntil).toISOString() : "unknown"
+          UI.println(
+            `  ✓ ${res.model.padEnd(32)} [Verified:${res.capability ?? "text"}] (${res.latencyMs}ms, until ${validUntil})`,
+          )
         } else {
-          UI.println(`  ✗ ${res.model.padEnd(32)} [Failed] ${res.error ? `(${res.error})` : ""}`)
+          UI.println(
+            `  ✗ ${res.model.padEnd(32)} [${(res.verification ?? "failed").toUpperCase()}] ${res.error ? `(${res.error})` : ""}`,
+          )
         }
       }
 

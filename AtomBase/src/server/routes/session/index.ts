@@ -2,6 +2,7 @@ import { Hono } from "hono"
 import { SessionCoreRoute } from "./core"
 import { SessionMessageRoute } from "./message"
 import { SessionToolRoute } from "./tool"
+import { SessionExecutionRoute } from "./execution"
 
 // Session routes are split into modular sub-files:
 // - core.ts: Basic CRUD and lifecycle operations
@@ -9,6 +10,7 @@ import { SessionToolRoute } from "./tool"
 // - tool.ts: Tools (revert, diff, command, etc.)
 
 export const SessionRoute = new Hono()
-    .route("/", SessionCoreRoute)
-    .route("/", SessionMessageRoute)
-    .route("/", SessionToolRoute)
+  .route("/", SessionCoreRoute)
+  .route("/", SessionMessageRoute)
+  .route("/", SessionToolRoute)
+  .route("/", SessionExecutionRoute)

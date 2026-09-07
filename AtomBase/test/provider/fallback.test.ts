@@ -2,6 +2,32 @@ import { describe, it, expect } from "bun:test"
 import { ModelFallback } from "@/integrations/provider/fallback"
 
 describe("ModelFallback", () => {
+  describe("probe validation", () => {
+    it("rejects empty and whitespace-only text", () => {
+      expect(() => ModelFallback._internals.validateProbeText({ text: "" })).toThrow("empty output")
+      expect(() => ModelFallback._internals.validateProbeText({ text: "  \n" })).toThrow("empty output")
+    })
+
+    it("accepts meaningful completed text", () => {
+      expect(() => ModelFallback._internals.validateProbeText({ text: "OK" })).not.toThrow()
+    })
+
+    it("classifies an output-limited response without visible text separately from an empty completion", () => {
+      expect(() => ModelFallback._internals.validateProbeText({ text: "", finishReason: "length" })).toThrow(
+        "output limit",
+      )
+    })
+
+    it("accepts only the expected side-effect-free tool call", () => {
+      expect(() =>
+        ModelFallback._internals.validateProbeTool({
+          toolCalls: [{ toolName: "verification", input: { value: "ok" } }],
+        }),
+      ).not.toThrow()
+      expect(() => ModelFallback._internals.validateProbeTool({ toolCalls: [] })).toThrow("no valid tool call")
+    })
+  })
+
   describe("shouldFallback", () => {
     it("should return true for rate limit errors", () => {
       const error = new Error("Rate limit exceeded")

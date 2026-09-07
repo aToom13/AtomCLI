@@ -13,6 +13,7 @@
       "events.cursor",
       "actions.signed",
       "permissions.resolve",
+      "routes.decide",
       "questions.reply",
       "sessions.manage",
       "missions.control",
@@ -93,6 +94,7 @@
               "events.cursor",
               "actions.signed",
               "permissions.resolve",
+              "routes.decide",
               "questions.reply",
               "sessions.manage",
               "missions.control",
@@ -240,6 +242,7 @@
               "events.cursor",
               "actions.signed",
               "permissions.resolve",
+              "routes.decide",
               "questions.reply",
               "sessions.manage",
               "missions.control",
@@ -534,6 +537,103 @@
             "type",
             "id",
             "resolution",
+            "signature",
+            "device_name",
+            "connection_id",
+            "counter",
+            "timestamp"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "route_decision"
+            },
+            "session_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "execution_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proposal_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expected_proposal_version": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "expected_route_revision": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "decision": {
+              "type": "string",
+              "enum": [
+                "accept",
+                "reject"
+              ]
+            },
+            "accept_scope": {
+              "type": "string",
+              "enum": [
+                "episode",
+                "execution"
+              ]
+            },
+            "directory": {
+              "type": "string"
+            },
+            "signature": {
+              "type": "string",
+              "minLength": 1
+            },
+            "device_name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "device_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "connection_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "counter": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "timestamp": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "client_request_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "required": [
+            "type",
+            "session_id",
+            "execution_id",
+            "proposal_id",
+            "expected_proposal_version",
+            "expected_route_revision",
+            "decision",
             "signature",
             "device_name",
             "connection_id",

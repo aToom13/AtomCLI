@@ -1,3 +1,4 @@
+import "../../preload"
 import { describe, expect, test } from "bun:test"
 import { SlashCommand } from "@tui/component/prompt/slash-command"
 
@@ -5,6 +6,16 @@ const active = { session: true, sharing: true }
 const home = { session: false, sharing: true }
 
 describe("TUI slash commands", () => {
+  test("exposes adaptive routing modes under model while retaining the legacy command", () => {
+    expect(SlashCommand.suggestions("model adaptive-routing ", active).map((item) => item.value)).toEqual([
+      "model adaptive-routing off",
+      "model adaptive-routing ask",
+      "model adaptive-routing auto",
+    ])
+    expect(SlashCommand.parse("/model adaptive-routing auto", active)).toMatchObject({
+      command: { action: "adaptive-routing.set" },
+    })
+  })
   test("shows only six intent-based command families", () => {
     const commands = SlashCommand.list(active)
     expect(commands.map((command) => command.name)).toEqual([

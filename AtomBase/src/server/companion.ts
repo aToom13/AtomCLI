@@ -35,6 +35,7 @@ import { MemoryLifecycle } from "@/core/memory/services/lifecycle"
 import { CompanionTransfer } from "@/services/companion/transfer"
 import { CompanionProtocol } from "./companion-protocol"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
+import { ExecutionRuntime } from "@/core/execution/runtime"
 
 const log = Log.create({ service: "companion-ws" })
 const MAX_ACTIVE_DEVICES = 100
@@ -47,6 +48,7 @@ const MOBILE_SYSTEM_CONTEXT =
   "This user message was sent from the AtomCLI Android Companion. Use a fast, risk-proportionate execution profile: for low-risk prototypes and routine changes, prefer direct work or at most one implementation sub-agent, run one focused verification, do not spawn reviewer/checker agents manually, and return the useful result immediately. Independent review remains required for security-, authorization-, migration-, release-, or data-integrity-sensitive work. Treat this as a fresh user turn; do not resume unfinished plans or verification from an earlier request unless this message explicitly asks you to."
 const AUDITED_ACTIONS = new Set([
   "permission_resolve",
+  "route_decision",
   "question_reply",
   "question_reject",
   "abort_session",
@@ -285,6 +287,8 @@ async function sendAgentList(ws: any) {
 async function sendBridgeSnapshot(clientId: string) {
   const permissions = []
   const questions = []
+  const routeProposals = []
+  const activeRoutes = []
   for (const directory of await knownDirectories(Instance.directory)) {
     await Instance.provide({
       directory,
@@ -309,11 +313,34 @@ async function sendBridgeSnapshot(clientId: string) {
             tool: question.tool,
           })),
         )
+        for await (const session of Session.list()) {
+          const snapshot = await Promise.resolve(ExecutionRuntime.snapshot(session.id)).catch(() => undefined)
+          if (!snapshot) continue
+          routeProposals.push(
+            ...snapshot.pendingProposals.map((proposal) => ({ ...proposal, sessionID: session.id, directory })),
+          )
+          activeRoutes.push(
+            ...snapshot.executions.flatMap((execution) =>
+              execution.id === snapshot.activeExecutionID && execution.route
+                ? [
+                    {
+                      sessionID: execution.rootSessionID,
+                      executionID: execution.id,
+                      routeRevision: execution.routeRevision,
+                      directory,
+                      ...execution.route,
+                    },
+                  ]
+                : [],
+            ),
+          )
+        }
       },
     })
   }
   MobileBridge.replacePendingPermissions(permissions)
   MobileBridge.replacePendingQuestions(questions)
+  MobileBridge.replaceRouteState(routeProposals, activeRoutes)
   MobileBridge.sendSnapshot(clientId)
 }
 
@@ -597,6 +624,39 @@ export const CompanionRoute = new Hono()
                     actionResult(ws, msg.type, msg, {
                       status: "error",
                       id: msg.id,
+                      error: err instanceof Error ? err.message : String(err),
+                    })
+                  }
+                  break
+                }
+
+                case "route_decision": {
+                  try {
+                    const result = await inDirectory(msg.directory, directory, async () => {
+                      const session = await Session.get(msg.session_id)
+                      return ExecutionRuntime.decideRouteProposal({
+                        requestID: msg.client_request_id ?? crypto.randomUUID(),
+                        proposalID: msg.proposal_id,
+                        executionID: msg.execution_id,
+                        sessionID: session.id,
+                        projectID: Instance.project.id,
+                        expectedProposalVersion: msg.expected_proposal_version,
+                        expectedRouteRevision: msg.expected_route_revision,
+                        decision: msg.decision,
+                        actorID: `companion:${connection.deviceId}`,
+                        acceptScope: msg.accept_scope,
+                      })
+                    })
+                    actionResult(ws, msg.type, msg, {
+                      status: result.decided ? "ok" : "conflict",
+                      id: msg.proposal_id,
+                      proposal: result.decided ? result.proposal : undefined,
+                      error: result.decided ? undefined : result.reason,
+                    })
+                  } catch (err) {
+                    actionResult(ws, msg.type, msg, {
+                      status: "error",
+                      id: msg.proposal_id,
                       error: err instanceof Error ? err.message : String(err),
                     })
                   }

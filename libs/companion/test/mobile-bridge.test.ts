@@ -55,6 +55,37 @@ describe("MobileBridge", () => {
     expect(messages.at(-1)?.payload.pending_questions).toEqual([])
 
     bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "execution.route.proposal",
+        properties: {
+          sessionID: "session_test",
+          proposal: {
+            id: "proposal_test",
+            executionID: "execution_test",
+            state: "pending",
+            expiresAt: Date.now() + 1000,
+          },
+        },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "route_proposal",
+      payload: { directory: "/home/user/project", proposal: { sessionID: "session_test" } },
+    })
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "execution.route.changed",
+        properties: { sessionID: "session_test", executionID: "execution_test", routeRevision: 2, stage: "expert" },
+      },
+    })
+    MobileBridge.sendSnapshot("phone")
+    expect(messages.at(-1)?.payload.active_routes).toEqual([
+      expect.objectContaining({ executionID: "execution_test", directory: "/home/user/project", stage: "expert" }),
+    ])
+
+    bus.emit("event", {
       payload: {
         type: "companion.artifact.shared",
         properties: {

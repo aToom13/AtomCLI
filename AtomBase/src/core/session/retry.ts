@@ -13,6 +13,7 @@ export namespace SessionRetry {
   }
 
   export async function sleep(ms: number, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
     return new Promise((resolve, reject) => {
       const abortHandler = () => {
         clearTimeout(timeout)
@@ -129,7 +130,7 @@ export namespace SessionRetry {
         ) {
           return "Provider Server Error"
         }
-      } catch { }
+      } catch {}
     }
 
     return undefined

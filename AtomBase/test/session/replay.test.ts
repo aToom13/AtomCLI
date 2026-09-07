@@ -57,4 +57,20 @@ describe("durable replay and checkpoints", () => {
       },
     })
   })
+
+  test("does not treat an unfinished linked summary as committed", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const running = await CompactionTransaction.start("session-compact-link", 100, 0, {
+          parentID: "user-compact",
+          summaryMessageID: "assistant-summary",
+        })
+        expect(await CompactionTransaction.isCommittedSummary("session-compact-link", "assistant-summary")).toBe(false)
+        await CompactionTransaction.finish(running, 20, true)
+        expect(await CompactionTransaction.isCommittedSummary("session-compact-link", "assistant-summary")).toBe(true)
+      },
+    })
+  })
 })

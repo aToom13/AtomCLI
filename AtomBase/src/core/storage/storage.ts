@@ -4,10 +4,11 @@ import fs from "fs/promises"
 import os from "os"
 import { Global } from "../global"
 import { lazy } from "@/util/util/lazy"
-import { Lock } from "@/util/util/lock"
 import { $ } from "bun"
 import { NamedError } from "@atomcli/util/error"
 import z from "zod"
+import { STORAGE_UPDATE_RETRIES, StorageManifest } from "./manifest"
+import { StorageBackup } from "./backup"
 
 export namespace Storage {
   const log = Log.create({ service: "storage" })
@@ -16,7 +17,7 @@ export namespace Storage {
   const CACHE_MAX_SIZE = 2000
   const CACHE_MAX_BYTES = 64 * 1024 * 1024
   const CACHE_MAX_ENTRY_BYTES = 1024 * 1024
-  const readCache = new Map<string, { value: any; bytes: number }>()
+  const readCache = new Map<string, { value: any; bytes: number; revision: number }>()
   let readCacheBytes = 0
 
   function cacheKey(key: string[]): string {
@@ -28,10 +29,15 @@ export namespace Storage {
     return v === null || (typeof v !== "object" && typeof v !== "function")
   }
 
-  function cacheGet(key: string[]): any | undefined {
+  function cacheGet(key: string[], revision: number): any | undefined {
     const k = cacheKey(key)
     const entry = readCache.get(k)
     if (entry === undefined) return undefined
+    if (entry.revision !== revision) {
+      readCacheBytes -= entry.bytes
+      readCache.delete(k)
+      return undefined
+    }
     // LRU: delete + re-insert to move to end
     readCache.delete(k)
     readCache.set(k, entry)
@@ -76,7 +82,7 @@ export namespace Storage {
     return bytes
   }
 
-  function cacheSet(key: string[], value: any, sizeHint?: number): void {
+  function cacheSet(key: string[], value: any, revision: number, sizeHint?: number): void {
     const k = cacheKey(key)
     const previous = readCache.get(k)
     if (previous) {
@@ -89,7 +95,7 @@ export namespace Storage {
     // Security: store a deep clone so the caller's reference cannot alias the cache
     // after this call — mutations to their copy won't corrupt cached state.
     const stored = isPrimitive(value) ? value : structuredClone(value)
-    readCache.set(k, { value: stored, bytes })
+    readCache.set(k, { value: stored, bytes, revision })
     readCacheBytes += bytes
     while (readCache.size > CACHE_MAX_SIZE || readCacheBytes > CACHE_MAX_BYTES) {
       const first = readCache.keys().next().value
@@ -107,24 +113,14 @@ export namespace Storage {
     readCache.delete(k)
   }
 
-  // ── List Cache (prefix-based invalidation) ────────────────
-  const LIST_CACHE_MAX_SIZE = 200
-  const listCache = new Map<string, string[][]>()
-
-  function listCacheKey(prefix: string[]): string {
-    return prefix.join("\0")
-  }
-
-  function listCacheInvalidate(key: string[]): void {
-    for (const [k] of listCache) {
-      const prefixParts = k.split("\0")
-      if (key.length >= prefixParts.length && prefixParts.every((p, i) => p === key[i])) {
-        listCache.delete(k)
-      }
-    }
-  }
-
   type Migration = (dir: string) => Promise<void>
+
+  async function exists(target: string) {
+    return fs
+      .access(target)
+      .then(() => true)
+      .catch(() => false)
+  }
 
   export const NotFoundError = NamedError.create(
     "NotFoundError",
@@ -136,7 +132,7 @@ export namespace Storage {
   const MIGRATIONS: Migration[] = [
     async (dir) => {
       const project = path.resolve(dir, "../project")
-      if (!fs.exists(project)) return
+      if (!(await exists(project))) return
       for await (const projectDir of new Bun.Glob("*").scan({
         cwd: project,
         onlyFiles: false,
@@ -156,7 +152,7 @@ export namespace Storage {
             if (worktree) break
           }
           if (!worktree) continue
-          if (!(await fs.exists(worktree))) continue
+          if (!(await exists(worktree))) continue
           const [id] = await $`git rev-list --max-parents=0 --all`
             .quiet()
             .nothrow()
@@ -253,53 +249,108 @@ export namespace Storage {
     },
   ]
 
+  async function runMigrations(dir: string, start: number, migrations: Migration[] = MIGRATIONS) {
+    for (let index = start; index < migrations.length; index++) {
+      log.info("running migration", { index })
+      try {
+        await migrations[index](dir)
+      } catch (error) {
+        log.error("failed to run migration", { index, error })
+        throw error
+      }
+      await Bun.write(path.join(dir, "migration"), (index + 1).toString())
+    }
+  }
+
   const state = lazy(async () => {
     const dir = path.join(Global.Path.data, "storage")
     const migration = await Bun.file(path.join(dir, "migration"))
       .json()
       .then((x) => parseInt(x))
       .catch(() => 0)
-    for (let index = migration; index < MIGRATIONS.length; index++) {
-      log.info("running migration", { index })
-      const migration = MIGRATIONS[index]
-      await migration(dir).catch(() => log.error("failed to run migration", { index }))
-      await Bun.write(path.join(dir, "migration"), (index + 1).toString())
+    const manifestFile = path.join(dir, "manifest.sqlite")
+    const manifestExisted = await Bun.file(manifestFile).exists()
+    if (!manifestExisted) {
+      await StorageBackup.createLegacy(dir, path.join(Global.Path.data, "storage-backups", "cutover-v1"))
     }
+    await runMigrations(dir, migration)
+    const manifest = await StorageManifest.open(dir)
+    if (!manifestExisted && !manifest.legacyImportComplete()) {
+      const known = manifest.logicalKeys()
+      for await (const item of new Bun.Glob("**/*.json").scan({ cwd: dir, onlyFiles: true })) {
+        if (item.startsWith(".blobs" + path.sep)) continue
+        const key = item.slice(0, -5).split(path.sep)
+        const encoded = StorageManifest.logicalKey(key)
+        if (known.has(encoded)) continue
+        const content = await Bun.file(path.join(dir, item)).text()
+        await manifest.importLegacy(key, content)
+        known.add(encoded)
+      }
+      manifest.markLegacyImportComplete()
+    }
+    manifest.backfillSessionGuards()
     return {
       dir,
+      manifest,
     }
   })
 
+  async function record(current: Awaited<ReturnType<typeof state>>, key: string[]) {
+    let result = await current.manifest.read(key)
+    if (result || current.manifest.pointer(key)) return result
+    const legacy = Bun.file(path.join(current.dir, ...key) + ".json")
+    if (!(await legacy.exists())) return
+    await current.manifest.importLegacy(key, await legacy.text())
+    result = await current.manifest.read(key)
+    return result
+  }
+
   export async function remove(key: string[]) {
-    const dir = await state().then((x) => x.dir)
-    const target = path.join(dir, ...key) + ".json"
+    const current = await state()
     return withErrorHandling(async () => {
-      await fs.unlink(target).catch(() => {})
+      current.manifest.remove(key)
       cacheDelete(key)
-      listCacheInvalidate(key)
+    })
+  }
+
+  export async function removeGuarded(key: string[], sessionID: string, expectedGeneration?: number) {
+    const current = await state()
+    return withErrorHandling(async () => {
+      current.manifest.removeGuarded(key, sessionID, expectedGeneration)
+      cacheDelete(key)
     })
   }
 
   export async function read<T>(key: string[]) {
-    const cached = cacheGet(key)
+    const current = await state()
+    let pointer = current.manifest.pointer(key)
+    if (!pointer) {
+      await record(current, key)
+      pointer = current.manifest.pointer(key)
+    }
+    if (!pointer || pointer.tombstone) {
+      throw new NotFoundError({ message: `Resource not found: ${path.join(current.dir, ...key)}.json` })
+    }
+    const cached = cacheGet(key, pointer.revision)
     if (cached !== undefined) return cached as T
-    const dir = await state().then((x) => x.dir)
-    const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
-      using _ = await Lock.read(target)
-      const file = Bun.file(target)
-      const result = await file.json()
-      cacheSet(key, result, file.size)
+      const stored = await record(current, key)
+      if (!stored) throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
+      const result = JSON.parse(stored.content)
+      cacheSet(key, result, stored.revision, stored.content.length)
       return result as T
     })
   }
 
   export async function peek(key: string[], maxBytes = 1024) {
-    const dir = await state().then((x) => x.dir)
-    const target = path.join(dir, ...key) + ".json"
+    const current = await state()
     return withErrorHandling(async () => {
-      using _ = await Lock.read(target)
-      return Bun.file(target).slice(0, Math.max(0, maxBytes)).text()
+      await record(current, key)
+      const pointer = current.manifest.pointer(key)
+      if (!pointer || pointer.tombstone || !pointer.contentHash) {
+        throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
+      }
+      return Bun.file(current.manifest.blobPath(pointer.contentHash)).slice(0, Math.max(0, maxBytes)).text()
     })
   }
 
@@ -308,10 +359,14 @@ export namespace Storage {
    * This is used for discriminators on potentially very large persisted records.
    */
   export async function topLevelString(key: string[], field: string) {
-    const dir = await state().then((x) => x.dir)
-    const target = path.join(dir, ...key) + ".json"
+    const current = await state()
     return withErrorHandling(async () => {
-      using _ = await Lock.read(target)
+      await record(current, key)
+      const pointer = current.manifest.pointer(key)
+      if (!pointer || pointer.tombstone || !pointer.contentHash) {
+        throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
+      }
+      const target = current.manifest.blobPath(pointer.contentHash)
       const reader = Bun.file(target).stream().getReader()
       const decoder = new TextDecoder()
       let depth = 0
@@ -399,27 +454,105 @@ export namespace Storage {
   }
 
   export async function update<T>(key: string[], fn: (draft: T) => void) {
-    const dir = await state().then((x) => x.dir)
-    const target = path.join(dir, ...key) + ".json"
+    const current = await state()
     return withErrorHandling(async () => {
-      using _ = await Lock.write(target)
-      const content = await Bun.file(target).json()
-      fn(content)
-      await Bun.write(target, JSON.stringify(content, null, 2))
-      cacheSet(key, content)
-      return content as T
+      for (let attempt = 0; attempt < STORAGE_UPDATE_RETRIES; attempt++) {
+        const stored = await record(current, key)
+        if (!stored) throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
+        const content = JSON.parse(stored.content) as T
+        fn(content)
+        const serialized = JSON.stringify(content, null, 2)
+        const revision = await current.manifest.compareAndSwap(key, stored.revision, serialized)
+        if (revision !== undefined) {
+          cacheSet(key, content, revision, serialized.length)
+          return content
+        }
+        await Bun.sleep(Math.min(attempt + 1, 8))
+      }
+      throw new StorageManifest.ConflictError(StorageManifest.logicalKey(key))
+    })
+  }
+
+  export async function updateGuarded<T>(
+    key: string[],
+    sessionID: string,
+    fn: (draft: T) => void,
+    expectedGeneration?: number,
+  ) {
+    const current = await state()
+    return withErrorHandling(async () => {
+      for (let attempt = 0; attempt < STORAGE_UPDATE_RETRIES; attempt++) {
+        const stored = await record(current, key)
+        if (!stored) throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
+        const content = JSON.parse(stored.content) as T
+        fn(content)
+        const serialized = JSON.stringify(content, null, 2)
+        const revision = await current.manifest.compareAndSwapGuarded(
+          key,
+          stored.revision,
+          sessionID,
+          expectedGeneration,
+          serialized,
+        )
+        if (revision !== undefined) {
+          cacheSet(key, content, revision, serialized.length)
+          return content
+        }
+        await Bun.sleep(Math.min(attempt + 1, 8))
+      }
+      throw new StorageManifest.ConflictError(StorageManifest.logicalKey(key))
     })
   }
 
   export async function write<T>(key: string[], content: T) {
-    const dir = await state().then((x) => x.dir)
-    const target = path.join(dir, ...key) + ".json"
+    const current = await state()
     return withErrorHandling(async () => {
-      using _ = await Lock.write(target)
-      await Bun.write(target, JSON.stringify(content, null, 2))
-      cacheSet(key, content)
-      listCacheInvalidate(key)
+      const serialized = JSON.stringify(content, null, 2)
+      const revision = await current.manifest.replace(key, serialized)
+      cacheSet(key, content, revision, serialized.length)
     })
+  }
+
+  export async function writeGuarded<T>(key: string[], sessionID: string, content: T, expectedGeneration?: number) {
+    const current = await state()
+    return withErrorHandling(async () => {
+      const serialized = JSON.stringify(content, null, 2)
+      const revision = await current.manifest.replaceGuarded(key, sessionID, expectedGeneration, serialized)
+      cacheSet(key, content, revision, serialized.length)
+      return revision
+    })
+  }
+
+  export async function activateSession(sessionID: string) {
+    const current = await state()
+    return current.manifest.activateSession(sessionID)
+  }
+
+  export async function tombstoneSessions(sessionIDs: string[]) {
+    const current = await state()
+    const result = current.manifest.tombstoneSessions(sessionIDs)
+    for (const sessionID of sessionIDs) {
+      for (const key of [...readCache.keys()]) {
+        if (key.includes(`\0${sessionID}\0`) || key.endsWith(`\0${sessionID}`)) {
+          const entry = readCache.get(key)
+          if (entry) readCacheBytes -= entry.bytes
+          readCache.delete(key)
+        }
+      }
+    }
+    return result
+  }
+
+  export async function sessionGuard(sessionID: string) {
+    const current = await state()
+    return current.manifest.sessionGuard(sessionID)
+  }
+
+  export function isSessionDeletedError(error: unknown): error is StorageManifest.SessionDeletedError {
+    return (
+      error instanceof StorageManifest.SessionDeletedError ||
+      (error instanceof Error && error.name === "StorageSessionDeletedError")
+    )
   }
 
   async function withErrorHandling<T>(body: () => Promise<T>) {
@@ -433,28 +566,34 @@ export namespace Storage {
     })
   }
 
-  const glob = new Bun.Glob("**/*")
   export async function list(prefix: string[]) {
-    const lk = listCacheKey(prefix)
-    const cached = listCache.get(lk)
-    if (cached !== undefined) return cached
-    const dir = await state().then((x) => x.dir)
+    const current = await state()
     try {
-      const result = await Array.fromAsync(
-        glob.scan({
-          cwd: path.join(dir, ...prefix),
-          onlyFiles: true,
-        }),
-      ).then((results) => results.map((x) => [...prefix, ...x.slice(0, -5).split(path.sep)]))
-      result.sort()
-      listCache.set(lk, result)
-      if (listCache.size > LIST_CACHE_MAX_SIZE) {
-        const first = listCache.keys().next().value
-        if (first !== undefined) listCache.delete(first)
+      const result = current.manifest.list(prefix)
+      if (current.manifest.legacyImportComplete()) return result
+      const legacyDir = path.join(current.dir, ...prefix)
+      if (
+        !(await fs
+          .stat(legacyDir)
+          .then((entry) => entry.isDirectory())
+          .catch(() => false))
+      )
+        return result
+      for await (const item of new Bun.Glob("**/*.json").scan({ cwd: legacyDir, onlyFiles: true })) {
+        const key = [...prefix, ...item.slice(0, -5).split(path.sep)]
+        if (!current.manifest.pointer(key)) result.push(key)
       }
-      return result
+      return result.sort((a, b) => StorageManifest.logicalKey(a).localeCompare(StorageManifest.logicalKey(b)))
     } catch {
       return []
     }
+  }
+
+  export const _internals = {
+    runMigrations,
+    async importLegacy(key: string[], content: string) {
+      const current = await state()
+      return current.manifest.importLegacy(key, content)
+    },
   }
 }
