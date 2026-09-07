@@ -80,6 +80,54 @@ class PendingPermission {
   }
 }
 
+class RouteProposal {
+  final String id;
+  final String executionId;
+  final String sessionId;
+  final int version;
+  final int routeRevision;
+  final String scope;
+  final String reasonCode;
+  final int expiresAt;
+  final Map<String, dynamic> fromRoute;
+  final Map<String, dynamic> toRoute;
+  final Map<String, dynamic> estimatedUsage;
+  final bool uncertainty;
+  final String? directory;
+
+  const RouteProposal({
+    required this.id,
+    required this.executionId,
+    required this.sessionId,
+    required this.version,
+    required this.routeRevision,
+    required this.scope,
+    required this.reasonCode,
+    required this.expiresAt,
+    required this.fromRoute,
+    required this.toRoute,
+    required this.estimatedUsage,
+    required this.uncertainty,
+    this.directory,
+  });
+
+  factory RouteProposal.fromJson(Map<String, dynamic> json) => RouteProposal(
+    id: json['id'] as String,
+    executionId: json['executionID'] as String,
+    sessionId: json['sessionID'] as String? ?? '',
+    version: json['version'] as int,
+    routeRevision: json['routeRevision'] as int,
+    scope: json['scope'] as String,
+    reasonCode: json['reasonCode'] as String,
+    expiresAt: json['expiresAt'] as int,
+    fromRoute: Map<String, dynamic>.from(json['fromRoute'] as Map? ?? {}),
+    toRoute: Map<String, dynamic>.from(json['toRoute'] as Map? ?? {}),
+    estimatedUsage: Map<String, dynamic>.from(json['estimatedUsage'] as Map? ?? {}),
+    uncertainty: json['uncertainty'] == true,
+    directory: json['directory'] as String?,
+  );
+}
+
 /// A single todo checklist item inside a DAG step.
 class TodoItem {
   final String id;

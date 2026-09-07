@@ -346,8 +346,8 @@ class LocalCacheDatabase {
     final db = await _db();
     final rows = await db.query(
       'outbox',
-      where: 'profile_id = ?',
-      whereArgs: [profileId],
+      where: 'profile_id = ? AND state IN (?, ?)',
+      whereArgs: [profileId, OutboxState.queued.name, OutboxState.sending.name],
       orderBy: 'created_at_ms ASC',
       limit: 100,
     );

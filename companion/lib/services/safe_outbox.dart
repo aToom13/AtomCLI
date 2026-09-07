@@ -71,8 +71,9 @@ class SafeOutbox {
       }
     }
     _entries.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-    while (_entries.length > _maxEntries) {
-      _entries.removeAt(0);
+    _entries.removeWhere(_isTerminal);
+    if (_entries.length > _maxEntries) {
+      throw StateError('The restored outbox exceeds its $_maxEntries message capacity');
     }
   }
 
@@ -95,6 +96,10 @@ class SafeOutbox {
     if ((payload['attachments'] as List?)?.isNotEmpty == true) {
       throw StateError('Messages with temporary attachments cannot be queued');
     }
+    _entries.removeWhere(_isTerminal);
+    if (_entries.length >= _maxEntries) {
+      throw StateError('The offline outbox is full; reconnect or cancel a queued message before sending another');
+    }
     final createdAt = now ?? DateTime.now();
     final entry = OutboxEntry(
       idempotencyKey: _uuidV4(),
@@ -107,9 +112,6 @@ class SafeOutbox {
       payload: Map.unmodifiable(Map<String, dynamic>.from(payload)),
     );
     _entries.add(entry);
-    while (_entries.length > _maxEntries) {
-      _entries.removeAt(0);
-    }
     return entry;
   }
 
@@ -163,6 +165,11 @@ class SafeOutbox {
       _update(key, OutboxState.acknowledged, clearError: true);
   void markFailed(String key, String error) =>
       _update(key, OutboxState.failed, error: error);
+
+  bool _isTerminal(OutboxEntry entry) =>
+      entry.state == OutboxState.acknowledged ||
+      entry.state == OutboxState.expired ||
+      entry.state == OutboxState.failed;
 
   void _update(
     String key,

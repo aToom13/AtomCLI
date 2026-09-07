@@ -99,4 +99,42 @@ void main() {
       throwsStateError,
     );
   });
+
+  test('terminal history never evicts an active message and a full active queue fails visibly', () {
+    final outbox = SafeOutbox();
+    final now = DateTime.utc(2026, 9, 2);
+    for (var index = 0; index < 100; index++) {
+      outbox.enqueueChat(
+        targetMachineId: 'machine-1',
+        targetProfileId: 'profile-1',
+        targetBridgeEpoch: 'epoch-1',
+        payload: {'type': 'chat_message', 'text': '$index'},
+        now: now.add(Duration(seconds: index)),
+      );
+    }
+    final first = outbox.entries.first;
+
+    expect(
+      () => outbox.enqueueChat(
+        targetMachineId: 'machine-1',
+        targetProfileId: 'profile-1',
+        targetBridgeEpoch: 'epoch-1',
+        payload: const {'type': 'chat_message', 'text': 'overflow'},
+        now: now.add(const Duration(minutes: 2)),
+      ),
+      throwsStateError,
+    );
+    expect(outbox.entryFor(first.idempotencyKey), isNotNull);
+
+    outbox.markFailed(first.idempotencyKey, 'user cancelled');
+    final replacement = outbox.enqueueChat(
+      targetMachineId: 'machine-1',
+      targetProfileId: 'profile-1',
+      targetBridgeEpoch: 'epoch-1',
+      payload: const {'type': 'chat_message', 'text': 'replacement'},
+      now: now.add(const Duration(minutes: 3)),
+    );
+    expect(outbox.entryFor(first.idempotencyKey), isNull);
+    expect(outbox.entryFor(replacement.idempotencyKey), isNotNull);
+  });
 }

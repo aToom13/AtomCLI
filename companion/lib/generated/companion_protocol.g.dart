@@ -16,6 +16,7 @@ abstract final class CompanionCapability {
   static const String eventsCursor = 'events.cursor';
   static const String actionsSigned = 'actions.signed';
   static const String permissionsResolve = 'permissions.resolve';
+  static const String routesDecide = 'routes.decide';
   static const String questionsReply = 'questions.reply';
   static const String sessionsManage = 'sessions.manage';
   static const String missionsControl = 'missions.control';
@@ -34,6 +35,7 @@ abstract final class CompanionCapability {
     'events.cursor',
     'actions.signed',
     'permissions.resolve',
+    'routes.decide',
     'questions.reply',
     'sessions.manage',
     'missions.control',

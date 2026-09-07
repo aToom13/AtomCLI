@@ -28,8 +28,12 @@ class PermissionsScreen extends ConsumerWidget {
           focusedRequest,
         ).compareTo(_focusOrder(b.reqId, focusedRequest)),
       );
+    final routes = ref
+        .watch(routeProposalsProvider)
+        .where((item) => item.expiresAt > DateTime.now().millisecondsSinceEpoch)
+        .toList();
     final connection = ref.watch(connectionStateProvider);
-    final total = permissions.length + questions.length;
+    final total = permissions.length + questions.length + routes.length;
 
     return Scaffold(
       appBar: AppBar(
@@ -55,6 +59,15 @@ class PermissionsScreen extends ConsumerWidget {
                   strings.awaitConfirmation,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
+                if (routes.isNotEmpty) ...[
+                  const SizedBox(height: 26),
+                  SectionLabel('${strings.models} · ${strings.thinkingEffort}'),
+                  const SizedBox(height: 10),
+                  for (final proposal in routes) ...[
+                    _RouteProposalCard(proposal: proposal),
+                    const SizedBox(height: 10),
+                  ],
+                ],
                 if (permissions.isNotEmpty) ...[
                   const SizedBox(height: 26),
                   SectionLabel(strings.permissionRequests),
@@ -84,6 +97,79 @@ class PermissionsScreen extends ConsumerWidget {
               ],
             ),
     );
+  }
+}
+
+class _RouteProposalCard extends ConsumerStatefulWidget {
+  final RouteProposal proposal;
+
+  const _RouteProposalCard({required this.proposal});
+
+  @override
+  ConsumerState<_RouteProposalCard> createState() => _RouteProposalCardState();
+}
+
+class _RouteProposalCardState extends ConsumerState<_RouteProposalCard> {
+  bool busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final target = widget.proposal.toRoute;
+    final label = '${target['providerID']}/${target['modelID']}'
+        '${target['variant'] == null ? '' : ' (${target['variant']})'}';
+    return ControlPanel(
+      borderColor: AppPalette.primary.withValues(alpha: 0.5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 6),
+          Text('${widget.proposal.reasonCode} · ${widget.proposal.scope}'),
+          Text('${widget.proposal.uncertainty ? '?' : '≈'} ${widget.proposal.estimatedUsage}'),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: busy ? null : () => _decide('reject'),
+                  child: Text(AppLocalizations.of(context).reject),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton(
+                  onPressed: busy ? null : () => _decide('accept'),
+                  child: busy
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(AppLocalizations.of(context).allowOnce),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _decide(String decision) async {
+    final ws = ref.read(wsServiceProvider);
+    if (ws == null || !ws.isConnected) return;
+    setState(() => busy = true);
+    try {
+      await ws.decideRoute(proposal: widget.proposal, decision: decision);
+      ref.read(routeProposalsProvider.notifier).remove(widget.proposal.id);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(_cleanError(error))));
+      }
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 }
 

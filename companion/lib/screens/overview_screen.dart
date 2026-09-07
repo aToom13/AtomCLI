@@ -27,6 +27,7 @@ class OverviewScreen extends ConsumerWidget {
     final steps = ref.watch(dagProvider);
     final subAgents = ref.watch(subAgentProvider);
     final conversation = ref.watch(conversationProvider);
+    final activeRoutes = ref.watch(activeRoutesProvider);
     final activeProfile = AuthService.instance.activeProfile;
     final screenWidth = MediaQuery.sizeOf(context).width;
     final horizontalPadding = screenWidth > 1156
@@ -34,6 +35,9 @@ class OverviewScreen extends ConsumerWidget {
         : 18.0;
     final selectedSession = sessions
         .where((session) => session.id == conversation.selectedSessionId)
+        .firstOrNull;
+    final selectedRoute = activeRoutes.values
+        .where((route) => route['sessionID'] == selectedSession?.id)
         .firstOrNull;
     final missionSessionIds = _missionSessionScope(
       selectedSession?.id,
@@ -124,6 +128,10 @@ class OverviewScreen extends ConsumerWidget {
                             ref.read(shellTabProvider.notifier).state =
                                 ShellTab.chat,
                       ),
+                    if (selectedRoute != null) ...[
+                      const SizedBox(height: 10),
+                      _ActiveRouteStrip(route: selectedRoute),
+                    ],
                     const SizedBox(height: 12),
                     Row(
                       children: [
@@ -258,6 +266,37 @@ class OverviewScreen extends ConsumerWidget {
 
   static bool _isRunning(String status) =>
       status == 'running' || status == 'in_progress' || status.endsWith('ing');
+}
+
+class _ActiveRouteStrip extends StatelessWidget {
+  final Map<String, dynamic> route;
+
+  const _ActiveRouteStrip({required this.route});
+
+  @override
+  Widget build(BuildContext context) {
+    final active = route['active'] is Map
+        ? Map<String, dynamic>.from(route['active'] as Map)
+        : route['route'] is Map
+        ? Map<String, dynamic>.from(route['route'] as Map)
+        : <String, dynamic>{};
+    return ControlPanel(
+      child: Row(
+        children: [
+          const Icon(Icons.route_outlined, color: AppPalette.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${AppLocalizations.of(context).models}: ${active['providerID'] ?? '?'}/${active['modelID'] ?? '?'}'
+              '${active['variant'] == null ? '' : ' · ${active['variant']}'}',
+            ),
+          ),
+          if (route['manualModelPin'] == true || route['manualThinkingPin'] == true)
+            const Icon(Icons.push_pin_outlined, size: 18),
+        ],
+      ),
+    );
+  }
 }
 
 class _Header extends StatelessWidget {

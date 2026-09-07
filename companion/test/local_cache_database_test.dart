@@ -135,6 +135,37 @@ void main() {
     expect(restored.single.payload['text'], 'continue');
   });
 
+  test('terminal outbox history cannot starve the active queue window', () async {
+    final fixture = await _databaseFixture();
+    addTearDown(fixture.dispose);
+    final now = DateTime.utc(2026, 9, 2);
+    for (var index = 0; index < 100; index++) {
+      await fixture.database.saveOutboxEntry(OutboxEntry(
+        idempotencyKey: 'failed-$index',
+        kind: 'chat_message',
+        targetMachineId: 'machine-1',
+        targetProfileId: 'profile-1',
+        createdAt: now.add(Duration(seconds: index)),
+        expiresAt: now.add(const Duration(hours: 1)),
+        payload: const {'type': 'chat_message'},
+        state: OutboxState.failed,
+        error: 'fixture',
+      ));
+    }
+    await fixture.database.saveOutboxEntry(OutboxEntry(
+      idempotencyKey: 'queued-new',
+      kind: 'chat_message',
+      targetMachineId: 'machine-1',
+      targetProfileId: 'profile-1',
+      createdAt: now.add(const Duration(minutes: 5)),
+      expiresAt: now.add(const Duration(hours: 1)),
+      payload: const {'type': 'chat_message', 'text': 'deliver me'},
+    ));
+
+    final restored = await fixture.database.loadOutbox('profile-1');
+    expect(restored.map((entry) => entry.idempotencyKey), ['queued-new']);
+  });
+
   test('durably restores encrypted resumable upload jobs', () async {
     final fixture = await _databaseFixture();
     addTearDown(fixture.dispose);

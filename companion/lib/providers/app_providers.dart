@@ -123,6 +123,28 @@ final permissionsProvider =
       PermissionsNotifier.new,
     );
 
+class RouteProposalsNotifier extends Notifier<List<RouteProposal>> {
+  @override
+  List<RouteProposal> build() => [];
+
+  void upsert(RouteProposal proposal) {
+    final next = state.where((item) => item.id != proposal.id).toList();
+    state = [...next, proposal];
+  }
+
+  void remove(String id) => state = state.where((item) => item.id != id).toList();
+
+  void setFromSnapshot(List<RouteProposal> proposals) => state = proposals;
+}
+
+final routeProposalsProvider =
+    NotifierProvider<RouteProposalsNotifier, List<RouteProposal>>(
+      RouteProposalsNotifier.new,
+    );
+
+final activeRoutesProvider =
+    StateProvider<Map<String, Map<String, dynamic>>>((ref) => {});
+
 /// Main shell navigation. Keeping it in provider state allows activity cards
 /// and notifications to move to the correct destination without fake tab APIs.
 abstract final class ShellTab {
@@ -1140,6 +1162,20 @@ void dispatchBackendEvents(Ref ref) {
           ref
               .read(permissionsProvider.notifier)
               .setFromSnapshot(pendingPermissions);
+          final rawRouteProposals = event.payload['route_proposals'] as List? ?? [];
+          ref.read(routeProposalsProvider.notifier).setFromSnapshot(
+            rawRouteProposals
+                .whereType<Map>()
+                .map((item) => RouteProposal.fromJson(Map<String, dynamic>.from(item)))
+                .where((item) => item.expiresAt > DateTime.now().millisecondsSinceEpoch)
+                .toList(),
+          );
+          final rawRoutes = event.payload['active_routes'] as List? ?? [];
+          ref.read(activeRoutesProvider.notifier).state = {
+            for (final item in rawRoutes.whereType<Map>())
+              if (item['executionID'] is String)
+                item['executionID'] as String: Map<String, dynamic>.from(item),
+          };
           final rawSubAgents = event.payload['sub_agents'] as List? ?? [];
           ref
               .read(subAgentProvider.notifier)
@@ -1412,6 +1448,31 @@ void dispatchBackendEvents(Ref ref) {
           ref
               .read(permissionsProvider.notifier)
               .remove(event.payload['requestID'] as String);
+
+        case 'route_proposal':
+          final raw = event.payload['proposal'];
+          if (raw is Map) {
+            final proposal = RouteProposal.fromJson({
+              ...Map<String, dynamic>.from(raw),
+              'sessionID': event.payload['sessionID'],
+              'directory': event.payload['directory'],
+            });
+            if (['pending', 'accepted'].contains(raw['state']) &&
+                proposal.expiresAt > DateTime.now().millisecondsSinceEpoch) {
+              ref.read(routeProposalsProvider.notifier).upsert(proposal);
+            } else {
+              ref.read(routeProposalsProvider.notifier).remove(proposal.id);
+            }
+          }
+
+        case 'route_changed':
+          final executionId = event.payload['executionID'] as String?;
+          if (executionId != null) {
+            ref.read(activeRoutesProvider.notifier).state = {
+              ...ref.read(activeRoutesProvider),
+              executionId: Map<String, dynamic>.from(event.payload),
+            };
+          }
 
         case 'sub_agent_started':
           final sa = SubAgentInfo.fromJson(

@@ -665,6 +665,24 @@ class WebSocketService {
     });
   }
 
+  Future<ActionResult> decideRoute({
+    required RouteProposal proposal,
+    required String decision,
+    String acceptScope = 'episode',
+  }) {
+    return _sendSignedAction({
+      'type': 'route_decision',
+      'session_id': proposal.sessionId,
+      'execution_id': proposal.executionId,
+      'proposal_id': proposal.id,
+      'expected_proposal_version': proposal.version,
+      'expected_route_revision': proposal.routeRevision,
+      'decision': decision,
+      if (decision == 'accept') 'accept_scope': acceptScope,
+      if (proposal.directory != null) 'directory': proposal.directory,
+    });
+  }
+
   Future<ActionResult> createSession({
     String? text,
     String? model,
