@@ -283,7 +283,7 @@ class _ActiveRouteStrip extends StatelessWidget {
     return ControlPanel(
       child: Row(
         children: [
-          const Icon(Icons.route_outlined, color: AppPalette.primary),
+          Icon(Icons.route_outlined, color: AppPalette.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Text(

@@ -228,7 +228,18 @@ test("atomcli-auto persists the selected provider catalog key", async () => {
 })
 
 test("atomcli-free execution selects only a model with fresh verification evidence", async () => {
-  await using tmp = await tmpdir()
+  await using tmp = await tmpdir({
+    config: {
+      experimental: {
+        auto_router: {
+          allowed_providers: ["atomcli"],
+          allow_paid_models: false,
+          allow_paid_probes: false,
+          exploration_rate: 0,
+        },
+      },
+    },
+  })
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
