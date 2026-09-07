@@ -25,7 +25,9 @@ cd AtomBase
 bun run dev
 ```
 
-The development command runs with Bun's `browser` condition, which is required for TUI imports. To inspect commands without starting an interactive workflow:
+Alternatively, `bun run dev` from the monorepo root preserves the root as the active project while loading the CLI from `AtomBase/`. The development command runs with Bun's `browser` condition, which is required for TUI imports. To inspect commands without starting an interactive workflow:
+
+Normal TUI startup does not open a redundant loopback control-plane listener; its RPC transport serves the local UI and the Companion listener gets first use of port 4096. Explicit control-plane network options still start that listener and may cause an automatic Companion listener to select another available port.
 
 ```sh
 bun run --conditions=browser ./src/index.ts --help
@@ -51,6 +53,18 @@ The models.dev fixture is the required test convention. `test/preload.ts` copies
 
 Prefer behavior-level tests over implementation-only assertions. A regression test should exercise the public boundary that failed, use an isolated temporary project when filesystem or Git state matters, and assert an observable result. Provider unit tests may mock transport, but live provider probes must remain explicitly opt-in and must distinguish rate limits from compatibility failures.
 
+### Storage cutover and recovery
+
+AtomCLI storage uses a SQLite/WAL manifest whose revisions point at immutable, content-addressed JSON blobs. `Storage.update` uses bounded compare-and-swap retries, so two current AtomCLI processes cannot silently overwrite the same read-modify-write operation. Reads validate their cached revision against the manifest; deletes leave a tombstone, preventing old JSON files or stale caches from recreating a deleted record.
+
+Session records have a durable generation guard. Creating or importing a session activates its generation; deletion first increments and tombstones that generation, then abandons pending completion projections and purges transcript namespaces. Message and part writes and removals validate the generation in the same manifest transaction, so a late stream or projector callback cannot recreate or mutate deleted content. Projection recovery treats an existing tombstone as an idempotent abandonment and scans committed deliveries in bounded pages of 50 instead of failing when more than 100 are waiting. Accounting may remain in the execution ledger, but deleted transcript payloads are not restored from it.
+
+Before the first manifest cutover, AtomCLI creates and verifies `~/.atomcli/data/storage-backups/cutover-v1`. This backup contains the original JSON records and a SHA-256 manifest; credentials outside the storage tree are not included. Corrupt legacy JSON is retained byte-for-byte for recovery and appears as an unreadable record instead of being discarded. Restore tooling must run `StorageBackup.restore(..., dryRun: true)` first and restore into an empty destination; publication occurs through a verified staging directory so an interrupted copy does not replace the destination.
+
+An interrupted cutover does not rescan and hash the entire legacy tree during every startup. Existing manifest keys open immediately; missing legacy records and list prefixes are imported on demand. A new cutover records completion only after the full initial import, so a crash cannot hide records and tombstones still take precedence over legacy files.
+
+Use `test/core/storage-manifest.test.ts`, `test/core/storage-backup.test.ts`, and `test/core/storage-migration.test.ts` when changing this boundary. The manifest format check intentionally rejects a database written by a newer AtomCLI binary.
+
 When the bundled AtomCLI guide changes, validate its frontmatter, reference paths, development coverage, and runtime discovery:
 
 ```sh
@@ -60,7 +74,7 @@ bun run --conditions=browser ./src/index.ts skill list
 bun run --conditions=browser ./src/index.ts skill show atomcli-guide
 ```
 
-The `eval benchmark` command measures model-driven agent behavior and is not part of the deterministic validation commands above. Without `--execute` it only reports stored observations. With `--execute`, every case materializes its own fixture into the workspace, prompts the selected agent under a hard per-case timeout, and is then graded by an independent verifier before all changes are reverted. Verifier sources are moved out of the worktree for the duration of a run and restored automatically, including after interruption. On an interactive terminal the command offers provider, model, and agent menus unless `--model` is given. Executing the benchmark contacts the selected provider, consumes quota, and takes minutes per case. See `AtomBase/evals/README.md`.
+The `eval benchmark` command measures model-driven agent behavior and is not part of the deterministic validation commands above. Without `--execute` it only reports stored observations. With `--execute`, every case materializes its own fixture into the workspace, prompts the selected agent under a hard per-case timeout, and is then graded by an independent verifier before all changes are reverted. Verifier sources are moved out of the worktree for the duration of a run and restored automatically, including after interruption. On an interactive terminal the command offers provider, model, and agent menus unless `--model` is given. Use `--routing fixed-base|fixed-expert|adaptive`; fixed-expert requires `--expert-model`, while adaptive may use it as the bounded expert candidate. The same versioned fixtures report route calls, expert episodes, unpriced calls, TTFT, proposals/rejections/repeated questions, and base returns. Executing the benchmark contacts the selected provider, consumes quota, and takes minutes per case. Fixture results are not live provider verification. See `AtomBase/evals/README.md`.
 
 ## Build and release
 
@@ -86,7 +100,7 @@ Use `AtomBase/package.json` as the release source of truth. Keep the versions in
 Do not edit those mirrored versions individually. Set and propagate a release version from the repository root:
 
 ```sh
-bun run version:sync 3.4.2
+bun run version:sync 3.4.3
 bun run version:check
 ```
 
@@ -164,7 +178,34 @@ Global files include `config.json`, `atomcli.json`, `atomcli.jsonc`, and `mcp.js
 
 Follow the namespace export pattern and use path aliases (`@/*`, `@tui/*`). Code built with `--conditions=browser` must use type-only imports for `ai` and dynamic imports for its runtime use.
 
+### Session execution invariants
+
+- A session run owns its abort controller. Cleanup from an older run must not cancel a replacement run for the same session.
+- The configured retry count is a retry budget after the first model attempt. Once exhausted, the processor records the terminal error and must not wait, select a fallback, or call the model again.
+- The final agent step includes the maximum-step instruction and passes an empty tool set to the model. Step limits are enforced by execution behavior, not only by prompt text.
+- Only one live `execute` call may own a workflow. A checkpoint whose process stopped can be resumed, while a second call against a currently owned workflow reports that it is already running.
+- A compaction summary becomes a history boundary only after its linked transaction is committed. Empty, whitespace-only, unfinished, and non-shrinking summaries are rejected without hiding the prior context.
+- A completed tool call/result remains in model history even if the provider fails later in the same assistant turn. Tool replay records distinguish an execution failure from an operation that completed before post-processing failed; the latter must not be retried automatically.
+- Optional `execution_budget` limits are snapshotted into a SQLite/WAL ledger per explicit root user turn. Root and child invocations keep an explicit persistent execution binding. Calls and steps use the execution scope, while root-session-tree and project cost totals remain distinct; every configured scope is admitted atomically. Dispatch rechecks the fence and deadline, and dispatched calls with unknown outcomes remain charged as uncertain across restart until late usage settles them. Verification probes retain the originating execution context and combine caller, deadline, and execution-lease abort signals.
+- Resuming a terminal execution uses the prompt's optional `resumesExecutionID` and creates a new execution segment linked to the prior one. Segments share `budgetScopeID`, cumulative calls, steps, cost, and the original deadline; a resumed policy may tighten but cannot extend those limits.
+- Verification probes and auxiliary review, compaction, and memory requests belong to the same execution budget. Auxiliary memory learning starts only after the main response so it cannot win the initial reservation race.
+- Executions use renewable owner leases and monotonic fencing. A reference-counted execution-lifetime controller renews ownership across model, review, and tool work; cancellation or lease loss aborts the shared signal and therefore the active stream/tool path. Takeover is allowed only after lease expiry; it releases reservations that the old fence never dispatched, while the stale owner cannot claim steps, reserve or dispatch calls, invoke a tool, or commit a final candidate. Late usage may still settle work dispatched before takeover.
+- Cancellation is a persistent execution state, not only an in-memory abort. Review and child-agent work receive the parent abort signal, and tool execution rechecks execution ownership immediately before invocation. A tool that applied a side effect before bookkeeping failed is still reported as applied and must not be retried automatically.
+- Tool middleware writes a bounded, owner/fence-bound work record after permission and immediately before invocation. Workspace-mutating tools dirty the persistent mutation revision at admission, before a side effect can race completion; duplicate operation IDs are rejected. Running or unknown work blocks staging and commit. A mutating invocation that throws remains unknown because partial side effects cannot be ruled out automatically.
+- Root terminal text is never persisted as public text or a terminal `finish` before the completion decision. The bounded candidate and digest are bound to the review files, mutation revision, plan revision, versioned review-policy digest, and a streaming content snapshot digest. Staging enters `finalizing`, where normal model work is rejected. Reviewer/checker access requires a persistent review claim bound to the concrete child session; a review-required candidate cannot commit without a matching persisted `passed` verdict. A policy decision that review is not required is recorded separately and is never represented as reviewer PASS. Commit rechecks the current policy/content/plan snapshots, fenced owner, and durable work/blockers in one ledger transaction.
+- A retryable review rejection atomically discards its candidate, binds the retry invocation, and writes a bounded continuation outbox record before session projection. If required review is unavailable or its bounded attempts are exhausted, the original candidate remains review-required and private: the ledger atomically records terminal outcome `blocked` and a separate safe delivery payload. It must never restage the candidate with `requiresReview: false` or report `completed`. Execution lifecycle, phase, immutable terminal outcome, safe reason, and resource version are persisted independently; public execution/event consumers are built on that record rather than interpreting `SessionStatus.idle` as success.
+- Root success and terminal failure delivery use the same durable boundary. `completed`, `failed`, `cancelled`, `budget_exhausted`, and review `blocked` outcomes are immutable; provider/model errors map to allowlisted, redacted reason codes. The terminal outcome, fixed delivery outbox, and versioned `execution.updated` event are written in one ledger transaction. Explicit root cancellation also stages a fixed local message/part delivery, including when no assistant message existed yet; child-only cancellation does not terminalize the root. A projector must claim each delivery with a short lease and opaque token, write every message/part under the exact session generation, and ACK with the same digest, generation, owner, and token. A takeover invalidates the stale projector, while an ACK retry by the winning token is idempotent. An invalid payload or missing target message is fenced into visible `recovery_required` state instead of entering an unbounded retry loop. Processor and model-resolution failures do not expose terminal `finish` or `time.completed` before this commit.
+- Public execution state is available through the session-scoped list, detail, snapshot, replay, cancel, and reconcile endpoints. List cursors are opaque and tied to the root session and database epoch. Snapshot state and its durable cursor come from one ledger transaction. Cancellation and reconciliation require a caller request ID plus exact execution version; reconciliation additionally requires the exact unknown-work version and bounded evidence. Duplicate request IDs are idempotent, while stale or conflicting requests fail without changing state.
+- Durable execution replay returns `resyncRequired` for an epoch change, cursor-ahead request, or retention gap. Budget reservation, dispatch, uncertain/settled usage, and late actual usage advance the execution resource version; configured cost scopes emit durable 80% and 100% warnings once per scope and policy version. Blocker creation and CAS transitions likewise emit versioned `execution.blocker.updated` events. The transient `/global/event` stream has a separate process epoch and emits `server.resync_required` for legacy cursors, process changes, future cursors, or its bounded replay gap. It must not be confused with the durable execution cursor or Companion bridge cursor. Global and instance SSE writers allow at most 256 pending events or 2 MiB per client and clean up the subscriber and heartbeat on abort, overflow, or write failure.
+- Session deletion carries its new generation into an idempotent `execution.deleted` event, abandons pending delivery, and never overwrites an already selected terminal outcome. Repeating deletion creates no new event. A terminal execution is excluded from active-session inheritance even if its compatibility pointer has not yet been cleaned up.
+- A takeover marks abandoned running work `unknown`; the stale fence cannot finish it and the new owner must explicitly reconcile it. Tool ownership is rechecked after permission and around middleware at the actual tool-body boundary, and the work record stays open through after hooks and result replay. Taskflow items, workflows, children, and verification jobs use durable blockers; only `resolved` or explicitly authorized/reasoned `waived` blockers satisfy the success gate. Ordinary prompt cleanup does not call the explicit cancellation path. Terminal executions reject new work while still allowing committed projection recovery and late usage settlement. Session projection is idempotent, so restart recovery can finish a committed delivery without rerunning the model.
+- Text attachments supplied as data URLs are decoded from the payload only. Base64 and percent-encoded UTF-8 are supported, malformed input is rejected, and decoded text is limited to 1 MiB.
+
+Cover changes to these paths with deterministic retry, continuation binding, abort ownership, stale-fence tool admission, finalizing dispatch, mutation-during-review, terminal reserve rejection, workflow ownership, compaction commit, tool-evidence, and attachment-decoding tests.
+
 ## Server API and SDK
+
+`GET /session/:sessionID/executions`, `GET /session/:sessionID/executions/:executionID`, and `GET /session/:sessionID/execution-snapshot` expose redacted durable execution state. `GET /session/:sessionID/execution-events` pages durable events from an epoch/sequence cursor. Root or invocation cancellation uses `POST .../cancel`; uncertain physical work uses `POST .../reconcile` with evidence and two CAS versions. `/session/status` remains a backward-compatible transient busy/retry/idle view and must not be interpreted as a terminal outcome.
 
 After changing `AtomBase/src/server/` routes, regenerate and build the SDK:
 

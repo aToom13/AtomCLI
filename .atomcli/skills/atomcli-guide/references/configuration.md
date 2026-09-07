@@ -128,6 +128,27 @@ Supported values:
 
 Use broader access only when the requested workflow requires it.
 
+## Execution budgets
+
+An optional execution budget applies to one explicit root user turn and every child-agent request it starts:
+
+```jsonc
+{
+  "execution_budget": {
+    "max_calls": 30,
+    "max_steps": 20,
+    "max_duration_ms": 900000,
+    "session_max_cost_usd": 2,
+    "project_max_cost_usd": 20,
+    "unknown_price": "block",
+  },
+}
+```
+
+`max_cost_usd` limits one execution, `session_max_cost_usd` limits the persistent root-session tree across executions, and `project_max_cost_usd` limits the project total. When several are configured, every scope must admit the call. Calls made for verification, retry/fallback, review, compaction, and session-bound memory count alongside the main model. Limits and reservations persist across process restarts. With a monetary limit, unknown model pricing is blocked by default; `"allow"` accepts that uncertainty. Actual provider usage can exceed its estimate, so AtomCLI records the full cost and blocks later dispatches but cannot promise a hard billing ceiling for an already-running request.
+
+The ledger assigns each root execution a renewable owner lease. If another process takes over after expiry, the fence increases, reservations that were never dispatched are reclaimed, and the stale process cannot start tools or dispatch more work. Cancellation is persisted and checked again before tool side effects. Root final text is kept private in a bounded persistent candidate; staging admits only reviewer/checker model work, and commit requires the current owner plus the current tracked workspace-mutation revision before closing the execution to new work. Committed text can be projected safely after a restart. Taskflow, workflow, child, and verification obligations are durable blockers; only resolved or explicitly authorized and reasoned waivers satisfy the success gate.
+
 ## Permissions
 
 Permissions may be configured globally or per agent. Actions are `allow`, `ask`, and `deny`; tool-specific rules may use path or command patterns. Prefer the narrowest rule that supports the workflow.

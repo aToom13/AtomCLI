@@ -47,9 +47,12 @@ From the monorepo root:
 
 ```sh
 bun install --frozen-lockfile
+bun run dev
 bun turbo typecheck
 bun turbo test
 ```
+
+The root `bun run dev` wrapper loads the CLI from `AtomBase/` while preserving the monorepo root as the active project directory.
 
 From `AtomBase/`:
 
@@ -92,6 +95,14 @@ MODELS_DEV_API_JSON=test/tool/fixtures/models-api.json
 
 - Do not “fix” default tests by adding real credentials or network calls.
 - For listeners, companion sockets, and concurrent services, add tests that verify resource cleanup and explicit-versus-automatic port semantics.
+
+## Storage recovery boundary
+
+Current AtomCLI processes coordinate JSON-backed records through a SQLite/WAL manifest and immutable content blobs. Reads validate cache revisions, read-modify-write updates use bounded compare-and-swap, and deletion tombstones prevent stale legacy files from resurrecting data. Session message and part writes and removals validate a durable session generation in the same manifest transaction. Deletion increments and tombstones the generation before transcript purge; a late projector converts its pending delivery to an idempotent abandonment. Recovery scans committed completion outboxes in pages of 50, so 101 pending records do not stop recovery. The first cutover creates a verified, credential-excluding backup at `~/.atomcli/data/storage-backups/cutover-v1`; malformed legacy JSON remains in that backup for recovery instead of being silently discarded. Restore code must verify hashes, support dry-run, target an empty directory, and publish only a completely copied staging directory.
+
+An interrupted cutover opens from existing manifest keys instead of hashing the whole legacy tree again. Missing records and requested list prefixes are imported lazily; a fresh cutover marks completion only after its full import, and tombstones always override legacy files.
+
+Run the three `test/core/storage-{manifest,backup,migration}.test.ts` suites after changing this mechanism. A newer on-disk manifest format must fail visibly rather than being downgraded.
 
 ## Formatting and TypeScript style
 
@@ -171,8 +182,29 @@ The edit tool's fuzzy matching and failure behavior are deliberate. Preserve its
 - The orchestration session-map key format is `parentSessionId:agentType:taskId`. Changing it breaks workflow cleanup.
 - The workflows map is bounded to 100 entries and has one-hour TTL cleanup. Do not remove those bounds.
 - Orchestrated subagents must always be denied `todowrite`, `todoread`, and `task` permissions.
+- Session cleanup is owner-scoped: an older run must not cancel a replacement run for the same session.
+- An exhausted model retry budget is terminal. It must not wait, select another fallback, or issue another model call.
+- The final configured agent step receives the maximum-step instruction with an empty tool set.
+- A workflow can have only one live `execute` owner. A stopped checkpoint is resumable; a concurrent execute request reports the existing run instead of resetting its tasks.
+- Optional `execution_budget` limits use a persistent SQLite/WAL ledger. A root request and its child sessions share atomic model-call, agent-step, duration, and cost admission; dispatched calls whose outcome is unknown remain conservatively charged after restart. Verification probes keep the originating execution context and abort when the caller, deadline, or execution lease is cancelled.
+- A prompt can resume a terminal execution by sending `resumesExecutionID`. Resume creates a linked segment but retains the prior `budgetScopeID`, cumulative calls, steps, cost, and original deadline; it can tighten limits but cannot reset or extend them.
+- Normal prompt cleanup is distinct from user cancellation. Cancellation targets the captured execution/fence, so delayed cleanup cannot cancel a newer user turn or shared parent/child execution.
+- Review-required completion uses a persistent claim bound to each concrete reviewer child session and needs a matching persisted passing verdict for the exact digest and mutation revision. Reviewer/checker names alone do not grant finalizing access.
+- Completion candidates also bind the current plan revision, versioned review-policy digest, and a streaming content snapshot digest. Policy skip is a distinct `not_required` decision, never a reviewer PASS. A stale policy, plan, mutation, or content snapshot cannot commit.
+- When required review is unavailable or exhausts its attempts, the private candidate keeps its review requirement. A separate safe delivery is committed with immutable execution outcome `blocked`; the candidate is never downgraded to `requiresReview: false` or reported as completed. Retryable review findings still use the bounded continuation outbox.
+- Terminal success and failure share an immutable execution outcome boundary. `completed`, `failed`, `cancelled`, `budget_exhausted`, and review `blocked` write a fixed delivery outbox and redacted, versioned execution event atomically. Explicit root cancellation has a fixed local delivery even before an assistant message exists; child-only cancellation leaves the root active. Projection claims use a short lease and token, all storage writes use the exact session generation, and ACK requires the same digest, generation, owner, and token. Invalid payloads or missing target messages become visible `recovery_required` records rather than retrying forever. Terminal `finish` and `time.completed` are not made visible before that commit, and a late or stale projection cannot make an older terminal execution active again.
+- Session-scoped execution list/detail/snapshot/replay APIs expose this redacted record. Snapshot state and cursor share one ledger transaction. Cancel and unknown-work reconciliation use idempotent request IDs and exact execution-version CAS; reconciliation also requires exact work version and bounded evidence. Stale/conflicting requests do not mutate state. `/session/status` remains transient busy/retry/idle compatibility state, not proof of success.
+- Durable execution cursor, transient global SSE cursor, and Companion bridge cursor are separate domains. Epoch changes, ahead cursors, or retention/buffer gaps require snapshot resynchronization. Budget and blocker changes advance resource versions; 80% and 100% cost warnings are emitted once per configured scope and policy version. Global and instance SSE queues are bounded to 256 pending events or 2 MiB and release subscribers/timers on abort, overflow, and write failure.
+- Session deletion carries the tombstone generation into an idempotent `execution.deleted` event, preserves an already selected outcome, and does not emit another deletion transition when retried.
+- Tool work remains open through permission, around/after hooks, plugin processing, and result replay. Ownership is checked at the tool-body boundary. A takeover marks abandoned running work unknown; the stale owner cannot finish it and the new fenced owner must explicitly reconcile it before completion.
+- Child, workflow, taskflow-plan, and verification obligations are durable blockers. Only resolved blockers or an authorized, reasoned waiver satisfy the success gate; clearing a visual task list does not silently resolve work.
+- Owner leases are renewed by a shared execution-lifetime controller while root, child, model, review, or tool work holds the execution. Persistent cancellation or lease loss aborts the shared signal. Rejected-review retries use a bounded persistent continuation outbox so a crash between the ledger decision and session projection cannot lose the retry or create a fresh budget scope.
+- Tool work is admitted persistently after permission but before invocation. Mutating tool admission dirties the revision before any side effect; duplicate operation IDs are rejected, and running or unknown operations block final staging/commit instead of being guessed complete after restart.
+- Session-bound verification, retry/fallback, review, compaction, and memory calls consume the same ledger. Background memory work runs after the main response so it cannot take the first reservation.
 
 Treat permission changes as security-sensitive and cover them with focused tests.
+
+Live agent comparisons use the same versioned eval fixtures with `eval benchmark --execute --routing fixed-base|fixed-expert|adaptive`; fixed-expert requires `--expert-model`. Reports distinguish calls, expert episodes, unpriced calls, TTFT/total time, proposals/rejections/repeated questions, and returns to base. These runs consume provider quota, and fixture-backed harness tests are not live model verification.
 
 ## TUI development
 
@@ -259,6 +291,12 @@ Tracked `.atomcli/` and `.claude/` assets are copied into every binary distribut
 - include only instruction assets required at runtime;
 - keep package manifests, locks, dependencies, inbox files, logs, plans, runs, and session state ignored;
 - never force-add ignored runtime content.
+
+## Session pipeline invariants
+
+- A compaction summary cuts off older model context only after its transaction commits. Empty, whitespace-only, unfinished, or non-shrinking summaries are rejected.
+- Completed tool evidence stays in model history if a provider error arrives later in the same turn. Replay distinguishes a tool execution failure from a post-processing failure after the operation was applied; do not automatically repeat the latter.
+- Plain-text data URL attachments decode only their payload. Base64 and percent-encoded UTF-8 are accepted, malformed encodings are rejected, and decoded text is capped at 1 MiB.
 
 ## Documentation and bundled guide maintenance
 

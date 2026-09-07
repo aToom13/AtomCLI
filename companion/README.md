@@ -14,14 +14,14 @@ iOS is not part of the current delivery target.
 
 ## Connect
 
-Start AtomCLI with companion access enabled:
+Normal interactive `atomcli` startup keeps the Companion listener ready on its preferred port 4096 when available, but does not authorize a new device or print a pairing token. The local TUI uses an in-process transport, so it does not take that port unless explicit control-plane network options are supplied. Start an explicit pairing flow when linking a new phone:
 
 ```sh
 atomcli --companion
 atomcli serve --companion
 ```
 
-Use `atomcli --companion` for the interactive TUI or `atomcli serve --companion` for the headless server. Scan the printed QR code in the Android app. The payload may contain both kinds of endpoint:
+Use `atomcli --companion` for interactive pairing or `atomcli serve --companion` for the headless server. Use `atomcli --no-companion` when the interactive listener must stay disabled. The TUI footer reports the actual control API and Companion ports, including partial startup failures. Scan the printed QR code in the Android app. The payload may contain both kinds of endpoint:
 
 - a Tailscale address for encrypted access across networks;
 - a private LAN address for devices on the same trusted network.
@@ -37,6 +37,8 @@ The PC writes a local, content-free Companion control audit to `~/.atomcli/compa
 The visible app and background service hand the socket to each other. Only one owns the connection at a time: the app owns it while visible, and the foreground service owns it after the app is hidden. While hidden, permission requests and questions still produce high-priority notifications. Running task lists remain visible as an ongoing notification, and new files or live previews produce transfer notifications.
 
 Android permission notifications expose only **Allow once** and **Deny**. Permanent grants and autonomous mode stay inside the app so they cannot be enabled by an accidental lock-screen tap. A single ordinary text question can use Android Direct Reply; multi-part, selection, and password questions must be opened in Companion. Question notifications also provide **Decline**. Command patterns are reduced to a target count in the lock-screen body instead of exposing full shell commands.
+
+Adaptive route proposals appear in the in-app Decisions inbox with their target model/thinking level, reason, scope, and estimated use. **Accept once** and **Keep current** send a newly signed online decision with proposal and route revisions; route decisions are never placed in the offline chat Outbox. Overview shows the authoritative active route and manual pin state received in the reconnect snapshot. Change or stop automatic proposals from the PC TUI with `/adaptive-routing off|ask|auto`.
 
 Notification actions are signed and sent through whichever foreground/background socket currently owns the connection. The notification remains present until the PC returns an action acknowledgement. Only then is it replaced briefly with **AtomCLI confirmed**; an offline, expired, conflicted, malformed, or timed-out request becomes **Action not completed** and remains available in the app. Authority decisions are never persisted to the safe Outbox. Resolution events and live authoritative snapshots remove stale OS notifications, including decisions completed from the PC. Android can still delay or suppress a background callback because of OEM battery policy, force-stop, notification permission, or a killed foreground service; a button animation by itself is therefore never treated as server success.
 
@@ -64,14 +66,14 @@ When the selected session spawns child agents, Chat groups their live tool, comm
 
 The app keeps its last task snapshot, session index, known-machine metadata, and safe outbox in an app-private SQLite database. Payload columns are AES-GCM encrypted with a key held separately in platform secure storage. Machine identifiers and storage timestamps remain database metadata; authentication keys, signatures, pairing tokens, permission requests, question requests, and temporary transfer/preview URLs are never placed in the offline cache. Cached screens are explicitly labelled as cached and do not imply that the PC is reachable or that a task is still running. A live authoritative snapshot replaces them after reconnection. Corrupt or unreadable cache records are discarded without blocking pairing or the live connection, and forgetting a machine removes its cached rows and queued messages.
 
-Paired device records are global to the local AtomCLI installation. Once at least one device is paired, later AtomCLI launches can start a Companion listener for reconnection without printing a new QR code. Passing `--companion` explicitly starts a new pairing flow and prints current endpoint information.
+Paired device records are global to the local AtomCLI installation. Normal TUI launches start a Companion listener even on a clean installation so the service is ready, but only an already authorized device can authenticate. No pairing token is issued unless `--companion` is passed explicitly. `--no-companion` disables that listener for the current TUI process.
 
 ## Machines, projects, processes, and ports
 
-The Companion listener is separate for each AtomCLI process:
+The Companion listener is separate for each AtomCLI process. In normal interactive startup the loopback control API starts first and typically owns 4096:
 
-1. With no fixed Companion port, the first process prefers port 4096.
-2. If 4096 is already occupied, another process selects an OS-assigned available port instead of exiting.
+1. With no fixed Companion port, each listener tries 4096 and otherwise selects an OS-assigned available port.
+2. This fallback normally occurs even for the first interactive process because its control API already owns 4096.
 3. Pairing output and QR data use the actual bound port.
 4. Each listener exposes only its own AtomCLI process and project/session context.
 

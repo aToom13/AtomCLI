@@ -19,6 +19,8 @@ Shared network options include:
 - `--companion`: enable pairing and print companion connection information.
 - `--companion-port <number>`: explicitly fix the companion listener port.
 
+Normal interactive `atomcli` startup launches the loopback control API and the scoped Companion listener together. The control API starts first; both prefer 4096 and automatically use real available ports when not fixed. The TUI footer shows the assigned ports and partial startup errors. Listener readiness does not issue a pairing token or authorize a device: `--companion` explicitly starts pairing, while `--no-companion` disables the interactive Companion listener. Headless `serve` and ACP retain their explicit Companion behavior.
+
 A non-loopback control-plane bind is refused without `--auth`:
 
 ```sh
@@ -46,6 +48,10 @@ atomcli run --attach http://127.0.0.1:4096 --auth "$ATOMCLI_SERVER_TOKEN" "Inspe
 
 Use the URL printed by the server because automatic port fallback can choose another port.
 
+Durable execution state is exposed per session through `/session/:sessionID/executions`, the execution detail endpoint, and `/session/:sessionID/execution-snapshot`. Replay uses `/session/:sessionID/execution-events` with its returned epoch and sequence; an epoch change, future cursor, or retained-history gap requires a fresh snapshot. Cancel and reconciliation requests require a stable request ID and exact versions, so retrying the same request is safe while stale clients cannot overwrite newer state. Root cancellation produces a durable local terminal message even if the provider had not created an assistant message yet; cancelling only a child leaves its root execution active. Budget and blocker updates arrive as versioned execution events. `/session/status` reports only transient busy/retry/idle activity.
+
+The `/global/event` SSE stream has a separate process-scoped epoch. Its event IDs use `epoch:sequence`; a legacy numeric cursor, process restart, cursor-ahead request, or bounded-buffer gap yields `server.resync_required`. A transport-level `server.connected` event is not proof that session state has been synchronized. Slow clients are disconnected after 256 pending events or 2 MiB so one subscriber cannot grow server memory without bound.
+
 ## ACP
 
 Start Agent Client Protocol mode for an ACP-compatible editor or client:
@@ -55,6 +61,8 @@ atomcli acp --help
 ```
 
 ACP communicates over its protocol streams and also uses the AtomCLI server internally. Configure its working directory and network/companion options according to the client integration.
+
+ACP advertises `atomcli-login`; terminal-auth capable clients can run `atomcli auth login`. AtomCLI verifies that a credential was stored before authentication succeeds and never asks for a credential in chat. A completed prompt is mapped from its durable execution outcome, so cancellation, blocked/failed work, and budget or turn limits use the matching ACP stop reason instead of always appearing as `end_turn`.
 
 ## Companion pairing
 
@@ -77,6 +85,8 @@ AtomCLI prints a QR code containing reachable WebSocket endpoints and a short-li
 The companion supports secure challenge authentication after pairing. Paired device credentials are loaded globally so future AtomCLI launches can accept reconnection without issuing a new pairing token.
 
 The challenge also negotiates the Companion protocol version and named capabilities. AtomCLI reports separate machine, project directory, process, bridge, device, and connection identities so reconnects and concurrent processes are not conflated. Existing protocol-v2 clients remain compatible; current clients negotiate v3.
+
+Current peers may negotiate `routes.decide`. Pending route proposals and active routes are included in authenticated snapshots and live events. Companion accepts or rejects them only with a fresh signed online action carrying both proposal version and route revision; an offline chat Outbox item can never become a route approval.
 
 The Android connection engine reports endpoint discovery, transport connection, authentication, synchronization, connected, retry, suspended, and incompatible-protocol phases separately. Use the Link screen's phase and endpoint details when a generic network error would otherwise be ambiguous.
 
@@ -144,6 +154,8 @@ Companion prompts use a fast, risk-proportionate execution profile. Low-risk pro
 Mission states are `LIVE`, `WAIT`, `PAUSED`, `DONE`, and `FAIL`. Pause is a signed live-only request that cancels the current turn but preserves the session for a later continuation. Stop marks an explicit termination and cancels the turn after mobile confirmation. Neither is an operating-system process freezer or rollback mechanism: already completed tool side effects remain, external commands may require time to observe cancellation, and an event-delivery delay can temporarily leave the card stale until the next event or authoritative snapshot. These authority-changing controls are never stored in the offline Outbox.
 
 If `--companion-port` or `server.companionPort` explicitly fixes a port, AtomCLI does not silently move it. A collision produces an error so an advertised/stored endpoint cannot unexpectedly refer to another port.
+
+Without a fixed port, each Companion listener tries 4096 and falls back to an OS-assigned port. In normal TUI startup the loopback control API starts first and usually owns 4096, so the Companion listener commonly uses another port even for the first process. The TUI footer and pairing output show the actual ports.
 
 Diagnosis:
 

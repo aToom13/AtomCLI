@@ -65,6 +65,12 @@ Run `atomcli <command> --help` for the current options. The complete top-level c
 
 Inside the interactive TUI, use `/model` or `/models` to open the model picker. The picker supports search by model name, ID, provider, and capability; it also exposes favorites and free/reasoning filters. OAuth-backed ChatGPT/Codex models are marked as subscription models rather than free models.
 
+Pressing Ctrl+C opens a safe exit confirmation with **Cancel** selected by default. Use the arrow keys or H/J/K/L to move between Cancel and Confirm, then press Enter; Escape cancels the dialog.
+
+Prompt, slash-command, and shell submissions show a delivery state. A server rejection is marked **FAILED**; a connection loss before acknowledgement is marked **DELIVERY UNKNOWN** so AtomCLI does not silently resend a command that may already have run. Focus that message and press Enter to restore its draft for inspection or retry.
+
+Interactive shell output is published to the session in 50 ms batches and keeps at most the newest 2 MiB. When older output is removed, the stored result starts with an explicit truncation marker; command completion and the newest diagnostics remain visible without unbounded session growth.
+
 Use `/model think` to select a reasoning level. The menu is derived from the active model, so unsupported levels are not offered. `/model visibility` only controls whether reasoning output is shown; it does not change the model's reasoning level.
 
 Useful commands include:
@@ -97,14 +103,14 @@ The guide uses focused reference files instead of placing the entire manual in e
 
 > **Beta:** AtomCLI Companion is still under active development. Android builds are usable for testing and daily development workflows, but mobile behavior, protocol capabilities, background execution, and UI details may change between releases. Treat it as a companion control surface rather than the sole copy of important work.
 
-Start pairing from either the TUI or headless server:
+Normal `atomcli` TUI startup keeps a scoped Companion listener ready in the worker and uses an in-process transport for the local TUI. It does not create a pairing token or authorize a new phone. Start an explicit pairing flow from either the TUI or headless server:
 
 ```sh
 atomcli --companion
 atomcli serve --companion
 ```
 
-The first automatic Companion listener prefers port 4096. If that port is occupied, including by another AtomCLI process, AtomCLI selects an available port and prints the real endpoint in the pairing information. A port explicitly fixed with `--companion-port` or `server.companionPort` does not move silently and fails on collision.
+The Companion listener gets first use of port 4096 during normal TUI startup, preserving saved phone endpoints. Explicit control-plane options such as `--port`, `--hostname`, or `--mdns` also start the HTTP control API; a port conflict can then move an automatically assigned Companion listener. The TUI footer shows the actual ports. A second AtomCLI process independently falls back to an available port. Use `--no-companion` to disable the listener. A port explicitly fixed with `--companion-port` or `server.companionPort` does not move silently and reports a visible partial-start error on collision.
 
 Paired device credentials are global, so later AtomCLI processes can enable their own Companion listener without showing a new QR code. Each process still owns a separate endpoint and session context; the phone connects to the selected machine endpoint, not to every running process at once. See the [Companion guide](companion/README.md).
 
@@ -151,6 +157,14 @@ atomcli completion powershell | Out-String | Invoke-Expression
 ## Configuration and data
 
 Global AtomCLI files live under `~/.atomcli/`. The configuration loader reads global `config.json`, `atomcli.json`, `atomcli.jsonc`, and `mcp.json`. A file specified by `ATOMCLI_CONFIG` overrides global configuration; project `atomcli.jsonc`, `atomcli.json`, and `mcp.json` override it. `ATOMCLI_CONFIG_CONTENT` has the highest precedence.
+
+Long-running work can use an optional `execution_budget` block to share call, agent-step, duration, and USD limits across a root request and its child agents. `max_cost_usd`, `session_max_cost_usd`, and `project_max_cost_usd` are separate execution, root-session-tree, and project ceilings; all configured scopes must admit a call. Model verification, retries, fallback, review, compaction, and session-bound memory calls consume the same ledger. Monetary limits reject models without known pricing by default; set `unknown_price` to `"allow"` only when accepting unmetered cost uncertainty. Completed calls may exceed their reservation, so the limit prevents later dispatches but is not an absolute billing guarantee.
+
+A later prompt may set `resumesExecutionID` to continue a terminal execution as a new auditable segment. The new segment keeps the original execution budget scope, deadline, and cumulative call, step, and cost usage; resume cannot loosen the original limits.
+
+Each root execution also has a renewable owner lease. An expired-owner takeover increments a monotonic fence, reclaims reservations that were never dispatched, marks abandoned tool work for explicit reconciliation, and prevents the previous process from finishing or starting work; late provider usage can still close an attempt that was already dispatched. User cancellation targets the exact captured execution and fence, while ordinary loop cleanup does not cancel shared parent/child work. Ownership is checked again after permission and middleware immediately before the tool body.
+
+Root terminal text is staged privately in the same SQLite/WAL ledger. Staging moves the execution into a finalizing phase. Reviewer/checker calls require a persistent review claim bound to the concrete reviewer session; a completion marked as requiring review cannot commit without a matching persisted `passed` verdict for its digest and mutation revision. Commit also requires the current fenced owner and no unresolved work, then closes the execution to new work. A committed candidate is projected idempotently into session storage after restart.
 
 Use `atomcli auth login` for credentials. Provider overrides use the `provider` field, and model identifiers use `provider/model`. See the [provider guide](docs/PROVIDERS.md) for examples.
 

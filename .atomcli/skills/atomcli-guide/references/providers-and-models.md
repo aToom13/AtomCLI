@@ -79,6 +79,32 @@ atomcli run --variant high "Solve this task"
 
 Do not claim a variant exists without checking the active model.
 
+## Adaptive model and thinking proposals
+
+The optional `adaptive_routing` block controls model proposals with `mode: "off" | "ask" | "auto"`; `thinking.mode` controls thinking-level proposals independently and both default to `ask`. `auto` does not itself grant provider, paid-model, or probe authority. Automatic application requires a trusted user grant bounded to the exact target and execution limits.
+
+The conversational model uses `model_control` to recommend model/thinking changes; natural-language intent is not matched with regex. Authentication, quota, network, permission, and storage failures are not task-difficulty evidence. Do not edit config files or search source code when the user asks to change the conversation model.
+
+Use `model_control` with `action: "list"` (optional `query`) to discover connected IDs and supported variants. Then `action: "request"` requires `providerID`, `modelID` and `reason`. `scope: "model"` changes the conversation selection; `thinking` changes its reasoning level; `expert` starts a bounded read-only episode on a configured expert. Only main conversations can request switches. Clarify ambiguous targets rather than inventing IDs.
+
+The runtime pauses subsequent model calls while approval is pending. Rejection, cancellation or expiry does not apply the route. After approval, parameters, credentials and text/tool verification must pass before application. Never describe a pending or merely accepted request as a completed switch. The TUI changes its selection only after application.
+
+For example, “set the model to GPT 5.6 Luna” should use the list/request tool sequence. This depends on the current model's tool-calling reliability, not an offline intent parser; the model picker remains the direct fallback. Approving a concrete model change can leave Free, with paid/subscription verification deferred until confirmation. Auto/Free requests retain the alias selection and its pricing/verification restrictions. Automatic recommendations respect manual pins and require exact grants for auto-acceptance.
+
+Eligibility is fail-closed: connection, provider/model allowlists, Free pricing, permission, capabilities, modalities, context/output limits, variant support, and current verification must all pass. A score cannot relax these constraints, and an accepted proposal changes nothing until a safe step boundary applies it.
+
+ChatGPT OAuth verification must stream Responses, just like normal dispatch; non-streaming requests are rejected by that endpoint. OAuth probes omit unsupported output-token limits but retain timeouts, instructions and `store: false`. API-key probes keep completion requests and output limits. Neither path records success without actual text or a valid verification tool call.
+
+Use `/model adaptive-routing off|ask|auto` (or the compatible `/adaptive-routing` command) in the TUI to change or stop proposals. Ctrl+P → Model → Auto / Free Model Settings also offers model/thinking proposal modes and separate paid-model/paid-probe switches; Free remains verified and zero-cost. The session route strip reports the concrete active route, thinking variant, base/expert stage, manual pin, and call budget. Explicit model and thinking choices are pinned and take precedence over automation.
+
+Cold verification completes text/tool checks for batches of two candidates within a shared 30-second deadline, stopping once a model is eligible. Cached probe results are released after use, so expired evidence and cooldowns can be retried without restarting.
+
+Category overrides retain alternative candidates, and provider-qualified exclusions apply before probing. Auto/Free settings include direct alias selection; save preferences before switching. Saving uses the configured SDK connection and reports failures before updating local settings.
+
+Even greetings may be sent with Agent tools enabled. Dispatch verifies missing tool evidence or changed parameters using the exact prepared parameters before sending the request, without rerunning parameter plugins. Probes remain bounded by time, cooldowns, cancellation, and execution budgets. Free never probes paid models; Auto needs both paid-model and paid-probe permission.
+
+Object-union tool schemas keep their alternatives and receive a root object type for providers such as Cohere. This lets the verification result match the real Agent tool payload more closely.
+
 ## Smart routing
 
 Smart routing lets AtomCLI choose a model by task category:
@@ -98,6 +124,18 @@ TUI equivalent:
 
 Use explicit `-m provider/model` when reproducibility matters more than automatic routing.
 
+### AtomCLI Auto and Free verification
+
+`atomcli/atomcli-auto` and `atomcli/atomcli-free` choose only candidates with fresh evidence for the capabilities required by the task. Catalog metadata and HTTP 200 alone are not sufficient. AtomCLI uses bounded text and side-effect-free tool probes, shares their TTL-based results across processes, and refreshes evidence from completed non-empty real calls. The evidence key includes a safe fingerprint of the effective endpoint and credential/configuration identity; secrets are not persisted.
+
+By default, both aliases consider explicitly zero-cost models from connected providers. Free keeps its free-only and verification requirements through retry, fallback, tool turns, compaction, memory helpers, and child sessions. Unknown price is not free, and no route silently falls back to a paid model. Auto can consider verified paid models only with `experimental.auto_router.allow_paid_models: true`; automatic paid probes additionally require `allow_paid_probes: true`. Limit either alias's candidate set with `allowed_providers`. Free ignores the paid flags and remains free-only.
+
+When no verified eligible candidate remains, AtomCLI stores a visible assistant error under the selected Auto/Free alias instead of leaving the prompt unanswered or restoring excluded, unavailable, unverified, capability-incompatible, or non-free candidates. The TUI also surfaces transport failures and does not automatically resend an uncertain prompt.
+
+Automatic verification considers ranked candidates within one shared deadline. Text and tool probes use separate bounded output allowances. A timeout or output-limited completion without visible text/tool proof is inconclusive, not verified, and observes a retry cooldown. Usage returned by the provider is accounted even when the returned content fails verification.
+
+Evidence is bound to the requested reasoning variant and its adapter options. Proof for `high` does not authorize `max`; stale or unsupported variants fail visibly rather than falling back to provider defaults.
+
 ## Fallback models
 
 Inspect, test, or configure fallback models:
@@ -105,11 +143,12 @@ Inspect, test, or configure fallback models:
 ```sh
 atomcli fallback --list
 atomcli fallback --probe
+atomcli fallback --probe --capability tool --force
 atomcli fallback --secondary provider/model --tertiary provider/model --enable
 atomcli fallback --reset
 ```
 
-`--probe` makes real model requests and may consume quota or incur provider costs. Explain that before running it.
+`--probe` makes real model requests, updates the shared capability evidence, and may consume quota or incur provider costs. Use `--capability text|tool`; `--force` explicitly bypasses fresh evidence and cooldowns. Explain the cost risk before running it.
 
 Equivalent config shape:
 

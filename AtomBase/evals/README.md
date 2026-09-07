@@ -23,6 +23,9 @@ Executing the suite against live models:
 bun run dev -- eval benchmark --execute
 bun run dev -- eval benchmark --execute --model provider/model
 bun run dev -- eval benchmark --execute --agent plan
+bun run dev -- eval benchmark --execute --routing fixed-base --model provider/base
+bun run dev -- eval benchmark --execute --routing fixed-expert --model provider/base --expert-model provider/expert
+bun run dev -- eval benchmark --execute --routing adaptive --model provider/base --expert-model provider/expert
 ```
 
 On an interactive terminal, `--execute` offers menus for provider, model, and agent unless they are passed explicitly. `--agent` defaults to `build`; `--suite` selects a named observation bucket. A positional file argument points at an alternative suite JSON.
@@ -36,6 +39,8 @@ With `--execute`, every case:
 3. Is graded by an independent verifier whose sources are moved out of the worktree for the duration of the run and restored automatically, including after interruption.
 
 Results are recorded under the selected suite bucket so repeated runs can be compared over time. Rate limits are detected and reported instead of being retried silently.
+
+Routing comparisons reuse the same versioned suite. `fixed-base` pins the selected base model, `fixed-expert` requires and pins `--expert-model`, and `adaptive` enables the local adaptive policy for the benchmark session without changing user configuration. Reports include success, calls, expert episodes, known cost plus unpriced-call count, TTFT/total duration, proposals, rejections, repeated questions, and returns to the base route. Fixture-backed results measure the harness only; they are not live model-quality or entitlement evidence.
 
 ## Adding a case
 

@@ -64,6 +64,14 @@ Confirm the exact local model ID with `atomcli models <provider>` rather than gu
 
 Type a prompt and press Enter to submit it. Insert a newline with Shift+Enter, Ctrl+Enter, Alt+Enter, or Ctrl+J on supported terminals. Use `/help` to see command families and current keybindings.
 
+Ctrl+C opens the exit confirmation with Cancel selected by default. Move between Cancel and Confirm with the arrow keys or H/J/K/L, press Enter to choose, or press Escape to stay in AtomCLI.
+
+Normal prompts, slash commands, and shell submissions use the same delivery indicator. `FAILED` means the server rejected the request; `DELIVERY UNKNOWN` means the connection ended before an acknowledgement, so the operation may already have started and is never resent automatically. Focus the message and press Enter to restore its draft, inspect current session state, and retry only when safe.
+
+Normal TUI startup uses its in-process transport and does not reserve a loopback control-plane port. This leaves the preferred `4096` port available to the automatically started Companion listener. A control-plane listener starts only when network options such as `--port`, `--hostname`, or `--mdns` request it.
+
+Shell submissions publish live output in 50 ms batches and retain at most the newest 2 MiB. A visible truncation marker replaces discarded earlier output, preventing long-running commands from growing the session without bound while preserving their latest diagnostics.
+
 Primary slash-command families:
 
 | Command     | Purpose                                                                |
@@ -82,6 +90,7 @@ Useful examples:
 /model think high
 /model visibility
 /model smart
+/adaptive-routing ask
 /agent select
 /agent skills
 /settings status
@@ -97,6 +106,8 @@ Useful examples:
 ```
 
 Legacy shortcuts such as `/models`, `/agents`, `/skills`, `/status`, `/auth`, `/mcp`, `/theme`, `/thinking`, and `/sessions` remain accepted. Prefer the grouped forms when teaching new users because they are easier to discover with autocomplete.
+
+Adaptive routing modes are `off`, `ask`, and `auto`. `off` is the immediate stop control; `ask` opens a proposal decision; `auto` can reuse only a previously accepted exact execution-scoped grant. Active model, thinking level, base/expert stage, pin, and call budget remain visible above the prompt.
 
 The default leader key is Ctrl+X. Common defaults include:
 
