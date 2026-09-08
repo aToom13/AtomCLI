@@ -702,7 +702,8 @@ export namespace HarnessState {
   const QA_SESSION_TTL_MS = 60 * 60 * 1000
   const MAX_QA_SESSIONS = 100
 
-  function pruneQASessions(now = Date.now()): void {
+  function pruneQASessions(): void {
+    const now = Date.now()
     for (const [key, ts] of QA_SESSION_TS) {
       if (now - ts > QA_SESSION_TTL_MS) {
         QA_SESSION_MAP.delete(key)
@@ -742,17 +743,11 @@ export namespace HarnessState {
    * oldest entries (by timestamp) are evicted — mirrors the reviewer session
    * registry to prevent unbounded memory growth in long-lived servers.
    */
-  export function setQASession(
-    orchestratorSessionID: string,
-    taskId: string,
-    qaSessionId: string,
-    slot = 0,
-    now = Date.now(),
-  ): void {
-    pruneQASessions(now)
+  export function setQASession(orchestratorSessionID: string, taskId: string, qaSessionId: string, slot = 0): void {
+    pruneQASessions()
     const key = `${orchestratorSessionID}:${taskId}:${slot}`
     QA_SESSION_MAP.set(key, qaSessionId)
-    QA_SESSION_TS.set(key, now)
+    QA_SESSION_TS.set(key, Date.now())
     log.info("QA session registered", { orchestratorSessionID, taskId, qaSessionId, slot })
   }
 
@@ -800,7 +795,8 @@ export namespace HarnessState {
   const REVIEWER_SESSION_TTL_MS = 60 * 60 * 1000
   const MAX_REVIEWER_SESSIONS = 100
 
-  function pruneReviewerSessions(now = Date.now()): void {
+  function pruneReviewerSessions(): void {
+    const now = Date.now()
     for (const [key, ts] of REVIEWER_SESSION_TS) {
       if (now - ts > REVIEWER_SESSION_TTL_MS) {
         REVIEWER_SESSION_MAP.delete(key)
@@ -834,11 +830,11 @@ export namespace HarnessState {
   /**
    * Register the reviewer session ID for a main session after first spawn.
    */
-  export function setReviewerSession(sessionID: string, reviewerSessionId: string, slot = 0, now = Date.now()): void {
-    pruneReviewerSessions(now)
+  export function setReviewerSession(sessionID: string, reviewerSessionId: string, slot = 0): void {
+    pruneReviewerSessions()
     const key = `${sessionID}:${slot}`
     REVIEWER_SESSION_MAP.set(key, reviewerSessionId)
-    REVIEWER_SESSION_TS.set(key, now)
+    REVIEWER_SESSION_TS.set(key, Date.now())
     log.info("main reviewer session registered", { sessionID, reviewerSessionId, slot })
   }
 

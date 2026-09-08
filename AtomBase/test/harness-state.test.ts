@@ -666,20 +666,28 @@ describe("HarnessState - bounded registries evict by oldest timestamp", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        // 100 entries at ascending fake timestamps 1000..1099
-        for (let i = 0; i < 100; i++) {
-          HarnessState.setReviewerSession(`sess-evict-${i}`, `r-evict-${i}`, 0, 1000 + i)
-        }
-        // 101st entry registered with a MUCH older timestamp (1): min-timestamp
-        // eviction must remove THIS one even though it was inserted last. The
-        // prune runs BEFORE insert, so a 102nd insert triggers the eviction.
-        HarnessState.setReviewerSession("sess-evict-old", "r-old", 0, 1)
-        HarnessState.setReviewerSession("sess-evict-trigger", "r-trigger", 0, 5000)
+        const realNow = Date.now
+        try {
+          // 100 entries at ascending fake timestamps 1000..1099
+          for (let i = 0; i < 100; i++) {
+            Date.now = () => 1000 + i
+            HarnessState.setReviewerSession(`sess-evict-${i}`, `r-evict-${i}`)
+          }
+          // 101st entry registered with a MUCH older timestamp (1): min-timestamp
+          // eviction must remove THIS one even though it was inserted last. The
+          // prune runs BEFORE insert, so a 102nd insert triggers the eviction.
+          Date.now = () => 1
+          HarnessState.setReviewerSession("sess-evict-old", "r-old")
+          Date.now = () => 5000
+          HarnessState.setReviewerSession("sess-evict-trigger", "r-trigger")
 
-        expect(HarnessState.getReviewerSession("sess-evict-old")).toBeUndefined()
-        expect(HarnessState.getReviewerSession("sess-evict-trigger")).toBe("r-trigger")
-        // First-inserted entry has a newer timestamp and survives
-        expect(HarnessState.getReviewerSession("sess-evict-0")).toBe("r-evict-0")
+          expect(HarnessState.getReviewerSession("sess-evict-old")).toBeUndefined()
+          expect(HarnessState.getReviewerSession("sess-evict-trigger")).toBe("r-trigger")
+          // First-inserted entry has a newer timestamp and survives
+          expect(HarnessState.getReviewerSession("sess-evict-0")).toBe("r-evict-0")
+        } finally {
+          Date.now = realNow
+        }
       },
     })
   })
@@ -689,16 +697,24 @@ describe("HarnessState - bounded registries evict by oldest timestamp", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        for (let i = 0; i < 100; i++) {
-          HarnessState.setQASession("orch-evict", `t-${i}`, `qa-${i}`, 0, 2000 + i)
-        }
-        HarnessState.setQASession("orch-evict", "t-old", "qa-old", 0, 2)
-        // Prune runs before insert, so a second insert triggers the eviction
-        HarnessState.setQASession("orch-evict", "t-trigger", "qa-trigger", 0, 6000)
+        const realNow = Date.now
+        try {
+          for (let i = 0; i < 100; i++) {
+            Date.now = () => 2000 + i
+            HarnessState.setQASession("orch-evict", `t-${i}`, `qa-${i}`)
+          }
+          Date.now = () => 2
+          HarnessState.setQASession("orch-evict", "t-old", "qa-old")
+          // Prune runs before insert, so a second insert triggers the eviction
+          Date.now = () => 6000
+          HarnessState.setQASession("orch-evict", "t-trigger", "qa-trigger")
 
-        expect(HarnessState.getQASession("orch-evict", "t-old")).toBeUndefined()
-        expect(HarnessState.getQASession("orch-evict", "t-trigger")).toBe("qa-trigger")
-        expect(HarnessState.getQASession("orch-evict", "t-0")).toBe("qa-0")
+          expect(HarnessState.getQASession("orch-evict", "t-old")).toBeUndefined()
+          expect(HarnessState.getQASession("orch-evict", "t-trigger")).toBe("qa-trigger")
+          expect(HarnessState.getQASession("orch-evict", "t-0")).toBe("qa-0")
+        } finally {
+          Date.now = realNow
+        }
       },
     })
   })
