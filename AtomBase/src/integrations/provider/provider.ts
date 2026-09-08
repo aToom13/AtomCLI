@@ -888,6 +888,15 @@ export namespace Provider {
       if (existingModel) return catalogStillApplies ? existingModel.variants : {}
       return ProviderTransform.variants(parsedModel)
     },
+    zenHeaders(input?: HeadersInit) {
+      const headers = new Headers(input)
+      if (!headers.has("x-atomcli-session")) return headers
+      for (const name of ["project", "session", "request", "client"]) {
+        const value = headers.get(`x-atomcli-${name}`)
+        if (value && !headers.has(`x-opencode-${name}`)) headers.set(`x-opencode-${name}`, value)
+      }
+      return headers
+    },
   }
 
   async function initialize() {
@@ -1433,6 +1442,10 @@ export namespace Provider {
           } catch {
             // Preserve non-JSON request bodies.
           }
+        }
+
+        if (model.providerID.startsWith("atomcli") || model.providerID === "opencode") {
+          opts.headers = _internals.zenHeaders(opts.headers as HeadersInit | undefined)
         }
 
         const response = await fetchFn(input, {

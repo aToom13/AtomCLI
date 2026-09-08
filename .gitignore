@@ -1,5 +1,6 @@
 # Local bug analysis reports (never commit)
 Bugs/
+/OpenCodeTest/
 
 # Operating-system and editor files
 .DS_Store

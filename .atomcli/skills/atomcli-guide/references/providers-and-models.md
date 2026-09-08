@@ -93,6 +93,8 @@ For example, “set the model to GPT 5.6 Luna” should use the list/request too
 
 Eligibility is fail-closed: connection, provider/model allowlists, Free pricing, permission, capabilities, modalities, context/output limits, variant support, and current verification must all pass. A score cannot relax these constraints, and an accepted proposal changes nothing until a safe step boundary applies it.
 
+Zen conversation requests disable server-side response storage, so replay sends complete tool-call/output pairs instead of temporary provider item references that Zen cannot reliably resolve.
+
 ChatGPT OAuth verification must stream Responses, just like normal dispatch; non-streaming requests are rejected by that endpoint. OAuth probes omit unsupported output-token limits but retain timeouts, instructions and `store: false`. API-key probes keep completion requests and output limits. Neither path records success without actual text or a valid verification tool call.
 
 Use `/model adaptive-routing off|ask|auto` (or the compatible `/adaptive-routing` command) in the TUI to change or stop proposals. Ctrl+P → Model → Auto / Free Model Settings also offers model/thinking proposal modes and separate paid-model/paid-probe switches; Free remains verified and zero-cost. The session route strip reports the concrete active route, thinking variant, base/expert stage, manual pin, and call budget. Explicit model and thinking choices are pinned and take precedence over automation.
@@ -137,6 +139,8 @@ Automatic verification considers ranked candidates within one shared deadline. T
 Evidence is bound to the requested reasoning variant and its adapter options. Proof for `high` does not authorize `max`; stale or unsupported variants fail visibly rather than falling back to provider defaults.
 
 ## Fallback models
+
+Retryable provider failures receive one retry on the current model before AtomCLI selects a fallback. Cancelling with ESC ends only the active turn; cancellation notices remain chronological and their internal metadata is not sent to the provider. The next user message starts a new execution normally.
 
 Inspect, test, or configure fallback models:
 
@@ -212,5 +216,7 @@ Configure a non-default endpoint with `provider.ollama.options.baseURL`.
 4. Inspect project and global provider overrides.
 5. Run the failing command with `--print-logs`.
 6. Refresh the catalog only if stale metadata is plausible: `atomcli models --refresh`.
+
+If every anonymous `atomcli/*-free` model reports that the free tier only works in OpenCode, update AtomCLI; current builds forward the Zen session identity required by the gateway.
 
 The models.dev cache under `~/.atomcli/cache/models.json` is regenerable implementation data, not the source of credentials or account entitlement.

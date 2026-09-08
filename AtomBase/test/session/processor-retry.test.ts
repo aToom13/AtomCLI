@@ -9,6 +9,9 @@ import { SessionProcessor } from "@/core/session/processor"
 import { ExecutionRuntime } from "@/core/execution/runtime"
 import { Provider } from "@/integrations/provider/provider"
 import { ModelVerification } from "@/integrations/provider/verification"
+import { ModelAvailability } from "@/integrations/provider/availability"
+import { ModelFallback } from "@/integrations/provider/fallback"
+import { SessionRetry } from "@/core/session/retry"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
@@ -19,6 +22,91 @@ afterEach(() => {
 })
 
 describe("session processor retry budget", () => {
+  test("retries the primary once before switching to a fallback", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const model = {
+      id: "primary",
+      providerID: "test-provider",
+      limit: { context: 100_000, output: 4_000 },
+      cost: { input: 0, output: 0 },
+    } as Provider.Model
+    const fallback = { ...model, id: "fallback" }
+    const assistantMessage = {
+      id: "msg_fallback_retry",
+      sessionID: "ses_fallback_retry",
+      parentID: "msg_user",
+      role: "assistant",
+      agent: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: model.id,
+      providerID: model.providerID,
+      time: { created: Date.now() },
+    } as MessageV2.Assistant
+    const fullStream = (async function* () {
+      yield { type: "text-start", id: "text-1" }
+      yield { type: "text-delta", id: "text-1", text: "OK" }
+      yield { type: "text-end", id: "text-1" }
+      yield {
+        type: "finish-step",
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }
+      yield { type: "finish" }
+    })()
+    const stream = spyOn(LLM, "stream")
+      .mockRejectedValueOnce(new Error("temporary rate limit"))
+      .mockRejectedValueOnce(new Error("temporary rate limit"))
+      .mockResolvedValueOnce({ fullStream } as any)
+    spies.push(stream)
+    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 2 } } as any))
+    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
+    spies.push(spyOn(AgentEval, "allowsModelFallback").mockReturnValue(true))
+    spies.push(spyOn(SessionRetry, "sleep").mockResolvedValue(undefined))
+    spies.push(
+      spyOn(MessageV2, "fromError").mockResolvedValue(
+        new MessageV2.APIError({ message: "temporary rate limit", statusCode: 429, isRetryable: true }).toObject(),
+      ),
+    )
+    spies.push(spyOn(ModelFallback, "getDynamicFallbackModels").mockResolvedValue(["test-provider/fallback"]))
+    spies.push(spyOn(Provider, "getModel").mockResolvedValue(fallback))
+    spies.push(spyOn(Provider, "isRouteEligible").mockResolvedValue(true))
+    spies.push(spyOn(ModelAvailability, "active").mockReturnValue(undefined))
+    spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
+    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+    spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => part) as any))
+    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const processor = SessionProcessor.create({
+          assistantMessage,
+          sessionID: assistantMessage.sessionID,
+          model,
+          abort: new AbortController().signal,
+        })
+        const result = await processor.process(
+          {
+            user: {} as MessageV2.User,
+            agent: {} as any,
+            abort: new AbortController().signal,
+            sessionID: assistantMessage.sessionID,
+            system: [],
+            messages: [],
+            tools: {},
+            model,
+          },
+          { enableAmendments: false },
+        )
+
+        expect(result.fallbackModel?.id).toBe("fallback")
+        expect(stream).toHaveBeenCalledTimes(3)
+      },
+    })
+  })
+
   test("does not poison model verification with a local execution-budget rejection", async () => {
     await using tmp = await tmpdir({ git: true })
     const model = { id: "budget-model", providerID: "test-provider" } as Provider.Model

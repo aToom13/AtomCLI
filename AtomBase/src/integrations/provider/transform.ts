@@ -435,7 +435,7 @@ export namespace ProviderTransform {
           (available.length ? `. Available variants: ${available.join(", ")}` : ". This model has no variants."),
       )
     }
-    const { _routePolicy, _catalogCostKnown, ...wireModelOptions } = modelOptions
+    const wireModelOptions = Object.fromEntries(Object.entries(modelOptions).filter(([key]) => !key.startsWith("_")))
     const withModel = mergeDeep(base, wireModelOptions) as Record<string, any>
     const withAgent = mergeDeep(withModel, agentOptions) as Record<string, any>
     return mergeDeep(withAgent, variant ?? {}) as Record<string, any>

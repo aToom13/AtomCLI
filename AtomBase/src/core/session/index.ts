@@ -294,7 +294,7 @@ export namespace Session {
       )) {
         result.push(msg)
       }
-      result.reverse()
+      result.sort((a, b) => a.info.time.created - b.info.time.created || a.info.id.localeCompare(b.info.id))
       return result
     },
   )

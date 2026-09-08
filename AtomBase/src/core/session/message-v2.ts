@@ -431,6 +431,14 @@ export namespace MessageV2 {
   })
   export type WithParts = z.infer<typeof WithParts>
 
+  function providerMetadata(metadata?: Record<string, any>) {
+    if (!metadata) return
+    const entries = Object.entries(metadata).filter(
+      ([, value]) => value !== null && typeof value === "object" && !Array.isArray(value),
+    )
+    return entries.length ? Object.fromEntries(entries) : undefined
+  }
+
   export async function toModelMessage(input: WithParts[]): Promise<ModelMessage[]> {
     const convertToModelMessages = await getConvertToModelMessages()
     const result: UIMessage[] = []
@@ -497,7 +505,7 @@ export namespace MessageV2 {
             assistantMessage.parts.push({
               type: "text",
               text: part.text,
-              providerMetadata: part.metadata,
+              providerMetadata: providerMetadata(part.metadata),
             })
           if (part.type === "step-start")
             assistantMessage.parts.push({
@@ -529,7 +537,7 @@ export namespace MessageV2 {
                 toolCallId: part.callID,
                 input: part.state.input,
                 output: part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output,
-                callProviderMetadata: part.metadata,
+                callProviderMetadata: providerMetadata(part.metadata),
               })
             }
             if (part.state.status === "error")
@@ -546,7 +554,7 @@ export namespace MessageV2 {
             assistantMessage.parts.push({
               type: "reasoning",
               text: part.text,
-              providerMetadata: part.metadata,
+              providerMetadata: providerMetadata(part.metadata),
             })
           }
         }
@@ -641,7 +649,7 @@ export namespace MessageV2 {
       )
         completed.add(msg.info.parentID)
     }
-    result.reverse()
+    result.sort((a, b) => a.info.time.created - b.info.time.created || a.info.id.localeCompare(b.info.id))
     return result
   }
 

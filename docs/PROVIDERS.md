@@ -60,9 +60,13 @@ With this example, Auto can reuse fresh evidence for a paid OpenAI model but wil
 
 If no eligible verified candidate exists, the session stores a visible assistant error under the selected Auto/Free alias instead of leaving only the user's message or relaxing exclusions, price, capabilities, or verification. The TUI also reports transport failures immediately. Reloading history preserves the model-selection failure and does not resubmit the prompt automatically.
 
+Retryable provider failures receive one retry on the current model before fallback selection begins. Cancelling with ESC ends only the active turn; cancellation notices remain in chronological order, and their internal metadata is not forwarded to the next provider prompt. A later user message starts a new execution normally.
+
 Automatic verification examines ranked candidates within a shared time bound rather than repeatedly stopping at the first three. Text and tool probes have separate bounded output allowances. A timeout or an output-limit completion without visible proof is recorded as inconclusive and retried only after its cooldown; it is not accepted as verification. When a provider returns usage before content validation fails, the real usage is still accounted. `atomcli fallback --probe --capability text` (or `tool`) makes real provider requests and updates the shared verification evidence; `--force` explicitly ignores fresh evidence and cooldowns. A probe may consume provider quota.
 
 Verification evidence is also bound to the selected reasoning variant and its adapter options. A `high` result cannot authorize `max`, and a stale or unsupported variant is rejected visibly instead of silently using the model default.
+
+AtomCLI sends Zen conversation requests with server-side response storage disabled. Session replay therefore includes complete tool-call/output pairs instead of temporary provider item references that Zen cannot reliably resolve.
 
 ChatGPT OAuth verification uses streaming Responses requests, like normal conversation dispatch. These probes omit the unsupported output-token limit and remain bounded by the probe deadline; standalone probes also supply the required instructions and `store: false`. OpenAI API-key probes retain the normal completion path and output limits. Both paths still require visible text or a valid verification tool call before recording success.
 
@@ -154,3 +158,4 @@ The models.dev catalog is cached at `~/.atomcli/cache/models.json`. It is an imp
 - Run `atomcli models <provider>` to confirm the local model identifier.
 - Use `atomcli --print-logs` for diagnostics.
 - Check the configured `provider` entry and any project-level override before changing global configuration.
+- If every anonymous `atomcli/*-free` model reports that the free tier only works in OpenCode, update AtomCLI; current builds forward the Zen session identity required by the gateway.

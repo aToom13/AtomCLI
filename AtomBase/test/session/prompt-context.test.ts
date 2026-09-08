@@ -109,6 +109,15 @@ describe("session prompt turn context", () => {
     ).toBe(false)
   })
 
+  test("a cancellation response does not answer later user messages", () => {
+    const user = { id: "msg_080e_new" } as MessageV2.User
+    const cancelled = { id: "msg_cancel_old", parentID: "msg_080d_old", finish: "error" } as MessageV2.Assistant
+    const current = { id: "msg_080e_reply", parentID: user.id, finish: "stop" } as MessageV2.Assistant
+
+    expect(SessionPrompt._internals.isFinishedResponse(user, cancelled)).toBe(false)
+    expect(SessionPrompt._internals.isFinishedResponse(user, current)).toBe(true)
+  })
+
   test("an old run cleanup cannot cancel its replacement", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({

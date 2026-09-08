@@ -200,7 +200,7 @@ export namespace LLM {
                 session_id: input.sessionID,
               }
             : undefined),
-          ...(input.model.providerID.startsWith("atomcli")
+          ...(input.model.providerID.startsWith("atomcli") || input.model.providerID === "opencode"
             ? {
                 "x-atomcli-project": Instance.project.id,
                 "x-atomcli-session": input.sessionID,
@@ -377,6 +377,7 @@ export namespace LLM {
         options,
       },
     )
+    if (input.model.providerID.startsWith("atomcli") || input.model.providerID === "opencode") params.options.store = false
     return { params, isCodex }
   }
 }

@@ -633,9 +633,12 @@ export namespace SessionProcessor {
               if (!exhausted) {
                 const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
 
-                // FALLBACK: On first retryable error, try switching to a fallback model
-                // instead of waiting (delay can be 43277s)
-                if (!fallbackAttempted && AgentEval.allowsModelFallback(input.sessionID)) {
+                // Give a transient failure one same-model retry before switching.
+                if (
+                  attempt >= SessionRetry.FALLBACK_AFTER_RETRIES &&
+                  !fallbackAttempted &&
+                  AgentEval.allowsModelFallback(input.sessionID)
+                ) {
                   try {
                     // Get fallback models from config or dynamically discover available free models
                     const dynamicDefaults = await ModelFallback.getDynamicFallbackModels({
@@ -724,10 +727,7 @@ export namespace SessionProcessor {
                   }
 
                   if (fallbackAttempted) {
-                    // Return to the prompt loop. It will construct a fresh
-                    // assistant turn and rebuild tool schemas for the new
-                    // model instead of reusing the failed model's tool set.
-                    break
+                    continue // Retry with new model
                   }
                 }
 

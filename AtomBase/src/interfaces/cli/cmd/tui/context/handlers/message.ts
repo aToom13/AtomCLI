@@ -1,7 +1,10 @@
 import { produce, type SetStoreFunction } from "solid-js/store"
-import { Binary } from "@atomcli/util/binary"
 
 const MAX_CACHED_MESSAGES = 100
+
+function compareMessages(a: any, b: any) {
+  return a.time.created - b.time.created || a.id.localeCompare(b.id)
+}
 
 export function handleMessageEvent(event: any, store: any, setStore: SetStoreFunction<any>) {
   switch (event.type) {
@@ -11,8 +14,8 @@ export function handleMessageEvent(event: any, store: any, setStore: SetStoreFun
         produce((draft: any) => {
           if (info.role === "user") {
             const optimistic = draft.optimistic_message[info.sessionID] ?? []
-            const acknowledged = Binary.search(optimistic, info.id, (message: any) => message.id)
-            if (acknowledged.found) optimistic.splice(acknowledged.index, 1)
+            const acknowledged = optimistic.findIndex((message: any) => message.id === info.id)
+            if (acknowledged >= 0) optimistic.splice(acknowledged, 1)
             const delivery = draft.delivery?.[info.id]
             if (delivery) {
               delivery.state = "sent"
@@ -26,12 +29,10 @@ export function handleMessageEvent(event: any, store: any, setStore: SetStoreFun
             draft.message[info.sessionID] = [info]
             return
           }
-          const result = Binary.search(messages, info.id, (message: any) => message.id)
-          if (result.found) {
-            messages[result.index] = info
-            return
-          }
-          messages.splice(result.index, 0, info)
+          const index = messages.findIndex((message: any) => message.id === info.id)
+          if (index >= 0) messages[index] = info
+          else messages.push(info)
+          messages.sort(compareMessages)
           while (messages.length > MAX_CACHED_MESSAGES) {
             const evicted = messages.shift()
             if (evicted) delete draft.part[evicted.id]
@@ -45,11 +46,11 @@ export function handleMessageEvent(event: any, store: any, setStore: SetStoreFun
       const { sessionID, messageID } = event.properties
       const messages = store.message[sessionID]
       if (!messages) break
-      const result = Binary.search(messages, messageID, (message: any) => message.id)
-      if (!result.found) break
+      const index = messages.findIndex((message: any) => message.id === messageID)
+      if (index < 0) break
       setStore(
         produce((draft: any) => {
-          draft.message[sessionID].splice(result.index, 1)
+          draft.message[sessionID].splice(index, 1)
           delete draft.part[messageID]
           if (draft.delivery) delete draft.delivery[messageID]
         }),

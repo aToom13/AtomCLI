@@ -313,6 +313,14 @@ export namespace ModelFallback {
                       topP: prepared?.params.topP,
                       topK: prepared?.params.topK,
                       providerOptions: ProviderTransform.providerOptions(model, requestOptions),
+                      ...(model.providerID.startsWith("atomcli") || model.providerID === "opencode"
+                        ? {
+                            headers: {
+                              "x-atomcli-session":
+                                options?.sessionID ?? concreteUser?.sessionID ?? "model-verification",
+                            },
+                          }
+                        : {}),
                       ...(probeTool
                         ? {
                             tools: { verification: probeTool },

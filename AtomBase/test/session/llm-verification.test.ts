@@ -8,6 +8,26 @@ import { Instance } from "@/services/project/instance"
 import * as AICompat from "@/util/util/ai-compat"
 import { tmpdir } from "../fixture/fixture"
 
+test("Zen conversation dispatch disables remote response references", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const provider = (await Provider.getProvider("atomcli"))!
+      const model = Object.values(provider.models).find((candidate) => !candidate.id.startsWith("atomcli-"))!
+      const { params } = await LLM.prepareRouteParams({
+        model,
+        provider,
+        sessionID: "ses_zen_store",
+        agent: { name: "agent", options: { store: true } } as any,
+        user: { id: "msg_zen_store" } as any,
+      })
+
+      expect(params.options.store).toBe(false)
+    },
+  })
+})
+
 test("Free dispatch verifies missing tools and changed parameters without permitting paid probes", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({

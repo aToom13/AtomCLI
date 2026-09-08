@@ -61,6 +61,21 @@ test("provider requests have a finite default timeout", () => {
   expect(Provider.requestTimeout({ timeout: false })).toBe(false)
 })
 
+test("AtomCLI Zen headers include the OpenCode session aliases", () => {
+  const headers = Provider._internals.zenHeaders({
+    "x-atomcli-project": "project",
+    "x-atomcli-session": "session",
+    "x-atomcli-request": "request",
+    "x-atomcli-client": "client",
+    "x-opencode-client": "preserved",
+  })
+
+  expect(headers.get("x-opencode-project")).toBe("project")
+  expect(headers.get("x-opencode-session")).toBe("session")
+  expect(headers.get("x-opencode-request")).toBe("request")
+  expect(headers.get("x-opencode-client")).toBe("preserved")
+})
+
 test("AtomCLI public catalog excludes deprecated and paid models", () => {
   const model = {
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },

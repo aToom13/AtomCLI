@@ -141,6 +141,14 @@ export namespace SessionPrompt {
     )
   }
 
+  function isFinishedResponse(user: MessageV2.User, assistant?: MessageV2.Assistant) {
+    return (
+      assistant?.parentID === user.id &&
+      Boolean(assistant.finish) &&
+      !["tool-calls", "unknown"].includes(assistant.finish!)
+    )
+  }
+
   function reviewRetryText(reason?: string) {
     return [
       "The final response was withheld because the independent review did not pass.",
@@ -578,6 +586,7 @@ export namespace SessionPrompt {
     shouldLoadTools,
     shouldResolveTools,
     isSyntheticContinuation,
+    isFinishedResponse,
     reviewRetryText,
     reviewBlockedText,
     projectCompletion,
@@ -961,11 +970,7 @@ export namespace SessionPrompt {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         await ExecutionRuntime.waitForRouteDecision(executionContext.rootSessionID, executionContext, abort)
       }
-      if (
-        lastAssistant?.finish &&
-        !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
-        lastUser.id < lastAssistant.id
-      ) {
+      if (isFinishedResponse(lastUser, lastAssistant)) {
         log.info("exiting loop", { sessionID })
         break
       }

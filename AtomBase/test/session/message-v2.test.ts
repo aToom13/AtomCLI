@@ -548,6 +548,46 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("recovers a session after an out-of-order cancellation message", async () => {
+    const cancelledUser = userInfo("msg_old_user")
+    cancelledUser.time.created = 1
+    const nextUser = userInfo("msg_next_user")
+    nextUser.time.created = 3
+    const cancellation = assistantInfo("msg_cancel_hash", cancelledUser.id)
+    cancellation.time.created = 2
+    cancellation.finish = "error"
+    const stream = (async function* () {
+      yield {
+        info: cancellation,
+        parts: [
+          {
+            ...basePart(cancellation.id, "prt_cancel_hash"),
+            type: "text",
+            text: "This execution was cancelled.",
+            synthetic: true,
+            metadata: { executionOutcome: "cancelled" },
+          },
+        ] as MessageV2.Part[],
+      }
+      yield {
+        info: nextUser,
+        parts: [{ ...basePart(nextUser.id, "p-next"), type: "text", text: "continue" }] as MessageV2.Part[],
+      }
+      yield {
+        info: cancelledUser,
+        parts: [{ ...basePart(cancelledUser.id, "p-old"), type: "text", text: "read a file" }] as MessageV2.Part[],
+      }
+    })()
+
+    const messages = await MessageV2.filterCompacted(stream)
+    expect(messages.map((message) => message.info.id)).toEqual([cancelledUser.id, cancellation.id, nextUser.id])
+    expect(await MessageV2.toModelMessage(messages)).toStrictEqual([
+      { role: "user", content: [{ type: "text", text: "read a file" }] },
+      { role: "assistant", content: [{ type: "text", text: "This execution was cancelled." }] },
+      { role: "user", content: [{ type: "text", text: "continue" }] },
+    ])
+  })
+
   test("splits assistant messages on step-start boundaries", async () => {
     const assistantID = "m-assistant"
 

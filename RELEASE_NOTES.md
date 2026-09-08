@@ -2,6 +2,13 @@
 
 AtomCLI 3.4.3-debug is a prerelease focused on review-loop correctness, task QA policy consistency, model-switch approval, and installer reliability. Companion remains a beta product under active development; Android, iOS, background execution, and OEM integrations are not universally stable.
 
+## Provider and Session Reliability
+
+- Forwarded AtomCLI session identity to Zen-compatible endpoints so anonymous free models and verification probes pass the gateway session check.
+- Disabled server-side response references for Zen conversations and removed internal routing metadata from provider request options, preserving complete tool-call and tool-result replay.
+- Made ESC cancel only the active turn. Later prompts resume normally, cancellation notices remain beside the cancelled turn, and internal cancellation metadata is excluded from model prompts.
+- Retried a transient provider failure once on the current model before selecting a fallback.
+
 ## Review and Agent Reliability
 
 - Reused a fresh reviewer PASS for the same unchanged revision at final completion instead of spawning another reviewer chain.
@@ -31,7 +38,7 @@ AtomCLI 3.4.3-debug is a prerelease focused on review-loop correctness, task QA 
 
 - AtomBase typecheck passed.
 - The focused review and agent suite passed 138 tests with no failures.
-- The fixture-backed AtomBase suite passed 1,630 tests with 10 opt-in tests skipped and no failures.
+- The fixture-backed AtomBase suite passed 1,637 tests with 10 opt-in tests skipped and no failures.
 - Bundled guide discovery and its three focused tests passed.
 - Live provider checks and physical-device behavior remain opt-in and environment-dependent.
 

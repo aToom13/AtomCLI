@@ -7,6 +7,7 @@ export namespace SessionRetry {
   export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
   export const RETRY_MAX_DELAY = 60_000
   export const DEFAULT_MAX_RETRIES = 3
+  export const FALLBACK_AFTER_RETRIES = 2
 
   export function exhausted(attempt: number, maxRetries = DEFAULT_MAX_RETRIES) {
     return attempt > Math.max(0, maxRetries)

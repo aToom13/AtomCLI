@@ -1325,6 +1325,23 @@ describe("ProviderTransform.variants", () => {
       })
     })
 
+    test("does not send internal routing metadata to providers", () => {
+      const model = createMockModel()
+      expect(
+        ProviderTransform.applyVariant(
+          model,
+          undefined,
+          {},
+          {
+            public: "value",
+            _routePolicy: { mode: "free" },
+            _fallbackChain: { primary: "model" },
+            _metaRouter: { modelID: "router" },
+          },
+        ),
+      ).toEqual({ public: "value" })
+    })
+
     test("rejects stale or unsupported variant names", () => {
       const model = createMockModel({ variants: { high: { reasoningEffort: "high" } } })
       expect(() => ProviderTransform.applyVariant(model, "xhigh", { reasoningEffort: "low" })).toThrow(

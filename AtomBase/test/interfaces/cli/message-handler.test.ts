@@ -55,4 +55,20 @@ describe("TUI message event cache", () => {
     expect(store.part["message-050"]).toBeUndefined()
     expect(store.delivery["message-050"]).toBeUndefined()
   })
+
+  test("places a delayed cancellation beside the turn it cancelled", () => {
+    const oldUser = message("message-1")
+    const cancellation = { ...message("msg_cancel_hash", "assistant"), time: { created: 2 } }
+    const nextUser = { ...message("message-3"), time: { created: 3 } }
+    const [store, setStore] = createStore<any>({
+      message: { session: [oldUser, nextUser] },
+      optimistic_message: { session: [] },
+      part: {},
+      delivery: {},
+    })
+
+    handleMessageEvent({ type: "message.updated", properties: { info: cancellation } }, store, setStore)
+
+    expect(store.message.session.map((item: any) => item.id)).toEqual([oldUser.id, cancellation.id, nextUser.id])
+  })
 })
