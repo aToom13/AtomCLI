@@ -31,13 +31,14 @@ const statusMock = mock(
     },
 )
 const waitMock = mock(async (sessionId: string) => statusMock(sessionId))
+const cancelMock = mock(async () => {})
 
 mock.module("../../src/integrations/tool/subagent", () => ({
   SubAgent: {
     spawn: spawnMock,
     status: statusMock,
     wait: waitMock,
-    cancel: async () => {},
+    cancel: cancelMock,
     capabilities: () => ({ wait: true, status: true, revive: true, steer: false }),
     buildFromAgent: (agent: any) => [
       ...(agent.permission ?? []),
@@ -64,6 +65,8 @@ const { SessionStatus } = await import("@/core/session/status")
 const { HarnessState } = await import("@/core/session/harness-state")
 const { Bus } = await import("@/core/bus")
 const { TuiEvent } = await import("@/interfaces/cli/cmd/tui/event")
+const { SubAgentRuntime } = await import("@/integrations/tool/subagent-runtime")
+const { Config } = await import("@/core/config/config")
 const { tmpdir } = await import("../fixture/fixture")
 
 beforeEach(() => {
@@ -96,6 +99,8 @@ beforeEach(() => {
   statusMock.mockImplementation((sessionId: string) => statusFallback!(sessionId))
   waitMock.mockReset()
   waitMock.mockImplementation(async (sessionId: string) => statusMock(sessionId))
+  cancelMock.mockReset()
+  cancelMock.mockImplementation(async () => {})
 })
 
 function mockCtx(sessionID: string, messageID: string) {
@@ -536,8 +541,203 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
         )
 
         expect(taskSpawnCount).toBe(1)
-        expect(reviewerSpawnCount).toBe(1)
+        expect(reviewerSpawnCount).toBe(2)
         expect(result.metadata?.status).toBe("failed")
+      },
+    })
+  })
+
+  test("passes rejected QA findings to the worker retry", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        let taskRuns = 0
+        let qaRuns = 0
+        let retryPrompt = ""
+        spawnMock.mockImplementation(async (args: any) => {
+          const isQA = args.description.startsWith("[QA")
+          const sessionId = args.sessionId ?? `ses_${isQA ? "qa" : "task"}`
+          await args.onSession?.({ sessionId, isNewSession: !args.sessionId })
+          if (isQA) {
+            qaRuns++
+            if (qaRuns === 1) {
+              return {
+                sessionId,
+                output: "Rejected.",
+                parts: [],
+                structuredOutput: {
+                  verdict: "rejected",
+                  summary: "Unsafe token remains.",
+                  findings: [
+                    {
+                      file: "src/auth/token.ts",
+                      startLine: 1,
+                      endLine: 1,
+                      severity: "P1",
+                      confidence: 1,
+                      title: "Unsafe token",
+                      evidence: 'export const token = "unsafe"',
+                      recommendation: "Use a safe value.",
+                    },
+                  ],
+                },
+              }
+            }
+            return {
+              sessionId,
+              output: "Passed.",
+              parts: [],
+              structuredOutput: { verdict: "passed", summary: "Fixed.", findings: [] },
+            }
+          }
+          taskRuns++
+          retryPrompt = args.parts.map((part: any) => part.text ?? "").join("\n")
+          await fs.mkdir(path.join(args.workingDirectory, "src/auth"), { recursive: true })
+          await fs.writeFile(
+            path.join(args.workingDirectory, "src/auth/token.ts"),
+            `export const token = "${taskRuns === 1 ? "unsafe" : "safe"}"\n`,
+          )
+          return { sessionId, output: "Implemented token.", parts: [] }
+        })
+
+        const { session, messageID } = await createAssistantMessageContext()
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          {
+            action: "spawn",
+            subagent_type: "explore",
+            prompt: "Implement the authentication token helper",
+            description: "Implement token",
+          },
+          mockCtx(session.id, messageID),
+        )
+
+        expect(result.metadata?.status).toBe("completed")
+        expect(taskRuns).toBe(2)
+        expect(qaRuns).toBe(4)
+        expect(retryPrompt).toContain("Unsafe token remains")
+      },
+    })
+  })
+
+  test("retries malformed reviewer output without rerunning the worker", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        let taskRuns = 0
+        let qaRuns = 0
+        const signals: AbortSignal[] = []
+        spawnMock.mockImplementation(async (args: any) => {
+          signals.push(args.signal)
+          const isQA = args.description.startsWith("[QA")
+          const sessionId = args.sessionId ?? `ses_${isQA ? "qa" : "task"}`
+          await args.onSession?.({ sessionId, isNewSession: !args.sessionId })
+          if (isQA) {
+            qaRuns++
+            if (qaRuns === 1) {
+              throw new SubAgentRuntime.OutputValidationError({
+                code: "OUTPUT_MISSING",
+                message: "missing structured output",
+                issues: [],
+              })
+            }
+            return {
+              sessionId,
+              output: "Passed.",
+              parts: [],
+              structuredOutput: { verdict: "passed", summary: "Verified.", findings: [] },
+            }
+          }
+          taskRuns++
+          await fs.mkdir(path.join(args.workingDirectory, "src/auth"), { recursive: true })
+          await fs.writeFile(path.join(args.workingDirectory, "src/auth/token.ts"), 'export const token = "safe"\n')
+          return { sessionId, output: "Implemented token.", parts: [] }
+        })
+
+        const { session, messageID } = await createAssistantMessageContext()
+        const instance = await AgentTool.init({})
+        const ctx = mockCtx(session.id, messageID)
+        const result = await instance.execute(
+          {
+            action: "spawn",
+            subagent_type: "explore",
+            prompt: "Implement the authentication token helper",
+            description: "Implement token",
+          },
+          ctx,
+        )
+
+        expect(result.metadata?.status).toBe("completed")
+        expect(taskRuns).toBe(1)
+        expect(qaRuns).toBe(4)
+        expect(signals.every((signal) => signal === ctx.abort)).toBe(true)
+      },
+    })
+  })
+
+  test("uses configured reviewer count and review attempt limit for task QA", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await fs.writeFile(
+          path.join(tmp.path, "atomcli.json"),
+          JSON.stringify({ review: { enabled: true, policy: "always", reviewer_count: 3, max_attempts: 1 } }),
+        )
+        await Config.clearCache()
+        let taskRuns = 0
+        let qaRuns = 0
+        spawnMock.mockImplementation(async (args: any) => {
+          const isQA = args.description.startsWith("[QA")
+          const sessionId = args.sessionId ?? `ses_${isQA ? `qa_${qaRuns}` : "task"}`
+          await args.onSession?.({ sessionId, isNewSession: !args.sessionId })
+          if (isQA) {
+            qaRuns++
+            return {
+              sessionId,
+              output: "Rejected.",
+              parts: [],
+              structuredOutput: {
+                verdict: "rejected",
+                summary: "Unsafe token remains.",
+                findings: [
+                  {
+                    file: "src/auth/token.ts",
+                    startLine: 1,
+                    endLine: 1,
+                    severity: "P1",
+                    confidence: 1,
+                    title: "Unsafe token",
+                    evidence: 'export const token = "unsafe"',
+                    recommendation: "Use a safe value.",
+                  },
+                ],
+              },
+            }
+          }
+          taskRuns++
+          await fs.mkdir(path.join(args.workingDirectory, "src/auth"), { recursive: true })
+          await fs.writeFile(path.join(args.workingDirectory, "src/auth/token.ts"), 'export const token = "unsafe"\n')
+          return { sessionId, output: "Implemented token.", parts: [] }
+        })
+
+        const { session, messageID } = await createAssistantMessageContext()
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          {
+            action: "spawn",
+            subagent_type: "explore",
+            prompt: "Implement the authentication token helper",
+            description: "Configured QA",
+          },
+          mockCtx(session.id, messageID),
+        )
+
+        expect(result.metadata?.status).toBe("failed")
+        expect(taskRuns).toBe(1)
+        expect(qaRuns).toBe(3)
       },
     })
   })

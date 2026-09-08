@@ -1,7 +1,10 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import { HarnessState } from "@/core/session/harness-state"
 import { buildReviewPrompt, collectDescendantIds } from "@/integrations/tool/review-gate"
 import { Instance } from "@/services/project/instance"
+import { Session } from "@/core/session"
+import { Identifier } from "@/core/id/id"
 import { tmpdir } from "../fixture/fixture"
 
 describe("ReviewGate - buildReviewPrompt", () => {
@@ -55,6 +58,37 @@ describe("ReviewGate - buildReviewPrompt", () => {
         // The raw breakout tag must not appear unescaped inside <file>...</file>
         expect(prompt).toContain("&lt;injected&gt;")
         expect(prompt).not.toContain("<file>src/<injected>.ts</file>")
+      },
+    })
+  })
+
+  test("reviews the current user turn instead of the first request in session history", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        for (const text of ["old request", "current request"]) {
+          const message = await Session.updateMessage({
+            id: Identifier.ascending("message"),
+            sessionID: session.id,
+            role: "user",
+            time: { created: Date.now() },
+            agent: "build",
+            model: { providerID: "fixture", modelID: "fixture" },
+          })
+          await Session.updatePart({
+            id: Identifier.ascending("part"),
+            messageID: message.id,
+            sessionID: session.id,
+            type: "text",
+            text,
+          })
+        }
+
+        const prompt = await buildReviewPrompt(session.id)
+        expect(prompt).toContain("current request")
+        expect(prompt).not.toContain("old request")
       },
     })
   })

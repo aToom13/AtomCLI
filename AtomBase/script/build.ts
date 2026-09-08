@@ -184,12 +184,12 @@ for (const item of targets) {
 
   if (fs.existsSync(rootAtom)) {
     console.log(`Copying .atomcli to dist/${name}/...`)
-    await $`cp -r ${rootAtom} dist/${name}/`
+    await fs.promises.cp(rootAtom, `dist/${name}/.atomcli`, { recursive: true })
   }
 
   if (fs.existsSync(rootClaude)) {
     console.log(`Copying .claude to dist/${name}/...`)
-    await $`cp -r ${rootClaude} dist/${name}/`
+    await fs.promises.cp(rootClaude, `dist/${name}/.claude`, { recursive: true })
   }
 
   binaries[name] = Script.version

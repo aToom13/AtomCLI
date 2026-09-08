@@ -378,6 +378,8 @@ describe("orchestrate - agent collaboration context", () => {
     expect(requiresTaskQA(tasks[0], 1, ["src/auth/token.ts"], "companion-fast")).toBe(true)
     expect(requiresTaskQA({ ...tasks[2], agent: "checker" }, 3, ["src/auth.ts"])).toBe(false)
     expect(requiresTaskQA({ ...tasks[2], agent: "reviewer" }, 3, ["src/auth.ts"])).toBe(false)
+    expect(requiresTaskQA(tasks[0], 1, ["src/auth/token.ts"], "standard", { enabled: false })).toBe(false)
+    expect(requiresTaskQA(tasks[0], 1, ["src/ui.ts"], "standard", { policy: "always" })).toBe(true)
   })
 })
 

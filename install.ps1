@@ -39,16 +39,18 @@ function Start-InstallProgress {
 
 function Set-InstallProgress {
     param([string]$Activity)
-    $script:ProgressCurrent++
     $percent = [Math]::Min(100, [Math]::Floor(($script:ProgressCurrent * 100) / $script:ProgressTotal))
     $width = 24
     $filled = [Math]::Floor(($percent * $width) / 100)
     $bar = ("=" * $filled) + ">" + (" " * [Math]::Max(0, $width - $filled))
     Write-Progress -Activity "AtomCLI setup" -Status $Activity -PercentComplete $percent
     Write-Host ("[{0}] {1,3}%  {2}" -f $bar, $percent, $Activity) -ForegroundColor Cyan
+    $script:ProgressCurrent++
 }
 
 function Complete-InstallProgress {
+    $bar = "=" * 24
+    Write-Host ("[{0}] 100%  Complete" -f $bar) -ForegroundColor Cyan
     Write-Progress -Activity "AtomCLI setup" -Completed
 }
 
@@ -693,7 +695,7 @@ function Initialize-Config {
       }
     }
   },
-  "model": "atomcli/minimax-m2.1-free",
+  "model": "atomcli/atomcli-free",
   "mcp": {}
 }
 "@
@@ -850,29 +852,7 @@ function Setup-OptionalFeatures {
     Write-Host ""
 
     if ($script:EnableKilocode) {
-        Write-Step "Configuring Kilocode..."
-        $configFile = Join-Path $ConfigDir "atomcli.json"
-        $kilocodeConfig = @"
-{
-  "provider": {
-    "atomcli": {
-      "models": {
-        "minimax-m2.1-free": {
-          "name": "Minimax-M2.1-Custom",
-          "limit": {
-            "context": 100000,
-            "output": 4096
-          }
-        }
-      }
-    }
-  },
-  "model": "kilocode/gpt-5-nano",
-  "mcp": {}
-}
-"@
-        Set-Content -Path $configFile -Value $kilocodeConfig -Encoding UTF8
-        Write-Success "Kilocode configured"
+        Write-Success "Kilocode enabled; existing configuration preserved"
     }
 
     if ($installMcps) {

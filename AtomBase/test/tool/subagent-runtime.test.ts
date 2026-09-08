@@ -77,4 +77,10 @@ describe("SubAgentRuntime", () => {
   test("rejects unsupported schemas before a sub-agent starts", () => {
     expect(() => SubAgentRuntime.parseSchema({ type: "object", oneOf: [] })).toThrow("unsupported JSON Schema")
   })
+
+  test("renders the exact tagged contract and schema supplied to sub-agents", () => {
+    const contract = SubAgentRuntime.contract(schema, "strict")
+    expect(contract).toContain("<structured_output>")
+    expect(contract).toContain(JSON.stringify(schema))
+  })
 })

@@ -73,6 +73,28 @@ describe("MobileBridge", () => {
       type: "route_proposal",
       payload: { directory: "/home/user/project", proposal: { sessionID: "session_test" } },
     })
+    const messageCount = messages.length
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "execution.route.proposal",
+        properties: {
+          sessionID: "session_test",
+          proposal: {
+            id: "proposal_question",
+            executionID: "execution_test",
+            state: "pending",
+            expiresAt: Date.now() + 1000,
+            evidenceRefs: ["approval:question"],
+          },
+        },
+      },
+    })
+    expect(messages).toHaveLength(messageCount)
+    MobileBridge.sendSnapshot("phone")
+    expect(messages.at(-1)?.payload.route_proposals).not.toContainEqual(
+      expect.objectContaining({ id: "proposal_question" }),
+    )
     bus.emit("event", {
       directory: "/home/user/project",
       payload: {

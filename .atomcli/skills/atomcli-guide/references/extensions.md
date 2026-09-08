@@ -79,7 +79,7 @@ The agent always sees allowed skill names and descriptions. A trigger-word match
 
 Skill names must be unique. A duplicate logs a warning and one definition wins; never rely on scan order. Keep `SKILL.md` focused on scope, routing, safety, and verification. Put detailed workflows in small `references/` files and link them with paths relative to `SKILL.md`.
 
-Bundled skills are copied into release assets from the repository's tracked `.atomcli/skills/`. Runtime configuration, dependencies, credentials, logs, inbox files, and session state under `.atomcli/` must remain ignored and must not be bundled.
+Bundled skills are packaged into a checksum-covered release archive from the repository's tracked `.atomcli/skills/`, then installed in the global skills directory. Runtime configuration, dependencies, credentials, logs, inbox files, and session state under `.atomcli/` must remain ignored and must not be bundled.
 
 AtomCLI ships an `atomcli-guide` skill for product usage and source-development questions. In a source checkout, update its relevant reference together with the canonical documentation and validate it with:
 

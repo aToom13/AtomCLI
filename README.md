@@ -34,7 +34,7 @@ atomcli setup --check
 atomcli setup --yes
 ```
 
-`atomcli upgrade` remains an alias for `atomcli update`. Installer and update progress is shown with an overall progress bar plus activity spinners for long downloads. On Linux, automatic system-package installation can request `sudo`; use `ATOMCLI_SKIP_PLAYWRIGHT=1` only when browser automation is intentionally unavailable.
+`atomcli upgrade` remains an alias for `atomcli update`. Installer and update output reports setup-stage progress, the Unix installer shows download progress in interactive terminals, and Bun and Playwright work keeps activity indicators visible. On Linux, automatic system-package installation can request `sudo`; Alpine installations use the matching musl binary and require `libstdc++` and `libgcc`, which the installer adds when missing. Use `ATOMCLI_SKIP_PLAYWRIGHT=1` only when browser automation is intentionally unavailable.
 
 To build from source, use Bun 1.3.14:
 

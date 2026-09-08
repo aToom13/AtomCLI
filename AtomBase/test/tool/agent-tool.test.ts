@@ -6,6 +6,7 @@ import { tmpdir } from "../fixture/fixture"
 import { Session } from "@/core/session"
 import { SessionStatus } from "@/core/session/status"
 import { SessionExecutionProfile } from "@/core/session/execution-profile"
+import { SubAgentLifecycle } from "@/integrations/tool/subagent-lifecycle"
 
 describe("AgentTool", () => {
   const dummyCtx = {
@@ -81,6 +82,13 @@ describe("AgentTool", () => {
         const parent = await Session.create({})
         const child = await Session.create({ parentID: parent.id, title: "Inspect files (@explore subagent)" })
         SessionStatus.set(child.id, { type: "busy" })
+        SubAgentLifecycle.update({
+          sessionId: child.id,
+          runtime: "atom-inprocess",
+          status: "running",
+          startedAt: Date.now() - 1_000,
+          updatedAt: Date.now() - 1_000,
+        })
         const instance = await AgentTool.init({})
         const result = await instance.execute(
           {
@@ -94,6 +102,7 @@ describe("AgentTool", () => {
         expect(result.output).toContain("is running")
         expect(result.metadata.sessionId).toBe(child.id)
         expect(result.metadata.status).toBe("running")
+        expect(result.metadata.elapsedMs).toBeGreaterThanOrEqual(1_000)
       },
     })
   })

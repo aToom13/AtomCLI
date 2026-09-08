@@ -14,7 +14,7 @@ Windows PowerShell installer:
 irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex
 ```
 
-The installers automatically scan required commands and browser libraries, install missing dependencies with the available platform package manager, synchronize release-matched Playwright and Chromium, and perform a real browser launch check. Linux package installation may request `sudo`.
+The installers automatically scan required commands and browser libraries, install missing dependencies with the available platform package manager, synchronize release-matched Playwright and Chromium, and perform a real browser launch check. They report setup-stage progress, and the Unix installer shows download progress in interactive terminals. Linux package installation may request `sudo`. Alpine uses the matching musl binary and requires `libstdc++` and `libgcc`; the installer checks and adds both packages when missing.
 
 Verify the installed command:
 

@@ -44,6 +44,26 @@ try {
         throw "installer arch detection failed: $($script:ArchType)"
     }
 
+    $ConfigDir = Join-Path $fixtureDir "config"
+    Initialize-Config
+    $config = Get-Content -Raw (Join-Path $ConfigDir "atomcli.json") | ConvertFrom-Json
+    if ($config.model -ne "atomcli/atomcli-free") {
+        throw "PowerShell installer default model differs from the Unix installer"
+    }
+
+    $progressOutput = & {
+        Start-InstallProgress -Total 2
+        Set-InstallProgress "one"
+        Set-InstallProgress "two"
+        Complete-InstallProgress
+    } *>&1 | Out-String
+    if ($progressOutput -notmatch '50%\s+two' -or $progressOutput -notmatch '100%\s+Complete') {
+        throw "PowerShell installer progress does not finish after the final step"
+    }
+    if ($progressOutput -match '100%\s+two') {
+        throw "PowerShell installer reported 100% before completion"
+    }
+
     $savedProcArch = $env:PROCESSOR_ARCHITECTURE
     $savedWow64Arch = $env:PROCESSOR_ARCHITEW6432
     try {

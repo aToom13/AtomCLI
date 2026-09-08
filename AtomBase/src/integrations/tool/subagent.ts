@@ -226,7 +226,16 @@ export namespace SubAgent {
     if (config.outputSchema) required.add("outputSchema")
     if (config.workingDirectory) required.add("isolation")
     SubAgentRuntime.negotiate(runtime, provider.capabilities, [...required])
-    return provider.spawn(config)
+    const parts = config.outputSchema
+      ? [
+          ...config.parts,
+          {
+            type: "text" as const,
+            text: SubAgentRuntime.contract(config.outputSchema, config.validationMode ?? "strict"),
+          },
+        ]
+      : config.parts
+    return provider.spawn({ ...config, parts })
   }
 
   async function spawnInProcess(config: SpawnConfig): Promise<SpawnResult> {

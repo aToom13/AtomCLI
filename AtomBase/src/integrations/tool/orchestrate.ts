@@ -483,12 +483,22 @@ function requiresTaskQA(
   editedFileCount: number,
   editedFiles: string[] = [],
   profile: SessionExecutionProfile.Name = "standard",
+  review: Partial<Config.Info["review"]> = {},
 ): boolean {
   if (task.agent === "reviewer" || task.agent === "checker") return false
   if (editedFileCount === 0) return false
-  return ReviewPolicy.requiresIndependentReview(profile === "companion-fast" ? "fast" : "adaptive", {
+  const policy = ReviewPolicy.snapshot({
+    enabled: review?.enabled !== false,
+    configuredPolicy: review?.policy ?? "adaptive",
+    executionProfile: profile,
+    reviewerCount: review?.reviewer_count ?? 2,
+    attemptLimit: review?.max_attempts ?? 3,
+    highRiskPatterns: review?.high_risk_patterns ?? [],
+  })
+  return ReviewPolicy.requiresIndependentReview(policy.effectivePolicy, {
     editedFiles,
     prompt: task.prompt,
+    extraHighRiskPatterns: policy.highRiskPatterns,
   })
 }
 
@@ -1054,9 +1064,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 // to integration tasks several layers later.
                 const depContext = buildDependencyContext(task, workflow)
 
-                const resultContract = task.outputSchema
-                  ? SubAgentRuntime.contract(task.outputSchema, task.validationMode ?? "strict")
-                  : AGENT_RESULT_CONTRACT
+                const resultContract = task.outputSchema ? "" : AGENT_RESULT_CONTRACT
                 const fullPrompt = `${depContext ? `${depContext}\n\n` : ""}${task.prompt}\n\n${resultContract}`
 
                 // Subagent permissions via shared utility
@@ -1071,8 +1079,15 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 let agent: Awaited<ReturnType<typeof Agent.get>>
                 let reviewerModel: ModelReference | undefined
                 let reviewerAgent: Awaited<ReturnType<typeof Agent.get>>
-                let reviewerSessionId: string | undefined
+                let reviewerSessionIds: string[] = []
+                let qaFeedback: string | undefined
+                let cachedSpawnResult: Awaited<ReturnType<typeof SubAgent.spawn>> | undefined
                 let isolation: SubAgentIsolation.Workspace | undefined
+                let workerFailures = 0
+                let reviewFailures = 0
+                const taskRetryLimit = task.maxRetries ?? DEFAULT_MAX_RETRIES
+                const reviewAttemptLimit = config.review?.max_attempts ?? 3
+                const qaReviewerCount = config.review?.reviewer_count ?? 2
                 const dismissedSessionIds = new Set<string>()
                 const sessionKey = `${ctx.sessionID}:${task.agent}:${task.id}`
                 const rememberSession = (sessionId: string) => {
@@ -1148,12 +1163,12 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 try {
                   for (
                     let attempt = 0;
-                    attempt <= (task.maxRetries ?? DEFAULT_MAX_RETRIES) &&
-                    !taskSuccess &&
-                    workflow.status === "running";
+                    attempt <= taskRetryLimit + reviewAttemptLimit && !taskSuccess && workflow.status === "running";
                     attempt++
                   ) {
                     lastAttemptCount = attempt
+                    let attemptSpawnResult: Awaited<ReturnType<typeof SubAgent.spawn>> | undefined
+                    let reviewing = false
                     try {
                       agent ??= await Agent.get(task.agent)
                       if (!agent) throw new Error(`Unknown agent: ${task.agent}`)
@@ -1211,32 +1226,40 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                         // was cleared (e.g. server restart). Keeps context in the same child session.
                         result.sessionId
 
-                      const promptParts = await SessionPrompt.resolvePromptParts(fullPrompt)
+                      const attemptPrompt = qaFeedback
+                        ? `${fullPrompt}\n\n<previous_qa_feedback>\n${escapeXmlText(qaFeedback)}\n</previous_qa_feedback>\nAddress these verified findings before returning.`
+                        : fullPrompt
+                      const promptParts = await SessionPrompt.resolvePromptParts(attemptPrompt)
 
-                      const spawnResult = await SubAgent.spawn({
-                        parentSessionID: ctx.sessionID,
-                        agent,
-                        model,
-                        parts: promptParts,
-                        permissions,
-                        description: `[${task.category}] ${task.id}`,
-                        parentStepId: task.id,
-                        sessionId: existingSessionId ?? undefined,
-                        title: `[${task.category}] ${task.id} (@${task.agent})`,
-                        // primary_tools = tools reserved for primary agents — deny them
-                        // in sub-agents so LLM-initiated spawns keep the same boundary
-                        // that TaskTool.run applied (config.ts documents this option).
-                        deniedTools: Object.fromEntries(
-                          (config.experimental?.primary_tools ?? []).map((t) => [t, false]),
-                        ),
-                        onSession: ({ sessionId }) => {
-                          result.sessionId = sessionId
-                          rememberSession(sessionId)
-                        },
-                        workingDirectory: isolation?.directory,
-                        outputSchema: task.outputSchema,
-                        validationMode: task.validationMode,
-                      })
+                      const spawnResult =
+                        cachedSpawnResult ??
+                        (await SubAgent.spawn({
+                          parentSessionID: ctx.sessionID,
+                          agent,
+                          model,
+                          parts: promptParts,
+                          permissions,
+                          description: `[${task.category}] ${task.id}`,
+                          parentStepId: task.id,
+                          sessionId: existingSessionId ?? undefined,
+                          title: `[${task.category}] ${task.id} (@${task.agent})`,
+                          // primary_tools = tools reserved for primary agents — deny them
+                          // in sub-agents so LLM-initiated spawns keep the same boundary
+                          // that TaskTool.run applied (config.ts documents this option).
+                          deniedTools: Object.fromEntries(
+                            (config.experimental?.primary_tools ?? []).map((t) => [t, false]),
+                          ),
+                          onSession: ({ sessionId }) => {
+                            result.sessionId = sessionId
+                            rememberSession(sessionId)
+                          },
+                          workingDirectory: isolation?.directory,
+                          outputSchema: task.outputSchema,
+                          validationMode: task.validationMode,
+                          signal: ctx.abort,
+                        }))
+                      cachedSpawnResult = undefined
+                      attemptSpawnResult = spawnResult
 
                       // Keep compatibility with alternate spawn implementations that do
                       // not invoke onSession (for example, external test integrations).
@@ -1272,6 +1295,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                           editedFiles.length,
                           editedFiles,
                           SessionExecutionProfile.get(ctx.sessionID),
+                          config.review,
                         )
                       ) {
                         await completeTask(spawnResult, attempt, "not-needed")
@@ -1279,6 +1303,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       }
 
                       // ─── REVIEWER QA: verify sub-agent output ─────────────
+                      reviewing = true
                       reviewerAgent ??= await Agent.get("reviewer")
                       if (!reviewerAgent) {
                         throw new Error("Unknown agent: reviewer")
@@ -1338,39 +1363,41 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                         `Use the supplied structured schema. Every finding must cite exact source evidence and a real 1-based file range.`,
                       ].join("\n")
 
-                      // ── Persistent QA session: one reviewer per task, reused across retries.
+                      // ── Persistent QA sessions: one per configured slot, reused across retries.
                       // This prevents "reviewer shopping" where a new reviewer without context
                       // accepts work that a previous reviewer correctly rejected.
-                      const existingQASessionId = HarnessState.getQASession(ctx.sessionID, task.id)
-                      reviewerSessionId = existingQASessionId
-
-                      const reviewResult = await SubAgent.spawn({
-                        parentSessionID: ctx.sessionID,
-                        agent: reviewerAgent,
-                        model: reviewerModel,
-                        permissions: SubAgent.buildFromAgent(reviewerAgent),
-                        parts: [{ type: "text", text: reviewPrompt }],
-                        description: `[QA${attempt > 0 ? ` retry ${attempt}` : ""}] ${task.id}`,
-                        sessionId: existingQASessionId,
-                        onSession: ({ sessionId, isNewSession }) => {
-                          reviewerSessionId = sessionId
-                          if (isNewSession) HarnessState.setQASession(ctx.sessionID, task.id, sessionId)
-                        },
-                        workingDirectory: isolation?.directory,
-                        outputSchema: ReviewV2.OutputSchema,
-                        validationMode: "strict",
-                      })
-
-                      // Keep compatibility with alternate spawn implementations that
-                      // do not invoke onSession.
-                      reviewerSessionId = reviewResult.sessionId
-                      if (!existingQASessionId) {
-                        HarnessState.setQASession(ctx.sessionID, task.id, reviewResult.sessionId)
-                      }
+                      reviewerSessionIds = Array.from({ length: qaReviewerCount }, () => "")
+                      const settledReviews = await Promise.allSettled(
+                        reviewerSessionIds.map(async (_, index) => {
+                          const existingQASessionId = HarnessState.getQASession(ctx.sessionID, task.id, index)
+                          const reviewResult = await SubAgent.spawn({
+                            parentSessionID: ctx.sessionID,
+                            agent: reviewerAgent!,
+                            model: reviewerModel!,
+                            permissions: SubAgent.buildFromAgent(reviewerAgent!),
+                            parts: [{ type: "text", text: reviewPrompt }],
+                            description: `[QA ${index + 1}/${qaReviewerCount}${attempt > 0 ? ` retry ${attempt}` : ""}] ${task.id}`,
+                            sessionId: existingQASessionId,
+                            onSession: ({ sessionId, isNewSession }) => {
+                              reviewerSessionIds[index] = sessionId
+                              if (isNewSession) HarnessState.setQASession(ctx.sessionID, task.id, sessionId, index)
+                            },
+                            workingDirectory: isolation?.directory,
+                            outputSchema: ReviewV2.OutputSchema,
+                            validationMode: "strict",
+                            signal: ctx.abort,
+                          })
+                          reviewerSessionIds[index] = reviewResult.sessionId
+                          if (!existingQASessionId) {
+                            HarnessState.setQASession(ctx.sessionID, task.id, reviewResult.sessionId, index)
+                          }
+                          return reviewResult
+                        }),
+                      )
                       // Cancellation can resolve SessionPrompt with a partial/error
                       // assistant message instead of rejecting. Consume both markers
                       // before a streamed PASS can complete the task.
-                      if (captureTerminations(dismissedSessionIds, result.sessionId, reviewerSessionId)) {
+                      if (captureTerminations(dismissedSessionIds, result.sessionId, ...reviewerSessionIds)) {
                         throw new Error("Sub-agent was closed and deleted by the user")
                       }
 
@@ -1383,7 +1410,14 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                       const workspaceSources = await ReviewV2.loadWorkspaceSources(reviewDirectory, reviewFiles)
                       const patchSources = ReviewV2.parseUnifiedDiff(isolationPreview?.patch ?? "")
                       const reviewReport = ReviewV2.aggregate({
-                        results: [{ reviewer: "task-reviewer", output: reviewResult.structuredOutput }],
+                        results: settledReviews.map((review, index) =>
+                          review.status === "fulfilled"
+                            ? { reviewer: `task-reviewer-${index + 1}`, output: review.value.structuredOutput }
+                            : {
+                                reviewer: `task-reviewer-${index + 1}`,
+                                error: review.reason instanceof Error ? review.reason.message : String(review.reason),
+                              },
+                        ),
                         sources: ReviewV2.mergeSources(workspaceSources, patchSources),
                         allowedFiles: reviewFiles,
                       })
@@ -1395,21 +1429,32 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                           .slice(0, 20)
                           .map(
                             (finding) =>
-                              `${finding.severity} ${finding.file}:${finding.startLine}-${finding.endLine} ${finding.title}`,
+                              `${finding.severity} ${finding.file}:${finding.startLine}-${finding.endLine} ${finding.title}\nEvidence: ${finding.evidence}\nRecommendation: ${finding.recommendation}`,
                           )
-                        throw new Error(`QA_FAILED: ${[reviewReport.summary, ...findings].join("\n")}`)
+                        qaFeedback = [
+                          ...reviewReport.reviewers.map((reviewer) => reviewer.summary).filter(Boolean),
+                          ...findings,
+                        ].join("\n")
+                        if (reviewReport.verdict === "inconclusive") {
+                          throw new Error(`QA_INFRASTRUCTURE_FAILED: ${qaFeedback || reviewReport.summary}`)
+                        }
+                        throw new Error(`QA_FAILED: ${qaFeedback}`)
                       }
                     } catch (e) {
                       if (e instanceof SubAgentRuntime.OutputValidationError) result.structuredError = e.detail
                       lastError = limitText(e instanceof Error ? e.message : String(e ?? "Sub-agent stopped"), 20_000)
+                      if (reviewing && !lastError.startsWith("QA_FAILED:") && attemptSpawnResult) {
+                        cachedSpawnResult = attemptSpawnResult
+                      }
 
                       // Closing a running child is an explicit user decision. The worker's
                       // abort route marks it before cancellation reaches this catch.
-                      captureTerminations(dismissedSessionIds, result.sessionId, reviewerSessionId)
+                      captureTerminations(dismissedSessionIds, result.sessionId, ...reviewerSessionIds)
                       const mainWasDismissed = result.sessionId ? dismissedSessionIds.has(result.sessionId) : false
-                      const reviewerWasDismissed = reviewerSessionId
-                        ? dismissedSessionIds.has(reviewerSessionId)
-                        : false
+                      const dismissedReviewer = reviewerSessionIds.find((sessionID) =>
+                        dismissedSessionIds.has(sessionID),
+                      )
+                      const reviewerWasDismissed = !!dismissedReviewer
                       const wasDismissed = mainWasDismissed || reviewerWasDismissed
                       if (wasDismissed) {
                         if (AGENT_SESSION_OWNER.get(sessionKey) === workflow.id) {
@@ -1420,10 +1465,16 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                         lastError = "Sub-agent was closed and deleted by the user"
                         log.info("task stopped after sub-agent deletion", {
                           taskId: task.id,
-                          sessionId: reviewerWasDismissed ? reviewerSessionId : result.sessionId,
+                          sessionId: dismissedReviewer ?? result.sessionId,
                         })
                         break
                       }
+
+                      if (reviewing) reviewFailures++
+                      else workerFailures++
+                      const retriesRemain = reviewing
+                        ? reviewFailures < reviewAttemptLimit
+                        : workerFailures <= taskRetryLimit
 
                       const taskAvailability = model ? await modelTemporaryAvailability(model) : undefined
                       const reviewerAvailability = reviewerModel
@@ -1448,18 +1499,18 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                         reviewerModel = undefined
                       }
 
-                      if (attempt < (task.maxRetries ?? DEFAULT_MAX_RETRIES)) {
+                      if (retriesRemain) {
                         log.warn("task failed, retrying", {
                           taskId: task.id,
                           attempt: attempt + 1,
-                          maxRetries: task.maxRetries ?? DEFAULT_MAX_RETRIES,
+                          maxRetries: reviewing ? reviewAttemptLimit - 1 : taskRetryLimit,
                           error: lastError,
                         })
 
                         // Exponential backoff
                         const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
                         await new Promise((resolve) => setTimeout(resolve, delay))
-                      }
+                      } else break
                     }
                   }
 
@@ -1496,7 +1547,8 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
                     log.error("task failed after all retries", {
                       taskId: task.id,
-                      maxRetries: task.maxRetries ?? DEFAULT_MAX_RETRIES,
+                      taskRetryLimit,
+                      reviewAttemptLimit,
                       error: lastError,
                     })
                   }
@@ -1729,6 +1781,16 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                   await SubAgent.cancel(r.sessionId)
                   try {
                     await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: r.sessionId })
+                  } catch {
+                    /* ignore */
+                  }
+                  abortedCount++
+                }
+                for (const qaSessionId of HarnessState.getQASessions(ctx.sessionID, task.id)) {
+                  if (qaSessionId === r.sessionId) continue
+                  await SubAgent.cancel(qaSessionId)
+                  try {
+                    await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: qaSessionId })
                   } catch {
                     /* ignore */
                   }

@@ -116,7 +116,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     "",
     "⚠️ **BLOCKING TOOL**: action='spawn' BLOCKS until the sub-agent finishes. Tasks that",
     "change files or write code receive independent reviewer QA; read-only investigation does not",
-    "spawn a redundant reviewer. Rejected reviewed work is auto-retried up to 2 times. You CANNOT do other",
+    "spawn a redundant reviewer. Rejected reviewed work follows the configured review attempt limit. You CANNOT do other",
     'work while a spawn is running. Do not say "I\'ll also do X while sub-agents work".',
     "Companion fast sessions reject manually spawned reviewer/checker agents for low-risk work; use one focused direct verification instead.",
     "",
@@ -215,7 +215,10 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
         if (params.session_id) {
           const session = await ownedChildSession(params.session_id)
           const status = SubAgent.status(params.session_id)
-          const elapsedMs = Math.max(0, (status.updatedAt || Date.now()) - status.startedAt)
+          const elapsedMs = Math.max(
+            0,
+            (status.status === "running" ? Date.now() : status.updatedAt) - status.startedAt,
+          )
           return {
             title: "Task Status",
             output: `Session ${params.session_id} is ${status.status}.\nTitle: ${session.title}\nRuntime: ${status.runtime}\nElapsed: ${elapsedMs}ms`,

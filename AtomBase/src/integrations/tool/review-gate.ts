@@ -114,12 +114,12 @@ export async function buildReviewPrompt(sessionID: string, impact?: ChangeImpact
 }
 
 /**
- * Find the first non-synthetic user message text in a session.
+ * Find the current non-synthetic user request in a session.
  */
 async function findOriginalUserRequest(sessionID: string): Promise<string> {
   try {
     const messages = await Session.messages({ sessionID, excludePatches: true })
-    const realUser = messages.find(
+    const realUser = messages.findLast(
       (m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic),
     )
     if (!realUser) return ""
@@ -289,8 +289,14 @@ export async function runBlockingReview(
     return { passed: true, exhausted: false, skipped: true }
   }
 
-  if (!options.decision && !HarnessState.needsReview(sessionID)) {
-    return { passed: true, exhausted: false, skipped: true }
+  if (!HarnessState.needsReview(sessionID)) {
+    const reviewerSessions = Array.from({ length: reviewerCount }, (_, index) =>
+      HarnessState.getReviewerSession(sessionID, index),
+    ).filter((value): value is string => !!value)
+    if (!options.authorizeSession || reviewerSessions.length === reviewerCount) {
+      await Promise.all(reviewerSessions.map((reviewerSessionID) => options.authorizeSession?.(reviewerSessionID)))
+      return { passed: true, exhausted: false, skipped: true }
+    }
   }
 
   const existingVerdict = HarnessState.getReviewVerdict(sessionID)
@@ -330,14 +336,17 @@ export async function runBlockingReview(
     const reviewerAgent = await Agent.get("reviewer")
     if (!reviewerAgent) {
       log.warn("reviewer agent not found — blocking review", { sessionID })
-      // Release the pending claim left by beginReview — otherwise the next
-      // `taskflow clear` sees a stale `pending` verdict, beginReview refuses
-      // to re-claim it, and clear is wedged forever with {error:true}.
-      HarnessState.releaseReview(sessionID)
+      // Record the unavailable attempt so infrastructure failures are bounded,
+      // while replacing the pending claim keeps the next attempt claimable.
+      HarnessState.recordReviewVerdict(sessionID, {
+        status: "fail",
+        reason: "Reviewer agent is unavailable, so the required review could not run.",
+      })
+      const exhausted = (HarnessState.getReviewVerdict(sessionID)?.attempts ?? 1) >= maxAttempts
       return {
         passed: false,
         reason: "Reviewer agent is unavailable, so the required review could not run.",
-        exhausted: false,
+        exhausted,
         skipped: true,
         error: true,
       }
@@ -367,17 +376,17 @@ export async function runBlockingReview(
     })()
 
     const reviewPrompt = await buildReviewPrompt(sessionID, impact)
-    const existingReviewerSession = HarnessState.getReviewerSession(sessionID)
     const focuses = [
       "correctness, regressions, edge cases, and request conformance",
       "security, permissions, concurrency, and data integrity",
       "tests, API compatibility, performance, and operational safety",
       "cross-file integration, error handling, and release risk",
     ]
-    let primarySessionRecorded = !!existingReviewerSession
     const settled = await Promise.allSettled(
-      Array.from({ length: reviewerCount }, (_, index) =>
-        SubAgent.spawn({
+      Array.from({ length: reviewerCount }, (_, index) => {
+        const existingReviewerSession = HarnessState.getReviewerSession(sessionID, index)
+        let sessionRecorded = !!existingReviewerSession
+        return SubAgent.spawn({
           parentSessionID: sessionID,
           agent: reviewerAgent,
           model: reviewerModel,
@@ -389,20 +398,20 @@ export async function runBlockingReview(
             },
           ],
           description: `🔍 Review V2 ${index + 1}/${reviewerCount}`,
-          sessionId: index === 0 ? existingReviewerSession : undefined,
+          sessionId: existingReviewerSession,
           outputSchema: ReviewV2.OutputSchema,
           validationMode: "strict",
           signal: options.signal,
           onSession: ({ sessionId }) => {
             return Promise.resolve(options.authorizeSession?.(sessionId)).then(() => {
-              if (!primarySessionRecorded && index === 0) {
-                HarnessState.setReviewerSession(sessionID, sessionId)
-                primarySessionRecorded = true
+              if (!sessionRecorded) {
+                HarnessState.setReviewerSession(sessionID, sessionId, index)
+                sessionRecorded = true
               }
             })
           },
-        }),
-      ),
+        })
+      }),
     )
     const reviewerResults: ReviewV2.ReviewerResult[] = settled.map((result, index) =>
       result.status === "fulfilled"
@@ -414,6 +423,17 @@ export async function runBlockingReview(
     )
     options.signal?.throwIfAborted()
     await aggregateDescendantEdits(sessionID)
+    const currentDiff = await ChangeImpact.diff(editedFiles).catch(() => "")
+    if (currentDiff !== diff) {
+      const reason = "The workspace changed while review was running; review must run again for the current revision."
+      HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason })
+      return {
+        passed: false,
+        reason,
+        exhausted: false,
+        skipped: false,
+      }
+    }
     const workspaceSources = await ReviewV2.loadWorkspaceSources(Instance.directory, editedFiles)
     const diffSources = ReviewV2.parseUnifiedDiff(diff)
     const report = ReviewV2.aggregate({
@@ -447,19 +467,24 @@ export async function runBlockingReview(
   } catch (error) {
     // Reviewer infrastructure failure — do not silently pass the gate. Surface
     // the error so the clear output can report "review skipped due to error"
-    // instead of appearing to have been reviewed. Release the pending claim so
-    // the next clear can re-attempt the review — otherwise the `pending`
-    // verdict left by beginReview permanently wedges `taskflow clear`.
+    // instead of appearing to have been reviewed. Cancellation restores the
+    // previous verdict; other infrastructure failures consume a bounded attempt.
     log.error("review gate: review failed with error", {
       sessionID,
       error: (error as Error).message,
     })
-    HarnessState.releaseReview(sessionID)
+    if (options.signal?.aborted) HarnessState.releaseReview(sessionID)
+    else
+      HarnessState.recordReviewVerdict(sessionID, {
+        status: "fail",
+        reason: `Review infrastructure error: ${(error as Error).message}`,
+      })
+    const exhausted = (HarnessState.getReviewVerdict(sessionID)?.attempts ?? 0) >= maxAttempts
     return {
       passed: false,
       reason: `Review infrastructure error: ${(error as Error).message}`,
       error: true,
-      exhausted: false,
+      exhausted,
       skipped: true,
     }
   }

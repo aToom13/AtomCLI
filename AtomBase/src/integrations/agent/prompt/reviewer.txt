@@ -53,7 +53,7 @@ Follow the output schema supplied with the task. Every finding must cite a real 
 
 ## Hard Rules
 
-- NEVER modify code. Your only write operations are bash commands for verification.
+- NEVER intentionally modify source files. Verification commands may create ignored build/test artifacts; if they change reviewed source, the gate invalidates the verdict.
 - If you cannot run tests (missing tool, permission denied, no test suite), return an `inconclusive` structured verdict.
 - Do not be lenient. A relevant failing test requires a concrete finding and a rejected verdict.
 - If `<harness_execution_logs>` shows required tests were never run, report a concrete finding only when it can be tied to a real file/range; otherwise return `inconclusive`.

@@ -38,7 +38,7 @@ The visible app and background service hand the socket to each other. Only one o
 
 Android permission notifications expose only **Allow once** and **Deny**. Permanent grants and autonomous mode stay inside the app so they cannot be enabled by an accidental lock-screen tap. A single ordinary text question can use Android Direct Reply; multi-part, selection, and password questions must be opened in Companion. Question notifications also provide **Decline**. Command patterns are reduced to a target count in the lock-screen body instead of exposing full shell commands.
 
-Adaptive route proposals appear in the in-app Decisions inbox with their target model/thinking level, reason, scope, and estimated use. **Accept once** and **Keep current** send a newly signed online decision with proposal and route revisions; route decisions are never placed in the offline chat Outbox. Overview shows the authoritative active route and manual pin state received in the reconnect snapshot. Change or stop automatic proposals from the PC TUI with `/adaptive-routing off|ask|auto`.
+In the default `ask` mode, model and thinking changes arrive through the normal question inbox and notification flow, with one-time, execution-wide, and keep-current choices. The answer becomes a newly signed online route decision; route decisions are never placed in the offline chat Outbox. Non-question route proposals remain visible in Decisions. Overview shows the authoritative active route and manual pin state received in the reconnect snapshot. Change or stop automatic proposals from the PC TUI with `/adaptive-routing off|ask|auto`.
 
 Notification actions are signed and sent through whichever foreground/background socket currently owns the connection. The notification remains present until the PC returns an action acknowledgement. Only then is it replaced briefly with **AtomCLI confirmed**; an offline, expired, conflicted, malformed, or timed-out request becomes **Action not completed** and remains available in the app. Authority decisions are never persisted to the safe Outbox. Resolution events and live authoritative snapshots remove stale OS notifications, including decisions completed from the PC. Android can still delay or suppress a background callback because of OEM battery policy, force-stop, notification permission, or a killed foreground service; a button animation by itself is therefore never treated as server success.
 
@@ -70,10 +70,10 @@ Paired device records are global to the local AtomCLI installation. Normal TUI l
 
 ## Machines, projects, processes, and ports
 
-The Companion listener is separate for each AtomCLI process. In normal interactive startup the loopback control API starts first and typically owns 4096:
+The Companion listener is separate for each AtomCLI process. In normal interactive startup the local TUI uses in-process RPC, so the Companion listener gets the first attempt at 4096:
 
 1. With no fixed Companion port, each listener tries 4096 and otherwise selects an OS-assigned available port.
-2. This fallback normally occurs even for the first interactive process because its control API already owns 4096.
+2. An explicitly started control API (`--port`, `--hostname`, or `--mdns`) can claim 4096 first and make the Companion listener fall back.
 3. Pairing output and QR data use the actual bound port.
 4. Each listener exposes only its own AtomCLI process and project/session context.
 

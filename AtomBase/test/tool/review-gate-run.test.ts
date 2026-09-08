@@ -94,6 +94,92 @@ describe("ReviewGate - runBlockingReview", () => {
     })
   })
 
+  test("a staged final decision reuses a fresh PASS for the same revision", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-final-reuse"
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        expect((await runBlockingReview(sessionID)).passed).toBe(true)
+        expect(spawnMock).toHaveBeenCalledTimes(2)
+
+        const assessment = await evaluateReviewDecision(sessionID)
+        const result = await runBlockingReview(sessionID, { decision: assessment.decision })
+        expect(result).toMatchObject({ passed: true, skipped: true })
+        expect(spawnMock).toHaveBeenCalledTimes(2)
+      },
+    })
+  })
+
+  test("binds reused PASS evidence to every final-review ledger session", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-final-ledger-reuse"
+        let next = 0
+        spawnMock.mockImplementation(async (config: any) => {
+          const sessionId = `reviewer-ledger-${next++}`
+          await config.onSession?.({ sessionId, isNewSession: true })
+          return {
+            sessionId,
+            isNewSession: true,
+            output: "",
+            parts: [],
+            structuredOutput: { verdict: "passed", summary: "Verified.", findings: [] },
+          }
+        })
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        expect((await runBlockingReview(sessionID)).passed).toBe(true)
+        const assessment = await evaluateReviewDecision(sessionID)
+        const authorized: string[] = []
+        const result = await runBlockingReview(sessionID, {
+          decision: assessment.decision,
+          authorizeSession: (reviewerSessionID) => {
+            authorized.push(reviewerSessionID)
+          },
+        })
+        expect(result).toMatchObject({ passed: true, skipped: true })
+        expect(authorized).toEqual(["reviewer-ledger-0", "reviewer-ledger-1"])
+        expect(spawnMock).toHaveBeenCalledTimes(2)
+      },
+    })
+  })
+
+  test("reuses every reviewer slot on the next changed revision", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-slot-reuse"
+        let next = 0
+        spawnMock.mockImplementation(async (config: any) => {
+          const sessionId = config.sessionId ?? `reviewer-slot-${next++}`
+          await config.onSession?.({ sessionId, isNewSession: !config.sessionId })
+          return {
+            sessionId,
+            isNewSession: !config.sessionId,
+            output: "",
+            parts: [],
+            structuredOutput: { verdict: "passed", summary: "Verified.", findings: [] },
+          }
+        })
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        expect((await runBlockingReview(sessionID)).passed).toBe(true)
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        expect((await runBlockingReview(sessionID)).passed).toBe(true)
+        expect(spawnMock.mock.calls.slice(2).map((call) => (call[0] as any).sessionId)).toEqual([
+          "reviewer-slot-0",
+          "reviewer-slot-1",
+        ])
+      },
+    })
+  })
+
   test("pins reviewers to the parent's verified AtomCLI Free route", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -176,6 +262,45 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(result.passed).toBe(false)
         expect(result.reason).toContain("changed while review was running")
         expect(HarnessState.needsReview(sessionID)).toBe(true)
+      },
+    })
+  })
+
+  test("reviewer source writes invalidate the verdict without leaving a pending claim", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        const target = path.join(dir, "src/auth/a.ts")
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, "export const auth = true\n")
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-reviewer-write"
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        let changed = false
+        spawnMock.mockImplementation(async () => {
+          if (!changed) {
+            changed = true
+            await fs.writeFile(path.join(tmp.path, "src/auth/a.ts"), "export const auth = false\n")
+          }
+          return {
+            sessionId: "reviewer-session-write",
+            isNewSession: true,
+            output: "",
+            parts: [],
+            structuredOutput: { verdict: "passed", summary: "Changed the source.", findings: [] },
+          }
+        })
+
+        const result = await runBlockingReview(sessionID)
+        expect(result.passed).toBe(false)
+        expect(result.reason).toContain("workspace changed while review was running")
+        expect(HarnessState.getReviewVerdict(sessionID)?.status).toBe("fail")
+        expect(HarnessState.beginReview(sessionID)).toBe(true)
       },
     })
   })
@@ -507,9 +632,8 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(result.reason?.toLowerCase()).toContain("reviewer")
         expect(spawnMock).not.toHaveBeenCalled()
 
-        // The claim taken by beginReview must have been released — otherwise
-        // the next clear sees a stale "pending" verdict and is wedged forever
-        expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
+        // Infrastructure failures are bounded but remain re-claimable.
+        expect(HarnessState.getReviewVerdict(sessionID)).toMatchObject({ status: "fail", attempts: 1 })
         expect(HarnessState.beginReview(sessionID)).toBe(true)
       },
     })

@@ -140,7 +140,8 @@ export function Session() {
 
   createEffect(() => {
     const proposal = sync.data.route_proposals[route.sessionID]?.find(
-      (item) => item.state === "pending" && item.expiresAt > Date.now(),
+      (item) =>
+        item.state === "pending" && item.expiresAt > Date.now() && !item.evidenceRefs.includes("approval:question"),
     )
     if (!proposal || decidingProposalID === proposal.id) return
     decidingProposalID = proposal.id

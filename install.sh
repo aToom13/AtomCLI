@@ -93,7 +93,6 @@ progress_start() {
 }
 
 progress_step() {
-    PROGRESS_CURRENT=$((PROGRESS_CURRENT + 1))
     local label="$1"
     local width=24
     local filled=$((PROGRESS_CURRENT * width / PROGRESS_TOTAL))
@@ -103,6 +102,15 @@ progress_step() {
     bar_empty=$(printf '%*s' "$empty" '')
     percent=$((PROGRESS_CURRENT * 100 / PROGRESS_TOTAL))
     printf "${CYAN}[%s>%s]${NC} %3d%%  %s\n" "$bar_fill" "$bar_empty" "$percent" "$label"
+    PROGRESS_CURRENT=$((PROGRESS_CURRENT + 1))
+}
+
+progress_complete() {
+    PROGRESS_CURRENT="$PROGRESS_TOTAL"
+    local width=24
+    local bar_fill
+    bar_fill=$(printf '%*s' "$width" '' | tr ' ' '=')
+    printf "${CYAN}[%s]${NC} 100%%  Complete\n" "$bar_fill"
 }
 
 # Detect OS
@@ -175,7 +183,7 @@ install_base_dependencies() {
                     ;;
                 *)
                     if has apk; then
-                        run_privileged apk add git curl ca-certificates tar coreutils
+                        run_privileged apk add --no-cache git curl ca-certificates tar coreutils libstdc++ libgcc
                     elif has zypper; then
                         run_privileged zypper --non-interactive install git curl ca-certificates tar coreutils
                     else
@@ -206,6 +214,26 @@ detect_distro() {
     esac
 }
 
+is_musl_linux() {
+    [ "$OS_TYPE" = "linux" ] || return 1
+    [ -f /etc/alpine-release ] && return 0
+    ldd --version 2>&1 | grep -qi musl
+}
+
+ensure_alpine_runtime_dependencies() {
+    [ "$OS_TYPE" = "linux" ] || return 0
+    has apk || return 0
+
+    local missing=()
+    apk info -e libstdc++ >/dev/null 2>&1 || missing+=(libstdc++)
+    apk info -e libgcc >/dev/null 2>&1 || missing+=(libgcc)
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        warn "Alpine runtime dependencies are missing; installing them automatically..."
+        run_privileged apk add --no-cache "${missing[@]}"
+    fi
+}
+
 # Check dependencies
 check_dependencies() {
     echo ""
@@ -222,6 +250,8 @@ check_dependencies() {
         warn "Required system dependencies are missing; installing them automatically..."
         install_base_dependencies || exit 1
     fi
+
+    ensure_alpine_runtime_dependencies || exit 1
 
     local deps_ok=true
     has git && success "git $(git --version | cut -d' ' -f3)" || { error "git not found"; deps_ok=false; }
@@ -301,9 +331,17 @@ download_file() {
     local url="$1"
     local destination="$2"
     if has curl; then
-        curl -fsSL "$url" -o "$destination"
+        if [ -t 2 ]; then
+            curl -fL --progress-bar "$url" -o "$destination"
+        else
+            curl -fsSL "$url" -o "$destination"
+        fi
     else
-        wget -q "$url" -O "$destination"
+        if [ -t 2 ]; then
+            wget "$url" -O "$destination"
+        else
+            wget -q "$url" -O "$destination"
+        fi
     fi
 }
 
@@ -428,6 +466,9 @@ EOF
     fi
     RESOLVED_VERSION="$version"
     local binary_name="atomcli-${OS_TYPE}-${ARCH_TYPE}"
+    if is_musl_linux; then
+        binary_name="${binary_name}-musl"
+    fi
     if [ "$OS_TYPE" = "windows" ]; then
         binary_name="${binary_name}.exe"
     fi
@@ -592,7 +633,7 @@ EOF
     
     # Detect libc type
     local libc_type="glibc"
-    if ldd --version 2>&1 | grep -qi musl; then
+    if is_musl_linux; then
         libc_type="musl"
     fi
     info "Detected libc: $libc_type"
@@ -893,9 +934,9 @@ prefetch_models_cache() {
     local cache_file="$cache_dir/models.json"
     
     if has curl; then
-        curl -fsSL "https://models.dev/api.json" -o "$cache_file" 2>/dev/null
+        curl -fsSL "https://models.dev/api.json" -o "$cache_file" 2>/dev/null || rm -f "$cache_file"
     elif has wget; then
-        wget -q "https://models.dev/api.json" -O "$cache_file" 2>/dev/null
+        wget -q "https://models.dev/api.json" -O "$cache_file" 2>/dev/null || rm -f "$cache_file"
     fi
     
     if [ -s "$cache_file" ]; then
@@ -1093,29 +1134,7 @@ setup_optional_features() {
     
     # Apply Kilocode
     if [ "$ENABLE_KILOCODE" = true ]; then
-        step "Configuring Kilocode..."
-        
-        # Kilocode is built-in, just create default config
-        cat > "$CONFIG_DIR/atomcli.json" << 'EOF'
-{
-  "provider": {
-    "atomcli": {
-      "models": {
-        "minimax-m2.1-free": {
-          "name": "Minimax-M2.1-Custom",
-          "limit": {
-            "context": 100000,
-            "output": 4096
-          }
-        }
-      }
-    }
-  },
-  "model": "atomcli/atomcli-free",
-  "mcp": {}
-}
-EOF
-        success "Kilocode configured"
+        success "Kilocode enabled; existing configuration preserved"
     fi
     
     # Apply MCPs
@@ -1257,6 +1276,7 @@ main_install() {
             setup_optional_features
             progress_step "Final verification"
             verify_installation 
+            progress_complete
             print_complete
             return
         fi
@@ -1279,6 +1299,7 @@ main_install() {
     setup_optional_features
     progress_step "Final verification"
     verify_installation
+    progress_complete
     print_complete
 }
 
@@ -1502,6 +1523,7 @@ update() {
             install_skills_bundle
             progress_step "Final verification"
             verify_installation
+            progress_complete
             echo ""
             echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${GREEN}${CHECK}${NC} ${BOLD}AtomCLI built from source successfully!${NC}"
@@ -1537,6 +1559,7 @@ update() {
     install_skills_bundle
     progress_step "Final verification"
     verify_installation
+    progress_complete
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""

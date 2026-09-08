@@ -10,6 +10,11 @@ import { MessageV2 } from "@/core/session/message-v2"
 import { LLM } from "@/core/session/llm"
 import { Agent } from "@/integrations/agent/agent"
 import { AgentEval } from "@/core/eval/harness"
+import { Question } from "@/interfaces/question"
+
+const APPROVAL_QUESTION_REF = "approval:question"
+const SWITCH_ONCE = "Switch once"
+const SWITCH_FOR_EXECUTION = "Allow for execution"
 
 export namespace ModelControl {
   export const Info = Tool.define("model_control", {
@@ -122,6 +127,32 @@ export namespace ModelControl {
         variant: args.variant,
         effectiveParams: params,
       })
+      const approvalMode = args.scope === "thinking" ? settings.thinking.mode : settings.mode
+      let approval: "once" | "execution" | "reject" | undefined
+      if (approvalMode === "ask") {
+        const route = `${target.providerID}/${target.id}${args.variant ? ` (${args.variant})` : ""}`
+        const answers = await Question.ask({
+          sessionID: ctx.sessionID,
+          tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
+          questions: [
+            {
+              header: args.scope === "thinking" ? "Thinking level" : "Model switch",
+              question: `Switch to ${route}?\nReason: ${args.reason}`,
+              type: "select",
+              options: [
+                { label: SWITCH_ONCE, description: "Use this route for the current request." },
+                {
+                  label: SWITCH_FOR_EXECUTION,
+                  description: "Allow this exact verified route for the rest of this execution.",
+                },
+                { label: "Keep current", description: "Continue with the current model and thinking level." },
+              ],
+            },
+          ],
+        })
+        approval =
+          answers[0]?.[0] === SWITCH_ONCE ? "once" : answers[0]?.[0] === SWITCH_FOR_EXECUTION ? "execution" : "reject"
+      }
       const result = await ExecutionRuntime.proposeRoute({
         id: crypto.randomUUID(),
         sessionID: ctx.sessionID,
@@ -139,18 +170,38 @@ export namespace ModelControl {
         evidenceRefs: [
           `reason:${args.reason}`,
           ...(alias ? [`requested-route:${args.providerID}/${args.modelID}`] : []),
+          ...(approval ? [APPROVAL_QUESTION_REF] : []),
         ],
         uncertainty: true,
         expiresAt: Date.now() + settings.proposal_ttl_ms,
         policyVersion: 1,
-        autoAccept: (args.scope === "thinking" ? settings.thinking.mode : settings.mode) === "auto",
+        autoAccept: approvalMode === "auto",
         manualModelPin: message.info.modelPinned,
         manualThinkingPin: message.info.thinkingPinned,
       })
       if (!result.proposed) throw new Error(`Model change request failed: ${result.reason}`)
+      const proposal = approval
+        ? ExecutionRuntime.decideRouteProposal({
+            requestID: crypto.randomUUID(),
+            proposalID: result.proposal.id,
+            executionID: execution.executionID,
+            sessionID: session.id,
+            projectID: session.projectID,
+            expectedProposalVersion: result.proposal.version,
+            expectedRouteRevision: result.proposal.routeRevision,
+            decision: approval === "reject" ? "reject" : "accept",
+            actorID: "user:question",
+            acceptScope: approval === "execution" ? "execution" : "episode",
+          })
+        : undefined
+      if (proposal && !proposal.decided) throw new Error(`Model change decision failed: ${proposal.reason}`)
+      const state = proposal?.proposal.state ?? result.proposal.state
       return {
         title: "Model change requested",
-        output: `Route proposal ${result.proposal.id}: ${result.proposal.state}. The runtime will wait for approval and apply the verified route before continuing.`,
+        output:
+          state === "rejected"
+            ? `Route proposal ${result.proposal.id}: rejected. The current route remains active.`
+            : `Route proposal ${result.proposal.id}: ${state}. The runtime will verify and apply the route before continuing.`,
         metadata: { proposalID: result.proposal.id },
       }
     },

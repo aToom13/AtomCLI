@@ -11,6 +11,7 @@ import { ModelControl } from "@/integrations/tool/model-control"
 import { Provider } from "@/integrations/provider/provider"
 import { Bus } from "@/core/bus"
 import { Instance } from "@/services/project/instance"
+import { Question } from "@/interfaces/question"
 import { tmpdir } from "../fixture/fixture"
 
 for (const decision of ["accept", "accept_free", "reject", "verification_failure", "params_changed"] as const) {
@@ -50,27 +51,20 @@ for (const decision of ["accept", "accept_free", "reject", "verification_failure
         const calls: string[] = []
         let proposalID = ""
         let decisionTask: Promise<void> | undefined
-        const unsubscribe = Bus.subscribe(ExecutionRuntime.Event.RouteProposal, ({ properties }) => {
+        const unsubscribeProposal = Bus.subscribe(ExecutionRuntime.Event.RouteProposal, ({ properties }) => {
           if (properties.sessionID !== session.id || properties.proposal.state !== "pending") return
           proposalID = properties.proposal.id
+        })
+        const unsubscribeQuestion = Bus.subscribe(Question.Event.Asked, ({ properties }) => {
+          if (properties.sessionID !== session.id) return
           // A delayed click reproduces the original race: no old-model call may pass it.
           decisionTask = (async () => {
             await Bun.sleep(30)
             expect(calls).toEqual([base.id])
-            const proposal = properties.proposal
-            const result = ExecutionRuntime.decideRouteProposal({
-              sessionID: session.id,
-              projectID: session.projectID,
-              executionID: proposal.executionID,
-              proposalID: proposal.id,
-              requestID: crypto.randomUUID(),
-              expectedProposalVersion: proposal.version,
-              expectedRouteRevision: proposal.routeRevision,
-              decision: decision === "reject" ? "reject" : "accept",
-              actorID: "test-user",
-              acceptScope: "episode",
+            await Question.reply({
+              requestID: properties.id,
+              answers: [[decision === "reject" ? "Keep current" : "Switch once"]],
             })
-            expect(result.decided).toBe(true)
           })()
         })
         try {
@@ -151,7 +145,8 @@ for (const decision of ["accept", "accept_free", "reject", "verification_failure
             if (decision === "reject" || decision === "params_changed") expect(verify).not.toHaveBeenCalled()
           }
         } finally {
-          unsubscribe()
+          unsubscribeProposal()
+          unsubscribeQuestion()
           for (const spy of spies.reverse()) spy.mockRestore()
         }
       },

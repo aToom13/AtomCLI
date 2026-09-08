@@ -431,21 +431,19 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
             // Branch on the failure mode so the agent gets accurate guidance:
             // infra errors are NOT code issues to fix — retry or escalate.
-            const header = review.error
-              ? "⛔ REVIEW ERROR: taskflow clear is blocked — the review could not run"
-              : review.exhausted
-                ? "⛔ REVIEW EXHAUSTED: taskflow clear is blocked — review attempts exhausted"
+            const header = review.exhausted
+              ? "⛔ REVIEW EXHAUSTED: taskflow clear is blocked — review attempts exhausted"
+              : review.error
+                ? "⛔ REVIEW ERROR: taskflow clear is blocked — the review could not run"
                 : "⛔ REVIEW FAILED: taskflow clear is blocked"
 
-            const fixInstruction = review.error
-              ? "The reviewer could not run due to an infrastructure error. Retry taskflow clear, or escalate to the user."
-              : review.exhausted
-                ? "Review attempts are exhausted. Escalate to the user for a decision — do not force clear."
+            const fixInstruction = review.exhausted
+              ? "Review attempts are exhausted. Escalate to the user for a decision — do not force clear."
+              : review.error
+                ? "The reviewer could not run due to an infrastructure error. Retry taskflow clear, or escalate to the user."
                 : "Fix the issues reported below, then call taskflow clear again."
 
-            const reason = review.error
-              ? "Review infrastructure error — no reviewer verdict was produced. This is not a code issue; retry the review."
-              : (review.reason ?? "Reviewer returned no reason.")
+            const reason = review.reason ?? "Reviewer returned no reason."
 
             return {
               title: "Taskflow clear blocked by review",

@@ -402,6 +402,14 @@ export namespace HarnessState {
     return getSession(sessionID).revision
   }
 
+  /** Start the next user turn without carrying completed review scope forward. */
+  export function clearReviewScope(sessionID: string): void {
+    const s = getSession(sessionID)
+    s.editedFiles.clear()
+    s.reviewVerdict = undefined
+    clearReviewerSessions(sessionID)
+  }
+
   /**
    * Merge edited files from a child/descendant session into a target session's
    * tracker. Sub-agent edits are tracked under the sub-agent's OWN session ID
@@ -643,8 +651,7 @@ export namespace HarnessState {
 
   /** Full reset of harness state for a session (e.g. on session close). */
   export function reset(sessionID: string): void {
-    REVIEWER_SESSION_MAP.delete(sessionID)
-    REVIEWER_SESSION_TS.delete(sessionID)
+    clearReviewerSessions(sessionID)
     store().delete(sessionID)
   }
 
@@ -684,11 +691,11 @@ export namespace HarnessState {
 
   // ── QASessionRegistry ─────────────────────────────────────
   //
-  // One persistent QA reviewer session per (orchestratorSessionID, taskID).
+  // One persistent QA reviewer session per (orchestratorSessionID, taskID, slot).
   // Reviewer sessions are reused across retries so the reviewer accumulates
   // context of every previous FAIL verdict and cannot be "reset-shopped".
   //
-  // Key: "parentSessionId:taskId" → QA reviewer session ID
+  // Key: "parentSessionId:taskId:slot" → QA reviewer session ID
 
   const QA_SESSION_MAP: Map<string, string> = new Map()
   const QA_SESSION_TS: Map<string, number> = new Map()
@@ -721,8 +728,13 @@ export namespace HarnessState {
   /**
    * Retrieve the persistent QA session ID for a task, if one exists.
    */
-  export function getQASession(orchestratorSessionID: string, taskId: string): string | undefined {
-    return QA_SESSION_MAP.get(`${orchestratorSessionID}:${taskId}`)
+  export function getQASession(orchestratorSessionID: string, taskId: string, slot = 0): string | undefined {
+    return QA_SESSION_MAP.get(`${orchestratorSessionID}:${taskId}:${slot}`)
+  }
+
+  export function getQASessions(orchestratorSessionID: string, taskId: string): string[] {
+    const prefix = `${orchestratorSessionID}:${taskId}:`
+    return [...QA_SESSION_MAP.entries()].filter(([key]) => key.startsWith(prefix)).map(([, sessionID]) => sessionID)
   }
 
   /**
@@ -731,21 +743,24 @@ export namespace HarnessState {
    * oldest entries (by timestamp) are evicted — mirrors the reviewer session
    * registry to prevent unbounded memory growth in long-lived servers.
    */
-  export function setQASession(orchestratorSessionID: string, taskId: string, qaSessionId: string): void {
+  export function setQASession(orchestratorSessionID: string, taskId: string, qaSessionId: string, slot = 0): void {
     pruneQASessions()
-    const key = `${orchestratorSessionID}:${taskId}`
+    const key = `${orchestratorSessionID}:${taskId}:${slot}`
     QA_SESSION_MAP.set(key, qaSessionId)
     QA_SESSION_TS.set(key, Date.now())
-    log.info("QA session registered", { orchestratorSessionID, taskId, qaSessionId })
+    log.info("QA session registered", { orchestratorSessionID, taskId, qaSessionId, slot })
   }
 
   /**
    * Clear QA session mapping for a task (e.g. on workflow cleanup).
    */
   export function clearQASession(orchestratorSessionID: string, taskId: string): void {
-    const key = `${orchestratorSessionID}:${taskId}`
-    QA_SESSION_MAP.delete(key)
-    QA_SESSION_TS.delete(key)
+    const prefix = `${orchestratorSessionID}:${taskId}:`
+    for (const key of QA_SESSION_MAP.keys()) {
+      if (!key.startsWith(prefix)) continue
+      QA_SESSION_MAP.delete(key)
+      QA_SESSION_TS.delete(key)
+    }
   }
 
   /**
@@ -763,12 +778,12 @@ export namespace HarnessState {
 
   // ── MainReviewerSessionRegistry ──────────────────────────
   //
-  // One persistent reviewer session per MAIN agent session. The reviewer is
-  // reused across all review attempts for a session so it accumulates context
+  // One persistent reviewer session per MAIN agent session and reviewer slot.
+  // Each reviewer is reused across attempts so it accumulates context
   // of every previous FAIL verdict and cannot be "reset-shopped" by the main
   // agent (same rationale as QASessionRegistry, but for the main loop).
   //
-  // Key: sessionID → reviewer session ID
+  // Key: sessionID:slot → reviewer session ID
   //
   // Bounded: entries older than 1 hour are pruned on set (mirrors
   // MAX_WORKFLOWS pattern in orchestrate.ts); when the map exceeds the cap the
@@ -808,25 +823,36 @@ export namespace HarnessState {
   /**
    * Retrieve the persistent reviewer session ID for a main session.
    */
-  export function getReviewerSession(sessionID: string): string | undefined {
-    return REVIEWER_SESSION_MAP.get(sessionID)
+  export function getReviewerSession(sessionID: string, slot = 0): string | undefined {
+    return REVIEWER_SESSION_MAP.get(`${sessionID}:${slot}`)
   }
 
   /**
    * Register the reviewer session ID for a main session after first spawn.
    */
-  export function setReviewerSession(sessionID: string, reviewerSessionId: string): void {
+  export function setReviewerSession(sessionID: string, reviewerSessionId: string, slot = 0): void {
     pruneReviewerSessions()
-    REVIEWER_SESSION_MAP.set(sessionID, reviewerSessionId)
-    REVIEWER_SESSION_TS.set(sessionID, Date.now())
-    log.info("main reviewer session registered", { sessionID, reviewerSessionId })
+    const key = `${sessionID}:${slot}`
+    REVIEWER_SESSION_MAP.set(key, reviewerSessionId)
+    REVIEWER_SESSION_TS.set(key, Date.now())
+    log.info("main reviewer session registered", { sessionID, reviewerSessionId, slot })
   }
 
   /**
    * Clear the reviewer session mapping for a main session (e.g. on reset).
    */
   export function clearReviewerSession(sessionID: string): void {
-    REVIEWER_SESSION_MAP.delete(sessionID)
-    REVIEWER_SESSION_TS.delete(sessionID)
+    const key = `${sessionID}:0`
+    REVIEWER_SESSION_MAP.delete(key)
+    REVIEWER_SESSION_TS.delete(key)
+  }
+
+  export function clearReviewerSessions(sessionID: string): void {
+    const prefix = `${sessionID}:`
+    for (const key of REVIEWER_SESSION_MAP.keys()) {
+      if (!key.startsWith(prefix)) continue
+      REVIEWER_SESSION_MAP.delete(key)
+      REVIEWER_SESSION_TS.delete(key)
+    }
   }
 }

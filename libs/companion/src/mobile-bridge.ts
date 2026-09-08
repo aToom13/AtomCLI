@@ -33,6 +33,7 @@ export interface RouteProposalState {
   executionID: string
   state: string
   expiresAt: number
+  evidenceRefs?: string[]
   [key: string]: unknown
 }
 
@@ -377,6 +378,10 @@ export namespace MobileBridge {
         case "execution.route.proposal": {
           const proposal = { ...(p.proposal as unknown as RouteProposalState), directory, sessionID: p.sessionID }
           if (!proposal?.id) break
+          if (Array.isArray(proposal.evidenceRefs) && proposal.evidenceRefs.includes("approval:question")) {
+            _routeProposals.delete(proposal.id)
+            break
+          }
           if (["pending", "accepted"].includes(proposal.state)) _routeProposals.set(proposal.id, proposal)
           else _routeProposals.delete(proposal.id)
           const event: BridgeEvent = {

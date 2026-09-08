@@ -22,7 +22,7 @@ Skills are discovered from these scopes:
 | Project | `.claude/skills/**/SKILL.md`          | Compatibility location              |
 | Global  | `~/.atomcli/skills/**/SKILL.md`       | Available across projects           |
 | Global  | `~/.claude/skills/**/SKILL.md`        | Global compatibility location       |
-| Bundled | Installation `.atomcli/` / `.claude/` | Tracked assets shipped with AtomCLI |
+| Bundled | Installation `.atomcli/` / `.claude/` | Tracked skills shipped with AtomCLI |
 
 Project discovery walks the active project directories up to its worktree boundary. Skill names must be unique across every discovered scope. Duplicate names log a warning and a later scan result can replace an earlier definition; never depend on that order for intentional overrides.
 

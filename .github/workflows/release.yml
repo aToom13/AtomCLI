@@ -15,6 +15,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -73,31 +75,57 @@ jobs:
           cd AtomBase
           bun run build
 
-      - name: Validate and build Android Companion
+      - name: Reuse unchanged Android Companion APK
+        id: companion-apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK="companion/build/app/outputs/flutter-apk/app-release.apk"
+          BASE_TAG="$(git tag --merged "${GITHUB_SHA}^" --sort=-version:refname | head -n 1)"
+          if test -n "${BASE_TAG}" && \
+             git diff --quiet "${BASE_TAG}" HEAD -- companion ':(exclude)companion/README.md' ':(exclude)companion/pubspec.yaml' && \
+             cmp -s <(git show "${BASE_TAG}:companion/pubspec.yaml" | sed '/^version:/d') <(sed '/^version:/d' companion/pubspec.yaml); then
+            DOWNLOAD_DIR="$(mktemp -d)"
+            if gh release download "${BASE_TAG}" --pattern atomcli-companion-android.apk --dir "${DOWNLOAD_DIR}"; then
+              mkdir -p "$(dirname "${APK}")"
+              mv "${DOWNLOAD_DIR}/atomcli-companion-android.apk" "${APK}"
+              echo "reused=true" >> "${GITHUB_OUTPUT}"
+              echo "source_tag=${BASE_TAG}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          fi
+          echo "reused=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate and prepare Android Companion
         working-directory: companion
         env:
           KEYSTORE_BASE64: ${{ secrets.ATOMCLI_ANDROID_KEYSTORE_BASE64 }}
           ATOMCLI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ATOMCLI_ANDROID_KEYSTORE_PASSWORD }}
           ATOMCLI_ANDROID_KEY_ALIAS: ${{ secrets.ATOMCLI_ANDROID_KEY_ALIAS }}
           ATOMCLI_ANDROID_KEY_PASSWORD: ${{ secrets.ATOMCLI_ANDROID_KEY_PASSWORD }}
+          COMPANION_APK_REUSED: ${{ steps.companion-apk.outputs.reused }}
         run: |
-          test -n "${KEYSTORE_BASE64}"
-          test -n "${ATOMCLI_ANDROID_KEYSTORE_PASSWORD}"
-          test -n "${ATOMCLI_ANDROID_KEY_ALIAS}"
-          test -n "${ATOMCLI_ANDROID_KEY_PASSWORD}"
-          export ATOMCLI_ANDROID_KEYSTORE_PATH="${RUNNER_TEMP}/atomcli-android-release.jks"
-          trap 'rm -f "${ATOMCLI_ANDROID_KEYSTORE_PATH}"' EXIT
-          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${ATOMCLI_ANDROID_KEYSTORE_PATH}"
           flutter pub get --enforce-lockfile
           flutter analyze
           flutter test
-          flutter build apk --release
+          if test "${COMPANION_APK_REUSED}" != "true"; then
+            test -n "${KEYSTORE_BASE64}"
+            test -n "${ATOMCLI_ANDROID_KEYSTORE_PASSWORD}"
+            test -n "${ATOMCLI_ANDROID_KEY_ALIAS}"
+            test -n "${ATOMCLI_ANDROID_KEY_PASSWORD}"
+            export ATOMCLI_ANDROID_KEYSTORE_PATH="${RUNNER_TEMP}/atomcli-android-release.jks"
+            trap 'rm -f "${ATOMCLI_ANDROID_KEYSTORE_PATH}"' EXIT
+            printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${ATOMCLI_ANDROID_KEYSTORE_PATH}"
+            flutter build apk --release
+          fi
           APK="build/app/outputs/flutter-apk/app-release.apk"
           APK_ANALYZER="${ANDROID_HOME}/cmdline-tools/latest/bin/apkanalyzer"
           APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -s "${APK}"
           MANIFEST="$(${APK_ANALYZER} manifest print "${APK}")"
-          printf '%s\n' "${MANIFEST}" | grep -q "android:versionName=\"${ATOMCLI_VERSION}\""
+          if test "${COMPANION_APK_REUSED}" != "true"; then
+            printf '%s\n' "${MANIFEST}" | grep -q "android:versionName=\"${ATOMCLI_VERSION}\""
+          fi
           printf '%s\n' "${MANIFEST}" | grep -q 'android.permission.POST_PROMOTED_NOTIFICATIONS'
           CERTIFICATES="$(${APKSIGNER} verify --verbose --print-certs "${APK}")"
           printf '%s\n' "${CERTIFICATES}" | grep -q '^Verifies$'

@@ -1,70 +1,38 @@
-# AtomCLI v3.4.3
+# AtomCLI v3.4.3-debug
 
-AtomCLI 3.4.3 focuses on verified model routing, durable execution recovery, session integrity, and a more reliable beta Companion workflow. Companion remains a beta product under active development: mobile behavior, protocol capabilities, background execution, and platform integrations may change in later releases. Local-network access is intended for trusted networks; Tailscale remains the recommended remote path.
+AtomCLI 3.4.3-debug is a prerelease focused on review-loop correctness, task QA policy consistency, model-switch approval, and installer reliability. Companion remains a beta product under active development; Android, iOS, background execution, and OEM integrations are not universally stable.
 
-## Verified Auto and Free Routing
+## Review and Agent Reliability
 
-- Changed AtomCLI Auto and AtomCLI Free to select concrete routes only after capability-specific verification with the effective endpoint, credentials, adapter parameters, and reasoning variant.
-- Kept AtomCLI Free restricted to explicitly zero-cost routes across retries, fallback, helper calls, and child sessions; unknown pricing is not treated as free.
-- Added separate opt-ins for paid Auto routes and paid verification probes so model discovery cannot silently incur cost.
-- Added bounded text and tool-call probes, expiring evidence, cooldowns, and visible failures when no verified route is currently eligible.
-- Fixed ChatGPT OAuth verification to use the streaming Responses path required by normal dispatch.
-- Preserved root union tool schemas while supplying the object metadata required by stricter providers.
+- Reused a fresh reviewer PASS for the same unchanged revision at final completion instead of spawning another reviewer chain.
+- Added the structured-output contract at the shared subagent spawn boundary so root and task reviewers receive the schema they are required to return.
+- Persisted each root and task QA reviewer slot across retries and applied the configured `reviewer_count` and `max_attempts` values to task QA.
+- Passed verified QA findings back to worker retries while retrying reviewer infrastructure failures without repeating completed worker side effects.
+- Scoped restored patch evidence to the current non-synthetic user turn and cleared root and descendant review state after successful completion.
+- Propagated cancellation to workflow workers and QA reviewers, bounded infrastructure failures, and corrected running-agent elapsed time.
+- Invalidated review results when reviewed source changes during review.
 
-## Adaptive Model Control and TUI
+## Model Control and Companion Beta
 
-- Added the `model_control` tool for connected-model discovery and explicit model, reasoning, or bounded expert-route proposals.
-- Added independent `off`, `ask`, and `auto` policies for model and reasoning recommendations. Automatic application requires an exact trusted grant and a safe execution boundary.
-- Added adaptive routing controls under the model slash-command tree and Ctrl+P model settings, including direct Auto and Free selection.
-- Kept manual model and reasoning choices pinned above later automatic proposals.
-- Added visible route, reasoning, stage, pin, and execution-call information near the prompt.
-- Fixed Ctrl+C confirmation navigation with arrow keys and H/J/K/L while retaining Cancel as the safe default.
-- Made rejected prompts and uncertain transport acknowledgements visible without automatically resending potentially side-effecting requests.
+- Routed ask-mode model and thinking changes through the normal question flow with one-time, execution-wide, and keep-current choices.
+- Recorded inline question answers as durable route decisions and suppressed duplicate pending-proposal prompts in the TUI and Companion bridge.
+- Clarified Companion listener port behavior when the TUI uses in-process RPC or an explicit control server owns port 4096.
+- No Flutter Companion application source changed relative to v3.4.3. The release workflow reuses the existing signed Companion APK when all APK inputs other than documentation and the version line are unchanged; otherwise it performs the normal signed build and certificate checks.
 
-## Durable Execution and Recovery
+## Installer and Distribution
 
-- Added a SQLite/WAL execution ledger with persistent call, step, duration, execution-cost, session-cost, and project-cost admission.
-- Added renewable owner leases, monotonic fencing, takeover recovery, exact cancellation targets, and conservative accounting for dispatched requests whose result is unknown.
-- Added durable work and blocker records for tools, child sessions, workflows, taskflow plans, verification, and review obligations.
-- Bound completion candidates to workspace mutation, plan, review-policy, and streamed-content revisions so stale review results cannot commit newer work.
-- Added immutable completed, failed, cancelled, budget-exhausted, and review-blocked outcomes with restart-safe delivery projection.
-- Added bounded completion recovery, projector leases and tokens, session-generation checks, and visible recovery-required records for invalid or missing projection targets.
-- Added session-scoped execution list, detail, snapshot, event replay, cancellation, and unknown-work reconciliation endpoints.
-- Bounded global and instance SSE queues by event count and bytes and cleaned up subscribers on abort, overflow, and write failure.
-
-## Session and Storage Integrity
-
-- Added a SQLite/WAL storage manifest, content-addressed records, cross-process compare-and-swap updates, session tombstones, and cache revision checks.
-- Added verified cutover backups and lazy legacy migration recovery without silently discarding malformed records.
-- Preserved cumulative budgets and the original deadline when a terminal execution is explicitly resumed.
-- Fixed retry exhaustion, stale run cleanup, final-step tool disabling, and workflow double-execution ownership.
-- Rejected empty, unfinished, or non-shrinking compaction summaries before hiding older context.
-- Preserved completed tool evidence when a later provider or post-processing failure occurs and prevented unsafe automatic replay of already-applied operations.
-- Added bounded base64 and percent-encoded text data URL decoding.
-- Moved session-bound memory work behind the main response and accounted helper model calls against the same execution budget.
-
-## Companion Beta
-
-- Started the Companion listener alongside normal TUI startup when paired-device state or explicit options require it, without reserving the preferred port for an unnecessary control listener.
-- Preserved the invoking project directory when the root development wrapper starts AtomBase, preventing saved Companion endpoints from appearing to belong to another project.
-- Kept automatic port fallback for normal startup while making explicit Companion port collisions fail visibly.
-- Added durable execution events and terminal outcomes to the Companion protocol and mobile state.
-- Added encrypted local cache records, a bounded plain-text safe outbox, bridge-epoch checks, and idempotent delivery handling.
-- Improved provider failure cards, connection diagnostics, optimistic message recovery, and cached-state labeling.
-- Kept authentication, permission decisions, stop controls, session creation, and temporary attachments outside offline replay.
-
-## API, SDK, ACP, and PTY
-
-- Regenerated the JavaScript SDK for the execution lifecycle and replay endpoints.
-- Mapped durable terminal outcomes to ACP stop reasons and tightened ACP authentication handling.
-- Added cleanup coverage for PTY subscribers and bounded retained shell output to the newest 2 MiB.
-- Updated canonical documentation and the bundled AtomCLI guide for the new routing, execution, storage, TUI, and Companion behavior.
+- Selected musl release binaries on Alpine and installed the required `libstdc++` and `libgcc` runtime packages when missing.
+- Preserved existing configuration when optional Kilocode support is enabled and aligned the PowerShell default model with the Unix installer.
+- Removed partial model-cache files after failed downloads and made install progress reach 100 percent only after final verification.
+- Added interactive download progress and expanded platform smoke coverage for bundled skills, musl version output, and help output.
+- Replaced platform-specific asset-copy commands in the build with Bun filesystem operations.
 
 ## Validation
 
-- Workspace and AtomBase typechecks passed.
-- The fixture-backed AtomBase suite passed 1,617 tests with 10 opt-in tests skipped and no failures.
-- Workspace Turbo tests, generated SDK checks, Companion protocol generation checks, bundled-guide tests, formatting checks, and repository hygiene checks passed.
+- AtomBase typecheck passed.
+- The focused review and agent suite passed 138 tests with no failures.
+- The fixture-backed AtomBase suite passed 1,630 tests with 10 opt-in tests skipped and no failures.
+- Bundled guide discovery and its three focused tests passed.
 - Live provider checks and physical-device behavior remain opt-in and environment-dependent.
 
-Version `3.4.3` is stable AtomCLI release metadata; the exact release tag is `v3.4.3`. Companion remains beta.
+Version `3.4.3-debug` is prerelease metadata; the exact release tag is `v3.4.3-debug`. Companion remains beta.

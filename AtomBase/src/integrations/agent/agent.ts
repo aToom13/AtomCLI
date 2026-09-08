@@ -131,7 +131,7 @@ export namespace Agent {
       },
       reviewer: {
         name: "reviewer",
-        description: `QA verification agent for sub-agent outputs. Independently runs tests, reads git diffs, calls APIs via bash, and validates web UIs via browser to verify work. Renders PASSED/REJECTED verdict. Never modifies code.`,
+        description: `QA verification agent for sub-agent outputs. Independently runs tests, reads git diffs, calls APIs via bash, and validates web UIs via browser to verify work. Renders PASSED/REJECTED verdict and must not intentionally modify source files.`,
         options: {},
         prompt: PROMPT_REVIEWER,
         permission: PermissionNext.merge(

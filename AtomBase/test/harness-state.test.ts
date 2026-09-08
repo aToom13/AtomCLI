@@ -86,6 +86,17 @@ describe("HarnessState - QASessionRegistry", () => {
     HarnessState.clearQASession(orchSessionID, taskId)
   })
 
+  test("keeps QA reviewer slots independently and clears the whole task", () => {
+    HarnessState.setQASession("orch-slots", "task", "qa-0", 0)
+    HarnessState.setQASession("orch-slots", "task", "qa-1", 1)
+
+    expect(HarnessState.getQASessions("orch-slots", "task")).toEqual(["qa-0", "qa-1"])
+    expect(HarnessState.getQASession("orch-slots", "task", 1)).toBe("qa-1")
+
+    HarnessState.clearQASession("orch-slots", "task")
+    expect(HarnessState.getQASessions("orch-slots", "task")).toEqual([])
+  })
+
   test("clearQASession removes specified task record and leaves other task records intact", async () => {
     const orchID = "orch-qa-test-2"
     HarnessState.setQASession(orchID, "task-A", "qa-A")
@@ -126,6 +137,23 @@ describe("HarnessState - QASessionRegistry", () => {
 })
 
 describe("HarnessState - ReviewVerdictRegistry", () => {
+  test("clearReviewScope starts the next user turn without old edits or verdict", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-next-turn"
+        HarnessState.addEditedFile(sessionID, "src/old.ts")
+        HarnessState.recordReviewVerdict(sessionID, { status: "pass" })
+        HarnessState.setReviewerSession(sessionID, "reviewer-old")
+        HarnessState.clearReviewScope(sessionID)
+        expect(HarnessState.getEditedFiles(sessionID)).toEqual([])
+        expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
+        expect(HarnessState.getReviewerSession(sessionID)).toBeUndefined()
+      },
+    })
+  })
+
   test("needsReview is false when no files were edited", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -322,6 +350,22 @@ describe("HarnessState - ReviewVerdictRegistry", () => {
 })
 
 describe("HarnessState - MainReviewerSessionRegistry", () => {
+  test("keeps reviewer slots independently", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        HarnessState.setReviewerSession("sess-slots", "reviewer-0", 0)
+        HarnessState.setReviewerSession("sess-slots", "reviewer-1", 1)
+        expect(HarnessState.getReviewerSession("sess-slots", 0)).toBe("reviewer-0")
+        expect(HarnessState.getReviewerSession("sess-slots", 1)).toBe("reviewer-1")
+        HarnessState.clearReviewerSessions("sess-slots")
+        expect(HarnessState.getReviewerSession("sess-slots", 0)).toBeUndefined()
+        expect(HarnessState.getReviewerSession("sess-slots", 1)).toBeUndefined()
+      },
+    })
+  })
+
   test("setReviewerSession/getReviewerSession round-trip and clearReviewerSession removes it", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({

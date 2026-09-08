@@ -19,7 +19,7 @@ Shared network options include:
 - `--companion`: enable pairing and print companion connection information.
 - `--companion-port <number>`: explicitly fix the companion listener port.
 
-Normal interactive `atomcli` startup launches the loopback control API and the scoped Companion listener together. The control API starts first; both prefer 4096 and automatically use real available ports when not fixed. The TUI footer shows the assigned ports and partial startup errors. Listener readiness does not issue a pairing token or authorize a device: `--companion` explicitly starts pairing, while `--no-companion` disables the interactive Companion listener. Headless `serve` and ACP retain their explicit Companion behavior.
+Normal interactive `atomcli` startup uses in-process RPC for the local TUI and starts a scoped Companion listener. Without explicit control-plane networking, the Companion listener gets the first attempt at 4096 and automatically falls back to an available port. Passing `--port`, `--hostname`, or `--mdns` starts the control API and can make the Companion listener fall back instead. The TUI footer shows the assigned ports and partial startup errors. Listener readiness does not issue a pairing token or authorize a device: `--companion` explicitly starts pairing, while `--no-companion` disables the interactive Companion listener. Headless `serve` and ACP retain their explicit Companion behavior.
 
 A non-loopback control-plane bind is refused without `--auth`:
 
@@ -155,7 +155,7 @@ Mission states are `LIVE`, `WAIT`, `PAUSED`, `DONE`, and `FAIL`. Pause is a sign
 
 If `--companion-port` or `server.companionPort` explicitly fixes a port, AtomCLI does not silently move it. A collision produces an error so an advertised/stored endpoint cannot unexpectedly refer to another port.
 
-Without a fixed port, each Companion listener tries 4096 and falls back to an OS-assigned port. In normal TUI startup the loopback control API starts first and usually owns 4096, so the Companion listener commonly uses another port even for the first process. The TUI footer and pairing output show the actual ports.
+Without a fixed port, each Companion listener tries 4096 and falls back to an OS-assigned port. In normal TUI startup it usually owns 4096 because the local TUI uses in-process RPC; an explicitly started control API can claim that port first. The TUI footer and pairing output show the actual ports.
 
 Diagnosis:
 

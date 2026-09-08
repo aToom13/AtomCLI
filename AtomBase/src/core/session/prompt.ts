@@ -375,15 +375,24 @@ export namespace SessionPrompt {
     return "projected" as const
   }
 
-  async function restoreReviewEvidence(sessionID: string): Promise<void> {
+  export function reviewEvidenceFiles(messages: MessageV2.WithParts[], notBefore = 0): string[] {
+    const turnStart = messages.findLastIndex(
+      (message) =>
+        message.info.role === "user" && !message.parts.every((part) => "synthetic" in part && part.synthetic),
+    )
+    if (turnStart < 0 || messages[turnStart].info.time.created < notBefore) return []
+    return messages
+      .slice(turnStart)
+      .flatMap((message) => message.parts)
+      .filter((part): part is MessageV2.PatchPart => part.type === "patch")
+      .flatMap((part) => part.files)
+  }
+
+  async function restoreReviewEvidence(sessionID: string, notBefore = 0): Promise<void> {
     if (HarnessState.getEditedFileCount(sessionID) === 0) {
       const messages = await Session.messages({ sessionID, excludePatches: false })
-      for (const message of messages) {
-        for (const part of message.parts) {
-          if (part.type !== "patch") continue
-          for (const filepath of part.files) HarnessState.restoreEditedFile(sessionID, filepath)
-        }
-      }
+      for (const filepath of reviewEvidenceFiles(messages, notBefore))
+        HarnessState.restoreEditedFile(sessionID, filepath)
     }
   }
 
@@ -409,8 +418,14 @@ export namespace SessionPrompt {
 
   async function reviewFiles(sessionID: string): Promise<string[]> {
     const files = new Set<string>()
+    const rootMessages = await Session.messages({ sessionID, excludePatches: false })
+    const rootTurn = rootMessages.findLast(
+      (message) =>
+        message.info.role === "user" && !message.parts.every((part) => "synthetic" in part && part.synthetic),
+    )
+    const turnStartedAt = rootTurn?.info.time.created ?? 0
     for (const current of await completionSessionTree(sessionID)) {
-      await restoreReviewEvidence(current)
+      await restoreReviewEvidence(current, current === sessionID ? 0 : turnStartedAt)
       for (const filepath of HarnessState.getEditedFiles(current)) files.add(filepath)
     }
     return [...files]
@@ -525,6 +540,7 @@ export namespace SessionPrompt {
       })
       if (committed === "retry") return committed
       await projectAndAckCompletion(committed)
+      for (const sessionID of await completionSessionTree(input.sessionID)) HarnessState.clearReviewScope(sessionID)
       return "committed"
     }
     if (!review.error && !review.exhausted) {
@@ -1535,7 +1551,11 @@ export namespace SessionPrompt {
         activeModel = result.fallbackModel
         fallbackActive = true
       }
+      const routeDecisionMadeThisStep = RouteRuntime.routeProposalHistory(executionContext.executionID).some(
+        (proposal) => proposal.stepID === processor.message.id && proposal.state === "rejected",
+      )
       if (
+        routeDecisionMadeThisStep ||
         RouteRuntime.snapshot(executionContext.rootSessionID).pendingProposals.some(
           (proposal) =>
             proposal.executionID === executionContext.executionID &&

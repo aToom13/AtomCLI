@@ -189,6 +189,7 @@ The edit tool's fuzzy matching and failure behavior are deliberate. Preserve its
 - Optional `execution_budget` limits use a persistent SQLite/WAL ledger. A root request and its child sessions share atomic model-call, agent-step, duration, and cost admission; dispatched calls whose outcome is unknown remain conservatively charged after restart. Verification probes keep the originating execution context and abort when the caller, deadline, or execution lease is cancelled.
 - A prompt can resume a terminal execution by sending `resumesExecutionID`. Resume creates a linked segment but retains the prior `budgetScopeID`, cumulative calls, steps, cost, and original deadline; it can tighten limits but cannot reset or extend them.
 - Normal prompt cleanup is distinct from user cancellation. Cancellation targets the captured execution/fence, so delayed cleanup cannot cancel a newer user turn or shared parent/child execution.
+- Structured-output contracts are appended at the shared subagent spawn boundary. Reviewer slots persist across retries, an unchanged revision reuses its fresh PASS, and task QA uses the configured reviewer count and review attempt limit while passing findings into worker retries. Reviewer infrastructure failures retry review without repeating completed worker side effects. Successful completion clears root and descendant review state; recovery restores patches only from the current non-synthetic user turn.
 - Review-required completion uses a persistent claim bound to each concrete reviewer child session and needs a matching persisted passing verdict for the exact digest and mutation revision. Reviewer/checker names alone do not grant finalizing access.
 - Completion candidates also bind the current plan revision, versioned review-policy digest, and a streaming content snapshot digest. Policy skip is a distinct `not_required` decision, never a reviewer PASS. A stale policy, plan, mutation, or content snapshot cannot commit.
 - When required review is unavailable or exhausts its attempts, the private candidate keeps its review requirement. A separate safe delivery is committed with immutable execution outcome `blocked`; the candidate is never downgraded to `requiresReview: false` or reported as completed. Retryable review findings still use the bounded continuation outbox.
@@ -283,9 +284,9 @@ From `AtomBase/`:
 bun run build
 ```
 
-The build script deletes `AtomBase/dist/` before every build. Never store source, release notes, or irreplaceable artifacts there.
+The build script deletes `AtomBase/dist/` before every build. Never store source, release notes, or irreplaceable artifacts there. Alpine runtimes for musl builds require `libstdc++` and `libgcc`; the release installer and platform smoke workflow install both packages.
 
-Tracked `.atomcli/` and `.claude/` assets are copied into every binary distribution. Before adding a bundled asset:
+The build tree includes tracked `.atomcli/` and `.claude/` assets. Published releases package bundled skills in a checksum-covered archive that installers place in the global skills directory. Before adding a bundled asset:
 
 - ensure it is intentional, portable, and free of credentials;
 - include only instruction assets required at runtime;

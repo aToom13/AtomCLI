@@ -90,7 +90,7 @@ export const RunCommand = cmd({
       })
       .option("port", {
         type: "number",
-        describe: "port for the local server (defaults to random port if no value provided)",
+        describe: "port for the local server (prefers 4096, then an available port)",
       })
       .option("variant", {
         type: "string",
