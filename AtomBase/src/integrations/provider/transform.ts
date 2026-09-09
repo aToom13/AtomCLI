@@ -856,4 +856,72 @@ export namespace ProviderTransform {
 
     return message
   }
+
+  export function sseToChatCompletion(text: string, modelId: string) {
+    const chunks: any[] = []
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith("data:")) continue
+      const data = trimmed.slice(5).trim()
+      if (!data || data === "[DONE]") continue
+      try {
+        chunks.push(JSON.parse(data))
+      } catch {}
+    }
+    if (!chunks.length) return null
+    const first = chunks.find((c) => c.id || c.model) || chunks[0]
+    const contentParts: string[] = []
+    const reasoningParts: string[] = []
+    const toolCallsMap = new Map<
+      number,
+      { id: string; type: "function"; function: { name: string; arguments: string } }
+    >()
+    let finishReason = "stop"
+    let usage: any = undefined
+    for (const chunk of chunks) {
+      const choice = chunk.choices?.[0]
+      const delta = choice?.delta || {}
+      if (typeof delta.content === "string") contentParts.push(delta.content)
+      const reasoningText = delta.reasoning_content ?? delta.reasoning ?? delta.thinking
+      if (typeof reasoningText === "string") reasoningParts.push(reasoningText)
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0
+          if (!toolCallsMap.has(idx)) {
+            toolCallsMap.set(idx, {
+              id: tc.id || `call_${idx}_${Date.now()}`,
+              type: "function",
+              function: { name: "", arguments: "" },
+            })
+          }
+          const call = toolCallsMap.get(idx)!
+          if (tc.id) call.id = tc.id
+          if (tc.function?.name) call.function.name += tc.function.name
+          if (tc.function?.arguments) call.function.arguments += tc.function.arguments
+        }
+      }
+      if (choice?.finish_reason) finishReason = choice.finish_reason
+      if (chunk.usage) usage = chunk.usage
+    }
+    const tool_calls = toolCallsMap.size > 0 ? Array.from(toolCallsMap.values()) : undefined
+    return {
+      id: first.id || `chatcmpl-${Date.now()}`,
+      object: "chat.completion",
+      created: first.created || Math.floor(Date.now() / 1000),
+      model: first.model || modelId,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: contentParts.join("") || (tool_calls ? null : ""),
+            ...(reasoningParts.length ? { reasoning_content: reasoningParts.join("") } : {}),
+            ...(tool_calls ? { tool_calls } : {}),
+          },
+          finish_reason: tool_calls ? "tool_calls" : finishReason,
+        },
+      ],
+      ...(usage ? { usage } : {}),
+    }
+  }
 }

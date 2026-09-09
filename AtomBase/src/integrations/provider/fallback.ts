@@ -94,8 +94,7 @@ export namespace ModelFallback {
           if (m.status === "deprecated") continue
           if (ModelAvailability.active(m.availability)) continue
           // Must be free
-          const isFree = (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0
-          if (!isFree) continue
+          if (!Provider.isExplicitlyFree(m)) continue
 
           // Skip excluded
           if (options?.excludeProviderID === "atomcli" && options?.excludeModelID === mID) {
@@ -123,8 +122,7 @@ export namespace ModelFallback {
           for (const [mID, m] of Object.entries(p.models || {})) {
             if (m.status === "deprecated") continue
             if (ModelAvailability.active(m.availability)) continue
-            const isFree = (m.cost?.input ?? 0) === 0 && (m.cost?.output ?? 0) === 0
-            if (isFree) {
+            if (Provider.isExplicitlyFree(m)) {
               if (options?.excludeProviderID === pID && options?.excludeModelID === mID) continue
               candidateModels.push({
                 id: mID,

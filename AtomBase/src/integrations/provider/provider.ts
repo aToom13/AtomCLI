@@ -45,6 +45,10 @@ import { ModelVerification } from "./verification"
 import { Bus } from "@/core/bus"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
 import { RouteEligibility } from "@/core/routing/route-eligibility"
+import { fetchOpenAICompatibleModels } from "./custom"
+import { ModelBilling } from "./billing"
+
+const PROVIDER_REFRESH_INTERVAL_MS = 15_000
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
@@ -765,20 +769,8 @@ export namespace Provider {
     }
   }
 
-  export function isExplicitlyFree(model: Pick<Model, "cost">): boolean {
-    const cost = model.cost
-    if (!cost) return false
-    if ((model as Model).options?._catalogCostKnown === false) return false
-    const values = [cost.input, cost.output, cost.cache?.read, cost.cache?.write]
-    if (cost.experimentalOver200K) {
-      values.push(
-        cost.experimentalOver200K.input,
-        cost.experimentalOver200K.output,
-        cost.experimentalOver200K.cache?.read,
-        cost.experimentalOver200K.cache?.write,
-      )
-    }
-    return values.every((value) => typeof value === "number" && Number.isFinite(value) && value === 0)
+  export function isExplicitlyFree(model: Pick<Model, "api" | "cost" | "options">): boolean {
+    return ModelBilling.classify(model) === "free"
   }
 
   export function routePolicy(model: Model): RoutePolicy {
@@ -1092,6 +1084,52 @@ export namespace Provider {
     // extend database from config
     for (const [providerID, provider] of configProviders) {
       const existing = database[providerID]
+      let configuredModels = provider.models ?? {}
+      const baseURL = provider.api ?? provider.options?.baseURL
+      const npm = provider.npm ?? Object.values(existing?.models ?? {})[0]?.api.npm
+      const discoveryEnabled = provider.options?.modelDiscovery !== false
+      if (discoveryEnabled && npm === "@ai-sdk/openai-compatible" && baseURL) {
+        const storedAuth = await Auth.get(providerID)
+        const apiKey =
+          storedAuth?.type === "api"
+            ? storedAuth.key
+            : (provider.options?.apiKey ?? provider.env?.map((name) => Env.get(name)).find(Boolean))
+        const discovery = await fetchOpenAICompatibleModels({
+          baseURL,
+          apiKey,
+          headers: provider.options?.headers,
+          timeout: 10_000,
+        })
+        if (discovery.ok && discovery.models.length > 0) {
+          configuredModels = Object.fromEntries(
+            discovery.models.map((model) => {
+              const discovered = {
+                name: model.name,
+                tool_call: model.tool_call,
+                reasoning: model.reasoning,
+                attachment: model.attachment,
+                temperature: model.temperature,
+                interleaved: model.interleaved,
+                limit: model.limit,
+                modalities: model.modalities,
+                cost: model.cost,
+                release_date: model.release_date,
+                options: {
+                  _modelDiscovery: true,
+                  ...(model.cost ? {} : { _billing: apiKey ? "subscription" : "unknown" }),
+                },
+              }
+              return [model.id, mergeDeep(discovered, provider.models?.[model.id] ?? {})]
+            }),
+          )
+          log.info("refreshed custom provider models", { providerID, count: discovery.models.length })
+        } else {
+          log.warn("failed to refresh custom provider models; retaining configured catalog", {
+            providerID,
+            error: discovery.error ?? "empty model list",
+          })
+        }
+      }
       const parsed: Info = {
         id: providerID,
         name: provider.name ?? existing?.name ?? providerID,
@@ -1101,7 +1139,7 @@ export namespace Provider {
         models: existing?.models ?? {},
       }
 
-      for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+      for (const [modelID, model] of Object.entries(configuredModels)) {
         const existingModel = parsed.models[model.id ?? modelID]
         const name = iife(() => {
           if (model.name) return model.name
@@ -1353,7 +1391,7 @@ export namespace Provider {
   }
 
   const stateCache = Instance.state(() => {
-    const ttl = 60 * 60 * 1000
+    const ttl = PROVIDER_REFRESH_INTERVAL_MS
     let expires = 0
     let catalogRevision = -1
     let current: ReturnType<typeof initialize> | undefined
@@ -1448,11 +1486,45 @@ export namespace Provider {
           opts.headers = _internals.zenHeaders(opts.headers as HeadersInit | undefined)
         }
 
-        const response = await fetchFn(input, {
+        let response = await fetchFn(input, {
           ...opts,
           // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
           timeout: false,
         })
+
+        const isStreaming = (() => {
+          try {
+            if (typeof opts.body === "string") {
+              const b = JSON.parse(opts.body)
+              return b.stream === true
+            }
+          } catch {
+            return false
+          }
+          return false
+        })()
+
+        const contentType = response.headers.get("content-type") || ""
+        if (!isStreaming && contentType.includes("text/event-stream") && response.ok) {
+          const text = await response.text()
+          const json = ProviderTransform.sseToChatCompletion(text, model.id)
+          if (json) {
+            response = new Response(JSON.stringify(json), {
+              status: response.status,
+              statusText: response.statusText,
+              headers: {
+                ...Object.fromEntries(response.headers.entries()),
+                "content-type": "application/json",
+              },
+            })
+          } else {
+            response = new Response(text, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers,
+            })
+          }
+        }
 
         if (model.providerID === "atomcli") {
           const availability =

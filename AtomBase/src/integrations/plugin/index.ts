@@ -10,6 +10,7 @@ import { Flag } from "@/interfaces/flag/flag"
 import { CodexAuthPlugin } from "./codex"
 import { KilocodeAuthPlugin } from "./kilocode"
 import { AntigravityAuthPlugin } from "./antigravity"
+import { ClineAuthPlugin } from "./cline"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
@@ -18,83 +19,86 @@ export namespace Plugin {
 
   // Built-in plugins (exclude Antigravity if disabled via flag)
   const INTERNAL_PLUGINS: PluginInstance[] = Flag.ATOMCLI_DISABLE_ANTIGRAVITY
-    ? [CodexAuthPlugin, KilocodeAuthPlugin]
-    : [CodexAuthPlugin, KilocodeAuthPlugin, AntigravityAuthPlugin]
+    ? [CodexAuthPlugin, KilocodeAuthPlugin, ClineAuthPlugin]
+    : [CodexAuthPlugin, KilocodeAuthPlugin, AntigravityAuthPlugin, ClineAuthPlugin]
 
-  const state = Instance.state(async () => {
-    const client = createAtomcliClient({
-      baseUrl: "http://localhost:4096",
-      directory: Instance.directory,
-      // @ts-ignore - fetch type incompatibility
-      fetch: async (...args) => Server.App().fetch(...args),
-    })
-    const config = await Config.get()
-    const hooks: Hooks[] = []
-    const input: PluginInput = {
-      client,
-      project: Instance.project,
-      worktree: Instance.worktree,
-      directory: Instance.directory,
-      serverUrl: Server.url(),
-      $: Bun.$,
-    }
-
-    for (const plugin of INTERNAL_PLUGINS) {
-      log.info("loading internal plugin", { name: plugin.name })
-      const init = await plugin(input)
-      hooks.push(init)
-    }
-
-    const plugins = [...(config.plugin ?? [])]
-    if (!Flag.ATOMCLI_DISABLE_DEFAULT_PLUGINS) {
-      plugins.push(...BUILTIN)
-    }
-    for (let plugin of plugins) {
-      // ignore old codex plugin since it is supported first party now
-      if (plugin.includes("atomcli-openai-codex-auth")) continue
-      log.info("loading plugin", { path: plugin })
-      if (!plugin.startsWith("file://")) {
-        const lastAtIndex = plugin.lastIndexOf("@")
-        const pkg = lastAtIndex > 0 ? plugin.substring(0, lastAtIndex) : plugin
-        const version = lastAtIndex > 0 ? plugin.substring(lastAtIndex + 1) : "latest"
-        const builtin = BUILTIN.some((x) => x.startsWith(pkg + "@"))
-        plugin = await BunProc.install(pkg, version).catch((err) => {
-          if (builtin) {
-            log.warn("failed to install builtin plugin", { pkg, version, error: err })
-            return ""
-          }
-          throw err
-        })
-        if (!plugin) continue
+  const state = Instance.state(
+    async () => {
+      const client = createAtomcliClient({
+        baseUrl: "http://localhost:4096",
+        directory: Instance.directory,
+        // @ts-ignore - fetch type incompatibility
+        fetch: async (...args) => Server.App().fetch(...args),
+      })
+      const config = await Config.get()
+      const hooks: Hooks[] = []
+      const input: PluginInput = {
+        client,
+        project: Instance.project,
+        worktree: Instance.worktree,
+        directory: Instance.directory,
+        serverUrl: Server.url(),
+        $: Bun.$,
       }
-      const mod = await import(plugin)
-      // Prevent duplicate initialization when plugins export the same function
-      // as both a named export and default export (e.g., `export const X` and `export default X`).
-      // Object.entries(mod) would return both entries pointing to the same function reference.
-      const seen = new Set<PluginInstance>()
-      for (const [_name, fn] of Object.entries<PluginInstance>(mod)) {
-        if (typeof fn !== "function") continue
-        if (seen.has(fn)) continue
-        seen.add(fn)
-        const init = await fn(input)
+
+      for (const plugin of INTERNAL_PLUGINS) {
+        log.info("loading internal plugin", { name: plugin.name })
+        const init = await plugin(input)
         hooks.push(init)
       }
-    }
 
-    return {
-      hooks,
-      input,
-    }
-  }, async (value) => {
-    for (const hook of [...value.hooks].reverse()) {
-      try {
-        await hook.dispose?.()
-      } catch (error) {
-        log.error("plugin dispose failed", { error })
+      const plugins = [...(config.plugin ?? [])]
+      if (!Flag.ATOMCLI_DISABLE_DEFAULT_PLUGINS) {
+        plugins.push(...BUILTIN)
       }
-    }
-    value.hooks.length = 0
-  })
+      for (let plugin of plugins) {
+        // ignore old codex plugin since it is supported first party now
+        if (plugin.includes("atomcli-openai-codex-auth")) continue
+        log.info("loading plugin", { path: plugin })
+        if (!plugin.startsWith("file://")) {
+          const lastAtIndex = plugin.lastIndexOf("@")
+          const pkg = lastAtIndex > 0 ? plugin.substring(0, lastAtIndex) : plugin
+          const version = lastAtIndex > 0 ? plugin.substring(lastAtIndex + 1) : "latest"
+          const builtin = BUILTIN.some((x) => x.startsWith(pkg + "@"))
+          plugin = await BunProc.install(pkg, version).catch((err) => {
+            if (builtin) {
+              log.warn("failed to install builtin plugin", { pkg, version, error: err })
+              return ""
+            }
+            throw err
+          })
+          if (!plugin) continue
+        }
+        const mod = await import(plugin)
+        // Prevent duplicate initialization when plugins export the same function
+        // as both a named export and default export (e.g., `export const X` and `export default X`).
+        // Object.entries(mod) would return both entries pointing to the same function reference.
+        const seen = new Set<PluginInstance>()
+        for (const [_name, fn] of Object.entries<PluginInstance>(mod)) {
+          if (typeof fn !== "function") continue
+          if (seen.has(fn)) continue
+          seen.add(fn)
+          const init = await fn(input)
+          hooks.push(init)
+        }
+      }
+
+      return {
+        hooks,
+        input,
+      }
+    },
+    async (value) => {
+      for (const hook of [...value.hooks].reverse()) {
+        try {
+          await hook.dispose?.()
+        } catch (error) {
+          log.error("plugin dispose failed", { error })
+        }
+      }
+      value.hooks.length = 0
+    },
+  )
 
   export async function trigger<
     Name extends Exclude<keyof Required<Hooks>, "auth" | "event" | "tool" | "dispose" | "tool.execute.around">,
