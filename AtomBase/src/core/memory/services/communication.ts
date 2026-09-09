@@ -1,6 +1,6 @@
 /**
  * Communication Style Manager
- * 
+ *
  * Manages how the AI communicates with the user based on
  * learned preferences and personality compatibility.
  */
@@ -15,12 +15,12 @@ import { z } from "zod"
  * Overall communication mode
  */
 export const CommunicationMode = z.enum([
-  "professional",   // Business-like
-  "friendly",       // Warm and approachable
-  "humorous",       // Fun and playful
-  "technical",      // Focus on facts
-  "supportive",     // Encouraging and caring
-  "adaptive",       // Adapts to user
+  "professional", // Business-like
+  "friendly", // Warm and approachable
+  "humorous", // Fun and playful
+  "technical", // Focus on facts
+  "supportive", // Encouraging and caring
+  "adaptive", // Adapts to user
 ])
 
 export type CommunicationMode = z.infer<typeof CommunicationMode>
@@ -29,11 +29,11 @@ export type CommunicationMode = z.infer<typeof CommunicationMode>
  * Response length preference
  */
 export const ResponseLength = z.enum([
-  "very_short",     // One-liners
-  "short",          // Brief
-  "medium",         // Balanced
-  "long",           // Detailed
-  "very_long",      // Comprehensive
+  "very_short", // One-liners
+  "short", // Brief
+  "medium", // Balanced
+  "long", // Detailed
+  "very_long", // Comprehensive
 ])
 
 export type ResponseLength = z.infer<typeof ResponseLength>
@@ -42,11 +42,11 @@ export type ResponseLength = z.infer<typeof ResponseLength>
  * Vocabulary preference
  */
 export const VocabularyStyle = z.enum([
-  "simple",         // Easy to understand
-  "technical",      // Industry terms
-  "casual",         // Everyday language
-  "academic",       // Formal/academic
-  "mixed",          // Context-dependent
+  "simple", // Easy to understand
+  "technical", // Industry terms
+  "casual", // Everyday language
+  "academic", // Formal/academic
+  "mixed", // Context-dependent
 ])
 
 export type VocabularyStyle = z.infer<typeof VocabularyStyle>
@@ -55,11 +55,11 @@ export type VocabularyStyle = z.infer<typeof VocabularyStyle>
  * Emoji usage preference
  */
 export const EmojiPreference = z.enum([
-  "none",           // No emojis
-  "minimal",        // Rarely
-  "moderate",       // Sometimes
-  "frequent",       // Often
-  "abundant",       // Lots of emojis
+  "none", // No emojis
+  "minimal", // Rarely
+  "moderate", // Sometimes
+  "frequent", // Often
+  "abundant", // Lots of emojis
 ])
 
 export type EmojiPreference = z.infer<typeof EmojiPreference>
@@ -85,7 +85,7 @@ export const CommunicationProfile = z.object({
 
   // Special
   useSlang: z.boolean().default(false),
-  useTurkish: z.boolean().default(false),  // For Turkish users
+  useTurkish: z.boolean().default(false), // For Turkish users
   useGenZSlang: z.boolean().default(false),
 
   // Personalized phrases (learned from user)
@@ -93,15 +93,9 @@ export const CommunicationProfile = z.object({
   dislikedPhrases: z.array(z.string()).default([]),
 
   // Context modifiers
-  formalGreetings: z.array(z.string()).default([
-    "Hello", "Hi there", "Good day"
-  ]),
-  casualGreetings: z.array(z.string()).default([
-    "Hey", "Yo", "Hi", "Hey hey"
-  ]),
-  turkishCasualGreetings: z.array(z.string()).default([
-    "Selam", "Naber", "Merhaba", "Hey"
-  ]),
+  formalGreetings: z.array(z.string()).default(["Hello", "Hi there", "Good day"]),
+  casualGreetings: z.array(z.string()).default(["Hey", "Yo", "Hi", "Hey hey"]),
+  turkishCasualGreetings: z.array(z.string()).default(["Selam", "Naber", "Merhaba", "Hey"]),
 })
 
 export type CommunicationProfile = z.infer<typeof CommunicationProfile>
@@ -206,11 +200,14 @@ export class CommunicationService {
     tone: string
     emojiDensity: number
     questionFrequency: number
-    formalLevel: number  // 0-1
+    formalLevel: number // 0-1
   }> {
     const c = await this.getProfile()
 
-    const styles: Record<CommunicationMode, { tone: string; emojiDensity: number; questionFrequency: number; formalLevel: number }> = {
+    const styles: Record<
+      CommunicationMode,
+      { tone: string; emojiDensity: number; questionFrequency: number; formalLevel: number }
+    > = {
       professional: {
         tone: "professional",
         emojiDensity: 0.1,
@@ -259,7 +256,7 @@ export class CommunicationService {
     options: {
       timeOfDay?: "morning" | "afternoon" | "evening" | "night"
       formality?: "formal" | "casual" | "turkish_casual"
-    } = {}
+    } = {},
   ): Promise<string> {
     const c = await this.getProfile()
     const { formality = "casual" } = options
@@ -330,41 +327,42 @@ export class CommunicationService {
     }
 
     // Emoji injection based on preference
-    const emojiDensity = {
-      none: 0,
-      minimal: 0.05,
-      moderate: 0.15,
-      frequent: 0.3,
-      abundant: 0.5,
-    }[c.emojiUsage] || 0.15
+    const emojiDensity =
+      {
+        none: 0,
+        minimal: 0.05,
+        moderate: 0.15,
+        frequent: 0.3,
+        abundant: 0.5,
+      }[c.emojiUsage] || 0.15
 
     // Only add emojis if density > 0
     if (emojiDensity > 0 && !transformed.includes("```")) {
       // Simple emoji injection for key words
       const emojiMap: Record<string, string> = {
-        "great": "🎉",
-        "good": "✨",
-        "nice": "🙌",
-        "perfect": "💯",
-        "awesome": "🔥",
-        "amazing": "🤩",
-        "help": "🙌",
-        "thanks": "🙏",
-        "thank": "🙏",
-        "sorry": "😔",
-        "error": "🐛",
-        "fix": "🔧",
-        "code": "💻",
-        "test": "🧪",
-        "build": "🚀",
-        "deploy": "📦",
-        "learn": "📚",
-        "question": "❓",
-        "idea": "💡",
-        "work": "⚡",
-        "done": "✅",
-        "yes": "👍",
-        "no": "👎",
+        great: "🎉",
+        good: "✨",
+        nice: "🙌",
+        perfect: "💯",
+        awesome: "🔥",
+        amazing: "🤩",
+        help: "🙌",
+        thanks: "🙏",
+        thank: "🙏",
+        sorry: "😔",
+        error: "🐛",
+        fix: "🔧",
+        code: "💻",
+        test: "🧪",
+        build: "🚀",
+        deploy: "📦",
+        learn: "📚",
+        question: "❓",
+        idea: "💡",
+        work: "⚡",
+        done: "✅",
+        yes: "👍",
+        no: "👎",
       }
 
       // Randomly add emojis based on density
@@ -381,10 +379,7 @@ export class CommunicationService {
   /**
    * Adjust response length
    */
-  async adjustLength(
-    text: string,
-    targetLength?: ResponseLength
-  ): Promise<string> {
+  async adjustLength(text: string, targetLength?: ResponseLength): Promise<string> {
     const c = await this.getProfile()
     const length = targetLength || c.length
 

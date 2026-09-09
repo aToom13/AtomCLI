@@ -1,6 +1,6 @@
 /**
  * Prompt Context Builder
- * 
+ *
  * Combines all memory systems to build rich context for AI prompts.
  * Creates a comprehensive context that includes personality, preferences,
  * history, and learned knowledge.
@@ -26,28 +26,28 @@ import type { EmbeddingService } from "../core/embedding"
 export interface PromptContext {
   // System prompt section
   system: string
-  
+
   // AI personality section
   aiPersonality: string
-  
-  // User context section  
+
+  // User context section
   userContext: string
-  
+
   // Communication style section
   communication: string
-  
+
   // Relevant memories section
   relevantMemories: string
-  
+
   // Knowledge context section
   knowledgeContext: string
-  
+
   // Task-specific context
   taskContext: string
-  
+
   // Combined full context
   fullContext: string
-  
+
   // Metadata
   metadata: {
     createdAt: string
@@ -80,17 +80,14 @@ export interface ContextBuilderOptions {
 export class PromptContextBuilder {
   private memoryStorage: MemoryStorage | null = null
   private embeddingService: EmbeddingService | null = null
-  
+
   // Service instances
   private personalityService: any = null
   private userProfileService: any = null
   private communicationService: any = null
   private knowledgeGraphService: any = null
 
-  constructor(
-    memoryStorage?: MemoryStorage,
-    embeddingService?: EmbeddingService
-  ) {
+  constructor(memoryStorage?: MemoryStorage, embeddingService?: EmbeddingService) {
     this.memoryStorage = memoryStorage || null
     this.embeddingService = embeddingService || null
   }
@@ -105,11 +102,11 @@ export class PromptContextBuilder {
       const { getAIPersonality } = await import("./personality")
       const { getUserProfile } = await import("./user-profile")
       const { getCommunication } = await import("./communication")
-      
+
       this.personalityService = getAIPersonality()
       this.userProfileService = getUserProfile()
       this.communicationService = getCommunication()
-      
+
       // Initialize personality service
       await this.personalityService.initialize()
       await this.userProfileService.initialize()
@@ -128,7 +125,7 @@ export class PromptContextBuilder {
    */
   async buildContext(options: ContextBuilderOptions = {}): Promise<PromptContext> {
     await this.initializeServices()
-    
+
     const {
       task = "",
       taskContext = "",
@@ -144,49 +141,49 @@ export class PromptContextBuilder {
 
     // Build each section
     const sections: string[] = []
-    
+
     // 1. System section (base instructions)
     let systemSection = ""
     if (includeSystem) {
       systemSection = await this.buildSystemSection()
       sections.push(systemSection)
     }
-    
+
     // 2. AI Personality section
     let aiPersonalitySection = ""
     if (includePersonality) {
       aiPersonalitySection = await this.buildPersonalitySection()
       sections.push(aiPersonalitySection)
     }
-    
+
     // 3. User Context section
     let userContextSection = ""
     if (includeUserContext) {
       userContextSection = await this.buildUserContextSection()
       sections.push(userContextSection)
     }
-    
+
     // 4. Communication Style section
     let communicationSection = ""
     if (includeCommunication) {
       communicationSection = await this.buildCommunicationSection()
       sections.push(communicationSection)
     }
-    
+
     // 5. Relevant Memories section
     let memoriesSection = ""
     if (includeMemories && searchQuery) {
       memoriesSection = await this.buildMemoriesSection(searchQuery, searchLimit)
       sections.push(memoriesSection)
     }
-    
+
     // 6. Knowledge Context section
     let knowledgeSection = ""
     if (includeKnowledge && task) {
       knowledgeSection = await this.buildKnowledgeSection(task)
       sections.push(knowledgeSection)
     }
-    
+
     // 7. Task Context section
     let taskSection = ""
     if (taskContext) {
@@ -251,7 +248,7 @@ You are a helpful AI assistant with persistent memory. You:
     } catch {
       // Service not available
     }
-    
+
     return `# AI Personality
 
 You are a helpful, friendly AI assistant. You communicate clearly and helpfully.`
@@ -266,7 +263,7 @@ You are a helpful, friendly AI assistant. You communicate clearly and helpfully.
       if (userContext) {
         return `# User Context\n\n${userContext}`
       }
-      
+
       // Try direct method
       const profile = await this.userProfileService?.getProfile()
       if (profile) {
@@ -281,7 +278,7 @@ You are a helpful, friendly AI assistant. You communicate clearly and helpfully.
     } catch {
       // Service not available
     }
-    
+
     return ""
   }
 
@@ -297,7 +294,7 @@ You are a helpful, friendly AI assistant. You communicate clearly and helpfully.
     } catch {
       // Service not available
     }
-    
+
     return ""
   }
 
@@ -310,27 +307,29 @@ You are a helpful, friendly AI assistant. You communicate clearly and helpfully.
     }
 
     try {
-      const memories = await this.memoryStorage.search(query, { 
+      const memories = await this.memoryStorage.search(query, {
         limit,
         minRelevance: 0,
         tags: [],
       })
-      
+
       if (memories.length === 0) {
         return ""
       }
 
-      const memoryTexts = memories.map((m, i) => {
-        let text = `## Memory ${i + 1}: ${m.title}\n`
-        text += `- Type: ${m.type}\n`
-        text += `- Context: ${m.context}\n`
-        text += `- Content: ${m.content}\n`
-        if (m.solution) {
-          text += `- Solution: ${m.solution}\n`
-        }
-        text += `- Used ${m.metadata.usageCount} times, success rate: ${(m.metadata.successRate * 100).toFixed(0)}%`
-        return text
-      }).join("\n\n")
+      const memoryTexts = memories
+        .map((m, i) => {
+          let text = `## Memory ${i + 1}: ${m.title}\n`
+          text += `- Type: ${m.type}\n`
+          text += `- Context: ${m.context}\n`
+          text += `- Content: ${m.content}\n`
+          if (m.solution) {
+            text += `- Solution: ${m.solution}\n`
+          }
+          text += `- Used ${m.metadata.usageCount} times, success rate: ${(m.metadata.successRate * 100).toFixed(0)}%`
+          return text
+        })
+        .join("\n\n")
 
       return `# Relevant Past Knowledge
 
@@ -348,7 +347,7 @@ ${memoryTexts}`
   private async buildKnowledgeSection(task: string): Promise<string> {
     // This would connect to the knowledge graph
     // For now, return a placeholder
-    
+
     return ""
   }
 
@@ -379,11 +378,7 @@ ${taskContext}`
   /**
    * Build context for code generation
    */
-  async buildCodeContext(
-    language: string,
-    task: string,
-    existingCode?: string
-  ): Promise<string> {
+  async buildCodeContext(language: string, task: string, existingCode?: string): Promise<string> {
     const context = await this.buildContext({
       task: `Write ${language} code for: ${task}`,
       taskContext: `
@@ -395,10 +390,14 @@ ${language}
 ## Task
 ${task}
 
-${existingCode ? `## Existing Code
+${
+  existingCode
+    ? `## Existing Code
 \`\`\`
 ${existingCode}
-\`\`\`` : ""}
+\`\`\``
+    : ""
+}
 
 ## Guidelines
 - Follow the user's code style preferences
@@ -412,11 +411,7 @@ ${existingCode}
   /**
    * Build context for debugging
    */
-  async buildDebugContext(
-    error: string,
-    code: string,
-    stackTrace?: string
-  ): Promise<string> {
+  async buildDebugContext(error: string, code: string, stackTrace?: string): Promise<string> {
     const context = await this.buildContext({
       searchQuery: error,
       searchLimit: 5,
@@ -426,10 +421,14 @@ ${existingCode}
 ## Error
 ${error}
 
-${stackTrace ? `## Stack Trace
+${
+  stackTrace
+    ? `## Stack Trace
 \`\`\`
 ${stackTrace}
-\`\`\`\n` : ""}
+\`\`\`\n`
+    : ""
+}
 
 ## Code
 \`\`\`
@@ -452,7 +451,7 @@ ${code}
       task?: string
       success?: boolean
       userFeedback?: string
-    }
+    },
   ): Promise<MemoryItem> {
     // Add task context as tags if provided
     if (context.task) {
@@ -460,9 +459,9 @@ ${code}
       const keywords = context.task
         .toLowerCase()
         .split(/\s+/)
-        .filter(w => w.length > 3)
+        .filter((w) => w.length > 3)
         .slice(0, 5)
-      
+
       item.tags = [...(item.tags || []), ...keywords]
     }
 
@@ -490,7 +489,7 @@ let defaultInstance: PromptContextBuilder | null = null
 
 export function getPromptContextBuilder(
   memoryStorage?: MemoryStorage,
-  embeddingService?: EmbeddingService
+  embeddingService?: EmbeddingService,
 ): PromptContextBuilder {
   if (!defaultInstance) {
     defaultInstance = new PromptContextBuilder(memoryStorage, embeddingService)

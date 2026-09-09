@@ -1,6 +1,6 @@
 /**
  * Session Persistence Service
- * 
+ *
  * Maintains session state across sessions.
  * Stores conversation summaries, task states, and learned items.
  */
@@ -9,12 +9,7 @@ import os from "os"
 import path from "path"
 import fs from "fs/promises"
 
-import type {
-  SessionState,
-  SessionSummary,
-  PersistedTask,
-  MemoryItem,
-} from "../types"
+import type { SessionState, SessionSummary, PersistedTask, MemoryItem } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -162,7 +157,7 @@ export class SessionService {
       id: session.id,
       date: startedAt.toISOString().split("T")[0],
       duration: durationMinutes,
-      tasks: session.tasks.map(t => t.description),
+      tasks: session.tasks.map((t) => t.description),
       filesModified: this.collectModifiedFiles(session),
       errors: this.collectErrors(session),
       learnedCount: session.learnedItems.length,
@@ -220,17 +215,14 @@ export class SessionService {
   /**
    * Update task status
    */
-  async updateTask(
-    taskId: string,
-    updates: Partial<PersistedTask>
-  ): Promise<void> {
+  async updateTask(taskId: string, updates: Partial<PersistedTask>): Promise<void> {
     await this.initialize()
 
     if (!this.currentSession) {
       throw new Error("No active session")
     }
 
-    const taskIndex = this.currentSession.tasks.findIndex(t => t.id === taskId)
+    const taskIndex = this.currentSession.tasks.findIndex((t) => t.id === taskId)
     if (taskIndex === -1) {
       throw new Error(`Task not found: ${taskId}`)
     }
@@ -287,10 +279,7 @@ export class SessionService {
   /**
    * Get memories relevant to current task from all sessions
    */
-  async getRelevantMemories(
-    task: string,
-    limit: number = 5
-  ): Promise<SessionSummary[]> {
+  async getRelevantMemories(task: string, limit: number = 5): Promise<SessionSummary[]> {
     await this.initialize()
 
     const sessions = await this.loadArchivedSessions()
@@ -298,7 +287,7 @@ export class SessionService {
 
     // Find relevant sessions
     const relevant = sessions
-      .filter(s => (s.summary || "").toLowerCase().includes(taskLower))
+      .filter((s) => (s.summary || "").toLowerCase().includes(taskLower))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
       .slice(0, limit)
 
@@ -357,7 +346,7 @@ export class SessionService {
     const parts: string[] = []
 
     if (session.tasks.length > 0) {
-      const completed = session.tasks.filter(t => t.status === "complete").length
+      const completed = session.tasks.filter((t) => t.status === "complete").length
       parts.push(`Completed ${completed}/${session.tasks.length} tasks`)
     }
 
@@ -379,7 +368,7 @@ export class SessionService {
     const highlights: string[] = []
 
     // Completed tasks
-    const completedTasks = session.tasks.filter(t => t.status === "complete")
+    const completedTasks = session.tasks.filter((t) => t.status === "complete")
     for (const task of completedTasks.slice(-3)) {
       highlights.push(`Completed: ${task.description}`)
     }
@@ -412,9 +401,7 @@ export class SessionService {
    * Collect errors from failed tasks
    */
   private collectErrors(session: SessionState): string[] {
-    return session.tasks
-      .filter(t => t.status === "failed")
-      .map(t => `Task failed: ${t.description}`)
+    return session.tasks.filter((t) => t.status === "failed").map((t) => `Task failed: ${t.description}`)
   }
 
   // ============================================================================
@@ -427,10 +414,7 @@ export class SessionService {
   private async saveCurrentSession(): Promise<void> {
     if (!this.currentSession) return
 
-    await fs.writeFile(
-      this.currentSessionPath,
-      JSON.stringify(this.currentSession, null, 2)
-    )
+    await fs.writeFile(this.currentSessionPath, JSON.stringify(this.currentSession, null, 2))
   }
 
   /**
@@ -443,7 +427,7 @@ export class SessionService {
       id: session.id,
       date: new Date(session.startedAt).toISOString().split("T")[0],
       duration: 0, // Would need to calculate
-      tasks: session.tasks.map(t => t.description),
+      tasks: session.tasks.map((t) => t.description),
       filesModified: [],
       errors: [],
       learnedCount: session.learnedItems.length,
@@ -490,9 +474,8 @@ export class SessionService {
 
     for (const session of sessions) {
       totalTasks += session.tasks.length
-      completedTasks += session.tasks.filter(t =>
-        t.toLowerCase().includes("complete") ||
-        t.toLowerCase().includes("done")
+      completedTasks += session.tasks.filter(
+        (t) => t.toLowerCase().includes("complete") || t.toLowerCase().includes("done"),
       ).length
       totalLearned += session.learnedCount
       totalTime += session.duration

@@ -1,6 +1,6 @@
 /**
  * Memory Analytics Service
- * 
+ *
  * Provides insights and statistics about the memory system.
  * Tracks learning effectiveness and provides improvement suggestions.
  */
@@ -8,13 +8,7 @@
 import path from "path"
 import fs from "fs/promises"
 
-import type {
-  MemoryStats,
-  EffectivenessMetrics,
-  ImprovementSuggestion,
-  MemoryItem,
-  AnalyticsHistory,
-} from "../types"
+import type { MemoryStats, EffectivenessMetrics, ImprovementSuggestion, MemoryItem, AnalyticsHistory } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -95,11 +89,7 @@ export class AnalyticsService {
   /**
    * Get comprehensive usage statistics
    */
-  async getUsageStats(
-    memories: MemoryItem[],
-    preferences: any[],
-    sessions: any[]
-  ): Promise<MemoryStats> {
+  async getUsageStats(memories: MemoryItem[], preferences: any[], sessions: any[]): Promise<MemoryStats> {
     await this.initialize()
 
     // Count by type
@@ -150,36 +140,26 @@ export class AnalyticsService {
     const recent = daily.slice(-7)
     const total = recent.reduce((sum, d) => sum + d.newItems, 0)
 
-    return Math.round(total / recent.length * 10) / 10
+    return Math.round((total / recent.length) * 10) / 10
   }
 
   /**
    * Find suggested topics based on gaps
    */
-  private findSuggestedTopics(
-    memories: MemoryItem[],
-    techCount: Record<string, number>
-  ): string[] {
+  private findSuggestedTopics(memories: MemoryItem[], techCount: Record<string, number>): string[] {
     const suggestions: string[] = []
 
     // Common topics that might be missing
-    const commonTopics = [
-      "JavaScript",
-      "TypeScript",
-      "Python",
-      "React",
-      "Node.js",
-      "Git",
-      "Docker",
-      "Testing",
-    ]
+    const commonTopics = ["JavaScript", "TypeScript", "Python", "React", "Node.js", "Git", "Docker", "Testing"]
 
     for (const topic of commonTopics) {
       const techKey = topic.toLowerCase()
-      if (!techCount[techKey] && !memories.some(m => 
-        m.context.toLowerCase().includes(techKey) ||
-        m.tags.some(t => t.toLowerCase().includes(techKey))
-      )) {
+      if (
+        !techCount[techKey] &&
+        !memories.some(
+          (m) => m.context.toLowerCase().includes(techKey) || m.tags.some((t) => t.toLowerCase().includes(techKey)),
+        )
+      ) {
         suggestions.push(topic)
       }
     }
@@ -194,25 +174,19 @@ export class AnalyticsService {
   /**
    * Calculate learning effectiveness metrics
    */
-  async getEffectivenessMetrics(
-    memories: MemoryItem[]
-  ): Promise<EffectivenessMetrics> {
+  async getEffectivenessMetrics(memories: MemoryItem[]): Promise<EffectivenessMetrics> {
     await this.initialize()
 
-    const successfulApplications = memories.filter(
-      m => m.metadata.successRate >= 0.8
-    ).length
+    const successfulApplications = memories.filter((m) => m.metadata.successRate >= 0.8).length
 
-    const failedApplications = memories.filter(
-      m => m.metadata.successRate < 0.5
-    ).length
+    const failedApplications = memories.filter((m) => m.metadata.successRate < 0.5).length
 
     // Top patterns by usage
     const topPatterns = memories
-      .filter(m => m.type === "pattern" || m.type === "solution")
+      .filter((m) => m.type === "pattern" || m.type === "solution")
       .sort((a, b) => b.metadata.usageCount - a.metadata.usageCount)
       .slice(0, 5)
-      .map(m => ({
+      .map((m) => ({
         pattern: m.title,
         successRate: m.metadata.successRate,
         usageCount: m.metadata.usageCount,
@@ -233,16 +207,13 @@ export class AnalyticsService {
   /**
    * Generate improvement suggestions
    */
-  async getImprovementSuggestions(
-    memories: MemoryItem[],
-    stats: MemoryStats
-  ): Promise<ImprovementSuggestion[]> {
+  async getImprovementSuggestions(memories: MemoryItem[], stats: MemoryStats): Promise<ImprovementSuggestion[]> {
     await this.initialize()
 
     const suggestions: ImprovementSuggestion[] = []
 
     // Suggest adding more patterns if success rate is low
-    const lowSuccessItems = memories.filter(m => m.metadata.successRate < 0.6)
+    const lowSuccessItems = memories.filter((m) => m.metadata.successRate < 0.6)
     if (lowSuccessItems.length > memories.length * 0.2) {
       suggestions.push({
         area: "learning",
@@ -263,7 +234,7 @@ export class AnalyticsService {
     }
 
     // Suggest adding more error patterns if learning velocity is low
-    const errorCount = memories.filter(m => m.type === "error").length
+    const errorCount = memories.filter((m) => m.type === "error").length
     if (errorCount < 5) {
       suggestions.push({
         area: "error_handling",
@@ -274,7 +245,7 @@ export class AnalyticsService {
     }
 
     // Suggest generating embeddings if missing
-    const missingEmbeddings = memories.filter(m => !m.embedding).length
+    const missingEmbeddings = memories.filter((m) => !m.embedding).length
     if (missingEmbeddings > 10) {
       suggestions.push({
         area: "search",
@@ -298,7 +269,7 @@ export class AnalyticsService {
     period: "week" | "month" | "all",
     memories: MemoryItem[],
     preferences: any[],
-    sessions: any[]
+    sessions: any[],
   ): Promise<string> {
     await this.initialize()
 
@@ -306,9 +277,7 @@ export class AnalyticsService {
     const effectiveness = await this.getEffectivenessMetrics(memories)
     const suggestions = await this.getImprovementSuggestions(memories, stats)
 
-    const periodLabel = period === "week" ? "Last Week" 
-      : period === "month" ? "Last Month" 
-      : "All Time"
+    const periodLabel = period === "week" ? "Last Week" : period === "month" ? "Last Month" : "All Time"
 
     const report = `
 # Memory System Report - ${periodLabel}
@@ -325,30 +294,30 @@ ${Object.entries(stats.memoriesByType)
   .join("\n")}
 
 ## Top Technologies
-${stats.topTechnologies.map(t => `- ${t}`).join("\n") || "- No data yet"}
+${stats.topTechnologies.map((t) => `- ${t}`).join("\n") || "- No data yet"}
 
 ## Effectiveness
 - **Successful Applications:** ${effectiveness.successfulApplications}
 - **Failed Applications:** ${effectiveness.failedApplications}
 
 ## Top Patterns
-${effectiveness.topPatterns.length > 0
-  ? effectiveness.topPatterns.map(p => 
-      `- **${p.pattern}** (${(p.successRate * 100).toFixed(0)}% success, ${p.usageCount} uses)`
-    ).join("\n")
-  : "- No patterns recorded yet"}
+${
+  effectiveness.topPatterns.length > 0
+    ? effectiveness.topPatterns
+        .map((p) => `- **${p.pattern}** (${(p.successRate * 100).toFixed(0)}% success, ${p.usageCount} uses)`)
+        .join("\n")
+    : "- No patterns recorded yet"
+}
 
 ## Suggested Topics
-${stats.suggestedTopics.length > 0
-  ? stats.suggestedTopics.map(t => `- ${t}`).join("\n")
-  : "- No suggestions yet"}
+${stats.suggestedTopics.length > 0 ? stats.suggestedTopics.map((t) => `- ${t}`).join("\n") : "- No suggestions yet"}
 
 ## Improvement Areas
-${suggestions.length > 0
-  ? suggestions.map(s => 
-      `- **[${s.area}]** ${s.suggestion} (priority: ${s.priority})`
-    ).join("\n")
-  : "- No improvements needed"}
+${
+  suggestions.length > 0
+    ? suggestions.map((s) => `- **[${s.area}]** ${s.suggestion} (priority: ${s.priority})`).join("\n")
+    : "- No improvements needed"
+}
 `
 
     return report.trim()
@@ -383,11 +352,13 @@ ${suggestions.length > 0
   /**
    * Get trend data for visualization
    */
-  async getTrendData(days: number = 30): Promise<Array<{
-    date: string
-    newItems: number
-    totalItems: number
-  }>> {
+  async getTrendData(days: number = 30): Promise<
+    Array<{
+      date: string
+      newItems: number
+      totalItems: number
+    }>
+  > {
     await this.initialize()
 
     return this.historicalData.dailyStats.slice(-days)
@@ -402,7 +373,7 @@ ${suggestions.length > 0
    */
   async checkHealth(
     memories: MemoryItem[],
-    preferences: any[]
+    preferences: any[],
   ): Promise<{
     status: "healthy" | "warning" | "critical"
     issues: string[]
@@ -420,9 +391,8 @@ ${suggestions.length > 0
     }
 
     // Check success rate
-    const avgSuccess = memories.length > 0
-      ? memories.reduce((sum, m) => sum + m.metadata.successRate, 0) / memories.length
-      : 1
+    const avgSuccess =
+      memories.length > 0 ? memories.reduce((sum, m) => sum + m.metadata.successRate, 0) / memories.length : 1
 
     if (avgSuccess < 0.5) {
       issues.push("Low success rate - patterns may not be effective")
@@ -433,7 +403,7 @@ ${suggestions.length > 0
     }
 
     // Check for unused memories
-    const unused = memories.filter(m => m.metadata.usageCount === 0).length
+    const unused = memories.filter((m) => m.metadata.usageCount === 0).length
     if (unused > memories.length * 0.5 && memories.length > 10) {
       issues.push("Many memories never used")
       score -= 15

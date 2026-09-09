@@ -1,6 +1,6 @@
 /**
  * User Preferences Memory Service
- * 
+ *
  * Automatically learns and remembers user preferences based on behavior.
  * Tracks code style, communication preferences, tool usage, and more.
  */
@@ -9,12 +9,7 @@ import os from "os"
 import path from "path"
 import fs from "fs/promises"
 
-import type {
-  UserPreference,
-  PreferenceCategory,
-  StyleGuide,
-  MemoryMetadata,
-} from "../types"
+import type { UserPreference, PreferenceCategory, StyleGuide, MemoryMetadata } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -109,12 +104,7 @@ export class PreferencesService {
   /**
    * Learn a new preference from user behavior
    */
-  async learn(
-    category: PreferenceCategory,
-    key: string,
-    value: any,
-    context?: string
-  ): Promise<void> {
+  async learn(category: PreferenceCategory, key: string, value: any, context?: string): Promise<void> {
     await this.initialize()
 
     const cacheKey = `${category}:${key}`
@@ -174,23 +164,14 @@ export class PreferencesService {
   /**
    * Learn from behavior pattern
    */
-  async learnFromPattern(
-    category: PreferenceCategory,
-    key: string,
-    value: any,
-    example: string
-  ): Promise<void> {
+  async learnFromPattern(category: PreferenceCategory, key: string, value: any, example: string): Promise<void> {
     await this.learn(category, key, value, example)
   }
 
   /**
    * Learn from explicit user correction
    */
-  async learnFromCorrection(
-    key: string,
-    correctValue: any,
-    context: string
-  ): Promise<void> {
+  async learnFromCorrection(key: string, correctValue: any, context: string): Promise<void> {
     // Determine category based on key pattern
     const category = this.inferCategory(key)
     await this.learn(category, key, correctValue, context)
@@ -199,11 +180,7 @@ export class PreferencesService {
   /**
    * Learn from tool usage pattern
    */
-  async learnToolPreference(
-    toolName: string,
-    preferredOption: string,
-    example?: string
-  ): Promise<void> {
+  async learnToolPreference(toolName: string, preferredOption: string, example?: string): Promise<void> {
     await this.learn("tool_usage", `${toolName}_preference`, preferredOption, example)
   }
 
@@ -214,10 +191,7 @@ export class PreferencesService {
   /**
    * Get a specific preference
    */
-  async get<T = any>(
-    category: PreferenceCategory,
-    key: string
-  ): Promise<{ value: T; confidence: number } | null> {
+  async get<T = any>(category: PreferenceCategory, key: string): Promise<{ value: T; confidence: number } | null> {
     await this.initialize()
 
     const cacheKey = `${category}:${key}`
@@ -258,7 +232,7 @@ export class PreferencesService {
   async getAll(): Promise<UserPreference[]> {
     await this.initialize()
 
-    return Array.from(this.cache.values()).map(e => this.entryToPreference(e))
+    return Array.from(this.cache.values()).map((e) => this.entryToPreference(e))
   }
 
   /**
@@ -314,13 +288,7 @@ export class PreferencesService {
   /**
    * Get preferences to apply to a code generation context
    */
-  async applyToContext(
-    context: {
-      language?: string
-      task?: string
-      files?: string[]
-    }
-  ): Promise<Record<string, any>> {
+  async applyToContext(context: { language?: string; task?: string; files?: string[] }): Promise<Record<string, any>> {
     const preferences: Record<string, any> = {}
 
     // Get style guide
@@ -338,9 +306,7 @@ export class PreferencesService {
 
     // Get tool preferences
     const toolPrefs = await this.getByCategory("tool_usage")
-    preferences.toolPreferences = Object.fromEntries(
-      toolPrefs.map(p => [p.key, p.value])
-    )
+    preferences.toolPreferences = Object.fromEntries(toolPrefs.map((p) => [p.key, p.value]))
 
     return preferences
   }

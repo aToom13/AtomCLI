@@ -1,6 +1,6 @@
 /**
  * ChromaDB Vector Storage for Semantic Search
- * 
+ *
  * Uses ChromaDB for efficient vector similarity search.
  * Embedded mode - no external server required.
  */
@@ -8,10 +8,7 @@
 import fs from "fs/promises"
 import path from "path"
 
-import type {
-  MemoryItem,
-  MemoryStats,
-} from "../types"
+import type { MemoryItem, MemoryStats } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -28,7 +25,11 @@ const log = Log.create({ service: "memory.storage.chroma" })
 export interface VectorStorage {
   initialize(): Promise<void>
   upsert(items: Array<{ id: string; vector: number[]; payload: any }>): Promise<void>
-  search(queryVector: number[], limit: number, filter?: Record<string, any>): Promise<Array<{ id: string; score: number; payload: any }>>
+  search(
+    queryVector: number[],
+    limit: number,
+    filter?: Record<string, any>,
+  ): Promise<Array<{ id: string; score: number; payload: any }>>
   delete(ids: string[]): Promise<void>
   clear(): Promise<void>
   count(): Promise<number>
@@ -46,8 +47,7 @@ export class ChromaStorage {
   private initialized = false
 
   constructor(persistPath?: string) {
-    this.persistPath = persistPath
-      || path.join(Global.Path.root, "memory", "chroma")
+    this.persistPath = persistPath || path.join(Global.Path.root, "memory", "chroma")
   }
 
   // ============================================================================
@@ -117,18 +117,16 @@ export class ChromaStorage {
   /**
    * Upsert vectors with payloads
    */
-  async upsert(
-    items: Array<{ id: string; vector: number[]; payload: MemoryItem }>
-  ): Promise<void> {
+  async upsert(items: Array<{ id: string; vector: number[]; payload: MemoryItem }>): Promise<void> {
     await this.initialize()
 
     if (items.length === 0) return
 
     try {
-      const ids = items.map(i => i.id)
-      const embeddings = items.map(i => i.vector)
-      const documents = items.map(i => i.payload.content)
-      const metadatas = items.map(i => ({
+      const ids = items.map((i) => i.id)
+      const embeddings = items.map((i) => i.vector)
+      const documents = items.map((i) => i.payload.content)
+      const metadatas = items.map((i) => ({
         type: i.payload.type,
         context: i.payload.context,
         title: i.payload.title,
@@ -156,7 +154,7 @@ export class ChromaStorage {
   async search(
     queryVector: number[],
     limit: number,
-    filter?: Record<string, any>
+    filter?: Record<string, any>,
   ): Promise<Array<{ id: string; score: number; payload: MemoryItem }>> {
     await this.initialize()
 
@@ -393,7 +391,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 export function normalizeVector(vector: number[]): number[] {
   const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0))
   if (norm === 0) return vector
-  return vector.map(v => v / norm)
+  return vector.map((v) => v / norm)
 }
 
 // ============================================================================

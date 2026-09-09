@@ -1,6 +1,6 @@
 /**
  * Simple Knowledge Graph
- * 
+ *
  * Stores relationships between concepts, errors, solutions, and files.
  * Enables semantic queries and connection discovery.
  */
@@ -8,13 +8,7 @@
 import path from "path"
 import fs from "fs/promises"
 
-import type {
-  KnowledgeNode,
-  KnowledgeEdge,
-  KnowledgeGraph as KnowledgeGraphType,
-  NodeType,
-  EdgeType,
-} from "../types"
+import type { KnowledgeNode, KnowledgeEdge, KnowledgeGraph as KnowledgeGraphType, NodeType, EdgeType } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -77,9 +71,9 @@ export class KnowledgeGraphService {
     this.nodes = new Map(Object.entries(graph.nodes) as [string, KnowledgeNode][])
     this.edges = new Map(Object.entries(graph.edges) as [string, KnowledgeEdge][])
 
-    log.info("Loaded knowledge graph", { 
-      nodes: this.nodes.size, 
-      edges: this.edges.size 
+    log.info("Loaded knowledge graph", {
+      nodes: this.nodes.size,
+      edges: this.edges.size,
     })
   }
 
@@ -210,12 +204,7 @@ export class KnowledgeGraphService {
   /**
    * Add an edge between two nodes
    */
-  async addEdge(
-    source: string,
-    target: string,
-    type: EdgeType,
-    weight: number = 0.5
-  ): Promise<KnowledgeEdge> {
+  async addEdge(source: string, target: string, type: EdgeType, weight: number = 0.5): Promise<KnowledgeEdge> {
     await this.initialize()
 
     // Verify nodes exist
@@ -389,10 +378,7 @@ export class KnowledgeGraphService {
   /**
    * Get connection suggestion between two nodes
    */
-  private getConnectionSuggestion(
-    node1: KnowledgeNode,
-    node2: KnowledgeNode
-  ): string | null {
+  private getConnectionSuggestion(node1: KnowledgeNode, node2: KnowledgeNode): string | null {
     // Same type → "similar_to"
     if (node1.type === node2.type) {
       return `Both are ${node1.type} nodes`
@@ -437,7 +423,7 @@ export class KnowledgeGraphService {
       context: string
       solution?: string
       tags?: string[]
-    }>
+    }>,
   ): Promise<void> {
     await this.initialize()
 
@@ -464,11 +450,7 @@ export class KnowledgeGraphService {
       if (!sourceNode) continue
 
       // Context → Memory edge
-      await this.addEdge(
-        `context_${mem.context.toLowerCase().replace(/\s+/g, "_")}`,
-        sourceNode.id,
-        "uses"
-      )
+      await this.addEdge(`context_${mem.context.toLowerCase().replace(/\s+/g, "_")}`, sourceNode.id, "uses")
 
       // Solution connections
       if (mem.solution) {
@@ -482,7 +464,7 @@ export class KnowledgeGraphService {
       }
     }
 
-    log.info("Built graph from memory", { 
+    log.info("Built graph from memory", {
       memories: memories.length,
       nodes: this.nodes.size,
       edges: this.edges.size,
@@ -533,9 +515,7 @@ export class KnowledgeGraphService {
       edgesByType[edge.type] = (edgesByType[edge.type] || 0) + 1
     }
 
-    const avgConnections = this.nodes.size > 0
-      ? this.edges.size * 2 / this.nodes.size
-      : 0
+    const avgConnections = this.nodes.size > 0 ? (this.edges.size * 2) / this.nodes.size : 0
 
     return {
       nodeCount: this.nodes.size,
@@ -565,10 +545,14 @@ export class KnowledgeGraphService {
    */
   async export(): Promise<string> {
     await this.initialize()
-    return JSON.stringify({
-      nodes: Object.fromEntries(this.nodes),
-      edges: Object.fromEntries(this.edges),
-    }, null, 2)
+    return JSON.stringify(
+      {
+        nodes: Object.fromEntries(this.nodes),
+        edges: Object.fromEntries(this.edges),
+      },
+      null,
+      2,
+    )
   }
 
   /**
@@ -581,9 +565,9 @@ export class KnowledgeGraphService {
     this.edges = new Map(Object.entries(graph.edges) as [string, KnowledgeEdge][])
 
     await this.saveGraph()
-    log.info("Imported knowledge graph", { 
-      nodes: this.nodes.size, 
-      edges: this.edges.size 
+    log.info("Imported knowledge graph", {
+      nodes: this.nodes.size,
+      edges: this.edges.size,
     })
   }
 }

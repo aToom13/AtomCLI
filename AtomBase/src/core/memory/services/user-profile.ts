@@ -1,6 +1,6 @@
 /**
  * User Personality Profile
- * 
+ *
  * Remembers user characteristics, preferences, and how
  * the user prefers to interact with the AI.
  */
@@ -15,13 +15,13 @@ import { z } from "zod"
  * How the user addresses the AI
  */
 export const UserToAIRelation = z.enum([
-  "formal",         // Uses formal language
-  "casual",         // Relaxed, friendly
-  "kanka",          // Turkish "buddy" style
-  "bro",            // Western "bro" style
-  "sen",            // Turkish informal "you"
-  "siz",            // Turkish formal "you"
-  "intimate",       // Very close, informal
+  "formal", // Uses formal language
+  "casual", // Relaxed, friendly
+  "kanka", // Turkish "buddy" style
+  "bro", // Western "bro" style
+  "sen", // Turkish informal "you"
+  "siz", // Turkish formal "you"
+  "intimate", // Very close, informal
 ])
 
 export type UserToAIRelation = z.infer<typeof UserToAIRelation>
@@ -30,11 +30,11 @@ export type UserToAIRelation = z.infer<typeof UserToAIRelation>
  * User's technical level
  */
 export const TechLevel = z.enum([
-  "beginner",       // New to coding
-  "junior",         // Some experience
-  "mid",            // Comfortable developer
-  "senior",         // Very experienced
-  "expert",         // Deep expertise
+  "beginner", // New to coding
+  "junior", // Some experience
+  "mid", // Comfortable developer
+  "senior", // Very experienced
+  "expert", // Deep expertise
 ])
 
 export type TechLevel = z.infer<typeof TechLevel>
@@ -43,12 +43,12 @@ export type TechLevel = z.infer<typeof TechLevel>
  * User's learning style
  */
 export const LearningStyle = z.enum([
-  "visual",         // Prefers visual explanations
-  "text",           // Prefers text/documentation
-  "hands_on",       // Prefers doing it themselves
-  "questioning",   // Asks lots of questions
-  "direct",         // Just give me the answer
-  "balanced",       // Mix of approaches
+  "visual", // Prefers visual explanations
+  "text", // Prefers text/documentation
+  "hands_on", // Prefers doing it themselves
+  "questioning", // Asks lots of questions
+  "direct", // Just give me the answer
+  "balanced", // Mix of approaches
 ])
 
 export type LearningStyle = z.infer<typeof LearningStyle>
@@ -57,11 +57,11 @@ export type LearningStyle = z.infer<typeof LearningStyle>
  * User's work style
  */
 export const WorkStyle = z.enum([
-  "structured",     // Follows processes
-  "flexible",       // Adapts as needed
-  "experimental",   // Tries new things
-  "efficient",      // Gets it done fast
-  "thorough",       // Does it right
+  "structured", // Follows processes
+  "flexible", // Adapts as needed
+  "experimental", // Tries new things
+  "efficient", // Gets it done fast
+  "thorough", // Does it right
 ])
 
 export type WorkStyle = z.infer<typeof WorkStyle>
@@ -70,10 +70,10 @@ export type WorkStyle = z.infer<typeof WorkStyle>
  * Communication preference
  */
 export const CommunicationPreference = z.enum([
-  "brief",          // Short, to the point
-  "detailed",       // Want all the details
-  "balanced",       // Depends on context
-  "storytelling",   // Prefers narratives
+  "brief", // Short, to the point
+  "detailed", // Want all the details
+  "balanced", // Depends on context
+  "storytelling", // Prefers narratives
 ])
 
 export type CommunicationPreference = z.infer<typeof CommunicationPreference>
@@ -82,10 +82,10 @@ export type CommunicationPreference = z.infer<typeof CommunicationPreference>
  * Time preference
  */
 export const TimePreference = z.enum([
-  "morning",        // Works best in morning
-  "afternoon",      // Afternoon person
-  "night",          // Night owl
-  "whenever",       // Flexible
+  "morning", // Works best in morning
+  "afternoon", // Afternoon person
+  "night", // Night owl
+  "whenever", // Flexible
 ])
 
 export type TimePreference = z.infer<typeof TimePreference>
@@ -242,12 +242,10 @@ export class UserProfileService {
   /**
    * Learn from user behavior
    */
-  async learnFromBehavior(
-    behavior: {
-      type: "question_length" | "code_reading" | "error_handling" | "tool_usage" | "explanation_depth"
-      data: Record<string, any>
-    }
-  ): Promise<void> {
+  async learnFromBehavior(behavior: {
+    type: "question_length" | "code_reading" | "error_handling" | "tool_usage" | "explanation_depth"
+    data: Record<string, any>
+  }): Promise<void> {
     const p = await this.getProfile()
 
     switch (behavior.type) {
@@ -319,7 +317,7 @@ export class UserProfileService {
     const recent = p.recentlyWorkedOn
 
     // Remove if exists (to move to front)
-    const filtered = recent.filter(item => item !== projectOrTopic)
+    const filtered = recent.filter((item) => item !== projectOrTopic)
 
     // Add to front, keep max 5
     p.recentlyWorkedOn = [projectOrTopic, ...filtered].slice(0, 5)
@@ -365,9 +363,7 @@ export class UserProfileService {
     const p = await this.getProfile()
 
     return {
-      depth: p.communication === "brief" ? "brief"
-        : p.communication === "detailed" ? "detailed"
-          : "medium",
+      depth: p.communication === "brief" ? "brief" : p.communication === "detailed" ? "detailed" : "medium",
       includeCode: p.prefersCodeExamples,
       includeExamples: p.prefersCodeExamples,
     }

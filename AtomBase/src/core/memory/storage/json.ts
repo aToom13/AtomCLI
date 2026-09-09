@@ -1,6 +1,6 @@
 /**
  * JSON File Storage for Memory Items
- * 
+ *
  * Simple file-based storage using JSON format.
  * Maintains backward compatibility with existing learning data.
  */
@@ -8,12 +8,7 @@
 import fs from "fs/promises"
 import path from "path"
 
-import type {
-  MemoryItem,
-  MemoryType,
-  SearchOptions,
-  MemoryStats,
-} from "../types"
+import type { MemoryItem, MemoryType, SearchOptions, MemoryStats } from "../types"
 
 import { Log } from "@/util/util/log"
 import { Global } from "@/core/global"
@@ -31,11 +26,8 @@ export class JSONStorage {
   private cache: Map<string, MemoryItem> = new Map()
 
   constructor(filePath?: string) {
-    this.dirPath = filePath
-      ? path.dirname(filePath)
-      : path.join(Global.Path.root, "memory")
-    this.filePath = filePath
-      || path.join(this.dirPath, "memories.json")
+    this.dirPath = filePath ? path.dirname(filePath) : path.join(Global.Path.root, "memory")
+    this.filePath = filePath || path.join(this.dirPath, "memories.json")
   }
 
   // ============================================================================
@@ -229,13 +221,7 @@ export class JSONStorage {
       if (options?.context && !item.context.toLowerCase().includes(options.context.toLowerCase())) continue
 
       // Build searchable text from all fields
-      const searchText = [
-        item.title,
-        item.content,
-        item.solution || "",
-        item.context,
-        item.tags.join(" "),
-      ].join(" ")
+      const searchText = [item.title, item.content, item.solution || "", item.context, item.tags.join(" ")].join(" ")
 
       // BM25 score
       let score = bm25Score(query, searchText)
@@ -245,7 +231,7 @@ export class JSONStorage {
       score += item.metadata.successRate * 0.5
 
       // Boost by strength
-      score *= (0.5 + item.strength * 0.5)
+      score *= 0.5 + item.strength * 0.5
 
       if (score > 0) {
         results.push({ item, score })
@@ -259,7 +245,7 @@ export class JSONStorage {
     const limit = options?.limit || 10
     const limited = results.slice(0, limit)
 
-    return limited.map(r => r.item)
+    return limited.map((r) => r.item)
   }
 
   /**
@@ -278,7 +264,7 @@ export class JSONStorage {
     }
 
     results.sort((a, b) => b.score - a.score)
-    return results.map(r => r.item)
+    return results.map((r) => r.item)
   }
 
   /**
@@ -298,7 +284,7 @@ export class JSONStorage {
     }
 
     results.sort((a, b) => b.score - a.score)
-    return results.map(r => r.item)
+    return results.map((r) => r.item)
   }
 
   /**

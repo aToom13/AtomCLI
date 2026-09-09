@@ -1,6 +1,6 @@
 /**
  * Embedding Service
- * 
+ *
  * Generates vector embeddings for text content using OpenAI or local models.
  * Used for semantic search in memory storage.
  */
@@ -51,10 +51,7 @@ function estimateTokens(text: string): number {
  * 3. Scan backwards from that char position to find a clean whitespace boundary.
  * 4. Append a truncation notice so downstream consumers know data is incomplete.
  */
-function truncateForEmbedding(
-  text: string,
-  maxTokens: number = 2000,
-): string {
+function truncateForEmbedding(text: string, maxTokens: number = 2000): string {
   if (estimateTokens(text) <= maxTokens) return text
 
   // Estimated safe char boundary
@@ -169,7 +166,7 @@ export class OpenAIEmbedding implements EmbeddingService {
       const results: number[][] = []
 
       for (let i = 0; i < texts.length; i += batchSize) {
-        const batch = texts.slice(i, i + batchSize).map(t => truncateForEmbedding(t))
+        const batch = texts.slice(i, i + batchSize).map((t) => truncateForEmbedding(t))
 
         const response = await client.embeddings.create({
           model: this.config.model,
@@ -377,7 +374,7 @@ export function euclideanDistance(a: number[], b: number[]): number {
 export function normalizeVector(vector: number[]): number[] {
   const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0))
   if (norm === 0) return vector
-  return vector.map(v => v / norm)
+  return vector.map((v) => v / norm)
 }
 
 /**
@@ -402,7 +399,7 @@ export function padVector(vector: number[], targetDimensions: number): number[] 
 export function batchTextsForEmbedding(
   texts: string[],
   maxTokens: number = 8000,
-  avgTokensPerChar: number = 4
+  avgTokensPerChar: number = 4,
 ): string[][] {
   const batches: string[][] = []
   let currentBatch: string[] = []
@@ -448,10 +445,7 @@ export function preprocessForEmbedding(text: string): string {
 /**
  * Create a summary for long texts
  */
-export async function summarizeForEmbedding(
-  text: string,
-  maxLength: number = 2000
-): Promise<string> {
+export async function summarizeForEmbedding(text: string, maxLength: number = 2000): Promise<string> {
   if (text.length <= maxLength) {
     return preprocessForEmbedding(text)
   }

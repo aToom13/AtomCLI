@@ -1,18 +1,13 @@
 /**
  * Background Learning Service
- * 
+ *
  * Performs learning tasks when the system is idle.
  * Handles embedding generation, graph cleanup, and predictive learning.
  */
 
 import { Log } from "@/util/util/log"
 
-import type {
-  BackgroundTask,
-  BackgroundTaskType,
-  BackgroundPriority,
-  BackgroundConfig,
-} from "../types"
+import type { BackgroundTask, BackgroundTaskType, BackgroundPriority, BackgroundConfig } from "../types"
 
 import type { MemoryItem } from "../types"
 import type { EmbeddingService } from "../core/embedding"
@@ -54,7 +49,7 @@ export class BackgroundLearningService {
   async initialize(
     embeddingService: EmbeddingService,
     storage: MemoryStorage,
-    graph: KnowledgeGraphService
+    graph: KnowledgeGraphService,
   ): Promise<void> {
     this.embeddingService = embeddingService
     this.storage = storage
@@ -105,7 +100,7 @@ export class BackgroundLearningService {
   async queueTask(
     type: BackgroundTaskType,
     data?: Record<string, any>,
-    priority: BackgroundPriority = "medium"
+    priority: BackgroundPriority = "medium",
   ): Promise<void> {
     if (this.queue.length >= this.config.maxQueueSize) {
       log.warn("Background task queue is full", { size: this.queue.length })
@@ -123,9 +118,7 @@ export class BackgroundLearningService {
 
     // Insert based on priority
     const priorityOrder = { high: 0, medium: 1, low: 2 }
-    const insertIndex = this.queue.findIndex(t =>
-      priorityOrder[t.priority] > priorityOrder[priority]
-    )
+    const insertIndex = this.queue.findIndex((t) => priorityOrder[t.priority] > priorityOrder[priority])
 
     if (insertIndex === -1) {
       this.queue.push(task)
@@ -174,16 +167,13 @@ export class BackgroundLearningService {
     if (!this.isRunning) return
     if (this.processing.length >= this.config.maxConcurrent) return
 
-    while (
-      this.processing.length < this.config.maxConcurrent &&
-      this.queue.length > 0
-    ) {
+    while (this.processing.length < this.config.maxConcurrent && this.queue.length > 0) {
       const task = this.queue.shift()
       if (!task) break
 
       this.processing.push(task)
       this.processTask(task).finally(() => {
-        this.processing = this.processing.filter(t => t.id !== task.id)
+        this.processing = this.processing.filter((t) => t.id !== task.id)
 
         // Continue processing
         setTimeout(() => this.processQueue(), 100)
@@ -247,7 +237,7 @@ export class BackgroundLearningService {
     try {
       // Get items without embeddings
       const items = await this.storage.search("", { limit: 100, minRelevance: 0, tags: [] })
-      const withoutEmbeddings = items.filter(item => !item.embedding)
+      const withoutEmbeddings = items.filter((item) => !item.embedding)
 
       log.info("Generating embeddings", { count: withoutEmbeddings.length })
 
