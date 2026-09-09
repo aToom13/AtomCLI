@@ -33,6 +33,7 @@ import { useSubAgents } from "@tui/context/subagent"
 import { VirtualList } from "../../component/virtual-list"
 import { useChain } from "@tui/context/chain"
 import { SessionRecovery } from "@tui/context/session-recovery"
+import { ExecutionRecoveryPrompt } from "./recovery"
 
 addDefaultParsers(parsers.parsers)
 
@@ -309,6 +310,11 @@ export function Session() {
 
   const questions = createMemo(() => state.questions())
 
+  const unknownWork = createMemo(() => {
+    if (session()?.parentID) return []
+    return SessionRecovery.unknownWork(sync.data.execution_snapshot[route.sessionID])
+  })
+
   return (
     <SessionContext.Provider
       value={{
@@ -522,8 +528,16 @@ export function Session() {
               <Show when={permissions().length === 0 && questions().length > 0}>
                 <QuestionPrompt request={questions()[0]} />
               </Show>
+              <Show when={permissions().length === 0 && questions().length === 0 && unknownWork().length > 0}>
+                <ExecutionRecoveryPrompt work={unknownWork()[0]} sessionID={route.sessionID} />
+              </Show>
               <Prompt
-                visible={!session()?.parentID && permissions().length === 0 && questions().length === 0}
+                visible={
+                  !session()?.parentID &&
+                  permissions().length === 0 &&
+                  questions().length === 0 &&
+                  unknownWork().length === 0
+                }
                 ref={(r) => {
                   prompt = r
                   promptRef.set(r)
@@ -531,7 +545,7 @@ export function Session() {
                     r.set(route.initialPrompt)
                   }
                 }}
-                disabled={permissions().length > 0 || questions().length > 0}
+                disabled={permissions().length > 0 || questions().length > 0 || unknownWork().length > 0}
                 onSubmit={() => {
                   toBottom()
                 }}

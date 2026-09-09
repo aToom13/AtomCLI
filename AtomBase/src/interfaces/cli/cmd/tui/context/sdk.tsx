@@ -10,10 +10,11 @@ export type EventSource = {
 
 // Extract TuiEvent types for emitter typing
 type TuiEventTypes = {
-  [K in keyof typeof TuiEvent as (typeof TuiEvent)[K] extends { type: string } ? (typeof TuiEvent)[K]["type"] : never]:
-  (typeof TuiEvent)[K] extends { type: string; properties: infer P }
-  ? { type: (typeof TuiEvent)[K]["type"]; properties: import("zod").infer<P & import("zod").ZodType> }
-  : never
+  [K in keyof typeof TuiEvent as (typeof TuiEvent)[K] extends { type: string }
+    ? (typeof TuiEvent)[K]["type"]
+    : never]: (typeof TuiEvent)[K] extends { type: string; properties: infer P }
+    ? { type: (typeof TuiEvent)[K]["type"]; properties: import("zod").infer<P & import("zod").ZodType> }
+    : never
 }
 
 // Combined event types: SDK events + TuiEvents

@@ -82,9 +82,7 @@ export function DialogSessionList() {
         const status = sync.data.session_status?.[x.id]
         const isWorking = status?.type === "busy"
         return {
-          title: isDeleting
-            ? `Press ${deleteKeybind} again to confirm`
-            : (isPinned ? "📌 " : "") + x.title,
+          title: isDeleting ? `Press ${deleteKeybind} again to confirm` : (isPinned ? "📌 " : "") + x.title,
           bg: isDeleting ? theme.error : undefined,
           value: x.id,
           category,

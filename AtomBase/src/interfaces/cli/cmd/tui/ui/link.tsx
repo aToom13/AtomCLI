@@ -21,17 +21,15 @@ export function Link(props: LinkProps) {
   const { theme } = useTheme()
 
   return (
-    <Focusable id={id} onPress={() => open(props.href).catch(() => { })}>
+    <Focusable id={id} onPress={() => open(props.href).catch(() => {})}>
       {(focused: () => boolean) => (
         <box
           backgroundColor={focused() ? theme.primary : undefined}
           onMouseUp={() => {
-            open(props.href).catch(() => { })
+            open(props.href).catch(() => {})
           }}
         >
-          <text fg={focused() ? theme.selectedListItemText : props.fg}>
-            {displayText}
-          </text>
+          <text fg={focused() ? theme.selectedListItemText : props.fg}>{displayText}</text>
         </box>
       )}
     </Focusable>

@@ -185,7 +185,8 @@ export namespace Ripgrep {
           fetch(`${url}.sha256`, { signal: controller.signal }),
         ])
         if (!response.ok) throw new DownloadFailedError({ url, status: response.status })
-        if (!checksumResponse.ok) throw new DownloadFailedError({ url: `${url}.sha256`, status: checksumResponse.status })
+        if (!checksumResponse.ok)
+          throw new DownloadFailedError({ url: `${url}.sha256`, status: checksumResponse.status })
 
         buffer = await readBounded(response, MAX_ARCHIVE_BYTES)
         const checksumBytes = await readBounded(checksumResponse, 4 * 1024)

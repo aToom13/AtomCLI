@@ -16,8 +16,8 @@ function isNewerVersion(local: string, remote: string): boolean {
   const cleanLocal = local.replace(/^v/, "").split("-")[0] // "2.1.0-main.abc" -> "2.1.0"
   const cleanRemote = remote.replace(/^v/, "").split("-")[0]
 
-  const localParts = cleanLocal.split(".").map(n => parseInt(n, 10) || 0)
-  const remoteParts = cleanRemote.split(".").map(n => parseInt(n, 10) || 0)
+  const localParts = cleanLocal.split(".").map((n) => parseInt(n, 10) || 0)
+  const remoteParts = cleanRemote.split(".").map((n) => parseInt(n, 10) || 0)
 
   // Pad arrays to same length
   while (localParts.length < 3) localParts.push(0)
@@ -38,7 +38,7 @@ export async function upgrade() {
 
   // Get channel from config (default to stable)
   const channel = config.channel || "stable"
-  const latest = await Installation.latest(method, channel).catch(() => { })
+  const latest = await Installation.latest(method, channel).catch(() => {})
   if (!latest) return
 
   // Only show notification if remote version is actually newer
@@ -56,5 +56,5 @@ export async function upgrade() {
   if (method === "unknown") return
   await Installation.upgrade(method, latest)
     .then(() => Bus.publish(Installation.Event.Updated, { version: latest }))
-    .catch(() => { })
+    .catch(() => {})
 }

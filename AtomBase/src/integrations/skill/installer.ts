@@ -93,13 +93,7 @@ export namespace SkillInstaller {
     const name = path.basename(rawName)
     const directory = path.resolve(Global.Path.skills, name)
     const relative = path.relative(Global.Path.skills, directory)
-    if (
-      name !== rawName ||
-      name === "." ||
-      name === ".." ||
-      relative.startsWith("..") ||
-      path.isAbsolute(relative)
-    ) {
+    if (name !== rawName || name === "." || name === ".." || relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new Error(`Invalid skill name "${rawName}": path traversal detected`)
     }
 

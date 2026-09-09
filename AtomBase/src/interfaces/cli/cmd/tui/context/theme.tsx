@@ -428,9 +428,7 @@ export namespace SystemTheme {
   export function options(themeIDs: string[]) {
     return [
       id,
-      ...themeIDs
-        .filter((item) => item !== id)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+      ...themeIDs.filter((item) => item !== id).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
     ]
   }
 

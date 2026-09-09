@@ -721,11 +721,13 @@ export function Prompt(props: PromptProps) {
           }
           const message = typeof error === "string" ? error : "The server rejected the request"
           sync.optimistic.settle(messageID, "failed", message)
+          void sync.session.refreshExecutions(sessionID).catch(() => {})
           toast.show({ title, message, variant: "error" })
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error)
           sync.optimistic.settle(messageID, "unknown", message)
+          void sync.session.refreshExecutions(sessionID).catch(() => {})
           toast.show({
             title: `${title} (delivery unknown)`,
             message: `${message}. Check the session before retrying.`,

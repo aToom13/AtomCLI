@@ -26,7 +26,7 @@ import { createSimpleContext } from "./helper"
 import type { Snapshot } from "@/core/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onMount } from "solid-js"
+import { batch, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/util/log"
 import type { Path } from "@atomcli/sdk/v2"
 
@@ -49,6 +49,7 @@ import { chatMachine } from "./machine/chat"
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
+    const PROVIDER_REFRESH_INTERVAL_MS = 15_000
     const [store, setStore] = createStore<{
       status: "loading" | "partial" | "complete"
       provider: Provider[]
@@ -148,6 +149,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       input: { store, setStore },
     }).start()
 
+    const refreshExecutions = async (sessionID: string) => {
+      const snapshot = await sdk.client.session.executions.snapshot({ sessionID })
+      if (!snapshot.data) return
+      setStore(
+        produce((draft) => {
+          draft.execution_snapshot[sessionID] = snapshot.data!
+        }),
+      )
+    }
+
     sdk.event.listen((e) => {
       const event = e.details
       if (
@@ -213,6 +224,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                   }
                 : execution.route,
             })
+          break
+        }
+
+        case "execution.updated": {
+          const properties = event.properties as any
+          const sessionID = properties?.sessionID ?? (event as any).sessionID
+          if (sessionID) {
+            void refreshExecutions(sessionID)
+          }
           break
         }
 
@@ -289,6 +309,27 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     onMount(() => {
       bootstrap()
+      let refreshingProviders = false
+      const timer = setInterval(async () => {
+        if (refreshingProviders) return
+        refreshingProviders = true
+        try {
+          const [configured, available] = await Promise.all([
+            sdk.client.config.providers({}, { throwOnError: true }),
+            sdk.client.provider.list({}, { throwOnError: true }),
+          ])
+          batch(() => {
+            setStore("provider", reconcile(configured.data!.providers))
+            setStore("provider_default", reconcile(configured.data!.default))
+            setStore("provider_next", reconcile(available.data!))
+          })
+        } catch (error) {
+          Log.Default.warn("provider refresh failed", { error })
+        } finally {
+          refreshingProviders = false
+        }
+      }, PROVIDER_REFRESH_INTERVAL_MS)
+      onCleanup(() => clearInterval(timer))
     })
 
     const result = {
@@ -360,6 +401,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             inflightSyncs.delete(sessionID)
           }
         },
+        refreshExecutions,
       },
       optimistic: {
         push(sessionID: string, msg: Message, parts: Part[], deliveryDraft: DeliveryRecord["draft"]) {

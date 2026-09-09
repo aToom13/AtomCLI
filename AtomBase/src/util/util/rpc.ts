@@ -9,20 +9,23 @@ export namespace Rpc {
       if (parsed.type === "rpc.request") {
         try {
           const method = rpc[parsed.method]
-          if (!method) throw Object.assign(new Error(`Unknown RPC method: ${parsed.method}`), { code: "METHOD_NOT_FOUND" })
+          if (!method)
+            throw Object.assign(new Error(`Unknown RPC method: ${parsed.method}`), { code: "METHOD_NOT_FOUND" })
           const result = await method(parsed.input)
           postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))
         } catch (error) {
-          postMessage(JSON.stringify({
-            type: "rpc.error",
-            id: parsed.id,
-            error: {
-              code: typeof (error as any)?.code === "string" ? (error as any).code : "INTERNAL_ERROR",
-              name: error instanceof Error ? error.name : "Error",
-              message: error instanceof Error ? error.message : String(error),
-              data: typeof (error as any)?.toObject === "function" ? (error as any).toObject() : undefined,
-            },
-          }))
+          postMessage(
+            JSON.stringify({
+              type: "rpc.error",
+              id: parsed.id,
+              error: {
+                code: typeof (error as any)?.code === "string" ? (error as any).code : "INTERNAL_ERROR",
+                name: error instanceof Error ? error.name : "Error",
+                message: error instanceof Error ? error.message : String(error),
+                data: typeof (error as any)?.toObject === "function" ? (error as any).toObject() : undefined,
+              },
+            }),
+          )
         }
       }
     }
