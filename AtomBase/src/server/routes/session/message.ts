@@ -11,254 +11,259 @@ import { Log } from "@/util/util/log"
 const log = Log.create({ service: "session.message.route" })
 
 export const SessionMessageRoute = new Hono()
-    .get(
-        "/:sessionID/message",
-        describeRoute({
-            summary: "Get session messages",
-            description: "Retrieve all messages in a session, including user prompts and AI responses.",
-            operationId: "session.messages",
-            responses: {
-                200: {
-                    description: "List of messages",
-                    content: {
-                        "application/json": {
-                            schema: resolver(z.lazy(() => MessageV2.WithParts.array())),
-                        },
-                    },
-                },
-                ...errors(400, 404),
+  .get(
+    "/:sessionID/message",
+    describeRoute({
+      summary: "Get session messages",
+      description: "Retrieve all messages in a session, including user prompts and AI responses.",
+      operationId: "session.messages",
+      responses: {
+        200: {
+          description: "List of messages",
+          content: {
+            "application/json": {
+              schema: resolver(z.lazy(() => MessageV2.WithParts.array())),
             },
-        }),
-        validator(
-            "param",
-            z.object({
-                sessionID: z.string().meta({ description: "Session ID" }),
-            }),
-        ),
-        validator(
-            "query",
-            z.object({
-                limit: z.coerce.number().optional(),
-            }),
-        ),
-        async (c) => {
-            const query = c.req.valid("query")
-            const messages = await Session.messages({
-                sessionID: c.req.valid("param").sessionID,
-                limit: query.limit,
-                excludePatches: true,
-            })
-            return c.json(messages)
+          },
         },
-    )
-    .get(
-        "/:sessionID/message/:messageID",
-        describeRoute({
-            summary: "Get message",
-            description: "Retrieve a specific message from a session by its message ID.",
-            operationId: "session.message",
-            responses: {
-                200: {
-                    description: "Message",
-                    content: {
-                        "application/json": {
-                            schema: resolver(
-                                z.object({
-                                    info: z.lazy(() => MessageV2.Info),
-                                    parts: z.lazy(() => MessageV2.Part.array()),
-                                }),
-                            ),
-                        },
-                    },
-                },
-                ...errors(400, 404),
+        ...errors(400, 404),
+      },
+    }),
+    validator(
+      "param",
+      z.object({
+        sessionID: z.string().meta({ description: "Session ID" }),
+      }),
+    ),
+    validator(
+      "query",
+      z.object({
+        limit: z.coerce.number().optional(),
+      }),
+    ),
+    async (c) => {
+      const query = c.req.valid("query")
+      const messages = await Session.messages({
+        sessionID: c.req.valid("param").sessionID,
+        limit: query.limit,
+        excludePatches: true,
+      })
+      return c.json(messages)
+    },
+  )
+  .get(
+    "/:sessionID/message/:messageID",
+    describeRoute({
+      summary: "Get message",
+      description: "Retrieve a specific message from a session by its message ID.",
+      operationId: "session.message",
+      responses: {
+        200: {
+          description: "Message",
+          content: {
+            "application/json": {
+              schema: resolver(
+                z.object({
+                  info: z.lazy(() => MessageV2.Info),
+                  parts: z.lazy(() => MessageV2.Part.array()),
+                }),
+              ),
             },
-        }),
-        validator(
-            "param",
-            z.object({
-                sessionID: z.string().meta({ description: "Session ID" }),
-                messageID: z.string().meta({ description: "Message ID" }),
-            }),
-        ),
-        async (c) => {
-            const params = c.req.valid("param")
-            const message = await MessageV2.get({
-                sessionID: params.sessionID,
-                messageID: params.messageID,
-            })
-            return c.json(message)
+          },
         },
-    )
-    .delete(
-        "/:sessionID/message/:messageID/part/:partID",
-        describeRoute({
-            description: "Delete a part from a message",
-            operationId: "part.delete",
-            responses: {
-                200: {
-                    description: "Successfully deleted part",
-                    content: {
-                        "application/json": {
-                            schema: resolver(z.boolean()),
-                        },
-                    },
-                },
-                ...errors(400, 404),
+        ...errors(400, 404),
+      },
+    }),
+    validator(
+      "param",
+      z.object({
+        sessionID: z.string().meta({ description: "Session ID" }),
+        messageID: z.string().meta({ description: "Message ID" }),
+      }),
+    ),
+    async (c) => {
+      const params = c.req.valid("param")
+      const message = await MessageV2.get({
+        sessionID: params.sessionID,
+        messageID: params.messageID,
+      })
+      return c.json(message)
+    },
+  )
+  .delete(
+    "/:sessionID/message/:messageID/part/:partID",
+    describeRoute({
+      description: "Delete a part from a message",
+      operationId: "part.delete",
+      responses: {
+        200: {
+          description: "Successfully deleted part",
+          content: {
+            "application/json": {
+              schema: resolver(z.boolean()),
             },
-        }),
-        validator(
-            "param",
-            z.object({
-                sessionID: z.string().meta({ description: "Session ID" }),
-                messageID: z.string().meta({ description: "Message ID" }),
-                partID: z.string().meta({ description: "Part ID" }),
-            }),
-        ),
-        async (c) => {
-            const params = c.req.valid("param")
-            await Session.removePart({
-                sessionID: params.sessionID,
-                messageID: params.messageID,
-                partID: params.partID,
-            })
-            return c.json(true)
+          },
         },
-    )
-    .patch(
-        "/:sessionID/message/:messageID/part/:partID",
-        describeRoute({
-            description: "Update a part in a message",
-            operationId: "part.update",
-            responses: {
-                200: {
-                    description: "Successfully updated part",
-                    content: {
-                        "application/json": {
-                            schema: resolver(z.lazy(() => MessageV2.Part)),
-                        },
-                    },
-                },
-                ...errors(400, 404),
+        ...errors(400, 404),
+      },
+    }),
+    validator(
+      "param",
+      z.object({
+        sessionID: z.string().meta({ description: "Session ID" }),
+        messageID: z.string().meta({ description: "Message ID" }),
+        partID: z.string().meta({ description: "Part ID" }),
+      }),
+    ),
+    async (c) => {
+      const params = c.req.valid("param")
+      await Session.removePart({
+        sessionID: params.sessionID,
+        messageID: params.messageID,
+        partID: params.partID,
+      })
+      return c.json(true)
+    },
+  )
+  .patch(
+    "/:sessionID/message/:messageID/part/:partID",
+    describeRoute({
+      description: "Update a part in a message",
+      operationId: "part.update",
+      responses: {
+        200: {
+          description: "Successfully updated part",
+          content: {
+            "application/json": {
+              schema: resolver(z.lazy(() => MessageV2.Part)),
             },
-        }),
-        validator(
-            "param",
-            z.object({
-                sessionID: z.string().meta({ description: "Session ID" }),
-                messageID: z.string().meta({ description: "Message ID" }),
-                partID: z.string().meta({ description: "Part ID" }),
-            }),
-        ),
-        validator("json", z.lazy(() => MessageV2.Part)),
-        async (c) => {
-            const params = c.req.valid("param")
-            const body = c.req.valid("json")
-            if (
-                body.id !== params.partID ||
-                body.messageID !== params.messageID ||
-                body.sessionID !== params.sessionID
-            ) {
-                throw new Error(
-                    `Part mismatch: body.id='${body.id}' vs partID='${params.partID}', body.messageID='${body.messageID}' vs messageID='${params.messageID}', body.sessionID='${body.sessionID}' vs sessionID='${params.sessionID}'`,
-                )
-            }
-            const part = await Session.updatePart(body)
-            return c.json(part)
+          },
         },
-    )
-    .post(
-        "/:sessionID/message",
-        describeRoute({
-            summary: "Send message",
-            description: "Create and send a new message to a session, streaming the AI response.",
-            operationId: "session.prompt",
-            responses: {
-                200: {
-                    description: "Created message",
-                    content: {
-                        "application/json": {
-                            schema: resolver(
-                                z.object({
-                                    info: z.lazy(() => MessageV2.Assistant),
-                                    parts: z.lazy(() => MessageV2.Part.array()),
-                                }),
-                            ),
-                        },
-                    },
-                },
-                ...errors(400, 404),
+        ...errors(400, 404),
+      },
+    }),
+    validator(
+      "param",
+      z.object({
+        sessionID: z.string().meta({ description: "Session ID" }),
+        messageID: z.string().meta({ description: "Message ID" }),
+        partID: z.string().meta({ description: "Part ID" }),
+      }),
+    ),
+    validator(
+      "json",
+      z.lazy(() => MessageV2.Part),
+    ),
+    async (c) => {
+      const params = c.req.valid("param")
+      const body = c.req.valid("json")
+      if (body.id !== params.partID || body.messageID !== params.messageID || body.sessionID !== params.sessionID) {
+        throw new Error(
+          `Part mismatch: body.id='${body.id}' vs partID='${params.partID}', body.messageID='${body.messageID}' vs messageID='${params.messageID}', body.sessionID='${body.sessionID}' vs sessionID='${params.sessionID}'`,
+        )
+      }
+      const part = await Session.updatePart(body)
+      return c.json(part)
+    },
+  )
+  .post(
+    "/:sessionID/message",
+    describeRoute({
+      summary: "Send message",
+      description: "Create and send a new message to a session, streaming the AI response.",
+      operationId: "session.prompt",
+      responses: {
+        200: {
+          description: "Created message",
+          content: {
+            "application/json": {
+              schema: resolver(
+                z.object({
+                  info: z.lazy(() => MessageV2.Assistant),
+                  parts: z.lazy(() => MessageV2.Part.array()),
+                }),
+              ),
             },
-        }),
-        validator(
-            "param",
-            z.object({
-                sessionID: z.string().meta({ description: "Session ID" }),
-            }),
-        ),
-        validator("json", z.lazy(() => SessionPrompt.PromptInput.omit({ sessionID: true }))),
-        async (c) => {
-            c.status(200)
-            c.header("Content-Type", "application/json")
-            return stream(
-                c,
-                async (stream) => {
-                    const sessionID = c.req.valid("param").sessionID
-                    const body = c.req.valid("json")
-                    try {
-                        const msg = await SessionPrompt.prompt({ ...body, sessionID })
-                        stream.write(JSON.stringify(msg))
-                    } catch (err) {
-                        const message = err instanceof Error ? err.message : String(err)
-                        log.error("prompt stream failed", { error: err, sessionID: c.req.valid("param").sessionID })
-                        stream.write(JSON.stringify({ error: message }))
-                    }
-                },
-                async (err, stream) => {
-                    // Hono's third argument: catches errors that escape the callback itself
-                    log.error("hono stream callback error", { error: err })
-                    await stream.write(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
-                },
-            )
+          },
         },
-    )
-    .post(
-        "/:sessionID/prompt_async",
-        describeRoute({
-            summary: "Send async message",
-            description:
-                "Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.",
-            operationId: "session.prompt_async",
-            responses: {
-                204: {
-                    description: "Prompt accepted",
-                },
-                ...errors(400, 404),
-            },
-        }),
-        validator(
-            "param",
-            z.object({
-                sessionID: z.string().meta({ description: "Session ID" }),
-            }),
-        ),
-        validator("json", z.lazy(() => SessionPrompt.PromptInput.omit({ sessionID: true }))),
-        async (c) => {
-            c.status(204)
-            c.header("Content-Type", "application/json")
-            return stream(
-                c,
-                async () => {
-                    const sessionID = c.req.valid("param").sessionID
-                    const body = c.req.valid("json")
-                    // Fire-and-forget: intentionally not awaited
-                    SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
-                        log.error("prompt_async failed", { error: err, sessionID })
-                    })
-                },
-                async (err) => {
-                    log.error("hono stream_async callback error", { error: err })
-                },
-            )
+        ...errors(400, 404),
+      },
+    }),
+    validator(
+      "param",
+      z.object({
+        sessionID: z.string().meta({ description: "Session ID" }),
+      }),
+    ),
+    validator(
+      "json",
+      z.lazy(() => SessionPrompt.PromptInput.omit({ sessionID: true })),
+    ),
+    async (c) => {
+      c.status(200)
+      c.header("Content-Type", "application/json")
+      return stream(
+        c,
+        async (stream) => {
+          const sessionID = c.req.valid("param").sessionID
+          const body = c.req.valid("json")
+          try {
+            const msg = await SessionPrompt.prompt({ ...body, sessionID })
+            stream.write(JSON.stringify(msg))
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            log.error("prompt stream failed", { error: err, sessionID: c.req.valid("param").sessionID })
+            stream.write(JSON.stringify({ error: message }))
+          }
         },
-    )
+        async (err, stream) => {
+          // Hono's third argument: catches errors that escape the callback itself
+          log.error("hono stream callback error", { error: err })
+          await stream.write(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+        },
+      )
+    },
+  )
+  .post(
+    "/:sessionID/prompt_async",
+    describeRoute({
+      summary: "Send async message",
+      description:
+        "Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.",
+      operationId: "session.prompt_async",
+      responses: {
+        204: {
+          description: "Prompt accepted",
+        },
+        ...errors(400, 404),
+      },
+    }),
+    validator(
+      "param",
+      z.object({
+        sessionID: z.string().meta({ description: "Session ID" }),
+      }),
+    ),
+    validator(
+      "json",
+      z.lazy(() => SessionPrompt.PromptInput.omit({ sessionID: true })),
+    ),
+    async (c) => {
+      c.status(204)
+      c.header("Content-Type", "application/json")
+      return stream(
+        c,
+        async () => {
+          const sessionID = c.req.valid("param").sessionID
+          const body = c.req.valid("json")
+          // Fire-and-forget: intentionally not awaited
+          SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
+            log.error("prompt_async failed", { error: err, sessionID })
+          })
+        },
+        async (err) => {
+          log.error("hono stream_async callback error", { error: err })
+        },
+      )
+    },
+  )

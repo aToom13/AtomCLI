@@ -2169,6 +2169,7 @@ export type Event =
   | EventPtyDeleted
   | EventExecutionRouteProposal
   | EventExecutionRouteChanged
+  | EventExecutionUpdated
   | EventFileEdited
   | EventFileChanged
   | EventFileCreated
@@ -2449,6 +2450,14 @@ export type EventExecutionRouteChanged = {
       variant?: string
     }
     stage: "base" | "expert"
+  }
+}
+
+export type EventExecutionUpdated = {
+  type: "execution.updated"
+  properties: {
+    sessionID: string
+    executionID: string
   }
 }
 
@@ -5221,6 +5230,17 @@ export type SessionExecutionsListResponses = {
         failed: number
       }
       recoveryRequired: boolean
+      unknownWork?: Array<{
+        id: string
+        executionID: string
+        invocationID: string
+        kind: string
+        mutating: boolean
+        state: "unknown"
+        version: number
+        createdAt: number
+        beganAt?: number
+      }>
       completion?: {
         id: string
         messageID: string
@@ -5401,6 +5421,17 @@ export type SessionExecutionsSnapshotResponses = {
         failed: number
       }
       recoveryRequired: boolean
+      unknownWork?: Array<{
+        id: string
+        executionID: string
+        invocationID: string
+        kind: string
+        mutating: boolean
+        state: "unknown"
+        version: number
+        createdAt: number
+        beganAt?: number
+      }>
       completion?: {
         id: string
         messageID: string
@@ -5687,6 +5718,17 @@ export type SessionExecutionsGetResponses = {
       failed: number
     }
     recoveryRequired: boolean
+    unknownWork?: Array<{
+      id: string
+      executionID: string
+      invocationID: string
+      kind: string
+      mutating: boolean
+      state: "unknown"
+      version: number
+      createdAt: number
+      beganAt?: number
+    }>
     completion?: {
       id: string
       messageID: string
@@ -5852,6 +5894,17 @@ export type SessionExecutionsCancelResponses = {
         failed: number
       }
       recoveryRequired: boolean
+      unknownWork?: Array<{
+        id: string
+        executionID: string
+        invocationID: string
+        kind: string
+        mutating: boolean
+        state: "unknown"
+        version: number
+        createdAt: number
+        beganAt?: number
+      }>
       completion?: {
         id: string
         messageID: string
@@ -6022,6 +6075,17 @@ export type SessionExecutionsReconcileResponses = {
         failed: number
       }
       recoveryRequired: boolean
+      unknownWork?: Array<{
+        id: string
+        executionID: string
+        invocationID: string
+        kind: string
+        mutating: boolean
+        state: "unknown"
+        version: number
+        createdAt: number
+        beganAt?: number
+      }>
       completion?: {
         id: string
         messageID: string
