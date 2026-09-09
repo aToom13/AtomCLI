@@ -5,6 +5,7 @@ import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { Browser } from "@/integrations/browser"
 import "./browser-e2e.fixture"
+import { ToolRuntime } from "@/integrations/tool/runtime"
 
 const ctx = {
   sessionID: "test",
@@ -17,6 +18,14 @@ const ctx = {
 }
 
 describe("tool.browser integration", () => {
+  test("classifies inspection actions as read-only", async () => {
+    const tool = await BrowserTool.init()
+    const mutating = tool.mutating as (params: any) => boolean
+    expect(mutating({ action: "snapshot" })).toBe(false)
+    expect(mutating({ action: "assert" })).toBe(false)
+    expect(mutating({ action: "click" })).toBe(true)
+  })
+
   test("tool definition is correct", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -93,6 +102,38 @@ describe("tool.browser integration", () => {
 
           await tool.execute({ action: "click", ref: "e7" }, ctx)
           expect(mockPage.locator).toHaveBeenLastCalledWith('[data-atomcli-ref="e7"]')
+        } finally {
+          Browser.getPage = originalGetPage
+          Browser.isPlaywrightAvailable = originalAvailable
+        }
+      },
+    })
+  })
+
+  test("marks locator wait timeouts as not applied", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const tool = await BrowserTool.init()
+        const click = mock(async () => {
+          throw new Error(
+            "click: Timeout 120000ms exceeded.\nCall log:\n  - waiting for locator('[data-atomcli-ref=\"e12\"]')",
+          )
+        })
+        const mockPage = {
+          locator: mock(() => ({ click })),
+          title: mock(async () => "Drive"),
+          url: mock(() => "https://drive.google.com/drive/folders/example"),
+        }
+        const originalGetPage = Browser.getPage
+        const originalAvailable = Browser.isPlaywrightAvailable
+        Browser.getPage = mock(async () => mockPage as any)
+        Browser.isPlaywrightAvailable = mock(async () => true)
+        try {
+          await expect(tool.execute({ action: "click", ref: "e12" }, ctx)).rejects.toBeInstanceOf(
+            ToolRuntime.NotAppliedError,
+          )
         } finally {
           Browser.getPage = originalGetPage
           Browser.isPlaywrightAvailable = originalAvailable

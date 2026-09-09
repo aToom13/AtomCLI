@@ -243,6 +243,7 @@ const parameters = z.object({
 
 export const SystemHealthTool = Tool.define<typeof parameters, SystemHealthMetadata>("system_health", {
   description: DESCRIPTION,
+  mutating: false,
   parameters,
   async execute(params, ctx) {
     if (params.action === "processes") {

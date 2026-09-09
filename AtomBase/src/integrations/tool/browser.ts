@@ -7,6 +7,7 @@ import { Instance } from "@/services/project/instance"
 import { Browser } from "../browser"
 import { BrowserSnapshot } from "./browser-snapshot"
 import { BrowserTarget } from "./browser-target"
+import { ToolRuntime } from "./runtime"
 import { assertExternalDirectory } from "./external-directory"
 import { Tool } from "./tool"
 
@@ -1168,6 +1169,11 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
   return result
 }
 
+function failedBeforeBrowserAction(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /Timeout \d+ms exceeded/.test(message) && /waiting for locator\(/.test(message)
+}
+
 export const BrowserTool = Tool.define("browser", {
   description: `Control a real Chromium browser with semantic, accessible locators and stable snapshot refs.
 Use ref, role+accessibleName, label, placeholder, testId, targetText, or CSS selector to target elements.
@@ -1177,6 +1183,19 @@ canvas-relative mouse/touch coordinates, held keys, deterministic browser clock 
 Use input_sequence for real-time games: combine simultaneous key_down/key_up events with wait or clock-driven advance events and capture checkpoints.
 Bounded multi-step flows reduce round trips. Set returnSnapshot=true after an action to inspect the resulting UI without another call.
 The browser stays open between calls. Playwright and Chromium must be installed.`,
+  mutating: (params) =>
+    ![
+      "snapshot",
+      "snapshot_diff",
+      "read",
+      "box",
+      "accessibility",
+      "screenshot",
+      "assert",
+      "console_logs",
+      "network",
+      "tabs",
+    ].includes(params.action),
   parameters: BrowserParameters,
   async execute(
     params,
@@ -1281,10 +1300,14 @@ The browser stays open between calls. Playwright and Chromium must be installed.
       }
     } catch (error) {
       if (ctx.abort.aborted) throw new Error(`Browser action '${params.action}' was aborted`, { cause: error })
-      throw new Error(
+      const failure = new Error(
         `Browser action '${params.action}' failed: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       )
+      if (params.action !== "flow" && failedBeforeBrowserAction(error)) {
+        throw new ToolRuntime.NotAppliedError(failure)
+      }
+      throw failure
     } finally {
       await restoreFocus?.()
     }

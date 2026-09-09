@@ -18,6 +18,11 @@ const ctx = {
 describe("tool.lsp", () => {
   test("requires a workspace symbol query and positions only for position operations", async () => {
     const tool = await LspTool.init()
+    const mutating = tool.mutating as (args: any) => boolean
+    expect(mutating({ operation: "hover" })).toBe(false)
+    expect(mutating({ operation: "codeActions", apply: false })).toBe(false)
+    expect(mutating({ operation: "renameSymbol" })).toBe(true)
+    expect(mutating({ operation: "codeActions", apply: true })).toBe(true)
 
     await expect(
       tool.execute(

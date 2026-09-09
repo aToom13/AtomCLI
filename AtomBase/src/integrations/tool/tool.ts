@@ -3,6 +3,7 @@ import type { MessageV2 } from "@/core/session/message-v2"
 import type { Agent } from "../agent/agent"
 import type { PermissionNext } from "@/util/permission/next"
 import { Truncate } from "./truncation"
+import { ToolNotAppliedError } from "./runtime-error"
 
 export namespace Tool {
   interface Metadata {
@@ -28,6 +29,7 @@ export namespace Tool {
     init: (ctx?: InitContext) => Promise<{
       description: string
       parameters: Parameters
+      mutating?: boolean | ((args: z.output<Parameters>) => boolean)
       execute(
         args: z.input<Parameters>,
         ctx: Context,
@@ -44,6 +46,7 @@ export namespace Tool {
   type Definition<Parameters extends z.ZodType, M extends Metadata> = {
     description: string
     parameters: Parameters
+    mutating?: boolean | ((args: z.output<Parameters>) => boolean)
     execute(
       args: z.output<Parameters>,
       ctx: Context,
@@ -100,9 +103,11 @@ export namespace Tool {
               parsed = toolInfo.parameters.parse(args)
             } catch (error) {
               if (error instanceof z.ZodError) {
-                throw new Error(formatError(error), { cause: error })
+                throw new ToolNotAppliedError(new Error(formatError(error), { cause: error }))
               }
-              throw new Error(`The ${id} tool encountered an unexpected error: ${error}`, { cause: error })
+              throw new ToolNotAppliedError(
+                new Error(`The ${id} tool encountered an unexpected error: ${error}`, { cause: error }),
+              )
             }
             const result = await execute(parsed, ctx)
             // skip truncation for tools that handle it themselves

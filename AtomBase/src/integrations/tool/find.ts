@@ -42,7 +42,11 @@ export const FindTool = Tool.define("find", {
       .enum(["pattern", "tree"])
       .default("pattern")
       .describe('Search mode: "pattern" for glob file matching, "tree" for directory structure view'),
-    pattern: z.string().max(1000).optional().describe('Glob pattern to match files against (for pattern mode, e.g. "**/*.ts")'),
+    pattern: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Glob pattern to match files against (for pattern mode, e.g. "**/*.ts")'),
     path: z
       .string()
       .max(4096)
@@ -95,7 +99,10 @@ async function executePattern(search: string, pattern: string, ctx: Tool.Context
   const files = await Promise.all(
     paths.map(async (file) => ({
       path: file,
-      mtime: await Bun.file(file).stat().then((stats) => stats.mtime.getTime()).catch(() => 0),
+      mtime: await Bun.file(file)
+        .stat()
+        .then((stats) => stats.mtime.getTime())
+        .catch(() => 0),
     })),
   )
   files.sort((a, b) => b.mtime - a.mtime)

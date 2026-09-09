@@ -5,8 +5,82 @@ import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { Storage } from "@/core/storage/storage"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { Tool } from "@/integrations/tool/tool"
+import z from "zod"
 
 describe("ToolRuntime", () => {
+  test("marks tool argument validation failures as not applied", async () => {
+    const tool = await Tool.define("validated", {
+      description: "test",
+      parameters: z.object({ value: z.string() }),
+      async execute() {
+        return { title: "ok", output: "ok", metadata: {} }
+      },
+    }).init()
+
+    await expect(tool.execute({ value: 1 } as any, {} as any)).rejects.toBeInstanceOf(ToolRuntime.NotAppliedError)
+  })
+
+  test("does not mark read-only tool failures as unknown work", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const active = spyOn(ExecutionRuntime, "assertActive").mockResolvedValue(undefined)
+        const register = spyOn(ExecutionRuntime, "registerWork").mockResolvedValue({
+          registered: true,
+          idempotent: false,
+          state: "prepared",
+          version: 1,
+        })
+        const begin = spyOn(ExecutionRuntime, "beginWork").mockResolvedValue({ began: true, version: 2 })
+        const finish = spyOn(ExecutionRuntime, "finishWork").mockResolvedValue({
+          finished: true,
+          idempotent: false,
+          state: "failed",
+          version: 3,
+        })
+        try {
+          await expect(
+            ToolRuntime.execute({
+              tool: "lsp",
+              args: { operation: "hover" },
+              mutating: false,
+              context: {
+                sessionID: "session-read-only",
+                messageID: "message-read-only",
+                callID: "call-read-only",
+                agent: "build",
+                abort: new AbortController().signal,
+                extra: {
+                  execution: {
+                    executionID: "execution-read-only",
+                    rootSessionID: "session-read-only",
+                    invocationID: "invocation-read-only",
+                    ownerID: "owner-read-only",
+                    fence: 1,
+                  },
+                },
+                metadata() {},
+                async ask() {},
+              },
+              execute: async () => {
+                throw new Error("LSP unavailable")
+              },
+            }),
+          ).rejects.toThrow("LSP unavailable")
+          expect(register).toHaveBeenCalledWith(expect.objectContaining({ mutating: false }))
+          expect(finish).toHaveBeenCalledWith(expect.objectContaining({ state: "failed" }))
+        } finally {
+          active.mockRestore()
+          register.mockRestore()
+          begin.mockRestore()
+          finish.mockRestore()
+        }
+      },
+    })
+  })
+
   test("applies replacement, around and reverse after middleware", async () => {
     await using project = await tmpdir()
     const order: string[] = []
@@ -111,6 +185,94 @@ describe("ToolRuntime", () => {
         )
         expect(events.some((event) => event.type === "tool.applied" && event.callID === "call-applied")).toBe(true)
         expect(events.some((event) => event.type === "tool.error" && event.applied === true)).toBe(true)
+      },
+    })
+  })
+
+  test("records known pre-mutation failures without blocking later execution", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const active = spyOn(ExecutionRuntime, "assertActive").mockResolvedValue(undefined)
+        const register = spyOn(ExecutionRuntime, "registerWork").mockResolvedValue({
+          registered: true,
+          idempotent: false,
+          state: "prepared",
+          version: 1,
+        })
+        const begin = spyOn(ExecutionRuntime, "beginWork").mockResolvedValue({ began: true, version: 2 })
+        const finish = spyOn(ExecutionRuntime, "finishWork").mockResolvedValue({
+          finished: true,
+          idempotent: false,
+          state: "failed",
+          version: 3,
+        })
+        try {
+          await expect(
+            ToolRuntime.execute({
+              tool: "write",
+              args: {},
+              context: {
+                sessionID: "session-not-applied",
+                messageID: "message-not-applied",
+                callID: "call-not-applied",
+                agent: "build",
+                abort: new AbortController().signal,
+                extra: {
+                  execution: {
+                    executionID: "execution-not-applied",
+                    rootSessionID: "session-not-applied",
+                    invocationID: "invocation-not-applied",
+                    ownerID: "owner-not-applied",
+                    fence: 1,
+                  },
+                },
+                metadata() {},
+                async ask() {},
+              },
+              execute: async () => {
+                throw new ToolRuntime.NotAppliedError(new Error("permission denied"))
+              },
+            }),
+          ).rejects.toThrow("permission denied")
+          expect(finish).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 2, state: "failed" }))
+        } finally {
+          active.mockRestore()
+          register.mockRestore()
+          begin.mockRestore()
+          finish.mockRestore()
+        }
+      },
+    })
+  })
+
+  test("treats rejected in-tool permission checks as not applied", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        await expect(
+          ToolRuntime.execute({
+            tool: "edit",
+            args: {},
+            context: {
+              sessionID: "session-permission-reject",
+              messageID: "message-permission-reject",
+              callID: "call-permission-reject",
+              agent: "build",
+              abort: new AbortController().signal,
+              metadata() {},
+              async ask() {
+                throw new Error("Permission rejected")
+              },
+            },
+            execute: async (_args, context) => {
+              await context.ask({ permission: "edit", patterns: ["file"], always: ["*"], metadata: {} })
+              return { title: "edit", output: "edited", metadata: {} }
+            },
+          }),
+        ).rejects.toBeInstanceOf(ToolRuntime.NotAppliedError)
       },
     })
   })

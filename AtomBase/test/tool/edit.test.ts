@@ -1,5 +1,5 @@
 import "../preload"
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import path from "path"
 import { EditTool } from "@/integrations/tool/edit"
 import { Instance } from "@/services/project/instance"
@@ -8,6 +8,7 @@ import type { PermissionNext } from "@/util/permission/next"
 import { FileTime } from "@/services/file/time"
 import { EditAnchor } from "@/integrations/tool/edit-anchor"
 import { ReadTool } from "@/integrations/tool/read"
+import { ToolRuntime } from "@/integrations/tool/runtime"
 
 const ctx = {
   sessionID: "test",
@@ -25,6 +26,46 @@ function markFileAsRead(filepath: string) {
 }
 
 describe("tool.edit", () => {
+  test("uses oldString and newString when operations is empty", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "empty-operations.txt")
+        await Bun.write(filePath, "before")
+        markFileAsRead(filePath)
+        const edit = await EditTool.init()
+
+        await edit.execute({ filePath, oldString: "before", newString: "after", operations: [] }, ctx)
+
+        expect(await Bun.file(filePath).text()).toBe("after")
+      },
+    })
+  })
+
+  test("marks permission-denied writes as not applied", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "permission-denied.txt")
+        await Bun.write(filePath, "before")
+        markFileAsRead(filePath)
+        const write = spyOn(Bun, "write").mockRejectedValue(
+          Object.assign(new Error("permission denied"), { code: "EACCES" }),
+        )
+        try {
+          const edit = await EditTool.init()
+          await expect(edit.execute({ filePath, oldString: "before", newString: "after" }, ctx)).rejects.toBeInstanceOf(
+            ToolRuntime.NotAppliedError,
+          )
+        } finally {
+          write.mockRestore()
+        }
+      },
+    })
+  })
+
   test("applies a content-hash guarded edit and returns the new hash", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -270,7 +311,7 @@ describe("tool.edit", () => {
               },
             },
           ),
-        ).rejects.toThrow(/oldString not found/)
+        ).rejects.toBeInstanceOf(ToolRuntime.NotAppliedError)
         expect(await Bun.file(filePath).text()).toBe(original)
         expect(permissionRequests).toBe(0)
       },
@@ -463,7 +504,7 @@ describe("tool.edit", () => {
             },
             ctx,
           ),
-        ).rejects.toThrow(/directory/)
+        ).rejects.toBeInstanceOf(ToolRuntime.NotAppliedError)
       },
     })
   })

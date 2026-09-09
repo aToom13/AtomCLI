@@ -62,6 +62,11 @@ const positionOperations = new Set<(typeof operations)[number]>([
 
 export const LspTool = Tool.define("lsp", {
   description: DESCRIPTION,
+  mutating: (args) =>
+    args.operation === "renameSymbol" ||
+    args.operation === "renameFile" ||
+    args.operation === "formatting" ||
+    (args.operation === "codeActions" && args.apply),
   parameters: z.object({
     operation: z.enum(operations).describe("The LSP operation to perform"),
     filePath: z.string().min(1).max(4096).describe("The absolute or relative path to the file"),

@@ -2,6 +2,7 @@ import { Plugin } from "@/integrations/plugin"
 import { Log } from "@/util/util/log"
 import type { Tool } from "./tool"
 import { SessionReplay } from "@/core/session/replay"
+import { ToolAppliedError, ToolNotAppliedError } from "./runtime-error"
 
 const READ_ONLY_TOOLS = new Set([
   "find",
@@ -18,17 +19,8 @@ const READ_ONLY_TOOLS = new Set([
 export namespace ToolRuntime {
   const log = Log.create({ service: "tool.runtime" })
 
-  export class AppliedError extends Error {
-    readonly applied = true
-
-    constructor(tool: string, cause: unknown) {
-      super(
-        `Tool ${tool} completed its operation, but post-processing failed. The operation may have side effects; do not retry it automatically. ${cause instanceof Error ? cause.message : String(cause)}`,
-        { cause },
-      )
-      this.name = "ToolAppliedError"
-    }
-  }
+  export const NotAppliedError = ToolNotAppliedError
+  export const AppliedError = ToolAppliedError
 
   export type Result = {
     title: string
@@ -52,6 +44,7 @@ export namespace ToolRuntime {
     args: Args
     context: Tool.Context
     execute(args: Args, context: Tool.Context): Promise<Output>
+    mutating?: boolean | ((args: Args) => boolean)
     permission?(args: Args, context: Tool.Context): Promise<void>
     middleware?: Middleware<Args, Output>[]
     timeoutMs?: number
@@ -85,9 +78,14 @@ export namespace ToolRuntime {
     }
     const ask = context.ask.bind(context)
     context.ask = async (request) => {
-      await ask(request)
-      if (context.abort.aborted) throw context.abort.reason ?? new Error(`Tool ${input.tool} was aborted`)
-      await assertExecutionActive()
+      try {
+        await ask(request)
+        if (context.abort.aborted) throw context.abort.reason ?? new Error(`Tool ${input.tool} was aborted`)
+        await assertExecutionActive()
+      } catch (error) {
+        if (error instanceof NotAppliedError) throw error
+        throw new NotAppliedError(error)
+      }
     }
     let args = input.args
 
@@ -119,7 +117,8 @@ export namespace ToolRuntime {
     const operationID = execution
       ? `${execution.executionID}:${execution.invocationID}:${context.messageID}:${callID}:0`
       : undefined
-    const mutating = !READ_ONLY_TOOLS.has(input.tool)
+    const mutating =
+      typeof input.mutating === "function" ? input.mutating(args) : (input.mutating ?? !READ_ONLY_TOOLS.has(input.tool))
     let workVersion: number | undefined
     if (execution && operationID) {
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
@@ -195,6 +194,8 @@ export namespace ToolRuntime {
     try {
       result = normalize(input.tool, await invoke(args, context))
     } catch (error) {
+      const notApplied = error instanceof NotAppliedError
+      const applied = error instanceof AppliedError
       if (execution && operationID) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         await ExecutionRuntime.finishWork({
@@ -202,7 +203,15 @@ export namespace ToolRuntime {
           execution,
           operationID,
           expectedVersion: workVersion!,
-          state: mutating && bodyBegan ? "unknown" : context.abort.aborted ? "cancelled" : "failed",
+          state: applied
+            ? "completed"
+            : notApplied
+              ? "failed"
+              : mutating && bodyBegan
+                ? "unknown"
+                : context.abort.aborted
+                  ? "cancelled"
+                  : "failed",
         }).catch((workError) => log.warn("failed to persist tool work failure", { workError, operationID }))
       }
       await SessionReplay.append({
@@ -211,7 +220,7 @@ export namespace ToolRuntime {
         callID,
         tool: input.tool,
         error: error instanceof Error ? error.message : String(error),
-        applied: mutating && bodyBegan,
+        applied: applied || (mutating && bodyBegan && !notApplied),
       }).catch((replayError) => log.warn("failed to record tool execution error", { replayError }))
       throw error
     }

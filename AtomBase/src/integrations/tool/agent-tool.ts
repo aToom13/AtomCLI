@@ -138,6 +138,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
   return {
     description,
     parameters,
+    mutating: (params: z.infer<typeof parameters>) => params.action !== "status" && params.action !== "wait",
     async execute(params: z.infer<typeof parameters>, ctx) {
       const rejectRedundantFastReviewer = async (agent: string, prompt: string, ownedFiles: string[] = []) => {
         if (SessionExecutionProfile.get(ctx.sessionID) !== "companion-fast") return

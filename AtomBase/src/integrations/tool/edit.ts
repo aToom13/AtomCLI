@@ -17,11 +17,14 @@ import { FileTime } from "@/services/file/time"
 import { Filesystem } from "@/util/util/filesystem"
 import { Instance } from "@/services/project/instance"
 import { assertExternalDirectory } from "./external-directory"
+import { ToolRuntime } from "./runtime"
+import { withTimeout } from "@/util/util/timeout"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_EDIT_OPERATIONS = 100
 const MAX_EDIT_CONTENT_BYTES = 10 * 1024 * 1024
 const MAX_EDIT_TOTAL_BYTES = 20 * 1024 * 1024
+const LSP_DIAGNOSTICS_TIMEOUT_MS = 2_000
 const MAX_EDIT_FILE_BYTES = 10 * 1024 * 1024
 const MAX_DIFF_BYTES = 200 * 1024
 const MAX_EXACT_DIFF_INPUT_BYTES = 512 * 1024
@@ -131,50 +134,54 @@ export const EditTool = Tool.define("edit", {
       ),
   }),
   async execute(params, ctx) {
-    if (!params.filePath) {
-      throw new Error("filePath is required")
-    }
-
-    // Build operations list: either from `operations` array or from single oldString/newString
-    const ops = params.operations
-      ? params.operations
-      : params.oldString !== undefined && params.newString !== undefined
-        ? [
-            {
-              oldString: params.oldString,
-              newString: params.newString,
-              replaceAll: params.replaceAll,
-              startAnchor: params.startAnchor,
-              endAnchor: params.endAnchor,
-            },
-          ]
-        : null
-
-    if (!ops || ops.length === 0) {
-      throw new Error("Either (oldString + newString) or operations array is required")
-    }
-
-    const totalBytes = ops.reduce(
-      (total, op) => total + Buffer.byteLength(op.oldString) + Buffer.byteLength(op.newString),
-      0,
-    )
-    if (totalBytes > MAX_EDIT_TOTAL_BYTES) {
-      throw new Error(`Combined edit content exceeds ${MAX_EDIT_TOTAL_BYTES} bytes`)
-    }
-
-    // Validate all operations
-    for (const op of ops) {
-      if (op.oldString === op.newString) {
-        throw new Error("oldString and newString must be different")
+    let ops: EditOperation[]
+    let filePath: string
+    try {
+      if (!params.filePath) {
+        throw new Error("filePath is required")
       }
-      if (!!op.startAnchor !== !!op.endAnchor) {
-        throw new Error("startAnchor and endAnchor must be provided together")
+
+      // Build operations list from either batch or legacy single-operation fields.
+      const requestedOps = params.operations?.length
+        ? params.operations
+        : params.oldString !== undefined && params.newString !== undefined
+          ? [
+              {
+                oldString: params.oldString,
+                newString: params.newString,
+                replaceAll: params.replaceAll,
+                startAnchor: params.startAnchor,
+                endAnchor: params.endAnchor,
+              },
+            ]
+          : null
+
+      if (!requestedOps || requestedOps.length === 0) {
+        throw new Error("Either (oldString + newString) or operations array is required")
       }
+
+      const totalBytes = requestedOps.reduce(
+        (total, op) => total + Buffer.byteLength(op.oldString) + Buffer.byteLength(op.newString),
+        0,
+      )
+      if (totalBytes > MAX_EDIT_TOTAL_BYTES) {
+        throw new Error(`Combined edit content exceeds ${MAX_EDIT_TOTAL_BYTES} bytes`)
+      }
+
+      for (const op of requestedOps) {
+        if (op.oldString === op.newString) throw new Error("oldString and newString must be different")
+        if (!!op.startAnchor !== !!op.endAnchor) {
+          throw new Error("startAnchor and endAnchor must be provided together")
+        }
+      }
+
+      ops = requestedOps
+      filePath = path.resolve(Instance.directory, params.filePath)
+      await assertExternalDirectory(ctx, filePath)
+    } catch (error) {
+      if (error instanceof ToolRuntime.NotAppliedError || error instanceof ToolRuntime.AppliedError) throw error
+      throw new ToolRuntime.NotAppliedError(error)
     }
-
-    const filePath = path.resolve(Instance.directory, params.filePath)
-    await assertExternalDirectory(ctx, filePath)
-
     return executeEdits(filePath, ops, params.contentHash, ctx)
   },
 })
@@ -193,120 +200,147 @@ async function executeEdits(
   expectedHash: string | undefined,
   ctx: Tool.Context,
 ) {
+  let writeAttempted = false
+  let writeApplied = false
   let diff = ""
   let contentOld = ""
   let contentNew = ""
   let summary = { diff: "", additions: 0, deletions: 0, preview: false }
-  await FileTime.withLock(filePath, async () => {
-    const file = Bun.file(filePath)
-    const stats = await file.stat().catch((): undefined => undefined)
-    if (stats?.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
-    if (stats && stats.size > MAX_EDIT_FILE_BYTES) {
-      throw new Error(`File ${filePath} exceeds the ${MAX_EDIT_FILE_BYTES} byte edit limit`)
-    }
-    if (!stats && operations[0].oldString !== "") throw new Error(`File ${filePath} not found`)
+  try {
+    await FileTime.withLock(filePath, async () => {
+      const file = Bun.file(filePath)
+      const stats = await file.stat().catch((): undefined => undefined)
+      if (stats?.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
+      if (stats && stats.size > MAX_EDIT_FILE_BYTES) {
+        throw new Error(`File ${filePath} exceeds the ${MAX_EDIT_FILE_BYTES} byte edit limit`)
+      }
+      if (!stats && operations[0].oldString !== "") throw new Error(`File ${filePath} not found`)
 
-    contentOld = stats ? await file.text() : ""
-    if (expectedHash) {
-      if (!stats || EditAnchor.contentHash(contentOld) !== expectedHash) {
-        throw new Error(`Stale edit: content changed for ${filePath}. Read the file again before editing`)
+      contentOld = stats ? await file.text() : ""
+      if (expectedHash) {
+        if (!stats || EditAnchor.contentHash(contentOld) !== expectedHash) {
+          throw new Error(`Stale edit: content changed for ${filePath}. Read the file again before editing`)
+        }
       }
-    }
-    if (stats && operations[0].oldString !== "") {
-      if (!FileTime.get(ctx.sessionID, filePath)) {
-        throw new Error(`You must read the file ${filePath} before overwriting it. Use the Read tool first`)
+      if (stats && operations[0].oldString !== "") {
+        if (!FileTime.get(ctx.sessionID, filePath)) {
+          throw new Error(`You must read the file ${filePath} before overwriting it. Use the Read tool first`)
+        }
+        if (!expectedHash) await FileTime.assert(ctx.sessionID, filePath)
       }
-      if (!expectedHash) await FileTime.assert(ctx.sessionID, filePath)
-    }
-    contentNew = contentOld
-    // Apply every operation in memory before requesting permission or writing.
-    // A failed match therefore leaves the original file untouched.
-    for (const operation of operations) {
-      if (operation.oldString === "") {
-        contentNew = operation.newString
-      } else if (operation.startAnchor && operation.endAnchor) {
-        const range = EditAnchor.resolveRange(contentNew, operation.startAnchor, operation.endAnchor)
-        const scoped = contentNew.slice(range.start, range.end)
-        const replaced = replace(scoped, operation.oldString, operation.newString, operation.replaceAll)
-        contentNew = contentNew.slice(0, range.start) + replaced + contentNew.slice(range.end)
-      } else {
-        contentNew = replace(contentNew, operation.oldString, operation.newString, operation.replaceAll)
+      contentNew = contentOld
+      // Apply every operation in memory before requesting permission or writing.
+      // A failed match therefore leaves the original file untouched.
+      for (const operation of operations) {
+        if (operation.oldString === "") {
+          contentNew = operation.newString
+        } else if (operation.startAnchor && operation.endAnchor) {
+          const range = EditAnchor.resolveRange(contentNew, operation.startAnchor, operation.endAnchor)
+          const scoped = contentNew.slice(range.start, range.end)
+          const replaced = replace(scoped, operation.oldString, operation.newString, operation.replaceAll)
+          contentNew = contentNew.slice(0, range.start) + replaced + contentNew.slice(range.end)
+        } else {
+          contentNew = replace(contentNew, operation.oldString, operation.newString, operation.replaceAll)
+        }
+        if (Buffer.byteLength(contentNew) > MAX_EDIT_FILE_BYTES) {
+          throw new Error(`Edited content exceeds the ${MAX_EDIT_FILE_BYTES} byte limit`)
+        }
       }
-      if (Buffer.byteLength(contentNew) > MAX_EDIT_FILE_BYTES) {
-        throw new Error(`Edited content exceeds the ${MAX_EDIT_FILE_BYTES} byte limit`)
-      }
-    }
 
-    summary = EditDiff.create(filePath, contentOld, contentNew)
-    diff = summary.diff
-    await ctx.ask({
-      permission: "edit",
-      patterns: [path.relative(Instance.worktree, filePath)],
-      always: ["*"],
-      metadata: {
-        filepath: filePath,
-        diff,
-      },
+      summary = EditDiff.create(filePath, contentOld, contentNew)
+      diff = summary.diff
+      await ctx.ask({
+        permission: "edit",
+        patterns: [path.relative(Instance.worktree, filePath)],
+        always: ["*"],
+        metadata: {
+          filepath: filePath,
+          diff,
+        },
+      })
+
+      const currentStats = await Bun.file(filePath)
+        .stat()
+        .catch((): undefined => undefined)
+      const currentContent = currentStats ? await Bun.file(filePath).text() : ""
+      if (!!currentStats !== !!stats || currentContent !== contentOld) {
+        throw new Error(
+          `Stale edit: content changed for ${filePath} while awaiting permission. No changes were written`,
+        )
+      }
+
+      try {
+        writeAttempted = true
+        await Bun.write(filePath, contentNew)
+        writeApplied = true
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code
+        if (["EACCES", "EPERM", "EROFS", "ENOENT"].includes(code ?? "")) {
+          throw new ToolRuntime.NotAppliedError(error)
+        }
+        throw error
+      }
+      await Bus.publish(FileEvent.Edited, {
+        file: filePath,
+      })
+      FileTime.read(ctx.sessionID, filePath)
     })
-
-    const currentStats = await Bun.file(filePath)
-      .stat()
-      .catch((): undefined => undefined)
-    const currentContent = currentStats ? await Bun.file(filePath).text() : ""
-    if (!!currentStats !== !!stats || currentContent !== contentOld) {
-      throw new Error(`Stale edit: content changed for ${filePath} while awaiting permission. No changes were written`)
-    }
-
-    await Bun.write(filePath, contentNew)
-    await Bus.publish(FileEvent.Edited, {
-      file: filePath,
-    })
-    FileTime.read(ctx.sessionID, filePath)
-  })
+  } catch (error) {
+    if (error instanceof ToolRuntime.NotAppliedError || error instanceof ToolRuntime.AppliedError) throw error
+    if (writeApplied) throw new ToolRuntime.AppliedError("edit", error)
+    if (!writeAttempted) throw new ToolRuntime.NotAppliedError(error)
+    throw error
+  }
 
   const additions = summary.additions
   const deletions = summary.deletions
   const metadataDiff = summary.diff
 
-  ctx.metadata({
-    metadata: {
-      diff: metadataDiff,
-      additions,
-      deletions,
-      diagnostics: {},
-      diffPreview: summary.preview,
-      contentHashBefore: EditAnchor.contentHash(contentOld),
-      contentHashAfter: EditAnchor.contentHash(contentNew),
-      ...(operations.length > 1 ? { operations: operations.length } : {}),
-    },
-  })
+  try {
+    ctx.metadata({
+      metadata: {
+        diff: metadataDiff,
+        additions,
+        deletions,
+        diagnostics: {},
+        diffPreview: summary.preview,
+        contentHashBefore: EditAnchor.contentHash(contentOld),
+        contentHashAfter: EditAnchor.contentHash(contentNew),
+        ...(operations.length > 1 ? { operations: operations.length } : {}),
+      },
+    })
 
-  let output = ""
-  await LSP.touchFile(filePath, true)
-  const diagnostics = await LSP.diagnostics()
-  const normalizedFilePath = Filesystem.normalizePath(filePath)
-  const issues = diagnostics[normalizedFilePath] ?? []
-  const errors = issues.filter((item) => item.severity === 1)
-  if (errors.length > 0) {
-    const limited = errors.slice(0, MAX_DIAGNOSTICS_PER_FILE)
-    const suffix =
-      errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
-    output += `\nThis file has errors, please fix\n<file_diagnostics>\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</file_diagnostics>\n`
-  }
+    let output = ""
+    const diagnostics = await withTimeout(
+      LSP.touchFile(filePath, true).then(() => LSP.diagnostics()),
+      LSP_DIAGNOSTICS_TIMEOUT_MS,
+    ).catch(() => ({}))
+    const normalizedFilePath = Filesystem.normalizePath(filePath)
+    const issues = diagnostics[normalizedFilePath] ?? []
+    const errors = issues.filter((item) => item.severity === 1)
+    if (errors.length > 0) {
+      const limited = errors.slice(0, MAX_DIAGNOSTICS_PER_FILE)
+      const suffix =
+        errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
+      output += `\nThis file has errors, please fix\n<file_diagnostics>\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</file_diagnostics>\n`
+    }
 
-  return {
-    metadata: {
-      diagnostics: { [normalizedFilePath]: issues.slice(0, MAX_DIAGNOSTICS_PER_FILE) },
-      diff: metadataDiff,
-      additions,
-      deletions,
-      diffPreview: summary.preview,
-      contentHashBefore: EditAnchor.contentHash(contentOld),
-      contentHashAfter: EditAnchor.contentHash(contentNew),
-      ...(operations.length > 1 ? { operations: operations.length } : {}),
-    },
-    title: `${path.relative(Instance.worktree, filePath)}`,
-    output,
+    return {
+      metadata: {
+        diagnostics: { [normalizedFilePath]: issues.slice(0, MAX_DIAGNOSTICS_PER_FILE) },
+        diff: metadataDiff,
+        additions,
+        deletions,
+        diffPreview: summary.preview,
+        contentHashBefore: EditAnchor.contentHash(contentOld),
+        contentHashAfter: EditAnchor.contentHash(contentNew),
+        ...(operations.length > 1 ? { operations: operations.length } : {}),
+      },
+      title: `${path.relative(Instance.worktree, filePath)}`,
+      output,
+    }
+  } catch (error) {
+    throw new ToolRuntime.AppliedError("edit", error)
   }
 }
 
