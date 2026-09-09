@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import { parseDiscoveredModel, fetchOpenAICompatibleModels } from "@/integrations/provider/custom"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "@/services/project/instance"
@@ -119,6 +119,7 @@ test("custom provider loaded from atomcli.json works with Provider.list() and Pr
               options: {
                 baseURL: "http://localhost:20128/v1",
                 apiKey: "sk-test-key",
+                modelDiscovery: false,
               },
               models: {
                 "claude-3.7-sonnet": {
@@ -156,4 +157,62 @@ test("custom provider loaded from atomcli.json works with Provider.list() and Pr
       expect(lang).toBeDefined()
     },
   })
+})
+
+test("custom provider discovery adds new models and treats missing prices as subscription access", async () => {
+  const originalFetch = globalThis.fetch
+  let now = Date.now()
+  const clock = spyOn(Date, "now").mockImplementation(() => now)
+  let catalog: Array<{ id: string; context_length?: number }> = [{ id: "existing-model" }]
+  globalThis.fetch = (async (input) => {
+    expect(input.toString()).toBe("https://router.example/v1/models")
+    return Response.json({ data: catalog })
+  }) as typeof fetch
+
+  try {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "atomcli.json"),
+          JSON.stringify({
+            provider: {
+              "plan-router": {
+                name: "Plan Router",
+                npm: "@ai-sdk/openai-compatible",
+                api: "https://router.example/v1",
+                options: {
+                  baseURL: "https://router.example/v1",
+                  apiKey: "fake-test-key",
+                  modelDiscovery: true,
+                },
+                models: {
+                  "existing-model": { name: "Existing Model" },
+                },
+              },
+            },
+          }),
+        )
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const provider = (await Provider.list())["plan-router"]
+        expect(Object.keys(provider.models)).toEqual(["existing-model"])
+        expect(provider.models["existing-model"].name).toBe("Existing Model")
+
+        catalog = [{ id: "newly-linked-model", context_length: 64_000 }]
+        now += 15_001
+        const refreshed = (await Provider.list())["plan-router"]
+        expect(Object.keys(refreshed.models)).toEqual(["newly-linked-model"])
+        expect(refreshed.models["newly-linked-model"].options._billing).toBe("subscription")
+        expect(refreshed.models["newly-linked-model"].options._catalogCostKnown).toBe(false)
+        expect(Provider.isExplicitlyFree(refreshed.models["newly-linked-model"])).toBe(false)
+      },
+    })
+  } finally {
+    clock.mockRestore()
+    globalThis.fetch = originalFetch
+  }
 })

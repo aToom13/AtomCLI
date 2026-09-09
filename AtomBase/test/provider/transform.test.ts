@@ -1365,4 +1365,86 @@ describe("ProviderTransform.variants", () => {
       expect(result).toEqual({})
     })
   })
+
+  describe("ProviderTransform.sseToChatCompletion", () => {
+    test("aggregates streaming text chunks into chat completion JSON", () => {
+      const sse = [
+        'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}',
+        'data: {"choices":[{"delta":{"content":" world!"}}]}',
+        'data: {"choices":[{"finish_reason":"stop"}]}',
+        "data: [DONE]",
+      ].join("\n\n")
+
+      const result = ProviderTransform.sseToChatCompletion(sse, "test-model")
+      expect(result).not.toBeNull()
+      expect(result?.id).toBe("chatcmpl-1")
+      expect(result?.model).toBe("test-model")
+      expect(result?.choices[0].message.content).toBe("Hello world!")
+      expect(result?.choices[0].finish_reason).toBe("stop")
+    })
+
+    test("aggregates reasoning content and usage", () => {
+      const sse = [
+        'data: {"id":"chatcmpl-2","choices":[{"delta":{"reasoning_content":"Thinking..."}}]}',
+        'data: {"choices":[{"delta":{"content":"Answer"}}]}',
+        'data: {"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+      ].join("\n")
+
+      const result = ProviderTransform.sseToChatCompletion(sse, "test-model")
+      expect(result?.choices[0].message.reasoning_content).toBe("Thinking...")
+      expect(result?.choices[0].message.content).toBe("Answer")
+      expect(result?.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5 })
+    })
+
+    test("aggregates streaming tool call chunks across indices", () => {
+      const sse = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_","arguments":"{\\"city\\":"}}]}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"weather","arguments":"\\"Paris\\"}"}}]}}]}',
+      ].join("\n")
+
+      const result = ProviderTransform.sseToChatCompletion(sse, "test-model")
+      expect(result?.choices[0].finish_reason).toBe("tool_calls")
+      expect(result?.choices[0].message.tool_calls).toEqual([
+        {
+          id: "call_1",
+          type: "function",
+          function: {
+            name: "get_weather",
+            arguments: '{"city":"Paris"}',
+          },
+        },
+      ])
+    })
+
+    test("handles CRLF line endings and alternative reasoning fields", () => {
+      const sse = [
+        'data: {"choices":[{"delta":{"thinking":"Deep thought..."}}]}',
+        'data: {"id":"chatcmpl-3","model":"model-override","choices":[{"delta":{"reasoning":" More thought."}}]}',
+        'data: {"choices":[{"delta":{"content":"Final answer"}}]}',
+      ].join("\r\n")
+
+      const result = ProviderTransform.sseToChatCompletion(sse, "default-model")
+      expect(result?.id).toBe("chatcmpl-3")
+      expect(result?.model).toBe("model-override")
+      expect(result?.choices[0].message.reasoning_content).toBe("Deep thought... More thought.")
+      expect(result?.choices[0].message.content).toBe("Final answer")
+    })
+
+    test("generates fallback tool call IDs when omitted across all chunks", () => {
+      const sse = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"calc","arguments":"{\\"x\\":1}"}}]}}]}',
+      ].join("\n")
+
+      const result = ProviderTransform.sseToChatCompletion(sse, "test-model")
+      expect(result?.choices[0].finish_reason).toBe("tool_calls")
+      expect(result?.choices[0].message.tool_calls?.[0]?.id).toMatch(/^call_0_\d+$/)
+      expect(result?.choices[0].message.tool_calls?.[0]?.function.name).toBe("calc")
+    })
+
+    test("returns null for empty or non-data SSE stream", () => {
+      expect(ProviderTransform.sseToChatCompletion("", "test-model")).toBeNull()
+      expect(ProviderTransform.sseToChatCompletion("data: [DONE]", "test-model")).toBeNull()
+      expect(ProviderTransform.sseToChatCompletion("invalid sse stream", "test-model")).toBeNull()
+    })
+  })
 })
