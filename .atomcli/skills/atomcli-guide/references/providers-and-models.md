@@ -17,6 +17,19 @@ atomcli auth login --help
 
 The login command can target a provider with `--provider` and, where several authentication methods exist, a method with `--method`. OAuth providers may open or print an authorization URL. API-key providers may accept credentials through their login flow or supported environment variables.
 
+### Cline
+
+Connect Cline through browser OAuth, then inspect its current free catalog:
+
+```sh
+atomcli auth login --provider cline
+atomcli models cline
+```
+
+AtomCLI refreshes Cline credentials automatically. Its model list is dynamic: it combines Cline's promoted free list with every API catalog ID ending in `:free`. This includes free variants such as Gemma even when they are absent from Cline's promoted UI list. Every model in this union has explicit zero pricing and is eligible for AtomCLI Free verification. Temporary upstream 404, 429, quota, or availability errors do not change that billing classification; they still prevent verification until the model works again.
+
+Matching OpenRouter metadata, cached for five minutes, supplies context limits, modalities, and reasoning controls. Reasoning-capable Cline models expose their thinking variants in the TUI and through `--variant`. Cline catalog loading continues without enrichment if the metadata endpoint is unavailable.
+
 Log out through the interactive provider selection:
 
 ```sh
@@ -24,6 +37,8 @@ atomcli auth logout
 ```
 
 Never infer successful access solely from the model catalog. Credentials, subscriptions, account entitlements, network access, and provider policies all affect availability.
+
+Antigravity OAuth models are plan/subscription entitlements, not free models. Zero-valued internal price placeholders remain excluded from AtomCLI Free routing.
 
 ## Model identifiers and selection
 
@@ -47,7 +62,7 @@ In the TUI:
 /models
 ```
 
-The picker searches model name, ID, provider, family, and reported capabilities. It exposes favorites plus free and reasoning-capable filters. Use the local picker or `atomcli models` for IDs that exist in the installed catalog.
+The picker searches model name, ID, provider, family, and reported capabilities. It exposes favorites plus free and reasoning-capable filters. `Ctrl+A` also lists providers with auth methods before login, including Cline even when no connected Cline model catalog exists. Use the local picker or `atomcli models` for IDs that exist in the installed catalog.
 
 Inspect richer catalog metadata or refresh it:
 
@@ -142,6 +157,8 @@ Evidence is bound to the requested reasoning variant and its adapter options. Pr
 
 Retryable provider failures receive one retry on the current model before AtomCLI selects a fallback. Cancelling with ESC ends only the active turn; cancellation notices remain chronological and their internal metadata is not sent to the provider. The next user message starts a new execution normally.
 
+Provider-native response state, including Responses item IDs and encrypted reasoning, survives history reload and compaction only while dispatch stays on the provider that produced it. Cross-provider model changes and fallbacks keep the conversation content but omit those opaque handles; an OpenAI-compatible gateway's `openai` metadata namespace does not make its item IDs valid for the OpenAI provider.
+
 Inspect, test, or configure fallback models:
 
 ```sh
@@ -192,6 +209,9 @@ Project overrides take precedence over global settings. Check both scopes when a
 
 - `FREE` means the catalog explicitly reports zero input and output cost and the provider is not classified as subscription access.
 - `PLAN` or `SUBSCRIPTION` means access is associated with a connected subscription. It does not mean zero cost or unlimited use.
+- `UNKNOWN` means the provider catalog omitted usable prices. Internal zero defaults never prove free access.
+
+OpenAI-compatible custom providers refresh `/models` every 15 seconds while AtomCLI runs, so gateway changes appear without logout/login. Authenticated catalogs with missing prices are classified as subscription access and excluded from AtomCLI Free. Explicit zero pricing remains required for `FREE`; use `provider.<id>.options.modelDiscovery: false` for a deliberately static model list.
 - Metered catalog prices are informational and may not reflect account-specific billing or negotiated limits.
 
 For financial decisions, tell the user to confirm current billing with the provider.

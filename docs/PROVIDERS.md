@@ -15,7 +15,18 @@ atomcli run -m provider/model "Explain this project"
 
 `atomcli auth login` presents the available authentication methods. `atomcli models [provider]` lists the models currently known to this installation. Model identifiers always use `provider/model` format.
 
-The interactive TUI also exposes provider and model selection. Enter `/model` or `/models` to open the model picker. Search matches model names, IDs, providers, families, and capabilities. The picker groups favorites and recent models before provider sections and shows the current model with a dot.
+### Cline free models
+
+Run `atomcli auth login --provider cline` and complete the browser sign-in. AtomCLI refreshes the OAuth token when needed, then builds the `cline` catalog from Cline's current API instead of shipping a fixed model list:
+
+- models promoted by Cline's `recommended-models` free list;
+- every catalog model whose ID ends in `:free`, including models such as Gemma that may not appear in Cline's promoted UI list.
+
+Both groups are marked explicitly zero-cost and can participate in `atomcli/atomcli-free`. A free classification describes current billing metadata, not current health: upstream quota, 404, or 429 failures can still make an individual model temporarily unavailable. Check the live list with `atomcli models cline` after login.
+
+AtomCLI enriches matching Cline entries from OpenRouter's public model metadata, cached for five minutes. Reasoning-capable models then expose supported thinking variants in the TUI and through `--variant`; catalog loading still works if metadata enrichment is unavailable.
+
+The interactive TUI also exposes provider and model selection. Enter `/model` or `/models` to open the model picker. Search matches model names, IDs, providers, families, and capabilities. The picker groups favorites and recent models before provider sections and shows the current model with a dot. `Ctrl+A` includes providers that expose an authentication method even before they have a connected model catalog, so Cline can be selected there before login.
 
 Model picker shortcuts:
 
@@ -34,9 +45,14 @@ The model picker distinguishes these access types:
 
 - `FREE`: the catalog explicitly reports zero input and output cost and the provider does not use subscription access.
 - `PLAN` / `SUBSCRIPTION`: the model is available through a connected subscription, such as ChatGPT OAuth for Codex models. This does not mean the model is free.
+- `UNKNOWN`: the provider did not publish usable pricing. Zero-filled internal defaults are never proof of free access.
+
+OpenAI-compatible custom providers refresh `/models` every 15 seconds while AtomCLI runs. Newly linked gateway models therefore appear without logout/login. Authenticated custom catalogs that omit pricing are shown as subscription access and remain excluded from AtomCLI Free; explicit zero pricing is required for `FREE`. Set `provider.<id>.options.modelDiscovery` to `false` only for a deliberately static catalog.
 - Models with metered catalog pricing do not receive a free badge; their per-million-token input and output prices appear in the details panel.
 
 Pricing metadata is informational and may differ from account-specific billing or entitlement. Confirm current limits and charges with the provider before relying on a model for paid workloads.
+
+Antigravity OAuth models are subscription/plan entitlements. Their internal zero-cost placeholders do not qualify them for `FREE` or AtomCLI Free routing.
 
 ### AtomCLI Auto and AtomCLI Free
 
@@ -61,6 +77,8 @@ With this example, Auto can reuse fresh evidence for a paid OpenAI model but wil
 If no eligible verified candidate exists, the session stores a visible assistant error under the selected Auto/Free alias instead of leaving only the user's message or relaxing exclusions, price, capabilities, or verification. The TUI also reports transport failures immediately. Reloading history preserves the model-selection failure and does not resubmit the prompt automatically.
 
 Retryable provider failures receive one retry on the current model before fallback selection begins. Cancelling with ESC ends only the active turn; cancellation notices remain in chronological order, and their internal metadata is not forwarded to the next provider prompt. A later user message starts a new execution normally.
+
+Provider-native response state, including Responses API item IDs and encrypted reasoning, is retained when history, resume, or compaction continues on the provider that created it. A model switch or fallback to a different provider replays the conversation content without those opaque handles because response item IDs are scoped to their producing provider, even when an OpenAI-compatible gateway reports them in the `openai` metadata namespace.
 
 Automatic verification examines ranked candidates within a shared time bound rather than repeatedly stopping at the first three. Text and tool probes have separate bounded output allowances. A timeout or an output-limit completion without visible proof is recorded as inconclusive and retried only after its cooldown; it is not accepted as verification. When a provider returns usage before content validation fails, the real usage is still accounted. `atomcli fallback --probe --capability text` (or `tool`) makes real provider requests and updates the shared verification evidence; `--force` explicitly ignores fresh evidence and cooldowns. A probe may consume provider quota.
 
