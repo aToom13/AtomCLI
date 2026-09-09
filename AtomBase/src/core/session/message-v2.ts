@@ -431,15 +431,27 @@ export namespace MessageV2 {
   })
   export type WithParts = z.infer<typeof WithParts>
 
-  function providerMetadata(metadata?: Record<string, any>) {
+  export function withProviderMetadataSource(metadata: Record<string, any>, providerID: string) {
+    return {
+      ...metadata,
+      atomcliProviderID: providerID,
+    }
+  }
+
+  function providerMetadata(metadata?: Record<string, any>, sourceProviderID?: string, targetProviderID?: string) {
     if (!metadata) return
+    const source = (metadata.atomcliProviderID as string | undefined) ?? sourceProviderID
+    if (targetProviderID && source && targetProviderID !== source) {
+      return undefined
+    }
     const entries = Object.entries(metadata).filter(
-      ([, value]) => value !== null && typeof value === "object" && !Array.isArray(value),
+      ([key, value]) =>
+        key !== "atomcliProviderID" && value !== null && typeof value === "object" && !Array.isArray(value),
     )
     return entries.length ? Object.fromEntries(entries) : undefined
   }
 
-  export async function toModelMessage(input: WithParts[]): Promise<ModelMessage[]> {
+  export async function toModelMessage(input: WithParts[], targetProviderID?: string): Promise<ModelMessage[]> {
     const convertToModelMessages = await getConvertToModelMessages()
     const result: UIMessage[] = []
 
@@ -495,6 +507,7 @@ export namespace MessageV2 {
         ) {
           continue
         }
+        const messageProviderID = msg.info.role === "assistant" ? msg.info.providerID : undefined
         const assistantMessage: UIMessage = {
           id: msg.info.id,
           role: "assistant",
@@ -505,7 +518,7 @@ export namespace MessageV2 {
             assistantMessage.parts.push({
               type: "text",
               text: part.text,
-              providerMetadata: providerMetadata(part.metadata),
+              providerMetadata: providerMetadata(part.metadata, messageProviderID, targetProviderID),
             })
           if (part.type === "step-start")
             assistantMessage.parts.push({
@@ -537,7 +550,7 @@ export namespace MessageV2 {
                 toolCallId: part.callID,
                 input: part.state.input,
                 output: part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output,
-                callProviderMetadata: providerMetadata(part.metadata),
+                callProviderMetadata: providerMetadata(part.metadata, messageProviderID, targetProviderID),
               })
             }
             if (part.state.status === "error")
@@ -547,15 +560,18 @@ export namespace MessageV2 {
                 toolCallId: part.callID,
                 input: part.state.input,
                 errorText: part.state.error,
-                callProviderMetadata: part.metadata,
+                callProviderMetadata: providerMetadata(part.metadata, messageProviderID, targetProviderID),
               })
           }
           if (part.type === "reasoning") {
-            assistantMessage.parts.push({
-              type: "reasoning",
-              text: part.text,
-              providerMetadata: providerMetadata(part.metadata),
-            })
+            const meta = providerMetadata(part.metadata, messageProviderID, targetProviderID)
+            if (part.text || meta) {
+              assistantMessage.parts.push({
+                type: "reasoning",
+                text: part.text,
+                providerMetadata: meta,
+              })
+            }
           }
         }
         if (msg.info.error && completedTool) {

@@ -2383,4 +2383,201 @@ describe("ExecutionLedger", () => {
     ).toMatchObject({ reconciled: true, idempotent: true, version: version + 1 })
     ledger.close()
   })
+
+  test("blocks a new root on unknown mutating work without leaking the rejected execution", async () => {
+    await using tmp = await tmpdir()
+    const ledger = ExecutionLedger.open(path.join(tmp.path, "ledger.sqlite"))
+    ledger.start({ id: "exec-old", projectID: "project", rootSessionID: "session", fence: 1 })
+    ledger.claimOwner({ executionID: "exec-old", ownerID: "owner-a", leaseMs: 10, now: 100 })
+    ledger.bind({
+      executionID: "exec-old",
+      rootSessionID: "session",
+      invocationID: "invocation-old",
+      sessionID: "session",
+      kind: "root",
+      ownerID: "owner-a",
+      fence: 1,
+      now: 101,
+    })
+    ledger.registerWork({
+      id: "operation-old",
+      executionID: "exec-old",
+      invocationID: "invocation-old",
+      kind: "tool:write",
+      mutating: true,
+      ownerID: "owner-a",
+      fence: 1,
+      now: 102,
+    })
+    ledger.beginWork({
+      id: "operation-old",
+      executionID: "exec-old",
+      invocationID: "invocation-old",
+      ownerID: "owner-a",
+      fence: 1,
+      expectedVersion: 1,
+      now: 103,
+    })
+    ledger.claimOwner({ executionID: "exec-old", ownerID: "owner-b", leaseMs: 100, now: 111 })
+
+    expect(ledger.view("exec-old")?.unknownWork).toEqual([
+      {
+        id: "operation-old",
+        executionID: "exec-old",
+        invocationID: "invocation-old",
+        kind: "tool:write",
+        mutating: true,
+        state: "unknown",
+        version: 3,
+        createdAt: 102,
+        beganAt: 103,
+      },
+    ])
+
+    ledger.start({ id: "exec-new", projectID: "project", rootSessionID: "session", fence: 1, now: 112 })
+    ledger.claimOwner({ executionID: "exec-new", ownerID: "owner-b", leaseMs: 100, now: 112 })
+    expect(
+      ledger.bind({
+        executionID: "exec-new",
+        rootSessionID: "session",
+        invocationID: "invocation-new",
+        sessionID: "session",
+        kind: "root",
+        ownerID: "owner-b",
+        fence: 1,
+        now: 113,
+      }),
+    ).toBeUndefined()
+    expect(ledger.view("exec-new")).toMatchObject({
+      lifecycle: "terminal",
+      outcome: "failed",
+      reason: { code: "recovery_required", retryable: true },
+    })
+    expect(ledger.snapshot("session").activeExecutionID).toBe("exec-old")
+    expect(ledger.snapshot("session").activeInvocations).toEqual([
+      expect.objectContaining({ id: "invocation-old", state: "unknown" }),
+    ])
+    const reconciled = ledger.requestReconcile({
+      requestID: "reconcile-old",
+      executionID: "exec-old",
+      sessionID: "session",
+      projectID: "project",
+      operationID: "operation-old",
+      state: "cancelled",
+      expectedVersion: ledger.view("exec-old")!.version,
+      expectedWorkVersion: 3,
+      evidence: "User confirmed operation operation-old was not applied.",
+      resolutionCode: "user_confirmed_not_applied",
+      now: 114,
+    })
+    expect(reconciled).toMatchObject({ reconciled: true, execution: { unknownWork: [] } })
+    ledger.start({ id: "exec-after", projectID: "project", rootSessionID: "session", fence: 1, now: 115 })
+    ledger.claimOwner({ executionID: "exec-after", ownerID: "owner-b", leaseMs: 100, now: 115 })
+    expect(
+      ledger.bind({
+        executionID: "exec-after",
+        rootSessionID: "session",
+        invocationID: "invocation-after",
+        sessionID: "session",
+        kind: "root",
+        ownerID: "owner-b",
+        fence: 1,
+        now: 116,
+      }),
+    ).toMatchObject({ executionID: "exec-after" })
+    ledger.close()
+  })
+
+  test("ignores a stale terminal invocation with no unknown work", async () => {
+    await using tmp = await tmpdir()
+    const ledger = ExecutionLedger.open(path.join(tmp.path, "ledger.sqlite"))
+    ledger.start({ id: "exec-old", projectID: "project", rootSessionID: "session", fence: 1 })
+    ledger.claimOwner({ executionID: "exec-old", ownerID: "owner-a", leaseMs: 10, now: 100 })
+    ledger.bind({
+      executionID: "exec-old",
+      rootSessionID: "session",
+      invocationID: "invocation-old",
+      sessionID: "session",
+      kind: "root",
+      ownerID: "owner-a",
+      fence: 1,
+      now: 101,
+    })
+    ledger.finishInvocation({
+      invocationID: "invocation-old",
+      executionID: "exec-old",
+      ownerID: "owner-a",
+      fence: 1,
+      state: "unknown",
+      now: 102,
+    })
+    ledger.requestCancel({
+      requestID: "cancel-old",
+      executionID: "exec-old",
+      sessionID: "session",
+      projectID: "project",
+      expectedVersion: ledger.view("exec-old")!.version,
+      now: 103,
+    })
+
+    ledger.start({ id: "exec-new", projectID: "project", rootSessionID: "session", fence: 1, now: 104 })
+    ledger.claimOwner({ executionID: "exec-new", ownerID: "owner-b", leaseMs: 100, now: 104 })
+    expect(
+      ledger.bind({
+        executionID: "exec-new",
+        rootSessionID: "session",
+        invocationID: "invocation-new",
+        sessionID: "session",
+        kind: "root",
+        ownerID: "owner-b",
+        fence: 1,
+        now: 105,
+      }),
+    ).toMatchObject({ executionID: "exec-new", invocationID: "invocation-new" })
+    expect(ledger.invocation("invocation-old")?.state).toBe("completed")
+    expect(ledger.snapshot("session").activeInvocations).toEqual([
+      expect.objectContaining({ id: "invocation-new", state: "running" }),
+    ])
+    ledger.close()
+  })
+
+  test("completes an expired legacy auxiliary invocation during startup recovery", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "legacy-invocation.sqlite")
+    const initial = ExecutionLedger.open(filepath)
+    initial.start({ id: "exec-old", projectID: "project", rootSessionID: "session", fence: 1, now: 100 })
+    initial.claimOwner({ executionID: "exec-old", ownerID: "owner-a", leaseMs: 10, now: 100 })
+    initial.bind({
+      executionID: "exec-old",
+      rootSessionID: "session",
+      invocationID: "invocation-old",
+      sessionID: "session",
+      kind: "root",
+      ownerID: "owner-a",
+      fence: 1,
+      now: 101,
+    })
+    initial.close()
+
+    const legacy = new Database(filepath)
+    legacy.run("DELETE FROM execution_invocation WHERE id = 'invocation-old'")
+    legacy.close()
+
+    const recovered = ExecutionLedger.open(filepath)
+    expect(recovered.invocation("invocation-old")?.state).toBe("completed")
+    recovered.start({ id: "exec-new", projectID: "project", rootSessionID: "session", fence: 1 })
+    const ownership = recovered.claimOwner({ executionID: "exec-new", ownerID: "owner-b", leaseMs: 100 })
+    expect(
+      recovered.bind({
+        executionID: "exec-new",
+        rootSessionID: "session",
+        invocationID: "invocation-new",
+        sessionID: "session",
+        kind: "root",
+        ownerID: "owner-b",
+        fence: ownership.fence,
+      }),
+    ).toMatchObject({ invocationID: "invocation-new" })
+    recovered.close()
+  })
 })

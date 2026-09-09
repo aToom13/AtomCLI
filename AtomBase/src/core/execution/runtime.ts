@@ -62,14 +62,30 @@ export namespace ExecutionRuntime {
         stage: z.enum(["base", "expert"]),
       }),
     ),
+    Updated: BusEvent.define(
+      "execution.updated",
+      z.object({
+        sessionID: z.string(),
+        executionID: z.string(),
+      }),
+    ),
   }
 
   export class BudgetExceededError extends Error {
     constructor(
       readonly reason: string,
       readonly executionID?: string,
+      readonly detail?: string,
     ) {
-      super(`Execution budget blocked the request: ${reason}`)
+      const isBudget = ["deadline", "call_limit", "step_limit", "cost_limit", "unknown_price"].includes(reason)
+      const message = isBudget
+        ? `Execution budget blocked the request: ${reason}`
+        : reason === "recovery_required"
+          ? `Execution recovery required: ${detail ?? "previous mutating work must be reconciled"}`
+          : detail
+            ? `Execution blocked: ${reason} (${detail})`
+            : `Execution blocked: ${reason}`
+      super(message)
       this.name = "ExecutionBudgetExceededError"
     }
   }
@@ -240,7 +256,12 @@ export namespace ExecutionRuntime {
   }
 
   export function classifyTerminalFailure(error: unknown, aborted = false): TerminalFailure {
-    const budgetReason = error instanceof BudgetExceededError ? error.reason : undefined
+    const budgetReason =
+      error instanceof BudgetExceededError
+        ? error.reason
+        : (error as any)?.name === "ExecutionBudgetExceededError"
+          ? (error as any)?.reason
+          : undefined
     if (
       budgetReason &&
       ["deadline", "call_limit", "step_limit", "cost_limit", "unknown_price"].includes(budgetReason)
@@ -254,6 +275,17 @@ export namespace ExecutionRuntime {
         unknown_price: "The execution budget requires a known model price.",
       }
       return { outcome: "budget_exhausted", reasonCode, reasonMessage: messages[reasonCode], retryable: false }
+    }
+    if (budgetReason === "recovery_required") {
+      return {
+        outcome: "failed",
+        reasonCode: "recovery_required",
+        reasonMessage:
+          (error instanceof BudgetExceededError && error.detail) ||
+          (error as any)?.detail ||
+          "The session has unknown mutating work that must be reconciled.",
+        retryable: true,
+      }
     }
     if (aborted || (error instanceof Error && error.name === "AbortError")) {
       return {
@@ -426,12 +458,30 @@ export namespace ExecutionRuntime {
       ownerID: runID,
       fence: ownership.fence,
     }
-    const bound = store.bind({
-      ...context,
-      sessionID: input.sessionID,
-      kind: input.kind,
-      acceptedMessageID: input.acceptedMessageID ?? input.invocationID,
-    })
+    let bound: Context | undefined
+    try {
+      bound = store.bind({
+        ...context,
+        sessionID: input.sessionID,
+        kind: input.kind,
+        acceptedMessageID: input.acceptedMessageID ?? input.invocationID,
+      })
+    } catch (error) {
+      if (!inherited) store.cancel(context)
+      throw error
+    }
+    if (!bound) {
+      const view = store.view(candidate.executionID)
+      const reasonCode = view?.reason?.code ?? "recovery_required"
+      const reasonMessage = view?.reason?.message
+      log.warn("execution invocation bind rejected", {
+        sessionID: input.sessionID,
+        executionID: candidate.executionID,
+        reasonCode,
+        reasonMessage,
+      })
+      throw new BudgetExceededError("recovery_required", candidate.executionID, reasonMessage)
+    }
     return bound
   }
 
@@ -446,13 +496,26 @@ export namespace ExecutionRuntime {
   }): Promise<Context> {
     const resolved = await context(input.sessionID, input.execution)
     if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    return resolved.store.bind({
+    const bound = resolved.store.bind({
       ...resolved.executionContext,
       invocationID: input.invocationID,
       sessionID: input.sessionID,
       replacesInvocationID: input.execution.invocationID,
       acceptedMessageID: input.invocationID,
     })
+    if (!bound) {
+      const view = resolved.store.view(input.execution.executionID)
+      const reasonCode = view?.reason?.code ?? "recovery_required"
+      const reasonMessage = view?.reason?.message
+      log.warn("execution continuation bind rejected", {
+        sessionID: input.sessionID,
+        executionID: input.execution.executionID,
+        reasonCode,
+        reasonMessage,
+      })
+      throw new BudgetExceededError("recovery_required", input.execution.executionID, reasonMessage)
+    }
+    return bound
   }
 
   export async function assertActive(input: { sessionID: string; execution: Context }) {
@@ -519,6 +582,9 @@ export namespace ExecutionRuntime {
       state: input.state,
     })
     if (!finished.finished) throw new BudgetExceededError(finished.reason, input.execution.executionID)
+    if (input.state === "unknown") {
+      Bus.publish(Event.Updated, { sessionID: input.sessionID, executionID: input.execution.executionID })
+    }
     return finished
   }
 
@@ -768,7 +834,11 @@ export namespace ExecutionRuntime {
     evidence: string
     resolutionCode: string
   }) {
-    return ledger().requestReconcile(input)
+    const result = ledger().requestReconcile(input)
+    if (result.reconciled) {
+      Bus.publish(Event.Updated, { sessionID: input.sessionID, executionID: input.executionID })
+    }
+    return result
   }
 
   export function decideRouteProposal(input: {

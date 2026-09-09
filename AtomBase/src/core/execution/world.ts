@@ -64,9 +64,12 @@ export namespace ExecutionWorld {
       available: () => process.platform === "darwin" && Boolean(Bun.which("sandbox-exec")),
       prepare(command, policy) {
         const workspace = path.resolve(policy.workspaceRoot).replaceAll('"', '\\"')
-        const writes = policy.filesystem === "full" ? "(allow file-write*)" : policy.filesystem === "workspace-write"
-          ? `(allow file-write* (subpath \"${workspace}\"))`
-          : ""
+        const writes =
+          policy.filesystem === "full"
+            ? "(allow file-write*)"
+            : policy.filesystem === "workspace-write"
+              ? `(allow file-write* (subpath \"${workspace}\"))`
+              : ""
         const network = policy.network === "allow" ? "(allow network*)" : ""
         const profile = `(version 1) (deny default) (allow process-exec process-fork) (allow file-read*) ${writes} ${network}`
         return {
@@ -80,7 +83,11 @@ export namespace ExecutionWorld {
     }
   }
 
-  export function prepare(command: Command, input: z.input<typeof Policy>, providers: Provider[] = [bubblewrap(), seatbelt()]) {
+  export function prepare(
+    command: Command,
+    input: z.input<typeof Policy>,
+    providers: Provider[] = [bubblewrap(), seatbelt()],
+  ) {
     const policy = Policy.parse(input)
     if (policy.sandbox === "off") return { ...command, enforcement: "off", provider: "host" } satisfies PreparedCommand
     const provider = providers.find((candidate) => candidate.available())

@@ -29,7 +29,10 @@ export namespace SessionPolicy {
   /**
    * Selects the optimal model for an agent type and task category.
    */
-  export async function decideModel(agentName: string, category?: string): Promise<{ providerID: string; modelID: string }> {
+  export async function decideModel(
+    agentName: string,
+    category?: string,
+  ): Promise<{ providerID: string; modelID: string }> {
     const taskCat: TaskCategory =
       (category as TaskCategory) ||
       (agentName === "documenter" ? "documentation" : agentName === "analyst" ? "analysis" : "coding")

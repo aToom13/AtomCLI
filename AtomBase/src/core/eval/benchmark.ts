@@ -136,7 +136,10 @@ export namespace AgentBenchmark {
    * carries a manifest, so even a hard kill is recoverable: the next call to
    * relocateVerifierSources self-heals, and signal handlers restore on exit.
    */
-  export async function relocateVerifierSources(casesRoot: string, explicitStashRoot?: string): Promise<VerifierRelocation> {
+  export async function relocateVerifierSources(
+    casesRoot: string,
+    explicitStashRoot?: string,
+  ): Promise<VerifierRelocation> {
     const stashRoot = explicitStashRoot ?? verifierStashRoot(casesRoot)
     // A crashed predecessor may have left its stash behind — heal before moving.
     await restoreStashedVerifiers(casesRoot, stashRoot)
@@ -149,13 +152,11 @@ export namespace AgentBenchmark {
       // Keep the "verify" level in the stash so staging copies stay uniform.
       const stash = path.join(stashRoot, entry, "verify")
       await fs.mkdir(path.dirname(stash), { recursive: true })
-      await fs
-        .rename(verify, stash)
-        .catch(async () => {
-          // Cross-device fallback (e.g. tmpfs): copy then remove.
-          await fs.cp(verify, stash, { recursive: true })
-          await fs.rm(verify, { recursive: true, force: true })
-        })
+      await fs.rename(verify, stash).catch(async () => {
+        // Cross-device fallback (e.g. tmpfs): copy then remove.
+        await fs.cp(verify, stash, { recursive: true })
+        await fs.rm(verify, { recursive: true, force: true })
+      })
       moved.push({ original: verify, stash })
     }
     if (moved.length === 0) return { stashRoot: undefined, restore: async () => {} }
@@ -193,10 +194,7 @@ export namespace AgentBenchmark {
       env: options.env ? { ...process.env, ...options.env } : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     })
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ])
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
     const exitCode = await proc.exited
     const timedOut = exitCode === 143 || exitCode === 124
     const output = `${stderr}
@@ -209,8 +207,13 @@ ${stdout}`.trim()
       .toLowerCase()
       .replace(/[^a-z0-9._-]+/g, "-")
       .slice(0, 80)
-    const digest = new Bun.CryptoHasher("sha1").update(`${suite.name}
-${suite.version}`).digest("hex").slice(0, 12)
+    const digest = new Bun.CryptoHasher("sha1")
+      .update(
+        `${suite.name}
+${suite.version}`,
+      )
+      .digest("hex")
+      .slice(0, 12)
     return `benchmark-${label}-${digest}`
   }
 
@@ -289,7 +292,11 @@ ${suite.version}`).digest("hex").slice(0, 12)
     return { executions, ...evaluate(suite, await collect(), verifiers) }
   }
 
-  export function evaluate(suite: Suite, results: AgentEval.Result[], verifiers?: Map<string, { passed?: boolean; detail?: string }>) {
+  export function evaluate(
+    suite: Suite,
+    results: AgentEval.Result[],
+    verifiers?: Map<string, { passed?: boolean; detail?: string }>,
+  ) {
     const cases = suite.cases.map((testCase) => {
       const matches = results.filter((result) => result.id === testCase.id)
       const latest = matches.sort((a, b) => b.timestamp - a.timestamp)[0]

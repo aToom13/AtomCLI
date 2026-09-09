@@ -100,48 +100,92 @@ You MUST read() a file BEFORE you can edit() it. The edit tool WILL FAIL otherwi
 
 // ─── Dynamic Context Generator ──────────────────────────────
 
-async function generateDynamicContext(options: { includeLearningMemory: boolean; includeUserProfile: boolean }): Promise<string> {
+async function generateDynamicContext(options: {
+  includeLearningMemory: boolean
+  includeUserProfile: boolean
+}): Promise<string> {
   const parts: string[] = []
 
   // User profile
-  if (options.includeUserProfile) try {
-    const profilePath = path.join(Global.Path.root, "personality", "user-profile.json")
-    const data = await fs.readFile(profilePath, "utf-8")
-    const profile = JSON.parse(data)
+  if (options.includeUserProfile)
+    try {
+      const profilePath = path.join(Global.Path.root, "personality", "user-profile.json")
+      const data = await fs.readFile(profilePath, "utf-8")
+      const profile = JSON.parse(data)
 
-    const profileParts = ["<user_context>", "# USER CONTEXT"]
-    if (profile.name) profileParts.push(`- **Name**: ${profile.name}`)
-    if (profile.techLevel) profileParts.push(`- **Tech Level**: ${profile.techLevel}`)
-    if (profile.communication) profileParts.push(`- **Communication Style**: ${profile.communication}`)
-    if (profile.primaryLanguage) profileParts.push(`- **Primary Language**: ${profile.primaryLanguage}`)
-    if (profile.interests?.length > 0) profileParts.push(`- **Interests**: ${profile.interests.join(", ")}`)
-    profileParts.push("</user_context>")
+      const profileParts = ["<user_context>", "# USER CONTEXT"]
+      if (profile.name) profileParts.push(`- **Name**: ${profile.name}`)
+      if (profile.techLevel) profileParts.push(`- **Tech Level**: ${profile.techLevel}`)
+      if (profile.communication) profileParts.push(`- **Communication Style**: ${profile.communication}`)
+      if (profile.primaryLanguage) profileParts.push(`- **Primary Language**: ${profile.primaryLanguage}`)
+      if (profile.interests?.length > 0) profileParts.push(`- **Interests**: ${profile.interests.join(", ")}`)
+      profileParts.push("</user_context>")
 
-    parts.push(profileParts.join("\n"))
-  } catch {
-    // No user profile — that's fine
-  }
+      parts.push(profileParts.join("\n"))
+    } catch {
+      // No user profile — that's fine
+    }
 
   // Learning memory
-  if (options.includeLearningMemory) try {
-    const memorySummary = await buildMemorySummary()
-    if (memorySummary) {
-      parts.push(`<learning_memory>\n${memorySummary}\n</learning_memory>`)
+  if (options.includeLearningMemory)
+    try {
+      const memorySummary = await buildMemorySummary()
+      if (memorySummary) {
+        parts.push(`<learning_memory>\n${memorySummary}\n</learning_memory>`)
+      }
+    } catch {
+      // No learning data — that's fine
     }
-  } catch {
-    // No learning data — that's fine
-  }
 
   return parts.join("\n\n")
 }
 
 const CORE_PROMPTS_BY_AGENT: Record<string, string[]> = {
-  agent: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_GIT_SAFETY, PROMPT_EXTENSIONS],
-  build: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_GIT_SAFETY, PROMPT_EXTENSIONS],
-  plan: [PROMPT_THINKING_PATTERN, PROMPT_IDENTITY, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
+  agent: [
+    PROMPT_THINKING_PATTERN,
+    PROMPT_IDENTITY,
+    PROMPT_TOOLS,
+    PROMPT_WORKFLOW,
+    PROMPT_COMMUNICATION,
+    PROMPT_CODE_EDITING,
+    PROMPT_GIT_SAFETY,
+    PROMPT_EXTENSIONS,
+  ],
+  build: [
+    PROMPT_THINKING_PATTERN,
+    PROMPT_IDENTITY,
+    PROMPT_TOOLS,
+    PROMPT_WORKFLOW,
+    PROMPT_COMMUNICATION,
+    PROMPT_CODE_EDITING,
+    PROMPT_GIT_SAFETY,
+    PROMPT_EXTENSIONS,
+  ],
+  plan: [
+    PROMPT_THINKING_PATTERN,
+    PROMPT_IDENTITY,
+    PROMPT_TOOLS,
+    PROMPT_WORKFLOW,
+    PROMPT_COMMUNICATION,
+    PROMPT_EXTENSIONS,
+  ],
   explore: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_EXTENSIONS],
-  checker: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
-  reviewer: [PROMPT_THINKING_PATTERN, PROMPT_TOOLS, PROMPT_WORKFLOW, PROMPT_COMMUNICATION, PROMPT_CODE_EDITING, PROMPT_EXTENSIONS],
+  checker: [
+    PROMPT_THINKING_PATTERN,
+    PROMPT_TOOLS,
+    PROMPT_WORKFLOW,
+    PROMPT_COMMUNICATION,
+    PROMPT_CODE_EDITING,
+    PROMPT_EXTENSIONS,
+  ],
+  reviewer: [
+    PROMPT_THINKING_PATTERN,
+    PROMPT_TOOLS,
+    PROMPT_WORKFLOW,
+    PROMPT_COMMUNICATION,
+    PROMPT_CODE_EDITING,
+    PROMPT_EXTENSIONS,
+  ],
 }
 
 function getCorePromptsForAgent(agent: string): string[] {

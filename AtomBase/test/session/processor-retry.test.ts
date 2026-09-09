@@ -30,7 +30,7 @@ describe("session processor retry budget", () => {
       limit: { context: 100_000, output: 4_000 },
       cost: { input: 0, output: 0 },
     } as Provider.Model
-    const fallback = { ...model, id: "fallback" }
+    const fallback = { ...model, id: "fallback", providerID: "fallback-provider" }
     const assistantMessage = {
       id: "msg_fallback_retry",
       sessionID: "ses_fallback_retry",
@@ -69,7 +69,7 @@ describe("session processor retry budget", () => {
         new MessageV2.APIError({ message: "temporary rate limit", statusCode: 429, isRetryable: true }).toObject(),
       ),
     )
-    spies.push(spyOn(ModelFallback, "getDynamicFallbackModels").mockResolvedValue(["test-provider/fallback"]))
+    spies.push(spyOn(ModelFallback, "getDynamicFallbackModels").mockResolvedValue(["fallback-provider/fallback"]))
     spies.push(spyOn(Provider, "getModel").mockResolvedValue(fallback))
     spies.push(spyOn(Provider, "isRouteEligible").mockResolvedValue(true))
     spies.push(spyOn(ModelAvailability, "active").mockReturnValue(undefined))
@@ -94,7 +94,18 @@ describe("session processor retry budget", () => {
             abort: new AbortController().signal,
             sessionID: assistantMessage.sessionID,
             system: [],
-            messages: [],
+            messages: [
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "reasoning",
+                    text: "thinking",
+                    providerOptions: { openai: { itemId: "rs_foreign" } },
+                  },
+                ],
+              },
+            ],
             tools: {},
             model,
           },
@@ -103,6 +114,7 @@ describe("session processor retry budget", () => {
 
         expect(result.fallbackModel?.id).toBe("fallback")
         expect(stream).toHaveBeenCalledTimes(3)
+        expect(JSON.stringify(stream.mock.calls[2][0].messages)).not.toContain("providerOptions")
       },
     })
   })

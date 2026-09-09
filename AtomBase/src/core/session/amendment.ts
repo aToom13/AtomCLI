@@ -1,10 +1,10 @@
 /**
  * Amendment Queue System for Streaming Interrupt
- * 
+ *
  * Allows users to send messages while agent is streaming/writing.
  * Messages go to "amendment queue" instead of blocking.
  * Agent incorporates amendments without stopping current stream.
- * 
+ *
  * Usage:
  * - Shift+Enter: Add amendment to queue
  * - Enter: Force interrupt current stream
@@ -51,11 +51,7 @@ export namespace AmendmentQueue {
   /**
    * Add amendment to queue
    */
-  export function addAmendment(
-    sessionID: string,
-    content: string,
-    metadata?: Record<string, any>
-  ): Amendment {
+  export function addAmendment(sessionID: string, content: string, metadata?: Record<string, any>): Amendment {
     const queue = getQueue(sessionID)
     const amendment: Amendment = {
       id: ulid(),
@@ -64,25 +60,21 @@ export namespace AmendmentQueue {
       type: "amendment",
       metadata,
     }
-    
+
     queue.items.push(amendment)
-    log.info("amendment added", { 
-      sessionID, 
+    log.info("amendment added", {
+      sessionID,
       amendmentID: amendment.id,
-      queueLength: queue.items.length 
+      queueLength: queue.items.length,
     })
-    
+
     return amendment
   }
 
   /**
    * Add interrupt signal to queue
    */
-  export function addInterrupt(
-    sessionID: string,
-    content?: string,
-    metadata?: Record<string, any>
-  ): Amendment {
+  export function addInterrupt(sessionID: string, content?: string, metadata?: Record<string, any>): Amendment {
     const queue = getQueue(sessionID)
     const interrupt: Amendment = {
       id: ulid(),
@@ -91,14 +83,14 @@ export namespace AmendmentQueue {
       type: "interrupt",
       metadata,
     }
-    
+
     queue.items.push(interrupt)
-    log.info("interrupt added", { 
-      sessionID, 
+    log.info("interrupt added", {
+      sessionID,
       interruptID: interrupt.id,
-      queueLength: queue.items.length 
+      queueLength: queue.items.length,
     })
-    
+
     return interrupt
   }
 
@@ -108,17 +100,17 @@ export namespace AmendmentQueue {
   export function dequeue(sessionID: string): Amendment | undefined {
     const queue = getQueue(sessionID)
     const item = queue.items.shift()
-    
+
     if (item) {
       queue.lastProcessedAt = Date.now()
-      log.info("dequeued", { 
-        sessionID, 
-        itemID: item.id, 
+      log.info("dequeued", {
+        sessionID,
+        itemID: item.id,
         type: item.type,
-        remaining: queue.items.length 
+        remaining: queue.items.length,
       })
     }
-    
+
     return item
   }
 
@@ -187,14 +179,14 @@ export namespace AmendmentQueue {
    */
   export function remove(sessionID: string, amendmentID: string): boolean {
     const queue = getQueue(sessionID)
-    const index = queue.items.findIndex(item => item.id === amendmentID)
-    
+    const index = queue.items.findIndex((item) => item.id === amendmentID)
+
     if (index >= 0) {
       queue.items.splice(index, 1)
       log.info("item removed", { sessionID, amendmentID })
       return true
     }
-    
+
     return false
   }
 
@@ -217,7 +209,7 @@ export namespace AmendmentQueue {
   } {
     const queue = getQueue(sessionID)
     const oldestItem = queue.items[0]
-    
+
     return {
       length: queue.items.length,
       isProcessing: queue.isProcessing,

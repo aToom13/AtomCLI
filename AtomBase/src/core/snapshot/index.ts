@@ -30,7 +30,11 @@ export namespace Snapshot {
       await $`git --git-dir ${git} config core.autocrlf false`.env(environment()).quiet().nothrow()
       log.info("initialized")
     }
-    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.env(environment()).quiet().cwd(Instance.directory).nothrow()
+    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`
+      .env(environment())
+      .quiet()
+      .cwd(Instance.directory)
+      .nothrow()
     const hash = await $`git --git-dir ${git} --work-tree ${Instance.worktree} write-tree`
       .env(environment())
       .quiet()
@@ -104,7 +108,11 @@ export namespace Snapshot {
 
   export async function patch(hash: string): Promise<Patch> {
     const git = gitdir()
-    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.env(environment()).quiet().cwd(Instance.directory).nothrow()
+    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`
+      .env(environment())
+      .quiet()
+      .cwd(Instance.directory)
+      .nothrow()
     const after = await $`git --git-dir ${git} --work-tree ${Instance.worktree} write-tree`
       .env(environment())
       .quiet()
@@ -204,7 +212,11 @@ export namespace Snapshot {
 
   export async function diff(hash: string) {
     const git = gitdir()
-    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`.env(environment()).quiet().cwd(Instance.directory).nothrow()
+    await $`git --git-dir ${git} --work-tree ${Instance.worktree} add .`
+      .env(environment())
+      .quiet()
+      .cwd(Instance.directory)
+      .nothrow()
     const result =
       await $`git -c core.autocrlf=false --git-dir ${git} --work-tree ${Instance.worktree} diff --no-ext-diff ${hash} -- .`
         .env(environment())

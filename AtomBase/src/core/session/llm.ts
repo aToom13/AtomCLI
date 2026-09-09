@@ -377,7 +377,8 @@ export namespace LLM {
         options,
       },
     )
-    if (input.model.providerID.startsWith("atomcli") || input.model.providerID === "opencode") params.options.store = false
+    if (input.model.providerID.startsWith("atomcli") || input.model.providerID === "opencode")
+      params.options.store = false
     return { params, isCodex }
   }
 }

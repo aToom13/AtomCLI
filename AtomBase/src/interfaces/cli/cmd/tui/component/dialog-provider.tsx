@@ -8,7 +8,7 @@ import { DialogPrompt } from "../ui/dialog-prompt"
 import { Link } from "../ui/link"
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
-import type { ProviderAuthAuthorization } from "@atomcli/sdk/v2"
+import type { ProviderAuthAuthorization, ProviderAuthMethod, ProviderListResponse } from "@atomcli/sdk/v2"
 import { DialogModel } from "./dialog-model"
 import { useKeyboard } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
@@ -24,13 +24,35 @@ const PROVIDER_PRIORITY: Record<string, number> = {
   google: 5,
 }
 
+export namespace ProviderDialog {
+  export function available(all: ProviderListResponse["all"], auth: Record<string, ProviderAuthMethod[]>) {
+    const ids = new Set(all.map((provider) => provider.id))
+    return [
+      ...all,
+      ...Object.keys(auth)
+        .filter((id) => !ids.has(id))
+        .map((id) => ({
+          id,
+          name: id
+            .split("-")
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" "),
+          env: [],
+          source: "custom" as const,
+          options: {},
+          models: {},
+        })),
+    ]
+  }
+}
+
 export function createDialogProviderOptions() {
   const sync = useSync()
   const dialog = useDialog()
   const sdk = useSDK()
   const options = createMemo(() => {
     const providerOptions = pipe(
-      sync.data.provider_next.all,
+      ProviderDialog.available(sync.data.provider_next.all, sync.data.provider_auth),
       sortBy((x) => PROVIDER_PRIORITY[x.id] ?? 99),
       map((provider) => ({
         title: provider.name,

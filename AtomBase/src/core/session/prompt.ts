@@ -1274,6 +1274,7 @@ export namespace SessionPrompt {
           tool: "task",
           args: taskArgs,
           context: taskCtx,
+          mutating: taskTool.mutating,
           execute: (args, context) => taskTool.execute(args, context),
         }).catch((error) => {
           executionError = error
@@ -1748,6 +1749,7 @@ export namespace SessionPrompt {
             tool: item.id,
             args,
             context: ctx,
+            mutating: item.mutating,
             execute: (nextArgs, nextContext) => item.execute(nextArgs, nextContext),
           })
         },

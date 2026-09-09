@@ -15,10 +15,7 @@ export namespace Bus {
     }),
   )
 
-  export const GlobalDisposed = BusEvent.define(
-    "global.disposed",
-    z.object({}),
-  )
+  export const GlobalDisposed = BusEvent.define("global.disposed", z.object({}))
 
   const state = Instance.state(
     () => {

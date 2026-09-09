@@ -11,9 +11,10 @@ import type { Provider } from "@/integrations/provider/provider"
 import { ModelAvailability } from "@/integrations/provider/availability"
 import * as fuzzysort from "fuzzysort"
 import { useTerminalDimensions } from "@opentui/solid"
+import { ModelBilling } from "@/integrations/provider/billing"
 
 export namespace ModelDialog {
-  export type Billing = "free" | "subscription" | "metered"
+  export type Billing = ModelBilling.Kind
 
   export type Value = {
     providerID: string
@@ -26,21 +27,20 @@ export namespace ModelDialog {
     return typeof candidate.providerID === "string" && typeof candidate.modelID === "string"
   }
 
-  export function billing(provider: Pick<Provider.Info, "id">, model: Pick<Provider.Model, "api" | "cost">): Billing {
-    const codexSubscription =
-      provider.id === "openai" && model.api.url?.includes("chatgpt.com/backend-api/codex") === true
-    if (codexSubscription) return "subscription"
-    if (model.cost.input === 0 && model.cost.output === 0) return "free"
-    return "metered"
+  export function billing(
+    _provider: Pick<Provider.Info, "id">,
+    model: Pick<Provider.Model, "api" | "cost" | "options">,
+  ): Billing {
+    return ModelBilling.classify(model)
   }
 
-  export function isFree(provider: Pick<Provider.Info, "id">, model: Pick<Provider.Model, "api" | "cost">) {
+  export function isFree(provider: Pick<Provider.Info, "id">, model: Pick<Provider.Model, "api" | "cost" | "options">) {
     return billing(provider, model) === "free"
   }
 
   export function statusLabel(
     provider: Pick<Provider.Info, "id">,
-    model: Pick<Provider.Model, "api" | "cost" | "status" | "availability">,
+    model: Pick<Provider.Model, "api" | "cost" | "options" | "status" | "availability">,
   ) {
     const availability = ModelAvailability.active(model.availability)
     if (availability?.status === "rate_limited") return "RATE LIMITED"
@@ -48,6 +48,7 @@ export namespace ModelDialog {
     const kind = billing(provider, model)
     if (kind === "free") return "FREE"
     if (kind === "subscription") return "SUBSCRIPTION"
+    if (kind === "unknown") return "UNKNOWN"
     return (model.status ?? "active").toUpperCase()
   }
 
@@ -103,7 +104,9 @@ export namespace ModelDialog {
         ? "free ücretsiz"
         : kind === "subscription"
           ? "subscription plan paid abonelik ücretli"
-          : "paid metered ücretli",
+          : kind === "unknown"
+            ? "unknown price fiyat bilinmiyor"
+            : "paid metered ücretli",
       `${formatTokens(model.limit.context)} context`,
     ]
       .filter(Boolean)
@@ -186,23 +189,29 @@ function ModelDetails(props: { value?: ModelDialog.Value }) {
             <text fg={theme.text}>
               Output <span style={{ fg: theme.accent }}>{ModelDialog.formatTokens(selected().model.limit.output)}</span>
             </text>
+            <Show when={ModelDialog.billing(selected().provider, selected().model) === "subscription"}>
+              <text fg={theme.text}>
+                Access <span style={{ fg: theme.secondary }}>Connected subscription</span>
+              </text>
+            </Show>
+            <Show when={ModelDialog.billing(selected().provider, selected().model) === "unknown"}>
+              <text fg={theme.text}>
+                Price <span style={{ fg: theme.textMuted }}>Not reported by provider</span>
+              </text>
+            </Show>
             <Show
-              when={ModelDialog.billing(selected().provider, selected().model) === "subscription"}
-              fallback={
-                <>
-                  <text fg={theme.text}>
-                    Input{" "}
-                    <span style={{ fg: theme.textMuted }}>{ModelDialog.formatPrice(selected().model.cost.input)}</span>
-                  </text>
-                  <text fg={theme.text}>
-                    Output{" "}
-                    <span style={{ fg: theme.textMuted }}>{ModelDialog.formatPrice(selected().model.cost.output)}</span>
-                  </text>
-                </>
+              when={
+                ModelDialog.billing(selected().provider, selected().model) === "free" ||
+                ModelDialog.billing(selected().provider, selected().model) === "metered"
               }
             >
               <text fg={theme.text}>
-                Access <span style={{ fg: theme.secondary }}>ChatGPT subscription</span>
+                Input{" "}
+                <span style={{ fg: theme.textMuted }}>{ModelDialog.formatPrice(selected().model.cost.input)}</span>
+              </text>
+              <text fg={theme.text}>
+                Output{" "}
+                <span style={{ fg: theme.textMuted }}>{ModelDialog.formatPrice(selected().model.cost.output)}</span>
               </text>
             </Show>
           </box>
@@ -268,7 +277,9 @@ export function DialogModel(props: { providerID?: string }) {
           ? "FREE"
           : billing === "subscription"
             ? "PLAN"
-            : undefined,
+            : billing === "unknown"
+              ? "UNKNOWN"
+              : undefined,
       item.model.capabilities.reasoning ? "THINK" : undefined,
       ModelDialog.formatTokens(item.model.limit.context),
     ].filter(Boolean)

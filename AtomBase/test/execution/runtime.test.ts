@@ -1,6 +1,7 @@
 import path from "path"
 import { describe, expect, test } from "bun:test"
 import "../preload"
+import { Bus } from "@/core/bus"
 import { Config } from "@/core/config/config"
 import { ExecutionLedger } from "@/core/execution/ledger"
 import { ExecutionRuntime } from "@/core/execution/runtime"
@@ -46,6 +47,32 @@ describe("ExecutionRuntime", () => {
     const provider = ExecutionRuntime.classifyTerminalFailure(new Error("private token=secret"))
     expect(provider).toMatchObject({ outcome: "failed", reasonCode: "provider_unavailable" })
     expect(provider.reasonMessage).not.toContain("secret")
+    expect(
+      ExecutionRuntime.classifyTerminalFailure(
+        new ExecutionRuntime.BudgetExceededError("recovery_required", "exec-1", "tool:bash:op-1 must be reconciled"),
+      ),
+    ).toEqual({
+      outcome: "failed",
+      reasonCode: "recovery_required",
+      reasonMessage: "tool:bash:op-1 must be reconciled",
+      retryable: true,
+    })
+    expect(
+      ExecutionRuntime.classifyTerminalFailure(new ExecutionRuntime.BudgetExceededError("recovery_required", "exec-1")),
+    ).toEqual({
+      outcome: "failed",
+      reasonCode: "recovery_required",
+      reasonMessage: "The session has unknown mutating work that must be reconciled.",
+      retryable: true,
+    })
+    const recoveryError = new ExecutionRuntime.BudgetExceededError(
+      "recovery_required",
+      "exec-1",
+      "tool:bash:op-1 must be reconciled",
+    )
+    expect(recoveryError.message).toBe("Execution recovery required: tool:bash:op-1 must be reconciled")
+    const defaultRecoveryError = new ExecutionRuntime.BudgetExceededError("recovery_required", "exec-1")
+    expect(defaultRecoveryError.message).toBe("Execution recovery required: previous mutating work must be reconciled")
   })
 
   test("does not treat catalog zero-fill as verified free pricing", () => {
@@ -370,6 +397,9 @@ describe("ExecutionRuntime", () => {
         await ExecutionRuntime.bindContinuation({ sessionID: root.id, invocationID: retryID, execution })
         const recovered = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: retryID })
         expect(recovered.executionID).toBe(execution.executionID)
+        expect(ExecutionRuntime.snapshot(root.id).activeInvocations).toEqual([
+          expect.objectContaining({ id: retryID, executionID: execution.executionID, state: "running" }),
+        ])
         await expect(
           ExecutionRuntime.admitModelCall({
             sessionID: root.id,
@@ -789,6 +819,89 @@ describe("ExecutionRuntime", () => {
           ExecutionRuntime.commitCompletion({ sessionID: root.id, execution, digest: staged.digest }),
         ).rejects.toMatchObject({ reason: "stale_policy" })
         ExecutionRuntime.cancelExecution(execution)
+      },
+    })
+  })
+
+  test("blocks resolveInvocation when unknown mutating work requires recovery and emits Updated events", async () => {
+    await using tmp = await tmpdir({})
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const message1 = await addUserMessage(root.id, "run bash command")
+        const execution1 = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: message1 })
+
+        const registered = await ExecutionRuntime.registerWork({
+          sessionID: root.id,
+          execution: execution1,
+          operationID: "op-bash-1",
+          kind: "tool:bash",
+          mutating: true,
+        })
+        const began = await ExecutionRuntime.beginWork({
+          sessionID: root.id,
+          execution: execution1,
+          operationID: "op-bash-1",
+          expectedVersion: registered.version,
+        })
+
+        const updatedEvents: { sessionID: string; executionID: string }[] = []
+        const unsub = Bus.subscribe(ExecutionRuntime.Event.Updated, ({ properties }) => {
+          updatedEvents.push(properties)
+        })
+
+        try {
+          await ExecutionRuntime.finishWork({
+            sessionID: root.id,
+            execution: execution1,
+            operationID: "op-bash-1",
+            expectedVersion: began.version,
+            state: "unknown",
+          })
+
+          expect(updatedEvents.length).toBeGreaterThan(0)
+          expect(updatedEvents[0].sessionID).toBe(root.id)
+
+          const message2 = await addUserMessage(root.id, "subsequent message")
+          let caughtError: unknown
+          try {
+            await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: message2 })
+          } catch (e) {
+            caughtError = e
+          }
+          expect(caughtError).toBeInstanceOf(ExecutionRuntime.BudgetExceededError)
+          expect((caughtError as ExecutionRuntime.BudgetExceededError).reason).toBe("recovery_required")
+          expect((caughtError as ExecutionRuntime.BudgetExceededError).detail).toContain("op-bash-1")
+
+          const failure = ExecutionRuntime.classifyTerminalFailure(caughtError)
+          expect(failure).toMatchObject({
+            outcome: "failed",
+            reasonCode: "recovery_required",
+            retryable: true,
+          })
+          expect(failure.reasonMessage).toContain("op-bash-1")
+
+          const snap = ExecutionRuntime.snapshot(root.id)
+          const execView = snap.executions.find((e) => e.id === execution1.executionID)
+          const reconcileResult = ExecutionRuntime.requestReconcile({
+            requestID: "reconcile-1",
+            executionID: execution1.executionID,
+            sessionID: root.id,
+            projectID: execView!.projectID, // use the stored projectID, not raw tmp.path
+            operationID: "op-bash-1",
+            state: "cancelled",
+            expectedVersion: execView!.version,
+            expectedWorkVersion: began.version + 1, // finishWork increments work version by 1
+            evidence: "User confirmed bash was cancelled",
+            resolutionCode: "user_cancelled",
+          })
+          expect(reconcileResult.reconciled).toBe(true)
+          expect(updatedEvents.length).toBeGreaterThan(1)
+        } finally {
+          unsub()
+        }
       },
     })
   })

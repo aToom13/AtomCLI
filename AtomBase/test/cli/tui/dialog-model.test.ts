@@ -51,6 +51,22 @@ describe("model dialog presentation", () => {
     )
   })
 
+  test("does not classify zero-filled unknown prices as free", () => {
+    const unknown = model({ options: { _catalogCostKnown: false } })
+
+    expect(ModelDialog.billing(provider, unknown)).toBe("unknown")
+    expect(ModelDialog.isFree(provider, unknown)).toBe(false)
+    expect(ModelDialog.statusLabel(provider, unknown)).toBe("UNKNOWN")
+  })
+
+  test("classifies authenticated entitlement catalogs as subscription access", () => {
+    const subscription = model({ options: { _catalogCostKnown: false, _billing: "subscription" } })
+
+    expect(ModelDialog.billing(provider, subscription)).toBe("subscription")
+    expect(ModelDialog.isFree(provider, subscription)).toBe(false)
+    expect(ModelDialog.statusLabel(provider, subscription)).toBe("SUBSCRIPTION")
+  })
+
   test("treats Codex OAuth models as subscription access instead of free", () => {
     const codex = model({
       providerID: "openai",

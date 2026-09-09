@@ -692,7 +692,22 @@ export namespace SessionProcessor {
                             routePolicy.requireVerification || routePolicy.freeOnly
                               ? Provider.applyRoutePolicy(fallbackModel, routePolicy)
                               : fallbackModel
-                          streamInput = { ...streamInput, model: routedFallback }
+                          const sanitizedMessages = streamInput.messages?.map((msg: any) => {
+                            if (!Array.isArray(msg.content)) return msg
+                            const content = msg.content.map((c: any) => {
+                              if (c && typeof c === "object" && "providerOptions" in c) {
+                                const { providerOptions, ...rest } = c
+                                return rest
+                              }
+                              return c
+                            })
+                            return { ...msg, content }
+                          })
+                          streamInput = {
+                            ...streamInput,
+                            model: routedFallback,
+                            ...(sanitizedMessages ? { messages: sanitizedMessages } : {}),
+                          }
                           // Update assistant message model info for UI display
                           input.assistantMessage.modelID = fallbackModel.id
                           input.assistantMessage.providerID = fallbackModel.providerID

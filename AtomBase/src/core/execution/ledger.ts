@@ -1,5 +1,8 @@
 import { Database } from "bun:sqlite"
 import z from "zod"
+import { Log } from "@/util/util/log"
+
+const log = Log.create({ service: "execution.ledger" })
 
 const MAX_PENDING_CONTINUATIONS = 100
 const COMPLETION_PROJECTION_PAGE_SIZE = 50
@@ -274,6 +277,21 @@ export namespace ExecutionLedger {
       failed: z.number().int().nonnegative(),
     }),
     recoveryRequired: z.boolean(),
+    unknownWork: z
+      .array(
+        z.object({
+          id: z.string(),
+          executionID: z.string(),
+          invocationID: z.string(),
+          kind: z.string(),
+          mutating: z.boolean(),
+          state: z.literal("unknown"),
+          version: z.number().int().positive(),
+          createdAt: z.number().int(),
+          beganAt: z.number().int().optional(),
+        }),
+      )
+      .default([]),
     completion: z
       .object({
         id: z.string(),
@@ -670,23 +688,24 @@ export namespace ExecutionLedger {
         finished_at INTEGER
       )
     `)
-      db.run(`
+      const invocationRecoveryNow = Date.now()
+      db.query<never, [number, number]>(`
         INSERT OR IGNORE INTO execution_invocation
           (id, execution_id, session_id, kind, state, owner_id, fence, created_at, finished_at)
         SELECT b.invocation_id, b.execution_id, b.session_id, 'auxiliary',
           CASE
             WHEN b.rowid = (SELECT MAX(latest.rowid) FROM execution_binding latest WHERE latest.session_id = b.session_id)
-              AND e.status IN ('active', 'finalizing') THEN 'running'
+              AND e.status IN ('active', 'finalizing') AND e.lease_expires_at > ? THEN 'running'
             ELSE 'completed'
           END,
           b.owner_id, b.fence, b.created_at,
           CASE
             WHEN b.rowid = (SELECT MAX(latest.rowid) FROM execution_binding latest WHERE latest.session_id = b.session_id)
-              AND e.status IN ('active', 'finalizing') THEN NULL
+              AND e.status IN ('active', 'finalizing') AND e.lease_expires_at > ? THEN NULL
             ELSE b.created_at
           END
         FROM execution_binding b JOIN execution e ON e.id = b.execution_id
-      `)
+      `).run(invocationRecoveryNow, invocationRecoveryNow)
       db.run(
         "CREATE INDEX IF NOT EXISTS execution_invocation_execution_state ON execution_invocation(execution_id, state)",
       )
@@ -862,6 +881,22 @@ export namespace ExecutionLedger {
       if (!workColumns.has("began_at")) db.run("ALTER TABLE execution_work ADD COLUMN began_at INTEGER")
       if (!workColumns.has("evidence")) db.run("ALTER TABLE execution_work ADD COLUMN evidence TEXT")
       if (!workColumns.has("resolution_code")) db.run("ALTER TABLE execution_work ADD COLUMN resolution_code TEXT")
+      db.query<never, [number, number]>(`
+        UPDATE execution_invocation
+        SET state = 'completed', revision = revision + 1, finished_at = ?
+        WHERE kind = 'auxiliary'
+          AND state IN ('accepted', 'running', 'waiting', 'draining', 'unknown')
+          AND EXISTS (
+            SELECT 1 FROM execution e
+            WHERE e.id = execution_invocation.execution_id
+              AND (e.status NOT IN ('active', 'finalizing') OR e.lease_expires_at IS NULL OR e.lease_expires_at <= ?)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM execution_work w
+            WHERE w.invocation_id = execution_invocation.id
+              AND w.state IN ('prepared', 'running', 'draining', 'unknown')
+          )
+      `).run(invocationRecoveryNow, invocationRecoveryNow)
       db.run(`
       CREATE TABLE IF NOT EXISTS execution_blocker (
         id TEXT PRIMARY KEY,
@@ -1300,6 +1335,36 @@ export namespace ExecutionLedger {
           (blockerCounts.get("unknown") ?? 0) > 0 ||
           (blockerCounts.get("failed") ?? 0) > 0 ||
           (blockerCounts.get("cancelled") ?? 0) > 0,
+        unknownWork: db
+          .query<
+            {
+              id: string
+              execution_id: string
+              invocation_id: string
+              kind: string
+              mutating: number
+              state: "unknown"
+              version: number
+              created_at: number
+              began_at: number | null
+            },
+            [string]
+          >(
+            `SELECT id, execution_id, invocation_id, kind, mutating, state, version, created_at, began_at
+             FROM execution_work WHERE execution_id = ? AND state = 'unknown' ORDER BY created_at, id`,
+          )
+          .all(executionID)
+          .map((row) => ({
+            id: row.id,
+            executionID: row.execution_id,
+            invocationID: row.invocation_id,
+            kind: row.kind,
+            mutating: Boolean(row.mutating),
+            state: row.state,
+            version: row.version,
+            createdAt: row.created_at,
+            beganAt: row.began_at ?? undefined,
+          })),
         completion: candidate
           ? {
               id: `completion:${executionID}`,
@@ -4672,6 +4737,35 @@ export namespace ExecutionLedger {
             .get(input.sessionID)
           const parentInvocationID = input.parentInvocationID ?? sessionLink?.parent_invocation_id ?? null
           const invocationKind = input.kind ?? (parentInvocationID ? "child" : "root")
+          if (invocationKind === "root") {
+            const unknownMutatingRows =
+              db
+                .query<{ id: string; kind: string; execution_id: string }, [string]>(
+                  `SELECT w.id, w.kind, w.execution_id FROM execution_work w
+                 JOIN execution e ON e.id = w.execution_id
+                 WHERE e.root_session_id = ? AND w.mutating = 1 AND w.state = 'unknown'
+                 ORDER BY w.created_at, w.id`,
+                )
+                .all(input.sessionID)
+            if (unknownMutatingRows.length > 0) {
+              const details = unknownMutatingRows.map((row) => `${row.kind}:${row.id}`).join(", ")
+              const reasonMessage = `Session has unknown mutating work that must be reconciled (${details}).`
+              log.warn("session root invocation blocked by unknown mutating work", {
+                sessionID: input.sessionID,
+                executionID: input.executionID,
+                unknownWork: unknownMutatingRows,
+              })
+              db.query(
+                `UPDATE execution SET status = 'terminal', lifecycle = 'terminal', phase = 'idle',
+                   outcome = 'failed', reason_code = 'recovery_required',
+                   reason_message = ?,
+                   reason_retryable = 1, version = version + 1, updated_at = ?, terminal_at = ?
+                 WHERE id = ? AND outcome IS NULL`,
+              ).run(reasonMessage, now, now, input.executionID)
+              appendExecutionEvent(input.executionID, "execution.updated", now)
+              return undefined
+            }
+          }
           if (input.replacesInvocationID && input.replacesInvocationID !== input.invocationID) {
             const replaced = invocation(input.replacesInvocationID)
             if (!replaced || replaced.executionID !== input.executionID || replaced.sessionID !== input.sessionID) {
@@ -4716,6 +4810,22 @@ export namespace ExecutionLedger {
                   `UPDATE execution_invocation SET state = 'completed', revision = revision + 1, finished_at = ?
                    WHERE id = ?`,
                 ).run(now, competing.id)
+              } else if (invocationKind === "root" && competing.kind === "root" && competing.state === "unknown") {
+                const unknownWorkCount =
+                  db
+                    .query<
+                      { count: number },
+                      [string]
+                    >(`SELECT COUNT(*) AS count FROM execution_work WHERE invocation_id = ? AND state = 'unknown'`)
+                    .get(competing.id)?.count ?? 0
+                if (unknownWorkCount === 0) {
+                  db.query(
+                    `UPDATE execution_invocation SET state = 'completed', revision = revision + 1, finished_at = ?
+                     WHERE id = ?`,
+                  ).run(now, competing.id)
+                } else {
+                  throw new Error(`session already has active invocation ${competing.id}`)
+                }
               } else {
                 throw new Error(`session already has active invocation ${competing.id}`)
               }
@@ -4967,8 +5077,13 @@ export namespace ExecutionLedger {
               }
             }
             db.query(
+              `UPDATE execution_work SET state = 'cancelled', version = version + 1,
+                 evidence = 'Read-only operation cancelled during owner takeover', resolution_code = 'takeover_cancelled', finished_at = ?
+               WHERE execution_id = ? AND mutating = 0 AND state IN ('running', 'draining') AND fence < ?`,
+            ).run(now, input.executionID, fence)
+            db.query(
               `UPDATE execution_work SET state = 'unknown', version = version + 1, finished_at = ?
-               WHERE execution_id = ? AND state IN ('running', 'draining') AND fence < ?`,
+               WHERE execution_id = ? AND mutating = 1 AND state IN ('running', 'draining') AND fence < ?`,
             ).run(now, input.executionID, fence)
             db.query(
               `UPDATE execution_work SET state = 'cancelled', version = version + 1,

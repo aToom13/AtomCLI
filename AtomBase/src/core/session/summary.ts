@@ -10,7 +10,6 @@ import { Log } from "@/util/util/log"
 import { Storage } from "@/core/storage/storage"
 import { Bus } from "@/core/bus"
 
-
 export namespace SessionSummary {
   const log = Log.create({ service: "session.summary" })
 
@@ -19,7 +18,10 @@ export namespace SessionSummary {
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   export function localTitle(text: string) {
-    const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, " ").replace(/\s+/g, " ").trim()
+    const cleaned = text
+      .replace(/<think>[\s\S]*?<\/think>/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim()
     if (!cleaned) return
     return cleaned.length > 100 ? cleaned.slice(0, 97) + "..." : cleaned
   }

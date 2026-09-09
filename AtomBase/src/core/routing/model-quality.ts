@@ -75,7 +75,11 @@ export namespace ModelQuality {
   function persist() {
     const value = current()
     let projectID: string
-    try { projectID = Instance.project.id } catch { return }
+    try {
+      projectID = Instance.project.id
+    } catch {
+      return
+    }
     const snapshot = structuredClone(value.models)
     value.pendingWrite = (value.pendingWrite ?? Promise.resolve())
       .catch(() => {})
@@ -108,7 +112,11 @@ export namespace ModelQuality {
     state.models[modelKey] = model
 
     const overflow = Object.values(state.models)
-      .sort((a, b) => Math.max(...Object.values(a.categories).map((x) => x.lastUpdated)) - Math.max(...Object.values(b.categories).map((x) => x.lastUpdated)))
+      .sort(
+        (a, b) =>
+          Math.max(...Object.values(a.categories).map((x) => x.lastUpdated)) -
+          Math.max(...Object.values(b.categories).map((x) => x.lastUpdated)),
+      )
       .slice(0, Math.max(0, Object.keys(state.models).length - MAX_MODELS))
     for (const item of overflow) delete state.models[item.key]
     persist()

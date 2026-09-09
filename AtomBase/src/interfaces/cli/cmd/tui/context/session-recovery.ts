@@ -274,4 +274,54 @@ export namespace SessionRecovery {
         }
       })
   }
+
+  export type UnknownWork = {
+    id: string
+    executionID: string
+    invocationID: string
+    kind: string
+    mutating: boolean
+    state: "unknown"
+    version: number
+    createdAt: number
+    beganAt?: number
+    executionVersion: number
+  }
+
+  export function unknownWork(
+    snapshot?: {
+      executions?: Array<{ id: string; version: number; unknownWork?: Array<any> }>
+    } | null,
+  ): UnknownWork[] {
+    if (!snapshot?.executions) return []
+    const list: UnknownWork[] = []
+    for (const exec of snapshot.executions) {
+      for (const item of exec.unknownWork ?? []) {
+        if (item.state === "unknown") {
+          list.push({
+            ...item,
+            executionID: item.executionID ?? exec.id,
+            executionVersion: exec.version,
+          })
+        }
+      }
+    }
+    return list.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+  }
+
+  export function reconciliation(work: UnknownWork, state: "completed" | "cancelled", requestID: string) {
+    return {
+      executionID: work.executionID,
+      requestID,
+      operationID: work.id,
+      state,
+      expectedVersion: work.executionVersion,
+      expectedWorkVersion: work.version,
+      evidence:
+        state === "completed"
+          ? `User confirmed operation ${work.id} completed and verified its effect.`
+          : `User confirmed operation ${work.id} was not applied or was cancelled.`,
+      resolutionCode: state === "completed" ? "user_confirmed_completed" : "user_confirmed_not_applied",
+    }
+  }
 }
