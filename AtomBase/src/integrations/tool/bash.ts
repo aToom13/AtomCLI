@@ -201,13 +201,13 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       const execution = (await Config.get()).execution
       const envMode = execution?.environment ?? "minimal"
       const env = EnvPolicy.build({
-          mode: envMode,
-          allow: execution?.envAllow,
-          cwd,
-          scope: "tool:bash",
-          grants: EnvPolicy.Grant.array().parse(ctx.extra?.envGrants ?? []),
-          approvedInherit: envMode === "inherit",
-        })
+        mode: envMode,
+        allow: execution?.envAllow,
+        cwd,
+        scope: "tool:bash",
+        grants: EnvPolicy.Grant.array().parse(ctx.extra?.envGrants ?? []),
+        approvedInherit: envMode === "inherit",
+      })
       const prepared = ExecutionWorld.prepare(
         { executable: shell, args: ExecutionWorld.shellArguments(shell, params.command), cwd, env },
         {

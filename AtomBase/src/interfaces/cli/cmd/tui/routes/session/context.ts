@@ -2,29 +2,29 @@ import { createContext, useContext } from "solid-js"
 import { useSync } from "@tui/context/sync"
 
 export class CustomSpeedScroll {
-    constructor(private speed: number) { }
+  constructor(private speed: number) {}
 
-    tick(_now?: number): number {
-        return this.speed
-    }
+  tick(_now?: number): number {
+    return this.speed
+  }
 
-    reset(): void { }
+  reset(): void {}
 }
 
 export const SessionContext = createContext<{
-    width: number
-    verticalMode: "tight" | "compact" | "normal"
-    sessionID: string
-    conceal: () => boolean
-    showThinking: () => boolean
-    showTimestamps: () => boolean
-    showDetails: () => boolean
-    diffWrapMode: () => "word" | "none"
-    sync: ReturnType<typeof useSync>
+  width: number
+  verticalMode: "tight" | "compact" | "normal"
+  sessionID: string
+  conceal: () => boolean
+  showThinking: () => boolean
+  showTimestamps: () => boolean
+  showDetails: () => boolean
+  diffWrapMode: () => "word" | "none"
+  sync: ReturnType<typeof useSync>
 }>()
 
 export const useSession = () => {
-    const ctx = useContext(SessionContext)
-    if (!ctx) throw new Error("SessionContext not found")
-    return ctx
+  const ctx = useContext(SessionContext)
+  if (!ctx) throw new Error("SessionContext not found")
+  return ctx
 }

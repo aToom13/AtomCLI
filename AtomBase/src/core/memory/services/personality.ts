@@ -1,6 +1,6 @@
 /**
  * AI Personality Profile
- * 
+ *
  * Defines how the AI presents itself, its characteristics,
  * and how it should behave in different contexts.
  */
@@ -15,12 +15,12 @@ import { z } from "zod"
  * AI base role/identity
  */
 export const AIRole = z.enum([
-  "assistant",      // Classic AI assistant
-  "friend",         // Friendly companion
-  "mentor",         // Teacher/guide
-  "partner",        // Work partner
-  "expert",         // Subject matter expert
-  "companion",      // General companion
+  "assistant", // Classic AI assistant
+  "friend", // Friendly companion
+  "mentor", // Teacher/guide
+  "partner", // Work partner
+  "expert", // Subject matter expert
+  "companion", // General companion
 ])
 
 export type AIRole = z.infer<typeof AIRole>
@@ -29,12 +29,12 @@ export type AIRole = z.infer<typeof AIRole>
  * Communication formality level
  */
 export const FormalityLevel = z.enum([
-  "very_formal",    // Highly formal, professional
-  "formal",         // Professional with some warmth
-  "neutral",        // Balanced, context-dependent
-  "casual",         // Relaxed, friendly
-  "very_casual",    // Very relaxed, informal
-  "street",         // Street talk, slang
+  "very_formal", // Highly formal, professional
+  "formal", // Professional with some warmth
+  "neutral", // Balanced, context-dependent
+  "casual", // Relaxed, friendly
+  "very_casual", // Very relaxed, informal
+  "street", // Street talk, slang
 ])
 
 export type FormalityLevel = z.infer<typeof FormalityLevel>
@@ -43,12 +43,12 @@ export type FormalityLevel = z.infer<typeof FormalityLevel>
  * Humor style
  */
 export const HumorStyle = z.enum([
-  "none",           // No humor
-  "dry",            // Dry wit
-  "light",          // Light humor
-  "playful",        // Playful, teasing
-  "sarcastic",      // Sarcastic (light)
-  "witty",          // Quick-witted
+  "none", // No humor
+  "dry", // Dry wit
+  "light", // Light humor
+  "playful", // Playful, teasing
+  "sarcastic", // Sarcastic (light)
+  "witty", // Quick-witted
 ])
 
 export type HumorStyle = z.infer<typeof HumorStyle>
@@ -57,9 +57,9 @@ export type HumorStyle = z.infer<typeof HumorStyle>
  * Proactivity level
  */
 export const ProactivityLevel = z.enum([
-  "reactive",       // Only respond when asked
-  "suggestive",     // Occasionally suggest things
-  "proactive",      // Often take initiative
+  "reactive", // Only respond when asked
+  "suggestive", // Occasionally suggest things
+  "proactive", // Often take initiative
   "very_proactive", // Always look for improvements
 ])
 
@@ -69,12 +69,12 @@ export type ProactivityLevel = z.infer<typeof ProactivityLevel>
  * Expertise domains
  */
 export const ExpertiseDomain = z.enum([
-  "coding",         // Programming
-  "writing",        // Content/writing
-  "research",       // Research/analysis
-  "design",         // UI/UX design
-  "devops",         // Infrastructure/deployment
-  "general",        // General purpose
+  "coding", // Programming
+  "writing", // Content/writing
+  "research", // Research/analysis
+  "design", // UI/UX design
+  "devops", // Infrastructure/deployment
+  "general", // General purpose
 ])
 
 export type ExpertiseDomain = z.infer<typeof ExpertiseDomain>
@@ -89,8 +89,8 @@ export type ExpertiseDomain = z.infer<typeof ExpertiseDomain>
 export const AIPersonality = z.object({
   // Core identity
   role: AIRole,
-  displayName: z.string(),           // How AI introduces itself
-  tagline: z.string().optional(),     // Short description
+  displayName: z.string(), // How AI introduces itself
+  tagline: z.string().optional(), // Short description
 
   // Communication style
   formality: FormalityLevel,
@@ -98,17 +98,17 @@ export const AIPersonality = z.object({
   proactivity: ProactivityLevel,
 
   // Characteristics
-  traits: z.array(z.string()),       // adjectives: "helpful", "curious", etc.
+  traits: z.array(z.string()), // adjectives: "helpful", "curious", etc.
   expertise: z.array(ExpertiseDomain),
 
   // Behavioral preferences
-  alwaysExplain: z.boolean(),        // Always explain decisions
-  askClarifying: z.boolean(),        // Ask questions when unsure
-  showWork: z.boolean(),             // Show thinking process
+  alwaysExplain: z.boolean(), // Always explain decisions
+  askClarifying: z.boolean(), // Ask questions when unsure
+  showWork: z.boolean(), // Show thinking process
 
   // Special features
   useEmojis: z.boolean(),
-  useSlang: z.boolean().optional(),  // Street slang usage
+  useSlang: z.boolean().optional(), // Street slang usage
   catchphrases: z.array(z.string()).optional(), // Signature phrases
 })
 

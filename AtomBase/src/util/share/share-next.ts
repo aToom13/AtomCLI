@@ -88,25 +88,25 @@ export namespace ShareNext {
 
   type Data =
     | {
-      type: "session"
-      data: SDK.Session
-    }
+        type: "session"
+        data: SDK.Session
+      }
     | {
-      type: "message"
-      data: SDK.Message
-    }
+        type: "message"
+        data: SDK.Message
+      }
     | {
-      type: "part"
-      data: SDK.Part
-    }
+        type: "part"
+        data: SDK.Part
+      }
     | {
-      type: "session_diff"
-      data: SDK.FileDiff[]
-    }
+        type: "session_diff"
+        data: SDK.FileDiff[]
+      }
     | {
-      type: "model"
-      data: SDK.Model[]
-    }
+        type: "model"
+        data: SDK.Model[]
+      }
 
   const queue = new Map<string, { timeout: NodeJS.Timeout; data: Map<string, Data> }>()
   async function sync(sessionID: string, data: Data[]) {

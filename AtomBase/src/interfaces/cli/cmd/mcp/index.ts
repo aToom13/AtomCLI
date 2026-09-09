@@ -22,17 +22,17 @@ export * from "./utils"
 
 // Main MCP command
 export const McpCommand = cmd({
-    command: "mcp",
-    describe: "manage MCP (Model Context Protocol) servers",
-    builder: (yargs) =>
-        yargs
-            .command(McpAddCommand)
-            .command(McpInstallCommand)
-            .command(McpRemoveCommand)
-            .command(McpListCommand)
-            .command(McpAuthCommand)
-            .command(McpLogoutCommand)
-            .command(McpDebugCommand)
-            .demandCommand(),
-    async handler() { },
+  command: "mcp",
+  describe: "manage MCP (Model Context Protocol) servers",
+  builder: (yargs) =>
+    yargs
+      .command(McpAddCommand)
+      .command(McpInstallCommand)
+      .command(McpRemoveCommand)
+      .command(McpListCommand)
+      .command(McpAuthCommand)
+      .command(McpLogoutCommand)
+      .command(McpDebugCommand)
+      .demandCommand(),
+  async handler() {},
 })

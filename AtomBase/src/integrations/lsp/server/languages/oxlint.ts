@@ -11,72 +11,72 @@ import type { Info } from "../types"
 const log = Log.create({ service: "lsp.server.oxlint" })
 
 export const Oxlint: Info = {
-    id: "oxlint",
-    root: NearestRoot([
-        ".oxlintrc.json",
-        "package-lock.json",
-        "bun.lockb",
-        "bun.lock",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "package.json",
-    ]),
-    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"],
-    async spawn(root) {
-        const ext = process.platform === "win32" ? ".cmd" : ""
+  id: "oxlint",
+  root: NearestRoot([
+    ".oxlintrc.json",
+    "package-lock.json",
+    "bun.lockb",
+    "bun.lock",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package.json",
+  ]),
+  extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"],
+  async spawn(root) {
+    const ext = process.platform === "win32" ? ".cmd" : ""
 
-        const serverTarget = path.join("node_modules", ".bin", "oxc_language_server" + ext)
-        const lintTarget = path.join("node_modules", ".bin", "oxlint" + ext)
+    const serverTarget = path.join("node_modules", ".bin", "oxc_language_server" + ext)
+    const lintTarget = path.join("node_modules", ".bin", "oxlint" + ext)
 
-        const resolveBin = async (target: string) => {
-            const localBin = path.join(root, target)
-            if (await Bun.file(localBin).exists()) return localBin
+    const resolveBin = async (target: string) => {
+      const localBin = path.join(root, target)
+      if (await Bun.file(localBin).exists()) return localBin
 
-            const candidates = Filesystem.up({
-                targets: [target],
-                start: root,
-                stop: Instance.worktree, // Assuming Instance.worktree is available and public
-            })
-            const first = await candidates.next()
-            await candidates.return()
-            if (first.value) return first.value
+      const candidates = Filesystem.up({
+        targets: [target],
+        start: root,
+        stop: Instance.worktree, // Assuming Instance.worktree is available and public
+      })
+      const first = await candidates.next()
+      await candidates.return()
+      if (first.value) return first.value
 
-            return undefined
+      return undefined
+    }
+
+    let lintBin = await resolveBin(lintTarget)
+    if (!lintBin) {
+      const found = Bun.which("oxlint")
+      if (found) lintBin = found
+    }
+
+    if (lintBin) {
+      const proc = LSPProcess.bunSpawn([lintBin, "--help"], { stdout: "pipe" })
+      await proc.exited
+      const help = await readableStreamToText(proc.stdout)
+      if (help.includes("--lsp")) {
+        return {
+          process: spawn(lintBin, ["--lsp"], {
+            cwd: root,
+          }),
         }
+      }
+    }
 
-        let lintBin = await resolveBin(lintTarget)
-        if (!lintBin) {
-            const found = Bun.which("oxlint")
-            if (found) lintBin = found
-        }
+    let serverBin = await resolveBin(serverTarget)
+    if (!serverBin) {
+      const found = Bun.which("oxc_language_server")
+      if (found) serverBin = found
+    }
+    if (serverBin) {
+      return {
+        process: spawn(serverBin, [], {
+          cwd: root,
+        }),
+      }
+    }
 
-        if (lintBin) {
-            const proc = LSPProcess.bunSpawn([lintBin, "--help"], { stdout: "pipe" })
-            await proc.exited
-            const help = await readableStreamToText(proc.stdout)
-            if (help.includes("--lsp")) {
-                return {
-                    process: spawn(lintBin, ["--lsp"], {
-                        cwd: root,
-                    }),
-                }
-            }
-        }
-
-        let serverBin = await resolveBin(serverTarget)
-        if (!serverBin) {
-            const found = Bun.which("oxc_language_server")
-            if (found) serverBin = found
-        }
-        if (serverBin) {
-            return {
-                process: spawn(serverBin, [], {
-                    cwd: root,
-                }),
-            }
-        }
-
-        log.info("oxlint not found, please install oxlint")
-        return
-    },
+    log.info("oxlint not found, please install oxlint")
+    return
+  },
 }

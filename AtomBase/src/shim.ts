@@ -3,7 +3,7 @@
 // but act as if it is running in the user's directory.
 
 if (process.env.ATOMCLI_CWD) {
-    const virtualCwd = process.env.ATOMCLI_CWD
-    // console.log("[AtomCLI] Shim: Swapping CWD to", virtualCwd)
-    process.cwd = () => virtualCwd
+  const virtualCwd = process.env.ATOMCLI_CWD
+  // console.log("[AtomCLI] Shim: Swapping CWD to", virtualCwd)
+  process.cwd = () => virtualCwd
 }

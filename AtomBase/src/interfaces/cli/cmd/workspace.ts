@@ -1,9 +1,9 @@
 /**
  * Multi-Project Workspace Command
- * 
+ *
  * Manages multiple projects simultaneously.
  * Supports cross-project refactoring and monorepo workflows.
- * 
+ *
  * Usage: atomcli workspace --add=../other-project
  */
 

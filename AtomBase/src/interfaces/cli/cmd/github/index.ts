@@ -15,8 +15,8 @@ export { parseGitHubRemote, extractResponseText } from "./utils"
 
 // Main GitHub command
 export const GithubCommand = cmd({
-    command: "github",
-    describe: "manage GitHub agent",
-    builder: (yargs) => yargs.command(GithubInstallCommand).command(GithubRunCommand).demandCommand(),
-    async handler() { },
+  command: "github",
+  describe: "manage GitHub agent",
+  builder: (yargs) => yargs.command(GithubInstallCommand).command(GithubRunCommand).demandCommand(),
+  async handler() {},
 })

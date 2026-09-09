@@ -26,7 +26,7 @@ export namespace Global {
       return path.join(this.root, "cache")
     },
     get config() {
-      return this.root  // Config files directly in ~/.atomcli/
+      return this.root // Config files directly in ~/.atomcli/
     },
     get state() {
       return path.join(this.root, "state")
