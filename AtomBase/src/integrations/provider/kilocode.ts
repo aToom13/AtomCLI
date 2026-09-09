@@ -106,12 +106,8 @@ export async function getKilocodeModels(token: string): Promise<Record<string, a
         continue
       }
 
-      const inputPrice = model.pricing?.prompt
-        ? parseFloat(model.pricing.prompt) * 1_000_000
-        : undefined
-      const outputPrice = model.pricing?.completion
-        ? parseFloat(model.pricing.completion) * 1_000_000
-        : undefined
+      const inputPrice = model.pricing?.prompt ? parseFloat(model.pricing.prompt) * 1_000_000 : undefined
+      const outputPrice = model.pricing?.completion ? parseFloat(model.pricing.completion) * 1_000_000 : undefined
 
       models[model.id] = {
         id: model.id,
@@ -247,7 +243,9 @@ export async function authenticateWithDeviceAuth(): Promise<{ token: string; ema
     console.log("\n⚠️  Could not open browser automatically. Please open the URL manually.")
   }
 
-  console.log(`\nWaiting for authorization... ⏳ (expires in ${Math.floor(expiresIn / 60)}:${String(expiresIn % 60).padStart(2, "0")})\n`)
+  console.log(
+    `\nWaiting for authorization... ⏳ (expires in ${Math.floor(expiresIn / 60)}:${String(expiresIn % 60).padStart(2, "0")})\n`,
+  )
 
   // Step 3: Poll for authorization
   const startTime = Date.now()

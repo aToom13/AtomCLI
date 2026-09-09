@@ -90,10 +90,7 @@ export namespace CodexModels {
     }
 
     const remote = response.models.filter(
-      (model) =>
-        typeof model.slug === "string" &&
-        model.slug.length > 0 &&
-        model.visibility === "list",
+      (model) => typeof model.slug === "string" && model.slug.length > 0 && model.visibility === "list",
     )
     const next: Provider.Info["models"] = {}
 
@@ -519,7 +516,9 @@ interface PendingOAuth {
 let oauthServer: ReturnType<typeof Bun.serve> | undefined
 let pendingOAuth: PendingOAuth | undefined
 
-async function startOAuthServer(port = OAUTH_PORT): Promise<{ hostname: "127.0.0.1"; port: number; redirectUri: string }> {
+async function startOAuthServer(
+  port = OAUTH_PORT,
+): Promise<{ hostname: "127.0.0.1"; port: number; redirectUri: string }> {
   if (oauthServer) {
     throw new Error("A Codex OAuth authorization is already in progress")
   }
@@ -529,52 +528,52 @@ async function startOAuthServer(port = OAUTH_PORT): Promise<{ hostname: "127.0.0
       hostname: "127.0.0.1",
       port,
       async fetch(req) {
-      const url = new URL(req.url)
+        const url = new URL(req.url)
 
-      if (url.pathname === "/auth/callback") {
-        const current = pendingOAuth
-        if (!current) {
-          return new Response(HTML_ERROR("No OAuth authorization is pending"), { status: 400, headers: HTML_HEADERS })
+        if (url.pathname === "/auth/callback") {
+          const current = pendingOAuth
+          if (!current) {
+            return new Response(HTML_ERROR("No OAuth authorization is pending"), { status: 400, headers: HTML_HEADERS })
+          }
+
+          const callback = CodexOAuth.validateCallback(url, current.state)
+          if (callback.type === "invalid") {
+            // A forged callback must not cancel the genuine login still in flight.
+            return new Response(HTML_ERROR(callback.message), { status: 400, headers: HTML_HEADERS })
+          }
+
+          pendingOAuth = undefined
+          if (callback.type === "error") {
+            current.reject(new Error(callback.message))
+            queueMicrotask(stopOAuthServer)
+            return new Response(HTML_ERROR(callback.message), { status: 400, headers: HTML_HEADERS })
+          }
+
+          try {
+            const tokens = await exchangeCodeForTokens(callback.code, current.redirectUri, current.pkce)
+            current.resolve(tokens)
+            return new Response(HTML_SUCCESS, { headers: HTML_HEADERS })
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error))
+            current.reject(failure)
+            return new Response(HTML_ERROR(failure.message), { status: 502, headers: HTML_HEADERS })
+          } finally {
+            queueMicrotask(stopOAuthServer)
+          }
         }
 
-        const callback = CodexOAuth.validateCallback(url, current.state)
-        if (callback.type === "invalid") {
-          // A forged callback must not cancel the genuine login still in flight.
-          return new Response(HTML_ERROR(callback.message), { status: 400, headers: HTML_HEADERS })
-        }
-
-        pendingOAuth = undefined
-        if (callback.type === "error") {
-          current.reject(new Error(callback.message))
+        if (url.pathname === "/cancel") {
+          const current = pendingOAuth
+          if (!current || url.searchParams.get("state") !== current.state) {
+            return new Response("Invalid state", { status: 400 })
+          }
+          pendingOAuth = undefined
+          current.reject(new Error("Login cancelled"))
           queueMicrotask(stopOAuthServer)
-          return new Response(HTML_ERROR(callback.message), { status: 400, headers: HTML_HEADERS })
+          return new Response("Login cancelled", { status: 200 })
         }
 
-        try {
-          const tokens = await exchangeCodeForTokens(callback.code, current.redirectUri, current.pkce)
-          current.resolve(tokens)
-          return new Response(HTML_SUCCESS, { headers: HTML_HEADERS })
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error))
-          current.reject(failure)
-          return new Response(HTML_ERROR(failure.message), { status: 502, headers: HTML_HEADERS })
-        } finally {
-          queueMicrotask(stopOAuthServer)
-        }
-      }
-
-      if (url.pathname === "/cancel") {
-        const current = pendingOAuth
-        if (!current || url.searchParams.get("state") !== current.state) {
-          return new Response("Invalid state", { status: 400 })
-        }
-        pendingOAuth = undefined
-        current.reject(new Error("Login cancelled"))
-        queueMicrotask(stopOAuthServer)
-        return new Response("Login cancelled", { status: 200 })
-      }
-
-      return new Response("Not found", { status: 404 })
+        return new Response("Not found", { status: 404 })
       },
     })
   } catch (error) {
