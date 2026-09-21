@@ -15,6 +15,9 @@ import { SessionExecutionProfile } from "@/core/session/execution-profile"
 import { Storage } from "@/core/storage/storage"
 import { Bus } from "@/core/bus"
 import { BusEvent } from "@/core/bus/bus-event"
+import { ExecutionContract } from "@/core/routing/execution-contract"
+import { ExecutionPolicy } from "@/core/routing/execution-policy"
+import { ExecutionCheckpoint } from "./checkpoint"
 
 export namespace ExecutionRuntime {
   const log = Log.create({ service: "execution-runtime" })
@@ -26,6 +29,19 @@ export namespace ExecutionRuntime {
   const MAX_COMPLETION_REVIEW_BYTES = 512 * 1024
   const MAX_CONTINUATION_PAYLOAD_BYTES = 64 * 1024
   const ledgers = new Map<string, ReturnType<typeof ExecutionLedger.open>>()
+
+  function hasRepeatedTail(values: string[] | undefined, count: number) {
+    if (!values || values.length < count) return false
+    const tail = values.slice(-count)
+    return tail.every((value) => value === tail[0])
+  }
+
+  function hasRepeatedValue(values: string[] | undefined, count: number) {
+    if (!values || values.length < count) return false
+    const counts = new Map<string, number>()
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+    return [...counts.values()].some((value) => value >= count)
+  }
   const leases = new Map<
     string,
     {
@@ -69,6 +85,15 @@ export namespace ExecutionRuntime {
         executionID: z.string(),
       }),
     ),
+    Checkpoint: BusEvent.define(
+      "execution.checkpoint",
+      z.object({
+        sessionID: z.string(),
+        executionID: z.string(),
+        sequence: z.number().int().positive(),
+        checkpoint: z.unknown(),
+      }),
+    ),
   }
 
   export class BudgetExceededError extends Error {
@@ -77,7 +102,14 @@ export namespace ExecutionRuntime {
       readonly executionID?: string,
       readonly detail?: string,
     ) {
-      const isBudget = ["deadline", "call_limit", "step_limit", "cost_limit", "unknown_price"].includes(reason)
+      const isBudget = [
+        "deadline",
+        "call_limit",
+        "step_limit",
+        "checkpoint_required",
+        "cost_limit",
+        "unknown_price",
+      ].includes(reason)
       const message = isBudget
         ? `Execution budget blocked the request: ${reason}`
         : reason === "recovery_required"
@@ -98,6 +130,311 @@ export namespace ExecutionRuntime {
       ledgers.set(filepath, current)
     }
     return current
+  }
+
+  const MAX_EXECUTION_STATES = 500
+  const executionStates = new Map<
+    string,
+    {
+      contract: ExecutionContract.Info
+      policy: ExecutionPolicy.PolicyInfo
+      evidence: ExecutionPolicy.RuntimeEvidence
+      promotionReasons: string[]
+      classifierFallback: boolean
+      extensionCount: number
+      sliceLimit: number
+      sliceStartCalls: number
+      sliceUsedCalls: number
+    }
+  >()
+
+  function getExecutionState(executionID: string) {
+    let current = executionStates.get(executionID)
+    {
+      try {
+        const persisted = ledger().getPolicyState(executionID)
+        if (persisted) {
+          current = {
+            ...persisted,
+            extensionCount: persisted.extensionCount ?? 0,
+            sliceLimit: persisted.sliceLimit ?? 30,
+            sliceStartCalls: persisted.sliceStartCalls ?? persisted.evidence?.toolCalls ?? 0,
+            sliceUsedCalls: persisted.sliceUsedCalls ?? 0,
+          }
+          executionStates.set(executionID, current)
+        }
+      } catch {}
+    }
+    return current
+  }
+
+  function setExecutionState(
+    executionID: string,
+    state: {
+      contract: ExecutionContract.Info
+      policy: ExecutionPolicy.PolicyInfo
+      evidence: ExecutionPolicy.RuntimeEvidence
+      promotionReasons: string[]
+      classifierFallback: boolean
+      extensionCount?: number
+      sliceLimit?: number
+      sliceStartCalls?: number
+      sliceUsedCalls?: number
+    },
+  ) {
+    const entry = {
+      ...state,
+      // The ledger-owned CAS counter must survive evidence/promotion merges that
+      // don't explicitly set it; only admit paths that won a grant may bump it.
+      extensionCount: state.extensionCount ?? executionStates.get(executionID)?.extensionCount ?? 0,
+      sliceLimit: state.sliceLimit ?? executionStates.get(executionID)?.sliceLimit ?? 30,
+      sliceStartCalls: state.sliceStartCalls ?? executionStates.get(executionID)?.sliceStartCalls ?? 0,
+      sliceUsedCalls: state.sliceUsedCalls ?? executionStates.get(executionID)?.sliceUsedCalls ?? 0,
+    }
+    executionStates.set(executionID, entry)
+    try {
+      ledger().savePolicyState({ executionID, ...entry })
+    } catch (err) {
+      log.warn("failed to persist policy state to ledger", { executionID, err })
+    }
+    pruneExecutionStates()
+  }
+
+  function pruneExecutionStates() {
+    if (executionStates.size <= MAX_EXECUTION_STATES) return
+    for (const executionID of executionStates.keys()) {
+      if (executionStates.size <= MAX_EXECUTION_STATES) break
+      if (ledger().view(executionID)?.lifecycle === "terminal") executionStates.delete(executionID)
+    }
+  }
+
+  export function setExecutionContract(
+    executionID: string,
+    contract: ExecutionContract.Info,
+    options?: { classifierFallback?: boolean },
+  ): ExecutionPolicy.PolicyInfo {
+    const existing = getExecutionState(executionID)
+    const evidence = existing?.evidence ?? {}
+    const policy = ExecutionPolicy.resolvePolicy(contract, evidence, existing?.promotionReasons ?? [], existing?.policy)
+    setExecutionState(executionID, {
+      contract,
+      policy,
+      evidence,
+      promotionReasons: policy.promotionReasons,
+      classifierFallback: options?.classifierFallback ?? false,
+    })
+    log.info("execution contract set", { executionID, scope: contract.scope, risk: contract.risk })
+    return policy
+  }
+
+  export function getExecutionContract(executionID: string): ExecutionContract.Info | undefined {
+    return getExecutionState(executionID)?.contract
+  }
+
+  export function getExecutionPolicy(executionID: string): ExecutionPolicy.PolicyInfo | undefined {
+    return getExecutionState(executionID)?.policy
+  }
+
+  export function getExecutionEvidence(executionID: string): ExecutionPolicy.RuntimeEvidence | undefined {
+    return getExecutionState(executionID)?.evidence
+  }
+
+  export function isClassifierFallback(executionID: string): boolean {
+    return getExecutionState(executionID)?.classifierFallback ?? false
+  }
+
+  export function resolveExecutionPolicy(
+    executionID: string,
+    evidence?: ExecutionPolicy.RuntimeEvidence,
+  ): ExecutionPolicy.PolicyInfo {
+    const existing = getExecutionState(executionID)
+    const contract = existing?.contract ?? ExecutionContract.fallback("default_runtime_policy")
+    const prev = existing?.evidence ?? {}
+    const next = evidence ?? {}
+    const mergedEvidence: ExecutionPolicy.RuntimeEvidence = {
+      ...prev,
+      ...next,
+      filesRead: [...new Set([...(prev.filesRead ?? []), ...(next.filesRead ?? [])])],
+      filesChanged: [...new Set([...(prev.filesChanged ?? []), ...(next.filesChanged ?? [])])],
+      packagesTouched: [...new Set([...(prev.packagesTouched ?? []), ...(next.packagesTouched ?? [])])],
+      mutatingCalls: (prev.mutatingCalls ?? 0) + (next.mutatingCalls ?? 0),
+      externalCalls: (prev.externalCalls ?? 0) + (next.externalCalls ?? 0),
+      toolCalls: (prev.toolCalls ?? 0) + (next.toolCalls ?? 0),
+      successfulToolCalls: (prev.successfulToolCalls ?? 0) + (next.successfulToolCalls ?? 0),
+      recentToolCallSignatures: [
+        ...(prev.recentToolCallSignatures ?? []),
+        ...(next.recentToolCallSignatures ?? []),
+      ].slice(-6),
+      recentToolFamilies: [...(prev.recentToolFamilies ?? []), ...(next.recentToolFamilies ?? [])].slice(-6),
+      recentToolTargets: [...(prev.recentToolTargets ?? []), ...(next.recentToolTargets ?? [])].slice(-6),
+      recentSemanticActionResults:
+        (next.mutatingCalls ?? 0) > 0
+          ? []
+          : [...(prev.recentSemanticActionResults ?? []), ...(next.recentSemanticActionResults ?? [])].slice(-24),
+      recentErrorFingerprints:
+        (next.successfulToolCalls ?? 0) > 0 && (next.failureCount ?? 0) === 0
+          ? []
+          : [...(prev.recentErrorFingerprints ?? []), ...(next.recentErrorFingerprints ?? [])].slice(-6),
+      failureCount: (prev.failureCount ?? 0) + (next.failureCount ?? 0),
+      subtasksSpawned: (prev.subtasksSpawned ?? 0) + (next.subtasksSpawned ?? 0),
+      hasAuthOrSecurityEffect: Boolean(prev.hasAuthOrSecurityEffect || next.hasAuthOrSecurityEffect),
+      hasSchemaOrMigrationEffect: Boolean(prev.hasSchemaOrMigrationEffect || next.hasSchemaOrMigrationEffect),
+      hasPublicApiEffect: Boolean(prev.hasPublicApiEffect || next.hasPublicApiEffect),
+      hasDestructiveAction: Boolean(prev.hasDestructiveAction || next.hasDestructiveAction),
+      uncertainOutcome: Boolean(prev.uncertainOutcome || next.uncertainOutcome),
+    }
+    const policy = ExecutionPolicy.resolvePolicy(
+      contract,
+      mergedEvidence,
+      existing?.promotionReasons ?? [],
+      existing?.policy,
+    )
+    setExecutionState(executionID, {
+      contract,
+      policy,
+      evidence: mergedEvidence,
+      promotionReasons: policy.promotionReasons,
+      classifierFallback: existing?.classifierFallback ?? false,
+    })
+    return policy
+  }
+
+  export function promoteScope(executionID: string, targetScope: ExecutionContract.Scope, reason: string): boolean {
+    const existing = getExecutionState(executionID)
+    if (!existing) return false
+    if (!ExecutionPolicy.canPromoteScope(existing.policy.scope, targetScope)) return false
+    const contract: ExecutionContract.Info = { ...existing.contract, scope: targetScope }
+    const reasons = [...existing.promotionReasons, reason]
+    const policy = ExecutionPolicy.resolvePolicy(contract, existing.evidence, reasons, existing.policy)
+    setExecutionState(executionID, {
+      contract,
+      policy,
+      evidence: existing.evidence,
+      promotionReasons: policy.promotionReasons,
+      classifierFallback: existing.classifierFallback,
+    })
+    log.info("execution scope promoted", { executionID, from: existing.policy.scope, to: targetScope, reason })
+    return true
+  }
+
+  export function promoteRisk(executionID: string, targetRisk: ExecutionContract.Risk, reason: string): boolean {
+    const existing = getExecutionState(executionID)
+    if (!existing) return false
+    if (!ExecutionPolicy.canPromoteRisk(existing.policy.risk, targetRisk)) return false
+    const contract: ExecutionContract.Info = { ...existing.contract, risk: targetRisk }
+    const reasons = [...existing.promotionReasons, reason]
+    const policy = ExecutionPolicy.resolvePolicy(contract, existing.evidence, reasons, existing.policy)
+    setExecutionState(executionID, {
+      contract,
+      policy,
+      evidence: existing.evidence,
+      promotionReasons: policy.promotionReasons,
+      classifierFallback: existing.classifierFallback,
+    })
+    log.info("execution risk promoted", { executionID, from: existing.policy.risk, to: targetRisk, reason })
+    return true
+  }
+
+  export function recordRuntimeEvidence(
+    executionID: string,
+    evidence: ExecutionPolicy.RuntimeEvidence,
+  ): ExecutionPolicy.PolicyInfo {
+    if (!getExecutionState(executionID)) return
+    return resolveExecutionPolicy(executionID, evidence)
+  }
+
+  export function isCheckpointRequired(executionID: string): boolean {
+    return checkpointReason(executionID) !== undefined
+  }
+
+  export function checkpointReason(executionID: string): string | undefined {
+    const sliceReason = ledger().sliceCheckpointReason(executionID)
+    if (sliceReason) return sliceReason
+    const existing = getExecutionState(executionID)
+    if (!existing) return undefined
+    const maxSteps = existing.policy?.budget?.maxSteps
+    if (maxSteps && maxSteps > 2) {
+      const steps = ledger().stepCount(executionID)
+      if (steps >= Math.ceil(maxSteps * 0.8)) return "step_threshold"
+    }
+    const callsSinceCheckpoint = Math.max(
+      ledger().sliceUsedCalls(executionID),
+      (existing.evidence.toolCalls ?? 0) - (existing.sliceStartCalls ?? 0),
+    )
+    if (
+      existing.policy.scope === "coordinated" &&
+      callsSinceCheckpoint >= 10 &&
+      !ledger().hasUnresolvedExecutionTaskflow(executionID)
+    ) {
+      return "missing_plan"
+    }
+    const previous = ledger().checkpoints(executionID).at(-1)?.payload as
+      | { evidence?: ExecutionPolicy.RuntimeEvidence; routeRevision?: number; planRevision?: number }
+      | undefined
+    if ((existing.evidence.failureCount ?? 0) >= (previous?.evidence?.failureCount ?? 0) + 3) return "repeated_failures"
+    if ((existing.evidence.noProgressSlices ?? 0) >= ExecutionCheckpoint.MAX_NO_PROGRESS_SLICES) return "no_progress"
+    if (hasRepeatedTail(existing.evidence.recentToolCallSignatures, 3)) return "repeated_tool_call"
+    if (hasRepeatedValue(existing.evidence.recentSemanticActionResults, 3)) return "repeated_semantic_action"
+    if (hasRepeatedTail(existing.evidence.recentToolTargets, 3)) return "repeated_tool_target"
+    if (hasRepeatedTail(existing.evidence.recentErrorFingerprints, 3)) return "repeated_error"
+    if (!previous) return undefined
+    const view = ledger().view(executionID)
+    const changed = Boolean(
+      view &&
+        (view.routeRevision > (previous.routeRevision ?? view.routeRevision) ||
+          (ledger().planRevision(executionID) ?? 0) >
+            (previous.planRevision ?? ledger().planRevision(executionID) ?? 0)),
+    )
+    return changed ? "route_or_plan_changed" : undefined
+  }
+
+  export function requestCheckpoint(executionID: string): boolean {
+    return ledger().requestCheckpoint(executionID)
+  }
+
+  export function admitToolCall(
+    executionID: string,
+    evidence?: ExecutionPolicy.RuntimeEvidence,
+    options?: { signature?: string; family?: string; target?: string },
+  ) {
+    let existing = getExecutionState(executionID)
+    if (!existing) return
+    reserveToolCall(executionID)
+    return recordToolCall(executionID, evidence, options)
+  }
+
+  export function reserveToolCall(executionID: string) {
+    if (!getExecutionState(executionID)) return
+    if (!ledger().reserveToolAllowance(executionID)) throw new BudgetExceededError("checkpoint_required", executionID)
+  }
+
+  export function releaseToolCall(executionID: string) {
+    ledger().releaseToolAllowance(executionID)
+  }
+
+  export function recordToolCall(
+    executionID: string,
+    evidence?: ExecutionPolicy.RuntimeEvidence,
+    options?: { signature?: string; family?: string; target?: string },
+  ) {
+    let existing = getExecutionState(executionID)
+    if (!existing) return
+    existing = getExecutionState(executionID)!
+    existing.sliceUsedCalls = ledger().sliceUsedCalls(executionID)
+    executionStates.set(executionID, existing)
+    return resolveExecutionPolicy(executionID, {
+      ...(evidence ?? {}),
+      toolCalls: 1,
+      recentToolCallSignatures: options?.signature ? [options.signature] : [],
+      recentToolFamilies: options?.family ? [options.family] : [],
+      recentToolTargets: options?.target ? [options.target] : [],
+    })
+  }
+
+  export function recordSemanticActionResult(executionID: string, signature: string, resultFingerprint: string) {
+    return resolveExecutionPolicy(executionID, {
+      recentSemanticActionResults: [`${signature}:${resultFingerprint}`],
+    })
   }
 
   function stopLease(executionID: string, reason?: string) {
@@ -262,6 +599,9 @@ export namespace ExecutionRuntime {
         : (error as any)?.name === "ExecutionBudgetExceededError"
           ? (error as any)?.reason
           : undefined
+    if (budgetReason === "checkpoint_required") {
+      throw new Error("checkpoint_required is a resumable control signal and cannot become a terminal outcome")
+    }
     if (
       budgetReason &&
       ["deadline", "call_limit", "step_limit", "cost_limit", "unknown_price"].includes(budgetReason)
@@ -425,8 +765,18 @@ export namespace ExecutionRuntime {
     const existing = store.binding(input.invocationID)
     const session = await Session.get(input.sessionID)
     const root = await rootSession(input.sessionID)
+    const waitingContinuation =
+      !existing && !session.parentID && !input.resumesExecutionID && (input.kind === undefined || input.kind === "root")
+        ? store.waitingInput(input.sessionID)
+        : undefined
+    const reviewerInvocationID =
+      input.kind === "reviewer"
+        ? store.snapshot(root.id).activeInvocations.find((invocation) => invocation.sessionID === input.sessionID)?.id
+        : undefined
     const inherited =
-      existing ?? (session.parentID ? (store.active(input.sessionID) ?? store.active(session.parentID)) : undefined)
+      existing ??
+      waitingContinuation ??
+      (session.parentID ? (store.active(input.sessionID) ?? store.active(session.parentID)) : undefined)
     const candidate: Context = inherited
       ? { ...inherited, invocationID: input.invocationID }
       : {
@@ -465,6 +815,9 @@ export namespace ExecutionRuntime {
         sessionID: input.sessionID,
         kind: input.kind,
         acceptedMessageID: input.acceptedMessageID ?? input.invocationID,
+        replacesInvocationID:
+          waitingContinuation?.invocationID ??
+          (reviewerInvocationID !== input.invocationID ? reviewerInvocationID : undefined),
       })
     } catch (error) {
       if (!inherited) store.cancel(context)
@@ -744,6 +1097,15 @@ export namespace ExecutionRuntime {
 
   export function blocker(blockerID: string) {
     return ledger().blocker(blockerID)
+  }
+
+  export function taskflowPlan(executionID: string, sessionID: string) {
+    return ledger().taskflowPlan(executionID, sessionID)
+  }
+
+  export async function closeTaskflow(input: { sessionID: string; execution: Context }) {
+    await assertActive(input)
+    ledger().closeTaskflow({ ...input.execution, sessionID: input.sessionID })
   }
 
   export function completion(executionID: string): Completion | undefined {
@@ -1341,12 +1703,14 @@ export namespace ExecutionRuntime {
   export async function admitStep(input: { sessionID: string; stepID: string; execution?: Context }) {
     const resolved = await context(input.sessionID, input.execution)
     if (!resolved) return
+    const policy = getExecutionPolicy(resolved.executionContext.executionID)
     const admission = resolved.store.claimStep({
       stepID: input.stepID,
       executionID: resolved.executionContext.executionID,
       invocationID: resolved.executionContext.invocationID,
       ownerID: resolved.executionContext.ownerID,
       fence: resolved.executionContext.fence,
+      maxSteps: policy?.budget.maxSteps,
     })
     if ("reason" in admission) throw new BudgetExceededError(admission.reason, resolved.executionContext.executionID)
   }
@@ -1409,5 +1773,232 @@ export namespace ExecutionRuntime {
         log.warn("model usage remains uncertain", { executionID, attemptID })
       },
     }
+  }
+
+  export function hasUnresolvedExecutionTaskflow(executionID: string): boolean {
+    return ledger().hasUnresolvedExecutionTaskflow(executionID)
+  }
+
+  function checkpointRuntimeState(executionID: string) {
+    const existing = getExecutionState(executionID)
+    if (!existing) throw new Error("execution policy state not found")
+    const previous = ledger().checkpoints(executionID).at(-1)?.payload as
+      | { evidence?: ExecutionPolicy.RuntimeEvidence; routeRevision?: number; planRevision?: number }
+      | undefined
+    const view = ledger().view(executionID)
+    const routeChanged = Boolean(
+      previous && view && view.routeRevision > (previous.routeRevision ?? view.routeRevision),
+    )
+    const planRevision = ledger().planRevision(executionID) ?? 0
+    const planChanged = Boolean(previous && planRevision > (previous.planRevision ?? planRevision))
+    const priorEvidence = previous?.evidence ?? {}
+    const hasNewFiles =
+      (existing.evidence.filesRead?.length ?? 0) > (priorEvidence.filesRead?.length ?? 0) ||
+      (existing.evidence.filesChanged?.length ?? 0) > (priorEvidence.filesChanged?.length ?? 0)
+    const successfulDelta =
+      (existing.evidence.successfulToolCalls ?? 0) > (priorEvidence.successfulToolCalls ?? 0) &&
+      !hasRepeatedTail(existing.evidence.recentToolCallSignatures, 3)
+    const progressed = !previous || hasNewFiles || successfulDelta || routeChanged || planChanged
+    return {
+      routeChanged,
+      planChanged,
+      noProgressSlices: progressed ? 0 : (priorEvidence.noProgressSlices ?? 0) + 1,
+    }
+  }
+
+  export function reconcileCheckpoint(
+    executionID: string,
+    checkpoint: import("./checkpoint").ExecutionCheckpoint.Result,
+  ): import("./checkpoint").ExecutionCheckpoint.Result {
+    const existing = getExecutionState(executionID)
+    if (!existing) throw new Error("execution policy state not found")
+    const runtime = checkpointRuntimeState(executionID)
+    let result = { ...checkpoint, planChanged: runtime.planChanged, routeChanged: runtime.routeChanged }
+
+    if (result.decision === "finish" && ledger().hasUnresolvedExecutionTaskflow(executionID)) {
+      const reason =
+        "The objective is complete, but the durable taskflow contains stale unresolved state and requires reconciliation."
+      result = {
+        ...result,
+        decision: "blocked",
+        requestedCalls: undefined,
+        finalResponse: undefined,
+        remainingWork: [...new Set([...result.remainingWork, reason])],
+        blockers: [...new Set([...result.blockers, reason])],
+        estimatedRemainingCalls: 0,
+        nextActions: [
+          ...new Set([...result.nextActions, "Report the stale taskflow state without granting more work."]),
+        ],
+      }
+    }
+
+    const hasDeliverables = (result.completedWork?.length ?? 0) >= 1 || (existing.evidence.mutatingCalls ?? 0) > 0
+    const noFailures = (result.failures?.length ?? 0) === 0 && (existing.evidence.failureCount ?? 0) === 0
+    const objectiveClaimsComplete =
+      /complete|completed|finished|all tests pass|success|done/i.test(result.objectiveAssessment) ||
+      /complete|completed|finished|all tests pass|success|done/i.test(result.progressSummary)
+    const noMeaningfulRemainingWork =
+      (result.remainingWork?.length ?? 0) === 0 ||
+      result.remainingWork.every((item) => /taskflow|reconcil|stale|none|nothing|cleanup|complete|all done/i.test(item))
+
+    if (
+      result.decision === "continue" &&
+      hasDeliverables &&
+      noFailures &&
+      objectiveClaimsComplete &&
+      noMeaningfulRemainingWork
+    ) {
+      if (ledger().hasUnresolvedExecutionTaskflow(executionID)) {
+        const reason =
+          "The objective is complete, but the durable taskflow contains stale unresolved state and requires reconciliation."
+        result = {
+          ...result,
+          decision: "blocked",
+          requestedCalls: undefined,
+          finalResponse: undefined,
+          remainingWork: [...new Set([...result.remainingWork, reason])],
+          blockers: [...new Set([...result.blockers, reason])],
+          estimatedRemainingCalls: 0,
+          nextActions: [
+            ...new Set([...result.nextActions, "Report the stale taskflow state without granting more work."]),
+          ],
+        }
+      } else {
+        result = {
+          ...result,
+          decision: "finish",
+          requestedCalls: undefined,
+          finalResponse: result.progressSummary || result.objectiveAssessment || "Project complete.",
+          estimatedRemainingCalls: 0,
+        }
+      }
+    }
+
+    const stallReasons = finalizationConstraints(executionID, runtime)
+    if (result.decision === "continue" && stallReasons.length) {
+      result = {
+        ...result,
+        decision: "blocked",
+        requestedCalls: undefined,
+        finalResponse: undefined,
+        blockers: [...new Set([...result.blockers, ...stallReasons])],
+        nextActions: [...new Set([...result.nextActions, "Provide new evidence or revise the execution route."])],
+      }
+    }
+    return result
+  }
+
+  export function finalizationConstraints(
+    executionID: string,
+    runtime = checkpointRuntimeState(executionID),
+  ): string[] {
+    const existing = getExecutionState(executionID)
+    if (!existing) return []
+    return [
+      existing.extensionCount >= ExecutionCheckpoint.MAX_EXTENSIONS ? "Execution extension limit reached." : undefined,
+      runtime.noProgressSlices >= ExecutionCheckpoint.MAX_NO_PROGRESS_SLICES
+        ? "No verifiable progress was recorded across consecutive execution slices."
+        : undefined,
+      hasRepeatedTail(existing.evidence.recentToolCallSignatures, 3)
+        ? "The same tool call was repeated without new evidence."
+        : undefined,
+      hasRepeatedValue(existing.evidence.recentSemanticActionResults, 3)
+        ? "The same semantic action was repeated without new evidence."
+        : undefined,
+      hasRepeatedTail(existing.evidence.recentToolTargets, 3)
+        ? "The same tool target was revisited without new evidence."
+        : undefined,
+      hasRepeatedTail(existing.evidence.recentErrorFingerprints, 3)
+        ? "The same tool error repeated without recovery."
+        : undefined,
+    ].filter((reason): reason is string => Boolean(reason))
+  }
+
+  export function applyCheckpoint(
+    executionID: string,
+    checkpointID: string,
+    checkpoint: import("./checkpoint").ExecutionCheckpoint.Result,
+    evidence?: ExecutionPolicy.RuntimeEvidence,
+    context?: { triggerMessageID?: string; telemetry?: Record<string, unknown> },
+  ) {
+    const existing = getExecutionState(executionID)
+    if (!existing) throw new Error("execution policy state not found")
+    const runtime = checkpointRuntimeState(executionID)
+    const runtimeEvidence = { ...(evidence ?? existing.evidence), noProgressSlices: runtime.noProgressSlices }
+    setExecutionState(executionID, { ...existing, evidence: runtimeEvidence })
+    const view = ledger().view(executionID)
+    const result = ledger().applyCheckpoint({
+      executionID,
+      checkpointID,
+      decision: checkpoint.decision,
+      requestedCalls: checkpoint.requestedCalls,
+      payload: {
+        checkpoint,
+        evidence: runtimeEvidence,
+        triggerMessageID: context?.triggerMessageID,
+        telemetry: context?.telemetry,
+        routeRevision: view?.routeRevision,
+        planRevision: ledger().planRevision(executionID),
+      },
+    })
+    // The ledger commits the grant and budget together; never write a stale
+    // cached policy back over that transaction (including idempotent retries).
+    executionStates.delete(executionID)
+    if (view) {
+      Bus.publish(Event.Checkpoint, {
+        sessionID: view.rootSessionID,
+        executionID,
+        sequence: result.sequence,
+        checkpoint,
+      })
+    }
+    return result
+  }
+
+  export function checkpoints(executionID: string) {
+    return ledger().checkpoints(executionID)
+  }
+
+  export function checkpointHandled(executionID: string, messageID: string) {
+    return checkpoints(executionID).some((item) => item.payload?.triggerMessageID === messageID)
+  }
+
+  export function checkpointFailures(executionID: string) {
+    return ledger().checkpointFailures(executionID)
+  }
+
+  export function recordCheckpointFailure(executionID: string) {
+    return ledger().recordCheckpointFailure(executionID)
+  }
+
+  export function allowance(executionID: string) {
+    const state = ledger().getPolicyState(executionID)
+    return {
+      limit: state?.sliceLimit ?? 30,
+      used: state?.sliceUsedCalls ?? 0,
+      extensions: state?.extensionCount ?? 0,
+      toolCalls: state?.evidence?.toolCalls ?? 0,
+    }
+  }
+
+  export function recordObjective(executionID: string, messageID: string, objective: string) {
+    return ledger().recordObjective({ executionID, messageID, objective })
+  }
+
+  export function objective(executionID: string) {
+    return ledger().objective(executionID)
+  }
+
+  export async function waitForInput(input: { sessionID: string; execution: Context; reason: string }) {
+    const resolved = await context(input.sessionID, input.execution)
+    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
+    const waiting = resolved.store.waitForInput({
+      executionID: input.execution.executionID,
+      invocationID: input.execution.invocationID,
+      ownerID: input.execution.ownerID,
+      fence: input.execution.fence,
+      reason: input.reason,
+    })
+    if (!waiting.waiting) throw new BudgetExceededError(waiting.reason, input.execution.executionID)
   }
 }

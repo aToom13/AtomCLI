@@ -129,13 +129,14 @@ export namespace ToolRegistry {
   }
 
   export const AGENT_TOOL_ALLOW_LISTS: Record<string, string[]> = {
-    explore: ["read", "find", "grep", "bash", "lsp", "webfetch", "websearch", "skill", "memory", "taskflow"],
+    explore: ["read", "find", "grep", "bash", "lsp", "browser", "webfetch", "websearch", "skill", "memory", "taskflow"],
     checker: [
       "read",
       "grep",
       "find",
       "bash",
       "lsp",
+      "browser",
       "webfetch",
       "websearch",
       "skill",
@@ -189,9 +190,17 @@ export namespace ToolRegistry {
       return true
     })
 
-    if (!requested && allowList && filteredTools.length === 0) {
-      log.warn("Agent tool allow list produced 0 tools, falling back to all tools", { agent: agent?.name })
-      filteredTools = allTools
+    // Log tools dropped by the agent allowlist so a later `invalid` call can be
+    // traced back to availability instead of mistaken for a model bug.
+    if (allowList && requested) {
+      const dropped = [...requested].filter((id) => !allowList.includes(id) && allTools.some((t) => t.id === id))
+      if (dropped.length > 0) {
+        log.debug("Agent allow list dropped requested tools", { agent: agent?.name, dropped })
+      }
+    }
+
+    if (filteredTools.length === 0) {
+      log.debug("Agent tool allow list produced no permitted tools", { agent: agent?.name })
     }
 
     const result = await Promise.all(

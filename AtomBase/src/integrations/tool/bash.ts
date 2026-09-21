@@ -93,6 +93,28 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
     description: DESCRIPTION.replaceAll("${directory}", Instance.directory)
       .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
       .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
+    effects(params: { command: string }) {
+      const command = params.command.trim()
+      const isReadOnlyGitBranch = /^git\s+branch(?:\s+(?:--show-current|--list|-l))?\s*$/i.test(command)
+      const isReadOnly =
+        (/^(cat|head|tail|ls|pwd|printf|git\s+(status|diff|log|show)|rg|grep|find|which|type|file|stat)\b/i.test(
+          command,
+        ) ||
+          isReadOnlyGitBranch) &&
+        !/[|;&><`]|\$\(/.test(command)
+      const isMutating = !isReadOnly
+      const isExternal = /\b(curl|wget|fetch|ssh|rsync|git\s+(push|pull|clone|fetch))\b/i.test(params.command)
+      const isDestructive = /\b(rm\s+-[rf]{1,2}|drop\s+(database|table)|mkfs|dd\s+if=|git\s+reset\s+--hard)\b/i.test(
+        params.command,
+      )
+      return {
+        workspace: isMutating ? ("write" as const) : ("read" as const),
+        external: isExternal ? ("write" as const) : ("none" as const),
+        reversible: !isDestructive && !isMutating,
+        destructive: isDestructive,
+        privileged: /\bsudo\b/i.test(params.command),
+      }
+    },
     parameters: z.object({
       command: z.string().min(1).max(100_000).describe("The command to execute"),
       timeout: z.number().int().min(1).max(MAX_TIMEOUT).describe("Optional timeout in milliseconds").optional(),

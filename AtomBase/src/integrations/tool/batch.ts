@@ -82,6 +82,8 @@ export const BatchTool = Tool.define("batch", async (initCtx) => {
             tool: call.tool,
             args: validatedParams,
             context: nestedContext,
+            mutating: tool.mutating,
+            effects: tool.effects,
             execute: (args, context) => tool.execute(args, context),
           })
           if (result.attachments?.length) {

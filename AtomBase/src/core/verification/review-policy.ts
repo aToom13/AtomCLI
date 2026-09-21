@@ -21,6 +21,8 @@ export namespace ReviewPolicy {
     extraHighRiskPatterns?: string[]
     diff?: string
     impact?: Impact
+    scope?: "direct" | "focused" | "coordinated"
+    risk?: "low" | "elevated" | "critical"
   }
 
   const HIGH_RISK = [
@@ -51,6 +53,8 @@ export namespace ReviewPolicy {
   ]
 
   export function assess(input: Input): Risk {
+    if (input.risk === "critical") return "high"
+    if (input.risk === "elevated" && input.scope === "coordinated") return "high"
     const files = input.editedFiles ?? []
     if (files.length === 0) return "low"
     if (input.testsFailed || (input.retries ?? 0) >= 2 || input.impact?.level === "high") return "high"
@@ -99,6 +103,8 @@ export namespace ReviewPolicy {
 
   export function requiresIndependentReview(policy: Mode, input: Input) {
     if (policy === "off") return false
+    if (input.risk === "critical") return true
+    if (input.risk === "elevated" && input.scope === "coordinated") return true
     if (policy === "always") return (input.editedFiles?.length ?? 0) > 0
     if (policy === "fast") {
       if ((input.editedFiles?.length ?? 0) === 0) return false

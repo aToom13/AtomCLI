@@ -95,13 +95,19 @@ export namespace Question {
     }
   })
 
-  export async function ask(input: {
-    sessionID: string
-    questions: Info[]
-    tool?: { messageID: string; callID: string }
-  }): Promise<Answer[]> {
+  export async function ask(
+    input: {
+      sessionID: string
+      questions: Info[]
+      tool?: { messageID: string; callID: string }
+    },
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<Answer[]> {
     const s = await state()
     const id = Identifier.ascending("question")
+    // A question nobody answers must not hang the turn forever (e.g. UI never
+    // surfaces it, server mode, user away). Mirror the permission auto-reject.
+    const timeoutMs = Math.min(Math.max(options?.timeoutMs ?? 300_000, 1), 10 * 60_000)
 
     log.info("asking", { id, questions: input.questions.length })
 
@@ -112,11 +118,52 @@ export namespace Question {
         questions: input.questions,
         tool: input.tool,
       }
+      const timer = setTimeout(() => {
+        if (!s.pending[id]) return
+        delete s.pending[id]
+        log.warn("question auto-rejected after timeout without an answer", {
+          id,
+          sessionID: input.sessionID,
+          timeoutMs,
+        })
+        Bus.publish(Event.Rejected, {
+          sessionID: info.sessionID,
+          requestID: id,
+        })
+        reject(
+          new Error(
+            `Question timed out after ${Math.round(timeoutMs / 1000)} seconds without an answer. Continue without it or ask again later.`,
+          ),
+        )
+      }, timeoutMs)
+      // Don't hold the process (or test runner) open for the full window.
+      timer.unref?.()
+      const settle = (fn: () => void) => {
+        clearTimeout(timer)
+        options?.signal?.removeEventListener("abort", onAbort)
+        fn()
+      }
+      const onAbort = () => {
+        if (!s.pending[id]) return
+        delete s.pending[id]
+        settle(() => {})
+        log.info("question aborted", { id, sessionID: input.sessionID })
+        Bus.publish(Event.Rejected, {
+          sessionID: info.sessionID,
+          requestID: id,
+        })
+        reject(options?.signal?.reason ?? new Error("Question cancelled"))
+      }
       s.pending[id] = {
         info,
-        resolve,
-        reject,
+        resolve: (answers) => settle(() => resolve(answers)),
+        reject: (e) => settle(() => reject(e)),
       }
+      if (options?.signal?.aborted) {
+        onAbort()
+        return
+      }
+      options?.signal?.addEventListener("abort", onAbort, { once: true })
       Bus.publish(Event.Asked, info)
     })
   }

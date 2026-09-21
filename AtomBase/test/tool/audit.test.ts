@@ -69,6 +69,19 @@ describe("active tool audit", () => {
     const result = await tool.execute({ tool: "demo", error: "missing field" }, context())
     expect(result.title).toBe("Invalid Tool")
     expect(result.output).toContain("missing field")
+    expect(result.output).toContain("demo")
+  })
+
+  test("allowlist intersection preserves an empty capability set", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // model_control is intentionally unavailable to explore agents.
+        const tools = await ToolRegistry.tools("test", { name: "explore" } as never, new Set(["model_control"]))
+        expect(tools).toHaveLength(0)
+      },
+    })
   })
 
   test("find executes both pattern and tree modes", async () => {

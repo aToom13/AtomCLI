@@ -882,6 +882,10 @@ export class Config extends HeyApiClient {
          */
         continue_loop_on_deny?: boolean
         /**
+         * Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled
+         */
+        execution_classification?: boolean
+        /**
          * Enable automatic model selection per task category in orchestrate tool
          */
         smart_model_routing?: boolean

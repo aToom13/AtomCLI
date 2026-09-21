@@ -39,6 +39,7 @@ export namespace AdaptivePolicy {
     thinkingPinned: z.boolean().default(false),
     rejectedFingerprintMatches: z.boolean().default(false),
     cooldownStepsRemaining: z.number().int().nonnegative().default(0),
+    scope: z.enum(["direct", "focused", "coordinated"]).optional(),
   })
   export type Input = z.input<typeof Input>
 
@@ -100,6 +101,9 @@ export namespace AdaptivePolicy {
     score = Math.min(10, score)
 
     const none = () => ({ kind: "none" as const, score, reasonCodes, evidenceRefs: [...evidenceRefs] })
+    if (input.scope === "direct" && !input.explicitlyRequestedRoute) {
+      return none()
+    }
     if (input.explicitlyRequestedRoute && input.expertRoute && input.expertEligible && !input.modelPinned) {
       return { ...none(), kind: "expert", targetRoute: input.expertRoute }
     }
@@ -110,6 +114,12 @@ export namespace AdaptivePolicy {
       input.cooldownStepsRemaining > 0
     )
       return none()
+    if (input.scope === "focused" && input.failedStrategies.length === 0) {
+      if (score >= 4 && input.higherThinkingVariant && input.thinkingEligible && !input.thinkingPinned) {
+        return { ...none(), kind: "thinking", targetVariant: input.higherThinkingVariant }
+      }
+      return none()
+    }
     if (score >= 4 && input.higherThinkingVariant && input.thinkingEligible && !input.thinkingPinned) {
       return { ...none(), kind: "thinking", targetVariant: input.higherThinkingVariant }
     }

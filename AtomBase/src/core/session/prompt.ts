@@ -27,6 +27,7 @@ import { recallCoreMemories } from "@/core/memory"
 import { SessionMemoryIntegration } from "../memory/integration/session"
 import { MemoryLifecycle } from "../memory/services/lifecycle"
 import { ToolRegistry } from "@/integrations/tool/registry"
+import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { MCP } from "@/integrations/mcp"
 import { LSP } from "@/integrations/lsp"
 import { ReadTool } from "@/integrations/tool/read"
@@ -153,7 +154,7 @@ export namespace SessionPrompt {
     return (
       message.info.role === "user" &&
       message.parts.length > 0 &&
-      message.parts.every((part) => "synthetic" in part && part.synthetic === true)
+      message.parts.every((part) => part.type === "compaction" || ("synthetic" in part && part.synthetic === true))
     )
   }
 
@@ -173,6 +174,193 @@ export namespace SessionPrompt {
     ]
       .filter(Boolean)
       .join("\n\n")
+  }
+
+  function checkpointTools<T>(_tools: Record<string, T>): Record<string, T> {
+    return {}
+  }
+
+  function isCheckpointContinuation(message?: MessageV2.WithParts): boolean {
+    if (!message || !isSyntheticContinuation(message)) return false
+    const text = message.parts
+      .filter((part): part is MessageV2.TextPart => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+    return text.includes("The final response was withheld") || text.includes("Completion preconditions failed")
+  }
+
+  function checkpointDelta(messages: MessageV2.WithParts[], since = 0): string {
+    return messages
+      .filter((message) => message.info.time.created >= since)
+      .flatMap((message) =>
+        message.parts.flatMap((part) => {
+          if (part.type === "tool") {
+            const detail =
+              part.state.status === "completed"
+                ? part.state.output
+                : part.state.status === "error"
+                  ? part.state.error
+                  : part.state.status
+            return [`tool ${part.tool} [${part.state.status}]: ${String(detail).slice(0, 1000)}`]
+          }
+          if (part.type === "patch") return [`files changed: ${part.files.join(", ")}`]
+          if (part.type === "subtask") return [`child task: ${part.prompt}`]
+          if (part.type === "compaction") return ["conversation compaction recorded"]
+          if (part.type === "text" && !part.synthetic) return [`message: ${part.text.slice(0, 2000)}`]
+          return []
+        }),
+      )
+      .slice(-100)
+      .join("\n")
+      .slice(-24_000)
+  }
+
+  function parseCheckpointJsonCandidates(text: string): unknown[] {
+    const trimmed = text.trim()
+    const candidates: unknown[] = []
+    const seen = new Set<string>()
+    const add = (value: string) => {
+      const candidate = value.trim()
+      if (!candidate || seen.has(candidate)) return
+      seen.add(candidate)
+      try {
+        candidates.push(JSON.parse(candidate))
+      } catch {}
+    }
+    add(trimmed)
+    for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) add(match[1])
+
+    let start = -1
+    let depth = 0
+    let quoted = false
+    let escaped = false
+    for (let index = 0; index < trimmed.length; index++) {
+      const char = trimmed[index]
+      if (quoted) {
+        if (escaped) escaped = false
+        else if (char === "\\") escaped = true
+        else if (char === '"') quoted = false
+        continue
+      }
+      if (char === '"') {
+        quoted = true
+        continue
+      }
+      if (char === "{") {
+        if (depth === 0) start = index
+        depth++
+      } else if (char === "}" && depth > 0) {
+        depth--
+        if (depth === 0 && start >= 0) {
+          add(trimmed.slice(start, index + 1))
+          start = -1
+        }
+      }
+    }
+    return candidates
+  }
+
+  function parseCheckpointJson(text: string): unknown {
+    return parseCheckpointJsonCandidates(text)[0]
+  }
+
+  function normalizeCheckpointForOpenTaskflow(
+    checkpoint: ExecutionCheckpoint.Result,
+    openTaskflow: boolean,
+  ): ExecutionCheckpoint.Result {
+    if (!openTaskflow || checkpoint.decision !== "finish") return checkpoint
+    const reason = "The durable taskflow is still open; continue by updating or completing its remaining steps."
+    return {
+      ...checkpoint,
+      decision: "continue",
+      requestedCalls: Math.max(checkpoint.requestedCalls ?? 0, ExecutionCheckpoint.MIN_CHECKPOINT_CALLS),
+      finalResponse: undefined,
+      remainingWork: [...new Set([...checkpoint.remainingWork, reason])],
+      blockers: [...new Set([...checkpoint.blockers, reason])],
+      estimatedRemainingCalls: Math.max(checkpoint.estimatedRemainingCalls, 1),
+      nextActions: [...new Set([...checkpoint.nextActions, "Reconcile the open taskflow before finishing."])],
+    }
+  }
+
+  function checkpointFinalParts(
+    parts: MessageV2.TextPart[] | undefined,
+    input: { sessionID: string; messageID: string; finalResponse: string },
+  ): MessageV2.TextPart[] {
+    const original = parts?.[0]
+    return [
+      {
+        ...(original ?? {
+          id: Identifier.ascending("part"),
+          messageID: input.messageID,
+          sessionID: input.sessionID,
+          type: "text",
+          time: { start: Date.now(), end: Date.now() },
+        }),
+        text: input.finalResponse,
+      },
+    ]
+  }
+
+  function buildDeterministicFinalResponse(input: {
+    sessionID: string
+    executionID: string
+    reasons: string[]
+  }): string {
+    const { ExecutionRuntime } = require("@/core/execution/runtime")
+    const checkpoints = ExecutionRuntime.checkpoints(input.executionID)
+    const lastPayload = checkpoints.at(-1)?.payload as { checkpoint?: ExecutionCheckpoint.Result } | undefined
+    const cp = lastPayload?.checkpoint
+
+    const lines: string[] = []
+    const rootObjective = ExecutionRuntime.objective(input.executionID)?.objective
+
+    if (rootObjective) {
+      lines.push(`Objective: ${rootObjective}`)
+    }
+
+    if (cp?.objectiveAssessment && cp.objectiveAssessment !== "Objective remains unchanged.") {
+      lines.push(`\nObjective status: ${cp.objectiveAssessment}`)
+    } else if (cp?.progressSummary && cp.progressSummary !== "No summary provided.") {
+      lines.push(`\nProgress: ${cp.progressSummary}`)
+    }
+
+    const completed = [
+      ...(cp?.completedWork ?? []),
+      ...HarnessState.getSteps(input.sessionID)
+        .filter((s) => s.status === "completed")
+        .map((s) => s.name),
+    ]
+    const uniqueCompleted = [...new Set(completed)]
+    if (uniqueCompleted.length > 0) {
+      lines.push("\nCompleted work:")
+      for (const item of uniqueCompleted) lines.push(`- ${item}`)
+    }
+
+    const logs = HarnessState.getLastLogs(input.sessionID)
+    const verificationLogs = logs.filter((l) => /test|check|verify|lint|build/i.test(l.command))
+    if (verificationLogs.length > 0) {
+      lines.push("\nVerification:")
+      for (const l of verificationLogs) {
+        const status = l.exitCode === 0 ? "PASSED" : `FAILED (exit ${l.exitCode})`
+        lines.push(`- \`${l.command}\`: ${status}`)
+      }
+    }
+
+    const remaining = [
+      ...(cp?.remainingWork ?? []),
+      ...(cp?.blockers ?? []),
+      ...HarnessState.getSteps(input.sessionID)
+        .filter((s) => s.status === "pending" || s.status === "running")
+        .map((s) => `durable taskflow step "${s.name}" is ${s.status}`),
+    ]
+    const uniqueRemaining = [...new Set(remaining)]
+    if (uniqueRemaining.length > 0) {
+      lines.push("\nRemaining / Blockers:")
+      for (const item of uniqueRemaining) lines.push(`- ${item}`)
+    }
+
+    lines.push(`\nFinalization reason: ${input.reasons.join("; ")}`)
+    return lines.join("\n")
   }
 
   async function returnExpertHandoff(input: {
@@ -461,6 +649,7 @@ export namespace SessionPrompt {
     execution: import("@/core/execution/runtime").ExecutionRuntime.Context
     candidate: import("@/core/execution/runtime").ExecutionRuntime.Completion
     abort: AbortSignal
+    allowRetry?: boolean
   }): Promise<"committed" | "blocked" | "retry"> {
     const { ExecutionRuntime } = await import("@/core/execution/runtime")
     input.abort.throwIfAborted()
@@ -498,7 +687,8 @@ export namespace SessionPrompt {
       return "retry" as const
     }
     const blockers: string[] = []
-    if (HarnessState.hasActivePlan(input.sessionID)) blockers.push("the taskflow plan is still open")
+    if (HarnessState.hasActivePlan(input.sessionID, input.execution.executionID))
+      blockers.push("the taskflow plan is still open")
     const workflowID = HarnessState.getActiveWorkflowId(input.sessionID)
     if (workflowID) blockers.push(`workflow ${workflowID} is still running`)
     const { SubAgentLifecycle } = await import("@/integrations/tool/subagent-lifecycle")
@@ -507,7 +697,49 @@ export namespace SessionPrompt {
         blockers.push(`child session ${childID} is running`)
       }
     }
-    if (blockers.length) return retry(`Completion preconditions failed: ${blockers.join("; ")}.`)
+    if (blockers.length) {
+      const reason = `Completion preconditions failed: ${blockers.join("; ")}.`
+      if (input.allowRetry !== false) return retry(reason)
+      await ExecutionRuntime.discardCompletion({
+        sessionID: input.sessionID,
+        execution: input.execution,
+        digest: input.candidate.digest,
+      })
+      const original = input.candidate.parts[0]
+      const candidateText = input.candidate.parts
+        .filter((part): part is MessageV2.TextPart => part.type === "text")
+        .map((part) => part.text)
+        .join("\n\n")
+        .trim()
+      const failure = ExecutionRuntime.classifyTerminalFailure(
+        new ExecutionRuntime.BudgetExceededError("step_limit", input.execution.executionID),
+      )
+      const completion = ExecutionRuntime.finalizeOutcome({
+        sessionID: input.sessionID,
+        messageID: input.candidate.messageID,
+        execution: input.execution,
+        failure: {
+          ...failure,
+          reasonMessage: `${reason} Execution stopped at its step limit; send another message to continue.`,
+        },
+        parts: [
+          {
+            ...(original ?? {
+              id: Identifier.ascending("part"),
+              messageID: input.candidate.messageID,
+              sessionID: input.sessionID,
+              type: "text" as const,
+              time: { start: Date.now(), end: Date.now() },
+            }),
+            text: [candidateText, `Execution status: technical blocker. ${reason}`].filter(Boolean).join("\n\n"),
+            synthetic: true,
+            metadata: { ...original?.metadata, blockerKind: "technical" },
+          },
+        ],
+      })
+      await projectAndAckCompletion(completion)
+      return "blocked"
+    }
     for (const filepath of input.candidate.editedFiles) HarnessState.restoreEditedFile(input.sessionID, filepath)
     await restoreReviewEvidence(input.sessionID)
     const { runBlockingReview } = await import("@/integrations/tool/review-gate")
@@ -521,6 +753,7 @@ export namespace SessionPrompt {
       : undefined
     const review = await runBlockingReview(input.sessionID, {
       signal: input.abort,
+      executionID: input.execution.executionID,
       decision: {
         policyVersion: input.candidate.policyVersion,
         policyDigest: input.candidate.policyDigest,
@@ -549,7 +782,34 @@ export namespace SessionPrompt {
       })
     }
     if (review.passed) {
-      if (HarnessState.needsReview(input.sessionID)) {
+      if (input.candidate.requiresReview && HarnessState.needsReview(input.sessionID)) {
+        if (input.allowRetry === false) {
+          const original = input.candidate.parts[0]
+          const blocked = await ExecutionRuntime.finalizeBlocked({
+            sessionID: input.sessionID,
+            digest: input.candidate.digest,
+            parts: [
+              {
+                ...(original ?? {
+                  id: Identifier.ascending("part"),
+                  messageID: input.candidate.messageID,
+                  sessionID: input.sessionID,
+                  type: "text" as const,
+                  time: { start: Date.now(), end: Date.now() },
+                }),
+                text: "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
+                synthetic: true,
+                metadata: { ...original?.metadata, reviewGate: "blocked" },
+              },
+            ],
+            execution: input.execution,
+            reasonCode: "review_rejected",
+            reasonMessage:
+              "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
+          })
+          await projectAndAckCompletion(blocked)
+          return "blocked"
+        }
         return retry("The workspace changed after review; the current revision must be reviewed again.")
       }
       const committed = await ExecutionRuntime.commitCompletion({
@@ -558,20 +818,60 @@ export namespace SessionPrompt {
         digest: input.candidate.digest,
       }).catch(async (error) => {
         if (error instanceof ExecutionRuntime.BudgetExceededError && error.reason === "stale_revision") {
+          if (input.allowRetry === false) {
+            const original = input.candidate.parts[0]
+            const blocked = await ExecutionRuntime.finalizeBlocked({
+              sessionID: input.sessionID,
+              digest: input.candidate.digest,
+              parts: [
+                {
+                  ...(original ?? {
+                    id: Identifier.ascending("part"),
+                    messageID: input.candidate.messageID,
+                    sessionID: input.sessionID,
+                    type: "text" as const,
+                    time: { start: Date.now(), end: Date.now() },
+                  }),
+                  text: "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
+                  synthetic: true,
+                  metadata: { ...original?.metadata, reviewGate: "blocked" },
+                },
+              ],
+              execution: input.execution,
+              reasonCode: "review_rejected",
+              reasonMessage:
+                "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
+            })
+            await projectAndAckCompletion(blocked)
+            return "blocked" as const
+          }
           return retry("The workspace changed after review; the current revision must be reviewed again.")
         }
         throw error
       })
-      if (committed === "retry") return committed
+      if (committed === "retry" || committed === "blocked") return committed
       await projectAndAckCompletion(committed)
       for (const sessionID of await completionSessionTree(input.sessionID)) HarnessState.clearReviewScope(sessionID)
       return "committed"
     }
-    if (!review.error && !review.exhausted) {
+    if (!review.error && !review.exhausted && input.allowRetry !== false) {
       return retry(review.reason)
     }
     const original = input.candidate.parts[0]
-    const blockedText = reviewBlockedText(review.reason)
+    const blockerKind = review.error ? "procedural_harness" : "verification"
+    const originalText = input.candidate.parts
+      .filter((part): part is MessageV2.TextPart => part.type === "text")
+      .map((part) => part.text)
+      .join("\n\n")
+      .trim()
+    const blockedText = [
+      originalText,
+      review.error
+        ? `Verification status: procedural/harness blocker. Independent review could not run: ${review.reason ?? "unknown reviewer error"}`
+        : `Verification status: verification blocker. ${reviewBlockedText(review.reason)}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n")
     const blocked = await ExecutionRuntime.finalizeBlocked({
       sessionID: input.sessionID,
       digest: input.candidate.digest,
@@ -586,7 +886,7 @@ export namespace SessionPrompt {
           }),
           text: blockedText,
           synthetic: true,
-          metadata: { ...original?.metadata, reviewGate: "blocked" },
+          metadata: { ...original?.metadata, reviewGate: "blocked", blockerKind },
         },
       ],
       execution: input.execution,
@@ -601,10 +901,20 @@ export namespace SessionPrompt {
     prepareTurnContext,
     shouldLoadTools,
     shouldResolveTools,
+    insertReminders,
     isSyntheticContinuation,
     isFinishedResponse,
     reviewRetryText,
     reviewBlockedText,
+    checkpointTools,
+    checkpointDelta,
+    checkpointFinalParts,
+    buildDeterministicFinalResponse,
+    normalizeCheckpointForOpenTaskflow,
+    parseCheckpointJson,
+    parseCheckpointJsonCandidates,
+    isCheckpointContinuation,
+    resolveCompletion,
     projectCompletion,
     projectAndAckCompletion,
     recordModelResolutionError,
@@ -875,9 +1185,11 @@ export namespace SessionPrompt {
     let executionContext: import("@/core/execution/runtime").ExecutionRuntime.Context | undefined
     let finishExecutionInvocation: ((state: "completed" | "failed" | "cancelled" | "unknown") => boolean) | undefined
     let invocationExitState: "completed" | "failed" | "cancelled" | "unknown" = "unknown"
+    let waitingForInput = false
 
     using _ = defer(() => {
-      finishExecutionInvocation?.(owner.signal.aborted ? "cancelled" : invocationExitState)
+      if (!waitingForInput || owner.signal.aborted)
+        finishExecutionInvocation?.(owner.signal.aborted ? "cancelled" : invocationExitState)
       releaseExecutionLease?.()
       finish(sessionID, owner)
     })
@@ -886,6 +1198,8 @@ export namespace SessionPrompt {
     let activeModel: Provider.Model | undefined
     let activeVariant: string | undefined
     let fallbackActive = false
+    let finalResponseOnly: { reasons: string[] } | undefined
+    let finalizationAttempt = 0
     const session = await Session.get(sessionID)
     while (true) {
       const { ExecutionRuntime: RecoveryRuntime } = await import("@/core/execution/runtime")
@@ -937,14 +1251,21 @@ export namespace SessionPrompt {
         finishExecutionInvocation = (state) => ExecutionRuntime.finishInvocation(executionContext!, state)
       } else if (executionContext.invocationID !== lastUser.id) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
-        ExecutionRuntime.finishInvocation(executionContext, "completed")
         if (lastUserMessage && isSyntheticContinuation(lastUserMessage)) {
           executionContext = await ExecutionRuntime.bindContinuation({
             sessionID,
             invocationID: lastUser.id,
             execution: executionContext,
           })
+        } else if (ExecutionRuntime.view(executionContext.executionID)?.phase === "waiting_input") {
+          ExecutionRuntime.finishInvocation(executionContext, "completed")
+          executionContext = await ExecutionRuntime.bindContinuation({
+            sessionID,
+            invocationID: lastUser.id,
+            execution: executionContext,
+          })
         } else {
+          ExecutionRuntime.cancelExecution(executionContext)
           releaseExecutionLease?.()
           releaseExecutionLease = undefined
           executionContext = await ExecutionRuntime.resolveInvocation({
@@ -959,6 +1280,18 @@ export namespace SessionPrompt {
       }
       {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (
+          lastUserMessage &&
+          !isSyntheticContinuation(lastUserMessage) &&
+          !ExecutionRuntime.objective(executionContext.executionID)
+        ) {
+          const objective = lastUserMessage.parts
+            .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+            .map((part) => part.text)
+            .join("\n")
+            .trim()
+          if (objective) ExecutionRuntime.recordObjective(executionContext.executionID, lastUser.id, objective)
+        }
         if (!trackExecution(sessionID, owner, executionContext)) {
           if (executionContext.rootSessionID === sessionID) ExecutionRuntime.cancelExecution(executionContext)
           else ExecutionRuntime.cancelInvocation(executionContext)
@@ -967,6 +1300,8 @@ export namespace SessionPrompt {
         releaseExecutionLease ??= ExecutionRuntime.holdLease(executionContext)
         abort = AbortSignal.any([owner.signal, ExecutionRuntime.leaseSignal(executionContext)])
       }
+      const { TaskFlow } = await import("@/integrations/tool/taskflow")
+      await TaskFlow.restore(sessionID, executionContext.executionID)
       if (!session.parentID) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         const pendingCompletion = ExecutionRuntime.completion(executionContext.executionID)
@@ -992,11 +1327,59 @@ export namespace SessionPrompt {
       }
 
       step++
-      if (step === 1)
+      if (step === 1) {
         ensureTitle({
           session,
           history: msgs,
         })
+        if (executionContext) {
+          const { ExecutionRuntime } = await import("@/core/execution/runtime")
+          if (!ExecutionRuntime.getExecutionContract(executionContext.executionID)) {
+            const userPromptText =
+              msgs
+                .findLast((message) => message.info.id === lastUser.id)
+                ?.parts.filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+                .map((part) => part.text)
+                .join("\n") ?? ""
+            const cfg = await Config.get()
+            if (cfg.experimental?.execution_classification) {
+              const { ExecutionClassifier } = await import("@/core/routing/execution-classifier")
+              let classifierModel: any = undefined
+              const baseModel = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID).catch(
+                () => undefined,
+              )
+              if (baseModel) {
+                classifierModel = await Provider.getLanguage(baseModel).catch(() => undefined)
+              }
+              const classification = await ExecutionClassifier.classify({
+                sessionID,
+                execution: executionContext,
+                invocationID: executionContext.invocationID,
+                prompt: userPromptText,
+                agentMode: lastUser.agent,
+                model: classifierModel,
+                modelInfo: baseModel,
+                signal: abort,
+              })
+              ExecutionRuntime.setExecutionContract(executionContext.executionID, classification.contract, {
+                classifierFallback: classification.fallback,
+              })
+            } else {
+              const { ExecutionContract } = await import("@/core/routing/execution-contract")
+              const scope =
+                lastUser.agent === "plan" || lastUser.agent === "explore"
+                  ? "focused"
+                  : lastUser.agent === "reviewer"
+                    ? "direct"
+                    : "coordinated"
+              ExecutionRuntime.setExecutionContract(
+                executionContext.executionID,
+                ExecutionContract.fallback("default_runtime_policy", { scope }),
+              )
+            }
+          }
+        }
+      }
 
       const routingPrompt = msgs
         .findLast((message) => message.info.id === lastUser.id)
@@ -1169,6 +1552,7 @@ export namespace SessionPrompt {
       let model: Provider.Model
       try {
         model =
+          (fallbackActive ? activeModel : undefined) ??
           (activeModel?.providerID === activeRoute.providerID && activeModel.id === activeRoute.modelID
             ? activeModel
             : undefined) ??
@@ -1291,6 +1675,7 @@ export namespace SessionPrompt {
           args: taskArgs,
           context: taskCtx,
           mutating: taskTool.mutating,
+          effects: taskTool.effects,
           execute: (args, context) => taskTool.execute(args, context),
         }).catch((error) => {
           executionError = error
@@ -1390,12 +1775,42 @@ export namespace SessionPrompt {
       // normal processing
       const agent = await Agent.get(lastUser.agent)
       const fastProfile = SessionExecutionProfile.get(sessionID) === "companion-fast"
-      const maxSteps = agent.steps ?? (fastProfile ? 18 : Infinity)
-      const isLastStep = step >= maxSteps
+      const { ExecutionRuntime: RuntimeForPolicy } = await import("@/core/execution/runtime")
+      const currentPolicy = executionContext
+        ? RuntimeForPolicy.getExecutionPolicy(executionContext.executionID)
+        : undefined
+      const maxSteps = agent.steps ?? Infinity
+      const isLastStep = !finalResponseOnly && step >= maxSteps
+      // Taskflow reminders must not instruct a call the provider would reject:
+      // last step (tools disabled), expert episode (read-only toolset), or a
+      // policy without taskflow (answer-only turn).
+      const routeStateEarly = executionContext ? RouteRuntime.view(executionContext.executionID)?.route : undefined
+      const expertEpisodeEarly = routeStateEarly?.stage === "expert" ? routeStateEarly.activeEpisodeID : undefined
+      const taskflowAvailable =
+        !isLastStep &&
+        expertEpisodeEarly === undefined &&
+        (currentPolicy ? currentPolicy.budget.allowTaskflow === true : true) &&
+        !(currentPolicy?.allowedTools && !currentPolicy.allowedTools.includes("taskflow"))
+      const currentEvidence = executionContext
+        ? RouteRuntime.getExecutionEvidence(executionContext.executionID)
+        : undefined
+      const eventCheckpoint =
+        isCheckpointContinuation(msgs.find((message) => message.info.id === lastUser.id)) &&
+        !RouteRuntime.checkpointHandled(executionContext.executionID, lastUser.id)
+      const checkpointRequired =
+        !finalResponseOnly &&
+        (eventCheckpoint ||
+          (executionContext !== undefined
+            ? RuntimeForPolicy.isCheckpointRequired(executionContext.executionID)
+            : currentPolicy !== undefined &&
+              currentPolicy.budget.maxToolCalls > 0 &&
+              (currentEvidence?.toolCalls ?? 0) >= Math.ceil(currentPolicy.budget.maxToolCalls * 0.8)))
       msgs = insertReminders({
         messages: msgs,
         agent,
         step,
+        taskflowAvailable,
+        checkpointRequired,
       })
 
       const currentModel = model
@@ -1438,30 +1853,39 @@ export namespace SessionPrompt {
       )
       const loadedMcpNames = new Set<string>()
 
-      const resolvedTools = shouldResolveTools(isLastStep)
-        ? await resolveTools({
-            agent,
-            session,
-            model,
-            tools: lastUser.tools,
-            processor,
-            bypassAgentCheck,
-            hasPriorToolActivity,
-            loadedMcpNames,
-            prompt: (lastUserMsg?.parts ?? [])
-              .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
-              .map((part) => part.text)
-              .join("\n"),
-            execution: executionContext,
-          })
-        : {}
+      const resolvedTools =
+        !finalResponseOnly && shouldResolveTools(isLastStep)
+          ? await resolveTools({
+              agent,
+              session,
+              model,
+              tools: lastUser.tools,
+              processor,
+              bypassAgentCheck,
+              hasPriorToolActivity,
+              loadedMcpNames,
+              prompt: (lastUserMsg?.parts ?? [])
+                .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+                .map((part) => part.text)
+                .join("\n"),
+              execution: executionContext,
+              checkpointRequired,
+            })
+          : {}
       const routeState = RouteRuntime.view(executionContext.executionID)?.route
       const expertEpisodeID = routeState?.stage === "expert" ? routeState.activeEpisodeID : undefined
-      const tools = expertEpisodeID
+      let tools = expertEpisodeID
         ? Object.fromEntries(Object.entries(resolvedTools).filter(([name]) => ["read", "grep", "find"].includes(name)))
         : resolvedTools
+      if (checkpointRequired) {
+        tools = checkpointTools(tools)
+      }
 
-      if (step === 1 && AgentEval.executionPolicy(sessionID).allowAuxiliarySummaries) {
+      if (
+        step === 1 &&
+        currentPolicy?.budget.allowSummary !== false &&
+        AgentEval.executionPolicy(sessionID).allowAuxiliarySummaries
+      ) {
         SessionSummary.summarize({
           sessionID: sessionID,
           messageID: lastUser.id,
@@ -1509,17 +1933,60 @@ export namespace SessionPrompt {
       }
 
       // Run environment, custom rules, memory recalls and skill auto-injection in parallel
+      const allowMemoryRecall = currentPolicy?.budget.allowMemoryRecall !== false
       const [environment, custom, memoryContext, coreMemoryContext, autoSkillContext] = await Promise.all([
         SystemPrompt.environment(userText, loadedMcpNames),
         SystemPrompt.custom(),
-        userText ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
-        userText
+        userText && allowMemoryRecall ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
+        userText && allowMemoryRecall
           ? recallCoreMemories(userText, 3, { skipRerank: fastProfile, routeModel: lastUser?.model, sessionID })
           : Promise.resolve(""),
         userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
       ])
 
       const system = [...environment, ...custom]
+      const allowance = RouteRuntime.allowance(executionContext.executionID)
+      const previousCheckpoint = RouteRuntime.checkpoints(executionContext.executionID).at(-1)
+      system.push(
+        `<execution_state>\n${JSON.stringify({
+          executionID: executionContext.executionID,
+          lastCheckpoint: previousCheckpoint?.sequence ?? 0,
+          allowance,
+          model: `${currentModel.providerID}/${currentModel.id}`,
+          plan: HarnessState.getSteps(sessionID).slice(0, 30),
+          checkpointRequired,
+        })}\nCounts above are harness observations. Task completion requires evidence; plan status alone is not verification.\n</execution_state>`,
+      )
+      if (previousCheckpoint && !checkpointRequired) {
+        system.push(`Previous checkpoint handoff:\n${JSON.stringify(previousCheckpoint.payload).slice(0, 24_000)}`)
+      }
+      if (checkpointRequired) {
+        const rootObjective = RouteRuntime.objective(executionContext.executionID)?.objective
+        const invalidResponses = RouteRuntime.checkpointFailures(executionContext.executionID)
+        if (invalidResponses)
+          system.push(
+            `Invalid checkpoint response (${invalidResponses}/${ExecutionCheckpoint.MAX_INVALID_RESPONSES}). Return JSON matching the execution_checkpoint schema.`,
+          )
+        const rawDelta = checkpointDelta(
+          await Session.messages({ sessionID, excludePatches: false }),
+          previousCheckpoint?.createdAt ?? 0,
+        )
+        system.push(
+          [
+            "<checkpoint_context>",
+            "Root user objective (immutable):",
+            rootObjective || userText || "(unavailable)",
+            previousCheckpoint ? `Previous checkpoint (#${previousCheckpoint.sequence}):` : "No previous checkpoint.",
+            previousCheckpoint ? JSON.stringify(previousCheckpoint.payload) : "",
+            "Since previous checkpoint:",
+            rawDelta || "(no recorded delta)",
+            "Evaluate durable evidence and current work segment. Do not redefine root objective.",
+            "</checkpoint_context>",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        )
+      }
       if (tools.model_control)
         system.push(
           "For conversation model or thinking-level changes, use model_control (list then request), never repository searches or configuration edits. You can recommend a better model for difficult work using the same tool. Explain the reason in the user's language. A proposal is not a completed switch. Respect rejected requests; only claim a switch after the runtime confirms it. Current dispatch: " +
@@ -1530,6 +1997,21 @@ export namespace SessionPrompt {
             (activeVariant ?? "default") +
             ").",
         )
+      if (finalResponseOnly) {
+        system.push(
+          [
+            "This is a final-response-only turn. No tools are available and no additional work may be attempted.",
+            "Return a normal user-facing final response, not checkpoint JSON.",
+            "Clearly summarize what was completed, what was verified, what remains, and any technical, verification, or procedural harness blockers.",
+            `Finalization constraints: ${finalResponseOnly.reasons.join("; ")}`,
+            finalizationAttempt > 0
+              ? "⚠️ Previous finalization attempt returned no text. You MUST return a user-facing final text summary now."
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        )
+      }
       const routeDecision = RouteRuntime.routeProposalHistory(executionContext.executionID)
         .filter((proposal) => proposal.invocationID === executionContext.invocationID)
         .at(-1)
@@ -1539,21 +2021,65 @@ export namespace SessionPrompt {
         )
       if (expertEpisodeID) {
         system.push(
-          "You are in a bounded read-only expert episode. Analyze or review only; do not claim to mutate files, run commands, or finish the user's root task. Return a concise evidence-based handoff for the base model. Do not include hidden chain-of-thought.",
+          "You are in a bounded read-only expert episode. Analyze or review only; do not claim to mutate files, run commands, or finish the user's root task. Only read, grep, and find tools are available — do NOT call taskflow, bash, edit, write, or any other tool. Return a concise evidence-based handoff for the base model. Do not include hidden chain-of-thought.",
         )
       }
       if (memoryContext) system.push(memoryContext)
       if (coreMemoryContext) system.push(`<core_memory>\n${coreMemoryContext}\n</core_memory>`)
       if (autoSkillContext) system.push(autoSkillContext)
+      if (Object.keys(tools).length === 0 && !isLastStep) {
+        // No tool schemas were advertised (casual turn, child model_control skip,
+        // or an empty allowlist intersection). Tell the model explicitly so it does
+        // not hallucinate tool calls the provider would reject as unavailable.
+        system.push("Tools are disabled for this turn. Respond with text only. Do NOT attempt any tool calls.")
+      }
       const turnContext = prepareTurnContext(system, await MessageV2.toModelMessage(sessionMessages), isLastStep)
 
       const requiresFinalGate = !session.parentID
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
-      await ExecutionRuntime.admitStep({
-        sessionID,
-        stepID: processor.message.id,
-        execution: executionContext,
-      })
+      try {
+        if (!finalResponseOnly)
+          await ExecutionRuntime.admitStep({
+            sessionID,
+            stepID: processor.message.id,
+            execution: executionContext,
+          })
+      } catch (error) {
+        if (!(error instanceof ExecutionRuntime.BudgetExceededError)) throw error
+        if (error.reason === "checkpoint_required") {
+          // Reserved slice is exhausted; next turn enters checkpoint mode.
+          continue
+        }
+        if (error.reason === "step_limit" && executionContext) {
+          const extensions = ExecutionRuntime.allowance(executionContext.executionID).extensions
+          if (extensions < ExecutionCheckpoint.MAX_EXTENSIONS) {
+            ExecutionRuntime.requestCheckpoint(executionContext.executionID)
+            continue
+          }
+          finalResponseOnly = { reasons: ["Execution step limit reached."] }
+          continue
+        }
+        const failure = ExecutionRuntime.classifyTerminalFailure(error, abort.aborted)
+        const completion = ExecutionRuntime.finalizeOutcome({
+          sessionID,
+          messageID: processor.message.id,
+          execution: executionContext,
+          failure,
+          parts: [
+            {
+              id: Identifier.ascending("part"),
+              messageID: processor.message.id,
+              sessionID,
+              type: "text",
+              text: failure.reasonMessage,
+              synthetic: true,
+              time: { start: Date.now(), end: Date.now() },
+            },
+          ],
+        })
+        await projectAndAckCompletion(completion)
+        break
+      }
       const result = await processor.process(
         {
           user: activeVariant === lastUser.variant ? lastUser : { ...lastUser, variant: activeVariant },
@@ -1565,13 +2091,148 @@ export namespace SessionPrompt {
           tools,
           model: currentModel,
           execution: executionContext,
+          finalizationOnly: Boolean(finalResponseOnly),
         },
-        { deferText: requiresFinalGate },
+        // Checkpoint JSON must stay buffered in every session type. Child sessions
+        // otherwise persist text directly while parser only reads deferred parts.
+        {
+          deferText: requiresFinalGate || checkpointRequired,
+          captureCheckpointReasoning: checkpointRequired,
+        },
       )
-      // Update fallback model if it was set during processing
+      // These results are transport/control outcomes, not checkpoint JSON. They
+      // must be handled before every early continuation in checkpoint mode.
       if (result.fallbackModel) {
         activeModel = result.fallbackModel
         fallbackActive = true
+      }
+      if (result.status === "stop" && !finalResponseOnly) {
+        if (requiresFinalGate && processor.message.error) {
+          const failure = ExecutionRuntime.classifyTerminalFailure(
+            result.terminalError ?? processor.message.error,
+            abort.aborted,
+          )
+          const completion = ExecutionRuntime.finalizeOutcome({
+            sessionID,
+            messageID: processor.message.id,
+            execution: executionContext,
+            failure,
+          })
+          await projectAndAckCompletion(completion)
+        }
+        break
+      }
+      if (result.status === "compact") {
+        if (checkpointRequired) RouteRuntime.requestCheckpoint(executionContext.executionID)
+        await SessionCompaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+        continue
+      }
+      if (checkpointRequired) {
+        const candidateTexts = [
+          (result.deferredTextParts ?? [])
+            .map((part) => part.text)
+            .join("\n")
+            .trim(),
+          ...(result.checkpointReasoningCandidates ?? []),
+        ].filter(Boolean)
+
+        let parsedCheckpoint: ExecutionCheckpoint.Result | undefined
+        for (const candidateText of candidateTexts) {
+          for (const checkpointInput of parseCheckpointJsonCandidates(candidateText)) {
+            const normalized = ExecutionCheckpoint.normalizeCandidate(checkpointInput)
+            const candidate = ExecutionCheckpoint.Result.safeParse(normalized)
+            if (candidate.success) {
+              parsedCheckpoint = candidate.data
+              break
+            }
+          }
+          if (parsedCheckpoint) break
+        }
+
+        if (!parsedCheckpoint) {
+          const terminalFinish = result.terminalFinish ?? processor.message.finish
+          if (terminalFinish !== "tool-calls") {
+            const failures = RouteRuntime.recordCheckpointFailure(executionContext.executionID)
+            if (failures >= ExecutionCheckpoint.MAX_INVALID_RESPONSES) {
+              const rootObjective = RouteRuntime.objective(executionContext.executionID)?.objective
+              parsedCheckpoint = ExecutionCheckpoint.conservativeContinue(rootObjective)
+            }
+          }
+          if (!parsedCheckpoint) {
+            // Invalid JSON is not a finished assistant answer and does not replace
+            // the root/event message. Persist the retry count, not synthetic turns.
+            await Session.updateMessage({ ...processor.message, finish: undefined })
+            continue
+          }
+        }
+        const checkpointRuntime = {
+          executionID: executionContext.executionID,
+          allowance: RouteRuntime.allowance(executionContext.executionID),
+          model: `${processor.message.providerID}/${processor.message.modelID}`,
+          reason: eventCheckpoint
+            ? "final_gate"
+            : (RouteRuntime.checkpointReason(executionContext.executionID) ?? "requested"),
+        }
+        const effectiveCheckpoint = RouteRuntime.reconcileCheckpoint(executionContext.executionID, parsedCheckpoint)
+        const applied = RouteRuntime.applyCheckpoint(
+          executionContext.executionID,
+          processor.message.id,
+          effectiveCheckpoint,
+          RouteRuntime.getExecutionEvidence(executionContext.executionID),
+          {
+            triggerMessageID: lastUser.id,
+            telemetry: checkpointRuntime,
+          },
+        )
+        await Session.updatePart({
+          id: Identifier.ascending("part"),
+          messageID: processor.message.id,
+          sessionID,
+          type: "checkpoint",
+          runtime: checkpointRuntime,
+          sequence: applied.sequence,
+          decision: effectiveCheckpoint.decision,
+          requestedCalls: effectiveCheckpoint.requestedCalls,
+          grantedCalls: applied.grantedCalls,
+          objectiveAssessment: effectiveCheckpoint.objectiveAssessment,
+          progressSummary: effectiveCheckpoint.progressSummary,
+          discoveries: effectiveCheckpoint.discoveries,
+          completedWork: effectiveCheckpoint.completedWork,
+          remainingWork: effectiveCheckpoint.remainingWork,
+          failures: effectiveCheckpoint.failures,
+          blockers: effectiveCheckpoint.blockers,
+          routeAssessment: effectiveCheckpoint.routeAssessment,
+          nextActions: effectiveCheckpoint.nextActions,
+        })
+        if (effectiveCheckpoint.decision === "continue" && applied.grantedCalls) continue
+        if (effectiveCheckpoint.decision === "continue" && applied.extensionLimitReached) {
+          finalResponseOnly = { reasons: ["Execution extension limit reached."] }
+          continue
+        }
+        if (effectiveCheckpoint.decision === "blocked") {
+          const constraints = RouteRuntime.finalizationConstraints(executionContext.executionID)
+          const reconciliation = effectiveCheckpoint.blockers.filter((blocker) =>
+            blocker.includes("durable taskflow contains stale unresolved state"),
+          )
+          if (constraints.length || reconciliation.length) {
+            finalResponseOnly = { reasons: [...constraints, ...reconciliation] }
+            continue
+          }
+          await RouteRuntime.waitForInput({
+            sessionID,
+            execution: executionContext,
+            reason: effectiveCheckpoint.blockers.join("; ") || effectiveCheckpoint.progressSummary,
+          })
+          waitingForInput = true
+          break
+        }
+        if (effectiveCheckpoint.decision === "finish") {
+          result.deferredTextParts = checkpointFinalParts(result.deferredTextParts, {
+            sessionID,
+            messageID: processor.message.id,
+            finalResponse: effectiveCheckpoint.finalResponse!,
+          })
+        }
       }
       const routeDecisionMadeThisStep = RouteRuntime.routeProposalHistory(executionContext.executionID).some(
         (proposal) => proposal.stepID === processor.message.id && proposal.state === "rejected",
@@ -1589,10 +2250,14 @@ export namespace SessionPrompt {
         await Session.updateMessage(processor.message)
         continue
       }
+      const hasFinalizationText =
+        Boolean(finalResponseOnly) &&
+        (result.deferredTextParts ?? []).some((part) => part.type === "text" && part.text.trim().length > 0)
       const terminalCandidate =
         result.status === "continue" &&
-        processor.message.finish &&
-        !["tool-calls", "unknown"].includes(processor.message.finish)
+        (hasFinalizationText ||
+          ((result.terminalFinish ?? processor.message.finish) &&
+            !["tool-calls", "unknown"].includes(result.terminalFinish ?? processor.message.finish!)))
       if (terminalCandidate && expertEpisodeID && routeState) {
         const expertText = (result.deferredTextParts ?? []).map((part) => part.text).join("\n")
         const returned = await returnExpertHandoff({
@@ -1613,46 +2278,111 @@ export namespace SessionPrompt {
       if (requiresFinalGate && terminalCandidate) {
         const editedFiles = await reviewFiles(sessionID)
         const { evaluateReviewDecision } = await import("@/integrations/tool/review-gate")
-        const reviewDecision = (await evaluateReviewDecision(sessionID)).decision
-        const candidate = await ExecutionRuntime.stageCompletion({
+        const reviewDecision = (await evaluateReviewDecision(sessionID, executionContext.executionID)).decision
+        let candidate
+        try {
+          candidate = await ExecutionRuntime.stageCompletion({
+            sessionID,
+            messageID: processor.message.id,
+            finish: finalResponseOnly ? "stop" : (result.terminalFinish ?? processor.message.finish!),
+            parts: result.deferredTextParts ?? [],
+            editedFiles,
+            requiresReview: reviewDecision.requirement === "required",
+            reviewDecision,
+            execution: executionContext,
+          })
+        } catch (error) {
+          if (error instanceof ExecutionRuntime.BudgetExceededError && error.reason === "active_blocker") {
+            if (finalResponseOnly) {
+              const reason = `Execution stopped by runtime constraints: ${finalResponseOnly.reasons.join("; ")}`
+              const modelParts = (result.deferredTextParts ?? []).filter(
+                (part) => part.type === "text" && part.text.trim().length > 0,
+              )
+              const parts = modelParts.length
+                ? modelParts
+                : [
+                    {
+                      id: Identifier.ascending("part"),
+                      messageID: processor.message.id,
+                      sessionID,
+                      type: "text" as const,
+                      text: [
+                        "The execution reached its work boundary before a model-generated final report was available.",
+                        `Completed work and verification remain recorded in the transcript. ${reason}`,
+                      ].join("\n\n"),
+                      synthetic: true,
+                      time: { start: Date.now(), end: Date.now() },
+                      metadata: { blockerKind: "procedural_harness" },
+                    },
+                  ]
+              const failure = ExecutionRuntime.classifyTerminalFailure(
+                new ExecutionRuntime.BudgetExceededError("step_limit", executionContext.executionID, reason),
+              )
+              const completion = ExecutionRuntime.finalizeOutcome({
+                sessionID,
+                messageID: processor.message.id,
+                execution: executionContext,
+                failure: { ...failure, reasonMessage: reason },
+                parts,
+              })
+              await projectAndAckCompletion(completion)
+              break
+            }
+            processor.message.finish = undefined
+            await Session.updateMessage(processor.message)
+            RouteRuntime.requestCheckpoint(executionContext.executionID)
+            continue
+          }
+          throw error
+        }
+        const outcome = await resolveCompletion({
           sessionID,
-          messageID: processor.message.id,
-          finish: processor.message.finish!,
-          parts: result.deferredTextParts ?? [],
-          editedFiles,
-          requiresReview: reviewDecision.requirement === "required",
-          reviewDecision,
+          lastUser,
           execution: executionContext,
+          candidate,
+          abort,
+          allowRetry: !isLastStep && !finalResponseOnly,
         })
-        const outcome = await resolveCompletion({ sessionID, lastUser, execution: executionContext, candidate, abort })
         if (outcome === "retry") {
           continue
         }
         break
       }
-      if (result.status === "stop") {
-        if (requiresFinalGate && processor.message.error) {
-          const failure = ExecutionRuntime.classifyTerminalFailure(
-            result.terminalError ?? processor.message.error,
-            abort.aborted,
-          )
-          const completion = ExecutionRuntime.finalizeOutcome({
-            sessionID,
-            messageID: processor.message.id,
-            execution: executionContext,
-            failure,
-          })
-          await projectAndAckCompletion(completion)
+      if (finalResponseOnly) {
+        if (!hasFinalizationText && finalizationAttempt === 0) {
+          finalizationAttempt++
+          await Session.removeMessage({ sessionID, messageID: processor.message.id }).catch(() => {})
+          continue
         }
-        break
-      }
-      if (result.status === "compact") {
-        await SessionCompaction.create({
+        const reason = `Execution stopped by runtime constraints: ${finalResponseOnly.reasons.join("; ")}`
+        const fallbackText = buildDeterministicFinalResponse({
           sessionID,
-          agent: lastUser.agent,
-          model: lastUser.model,
-          auto: true,
+          executionID: executionContext.executionID,
+          reasons: finalResponseOnly.reasons,
         })
+        const failure = ExecutionRuntime.classifyTerminalFailure(
+          new ExecutionRuntime.BudgetExceededError("step_limit", executionContext.executionID, reason),
+        )
+        const part: MessageV2.TextPart = {
+          id: Identifier.ascending("part"),
+          messageID: processor.message.id,
+          sessionID,
+          type: "text",
+          text: fallbackText,
+          synthetic: true,
+          time: { start: Date.now(), end: Date.now() },
+          metadata: { blockerKind: "procedural_harness" },
+        }
+        await Session.updatePart(part)
+        const completion = ExecutionRuntime.finalizeOutcome({
+          sessionID,
+          messageID: processor.message.id,
+          execution: executionContext,
+          failure: { ...failure, reasonMessage: reason },
+          parts: [part],
+        })
+        await projectAndAckCompletion(completion)
+        break
       }
       continue
     }
@@ -1699,6 +2429,7 @@ export namespace SessionPrompt {
     loadedMcpNames: Set<string>
     prompt: string
     execution?: import("@/core/execution/runtime").ExecutionRuntime.Context
+    checkpointRequired?: boolean
   }) {
     using _ = log.time("resolveTools")
     const explicitTools = Object.values(input.tools ?? {}).some((enabled) => enabled === true)
@@ -1710,13 +2441,27 @@ export namespace SessionPrompt {
       hasPriorToolActivity: input.hasPriorToolActivity,
     })
     const tools: Record<string, AITool> = {}
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    const allowedTools = input.execution
+      ? ExecutionRuntime.getExecutionPolicy(input.execution.executionID)?.allowedTools
+      : undefined
+    const requestedTools = allowedTools
+      ? new Set([...allowedTools, ...(allowedTools.length > 0 ? ["model_control"] : [])])
+      : loadAll
+        ? undefined
+        : new Set(["model_control"])
 
     const context = (args: any, options: ToolCallOptions): Tool.Context => ({
       sessionID: input.session.id,
       abort: options.abortSignal!,
       messageID: input.processor.message.id,
       callID: options.toolCallId,
-      extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, execution: input.execution },
+      extra: {
+        model: input.model,
+        bypassAgentCheck: input.bypassAgentCheck,
+        execution: input.execution,
+        checkpointRequired: input.checkpointRequired,
+      },
       agent: input.agent.name,
       metadata: async (val: { title?: string; metadata?: any }) => {
         const match = input.processor.partFromToolCall(options.toolCallId)
@@ -1749,11 +2494,7 @@ export namespace SessionPrompt {
     const tool = await getTool()
     const jsonSchema = await getJsonSchema()
 
-    for (const item of await ToolRegistry.tools(
-      input.model.providerID,
-      input.agent,
-      loadAll ? undefined : new Set(["model_control"]),
-    )) {
+    for (const item of await ToolRegistry.tools(input.model.providerID, input.agent, requestedTools)) {
       if (item.id === "model_control" && input.session.parentID) continue
       const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
       tools[item.id] = tool({
@@ -1767,6 +2508,7 @@ export namespace SessionPrompt {
             args,
             context: ctx,
             mutating: item.mutating,
+            effects: item.effects,
             execute: (nextArgs, nextContext) => item.execute(nextArgs, nextContext),
           })
         },
@@ -1779,7 +2521,7 @@ export namespace SessionPrompt {
       })
     }
 
-    if (!loadAll) return tools
+    if (!loadAll || allowedTools) return tools
     // Timeout MCP tools loading to prevent hanging when MCP servers are slow/unreachable
     const mcpAbort = new AbortController()
     const mcpTimer = setTimeout(() => {
@@ -2222,7 +2964,7 @@ export namespace SessionPrompt {
               // An extra space is added here. Otherwise the 'Use' gets appended
               // to user's last word; making a combined word
               text:
-                " Use the above message and context to generate a prompt and call the task tool with subagent: " +
+                " Use the above message and context to generate a prompt and call the agent tool with action='spawn', subagent_type: " +
                 part.name +
                 hint,
             },
@@ -2266,7 +3008,13 @@ export namespace SessionPrompt {
     }
   }
 
-  export function insertReminders(input: { messages: MessageV2.WithParts[]; agent: Agent.Info; step: number }) {
+  export function insertReminders(input: {
+    messages: MessageV2.WithParts[]
+    agent: Agent.Info
+    step: number
+    taskflowAvailable?: boolean
+    checkpointRequired?: boolean
+  }) {
     const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
     if (!userMessage) return input.messages
 
@@ -2301,6 +3049,21 @@ export namespace SessionPrompt {
 
     let aggregatedReminders: string[] = []
 
+    if (input.checkpointRequired) {
+      aggregatedReminders.push(
+        [
+          "<execution_checkpoint>",
+          "Execution checkpoint required. Re-evaluate the root user objective, progress, failures, remaining work, and route.",
+          "Decide whether to continue, finish, or replan. Avoid repeated tool calls and stop when evidence is sufficient.",
+          "If continuing, keep the next work slice focused and update the durable taskflow plan when scope changes.",
+          'Respond with one raw JSON object only using decision="continue"|"finish"|"blocked", requestedCalls (required for continue; positive integer; harness clamps to 50), finalResponse (required for finish; user-facing answer), objectiveAssessment, progressSummary, discoveries, completedWork, remainingWork, failures, blockers, routeAssessment, planChanged, routeChanged, estimatedRemainingCalls, and nextActions.',
+          "Use [] for empty list fields, false for unchanged booleans, and 0 for estimatedRemainingCalls when finished. Do not call tools, use markdown fences, or emit a second object.",
+          "Do not expose hidden chain-of-thought.",
+          "</execution_checkpoint>",
+        ].join("\n"),
+      )
+    }
+
     if (!["reviewer", "checker", "explore", "plan"].includes(input.agent.name)) {
       const toolCallIDs = new Set<string>()
       for (const message of input.messages) {
@@ -2310,10 +3073,16 @@ export namespace SessionPrompt {
           toolCallIDs.add(part.id || `${message.info.id}:${index}`)
         }
       }
-      const progress = HarnessState.consumeTaskflowReminder({
-        sessionID,
-        toolCallCount: toolCallIDs.size,
-      })
+      // Skip when taskflow is not in this turn's toolset (expert episode, last
+      // step, permission deny): instructing a call the provider would reject as
+      // unavailable produces an `invalid` repair loop instead of progress.
+      const progress =
+        input.taskflowAvailable === false
+          ? undefined
+          : HarnessState.consumeTaskflowReminder({
+              sessionID,
+              toolCallCount: toolCallIDs.size,
+            })
       if (progress) {
         const completed = progress.steps.filter((step) => step.status === "completed").length
         const visibleSteps = progress.steps.slice(0, 20)
@@ -2345,7 +3114,7 @@ export namespace SessionPrompt {
 
       // Plan→Build barrier: require an active taskflow plan before writing code
       const hasActivePlan = HarnessState.hasActivePlan(sessionID)
-      if (!hasActivePlan && input.step <= 2 && !hasSyntheticText("plan_barrier")) {
+      if (!hasActivePlan && input.step <= 2 && !hasSyntheticText("plan_barrier") && input.taskflowAvailable !== false) {
         aggregatedReminders.push(
           [
             "<plan_barrier>",
@@ -2364,6 +3133,7 @@ export namespace SessionPrompt {
       input.step > 2 &&
       !hasTaskflowCall &&
       !hasSyntheticText("chain_reminder") &&
+      input.taskflowAvailable !== false &&
       !["explore", "reviewer", "checker"].includes(input.agent.name)
     ) {
       aggregatedReminders.push(
@@ -2390,24 +3160,25 @@ export namespace SessionPrompt {
 
     // ── Dynamic edit-count reminders (harness enforcement) ──────────────────
     if (!["reviewer", "checker", "plan", "explore"].includes(input.agent.name)) {
-      const editCount = HarnessState.getEditedFileCount(sessionID)
-      const hasCritical = HarnessState.hasCriticalEdit(sessionID)
+      const editReminder = HarnessState.consumeEditReminder(sessionID)
 
-      if (!hasSyntheticText("edit_reminder")) {
-        if (hasCritical) {
+      if (editReminder) {
+        if (editReminder.critical) {
           aggregatedReminders.push(
             [
               '<edit_reminder type="critical">',
+              `<cause_id>edit_reminder:${sessionID}:${editReminder.revision}</cause_id>`,
               "⚠️ System Reminder: A CRITICAL file (auth/config/database/migration/env/secret) was modified.",
               "You MUST verify correctness before continuing. Run the project typecheck and test commands now.",
               "</edit_reminder>",
             ].join("\n"),
           )
-        } else if (editCount >= 1) {
+        } else {
           aggregatedReminders.push(
             [
-              `<edit_reminder type="high" count="${editCount}">`,
-              `⚠️ System Reminder: ${editCount}+ file edit(s) detected in this session.`,
+              `<edit_reminder type="high" count="${editReminder.count}">`,
+              `<cause_id>edit_reminder:${sessionID}:${editReminder.revision}</cause_id>`,
+              `⚠️ System Reminder: ${editReminder.count}+ file edit(s) detected in this session.`,
               "The review gate is ACTIVE: taskflow action='clear' is code-level blocked until the",
               "reviewer sub-agent returns PASS on your changes. Before calling clear:",
               "1. Run the project test and typecheck commands and capture raw output",

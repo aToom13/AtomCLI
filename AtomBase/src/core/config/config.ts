@@ -1392,6 +1392,12 @@ export namespace Config {
             .optional()
             .describe("Tools that should only be available to primary agents."),
           continue_loop_on_deny: z.boolean().optional().describe("Continue the agent loop when a tool call is denied"),
+          execution_classification: z
+            .boolean()
+            .optional()
+            .describe(
+              "Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled",
+            ),
           smart_model_routing: z
             .boolean()
             .optional()

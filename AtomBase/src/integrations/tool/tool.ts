@@ -6,6 +6,14 @@ import { Truncate } from "./truncation"
 import { ToolNotAppliedError } from "./runtime-error"
 
 export namespace Tool {
+  export type ToolEffects = {
+    workspace: "none" | "read" | "write"
+    external: "none" | "read" | "write"
+    reversible: boolean
+    destructive: boolean
+    privileged: boolean
+  }
+
   interface Metadata {
     [key: string]: any
   }
@@ -30,6 +38,7 @@ export namespace Tool {
       description: string
       parameters: Parameters
       mutating?: boolean | ((args: z.output<Parameters>) => boolean)
+      effects?: ToolEffects | ((args: z.output<Parameters>) => ToolEffects)
       execute(
         args: z.input<Parameters>,
         ctx: Context,
@@ -47,6 +56,7 @@ export namespace Tool {
     description: string
     parameters: Parameters
     mutating?: boolean | ((args: z.output<Parameters>) => boolean)
+    effects?: ToolEffects | ((args: z.output<Parameters>) => ToolEffects)
     execute(
       args: z.output<Parameters>,
       ctx: Context,

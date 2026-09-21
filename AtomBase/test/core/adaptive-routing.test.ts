@@ -58,6 +58,31 @@ describe("adaptive routing policy", () => {
     ).toBe("none")
   })
 
+  test("uses execution scope to bound adaptive escalation", () => {
+    const profile = TaskProfile.infer("Review concurrency and persistence risks", "coding")
+    const evidence = {
+      profile,
+      stage: "review" as const,
+      highRiskEvidence: ["diff:auth"],
+      concurrencyEvidence: ["test:race"],
+      higherThinkingVariant: "high",
+      thinkingEligible: true,
+      expertRoute: "p/expert",
+      expertEligible: true,
+    }
+
+    expect(AdaptivePolicy.evaluate({ ...evidence, scope: "direct" }).kind).toBe("none")
+    expect(AdaptivePolicy.evaluate({ ...evidence, scope: "focused" }).kind).toBe("thinking")
+    expect(AdaptivePolicy.evaluate({ ...evidence, scope: "coordinated" }).kind).toBe("thinking")
+    expect(
+      AdaptivePolicy.evaluate({
+        ...evidence,
+        scope: "direct",
+        explicitlyRequestedRoute: true,
+      }).kind,
+    ).toBe("expert")
+  })
+
   test("turns an explicit user model request into an ask-mode proposal even without mutation evidence", () => {
     const profile = TaskProfile.infer("AtomCLI Auto modeline geçiş isteği gönder")
     expect(

@@ -1049,6 +1049,10 @@ export type Config = {
      */
     continue_loop_on_deny?: boolean
     /**
+     * Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled
+     */
+    execution_classification?: boolean
+    /**
      * Enable automatic model selection per task category in orchestrate tool
      */
     smart_model_routing?: boolean
@@ -1705,6 +1709,37 @@ export type ReasoningPart = {
   }
 }
 
+export type CheckpointPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "checkpoint"
+  sequence: number
+  decision: "continue" | "finish" | "blocked"
+  requestedCalls?: number
+  grantedCalls?: number
+  objectiveAssessment: string
+  progressSummary: string
+  discoveries: Array<string>
+  completedWork: Array<string>
+  remainingWork: Array<string>
+  failures: Array<string>
+  blockers: Array<string>
+  routeAssessment: string
+  nextActions: Array<string>
+  runtime?: {
+    executionID: string
+    reason: string
+    model: string
+    allowance: {
+      limit: number
+      used: number
+      extensions: number
+      toolCalls: number
+    }
+  }
+}
+
 export type FilePartSourceText = {
   value: string
   start: number
@@ -1920,6 +1955,7 @@ export type Part =
       command?: string
     }
   | ReasoningPart
+  | CheckpointPart
   | FilePart
   | ToolPart
   | StepStartPart
@@ -2170,6 +2206,7 @@ export type Event =
   | EventExecutionRouteProposal
   | EventExecutionRouteChanged
   | EventExecutionUpdated
+  | EventExecutionCheckpoint
   | EventFileEdited
   | EventFileChanged
   | EventFileCreated
@@ -2458,6 +2495,16 @@ export type EventExecutionUpdated = {
   properties: {
     sessionID: string
     executionID: string
+  }
+}
+
+export type EventExecutionCheckpoint = {
+  type: "execution.checkpoint"
+  properties: {
+    sessionID: string
+    executionID: string
+    sequence: number
+    checkpoint: unknown
   }
 }
 
@@ -3407,6 +3454,10 @@ export type ConfigUpdateData = {
        * Continue the agent loop when a tool call is denied
        */
       continue_loop_on_deny?: boolean
+      /**
+       * Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled
+       */
+      execution_classification?: boolean
       /**
        * Enable automatic model selection per task category in orchestrate tool
        */
@@ -5156,6 +5207,7 @@ export type SessionExecutionsListResponses = {
         | "tools"
         | "waiting_permission"
         | "waiting_children"
+        | "waiting_input"
         | "awaiting_route_approval"
         | "reviewing"
         | "finalizing"
@@ -5347,6 +5399,7 @@ export type SessionExecutionsSnapshotResponses = {
         | "tools"
         | "waiting_permission"
         | "waiting_children"
+        | "waiting_input"
         | "awaiting_route_approval"
         | "reviewing"
         | "finalizing"
@@ -5489,6 +5542,8 @@ export type SessionExecutionsSnapshotResponses = {
         | "draining"
         | "unknown"
         | "resumable"
+        | "reopened"
+        | "blocked"
         | "resolved"
         | "failed"
         | "cancelled"
@@ -5644,6 +5699,7 @@ export type SessionExecutionsGetResponses = {
       | "tools"
       | "waiting_permission"
       | "waiting_children"
+      | "waiting_input"
       | "awaiting_route_approval"
       | "reviewing"
       | "finalizing"
@@ -5820,6 +5876,7 @@ export type SessionExecutionsCancelResponses = {
         | "tools"
         | "waiting_permission"
         | "waiting_children"
+        | "waiting_input"
         | "awaiting_route_approval"
         | "reviewing"
         | "finalizing"
@@ -6001,6 +6058,7 @@ export type SessionExecutionsReconcileResponses = {
         | "tools"
         | "waiting_permission"
         | "waiting_children"
+        | "waiting_input"
         | "awaiting_route_approval"
         | "reviewing"
         | "finalizing"

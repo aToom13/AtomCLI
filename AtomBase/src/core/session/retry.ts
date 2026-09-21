@@ -112,6 +112,13 @@ export namespace SessionRetry {
       }
     }
 
+    // Provider streams can end with no content and no error frame. The runtime
+    // raises it as a plain error, so match on the marker instead of the error
+    // class — otherwise a transient transport drop terminates the execution.
+    if (typeof error.data?.message === "string" && error.data.message.includes(MessageV2.EMPTY_OUTPUT_MESSAGE)) {
+      return "Empty model response"
+    }
+
     if (typeof error.data?.message === "string") {
       try {
         const json = JSON.parse(error.data.message)

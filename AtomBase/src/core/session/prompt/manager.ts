@@ -50,6 +50,10 @@ export interface BuildOptions {
   modelId: string
   /** Agent type (default: "agent") */
   agent?: AgentType
+  /** Execution scope (direct | focused | coordinated) */
+  scope?: "direct" | "focused" | "coordinated"
+  /** Risk level (low | elevated | critical) */
+  risk?: "low" | "elevated" | "critical"
   /** Custom sections to append */
   customSections?: string[]
   /** Include learning memory summary */
@@ -188,7 +192,26 @@ const CORE_PROMPTS_BY_AGENT: Record<string, string[]> = {
   ],
 }
 
-function getCorePromptsForAgent(agent: string): string[] {
+function getCorePromptsForAgent(
+  agent: string,
+  scope?: "direct" | "focused" | "coordinated",
+  risk?: "low" | "elevated" | "critical",
+): string[] {
+  if (scope === "direct") {
+    const list = [PROMPT_IDENTITY, PROMPT_COMMUNICATION, PROMPT_GIT_SAFETY]
+    if (risk === "critical") list.push(PROMPT_CODE_EDITING)
+    return list
+  }
+  if (scope === "focused") {
+    return [
+      PROMPT_THINKING_PATTERN,
+      PROMPT_IDENTITY,
+      PROMPT_COMMUNICATION,
+      PROMPT_CODE_EDITING,
+      PROMPT_GIT_SAFETY,
+      PROMPT_EXTENSIONS,
+    ]
+  }
   return CORE_PROMPTS_BY_AGENT[agent] ?? CORE_PROMPTS
 }
 
@@ -199,8 +222,8 @@ function getCorePromptsForAgent(agent: string): string[] {
  * Uses .txt file imports + inline emphasis sections.
  */
 function build(options: BuildOptions): string {
-  const { modelId, agent = "agent", customSections = [] } = options
-  const coreSections = getCorePromptsForAgent(agent)
+  const { modelId, agent = "agent", scope, risk, customSections = [] } = options
+  const coreSections = getCorePromptsForAgent(agent, scope, risk)
 
   const sections: string[] = [
     // Core prompts conditionally selected for agent
@@ -224,6 +247,8 @@ async function buildAsync(options: BuildOptions): Promise<string> {
   const {
     modelId,
     agent = "agent",
+    scope,
+    risk,
     customSections = [],
     includeLearningMemory = true,
     includeUserProfile = true,
@@ -235,7 +260,7 @@ async function buildAsync(options: BuildOptions): Promise<string> {
     dynamicCtx = await generateDynamicContext({ includeLearningMemory, includeUserProfile })
   }
 
-  const coreSections = getCorePromptsForAgent(agent)
+  const coreSections = getCorePromptsForAgent(agent, scope, risk)
 
   const sections: string[] = [
     // Core prompts conditionally selected for agent

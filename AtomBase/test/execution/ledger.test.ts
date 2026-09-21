@@ -1833,6 +1833,181 @@ describe("ExecutionLedger", () => {
     ledger.close()
   })
 
+  test("reopens a completed plan item with durable evidence", async () => {
+    await using tmp = await tmpdir()
+    const ledger = ExecutionLedger.open(path.join(tmp.path, "ledger.sqlite"))
+    ledger.start({ id: "exec-reopen", projectID: "project", rootSessionID: "session", fence: 1 })
+    ledger.claimOwner({ executionID: "exec-reopen", ownerID: "owner", leaseMs: 100, now: 100 })
+    ledger.bind({
+      executionID: "exec-reopen",
+      rootSessionID: "session",
+      invocationID: "invocation",
+      sessionID: "session",
+      ownerID: "owner",
+      fence: 1,
+      now: 101,
+    })
+    const plan = ledger.createPlan({
+      executionID: "exec-reopen",
+      invocationID: "invocation",
+      ownerID: "owner",
+      fence: 1,
+      items: [{ id: "verify", resourceScope: "plan-item:verify" }],
+      now: 102,
+    })
+    if (!plan.created) throw new Error("expected plan")
+    let item = plan.blockers[0]
+    item = ledger.transitionBlocker({
+      id: item.id,
+      executionID: "exec-reopen",
+      ownerID: "owner",
+      fence: 1,
+      expectedVersion: item.version,
+      state: "running",
+      now: 103,
+    }).blocker!
+    item = ledger.transitionBlocker({
+      id: item.id,
+      executionID: "exec-reopen",
+      ownerID: "owner",
+      fence: 1,
+      expectedVersion: item.version,
+      state: "resolved",
+      evidence: "first verification passed",
+      resolutionCode: "verified",
+      now: 104,
+    }).blocker!
+    const reopened = ledger.transitionBlocker({
+      id: item.id,
+      executionID: "exec-reopen",
+      ownerID: "owner",
+      fence: 1,
+      expectedVersion: item.version,
+      state: "reopened",
+      evidence: "new evidence invalidated verification",
+      resolutionCode: "new_evidence",
+      now: 105,
+    })
+    expect(reopened).toMatchObject({ transitioned: true, blocker: { state: "reopened" } })
+    ledger.close()
+  })
+
+  test("reserves slice allowance atomically and persists bounded checkpoint grants", async () => {
+    await using tmp = await tmpdir()
+    const filepath = path.join(tmp.path, "ledger.sqlite")
+    const ledger = ExecutionLedger.open(filepath)
+    ledger.start({ id: "exec-slices", projectID: "project", rootSessionID: "session", fence: 1 })
+    ledger.savePolicyState({
+      executionID: "exec-slices",
+      contract: {},
+      policy: {},
+      evidence: {},
+      promotionReasons: [],
+      classifierFallback: false,
+      extensionCount: 0,
+      sliceLimit: 2,
+      sliceStartCalls: 0,
+    })
+    const reservations = await Promise.all(
+      Array.from({ length: 5 }, async () => ledger.reserveToolAllowance("exec-slices")),
+    )
+    expect(reservations.filter(Boolean)).toHaveLength(2)
+    expect(ledger.sliceCheckpointRequired("exec-slices")).toBe(true)
+    ledger.releaseToolAllowance("exec-slices")
+    expect(ledger.reserveToolAllowance("exec-slices")).toBe(true)
+    expect(ledger.reserveToolAllowance("exec-slices")).toBe(false)
+    expect(ledger.requestCheckpoint("exec-slices")).toBe(true)
+    expect(ledger.sliceCheckpointRequired("exec-slices")).toBe(true)
+    for (let sequence = 1; sequence <= 4; sequence++) {
+      const applied = ledger.applyCheckpoint({
+        executionID: "exec-slices",
+        checkpointID: `checkpoint-${sequence}`,
+        decision: "continue",
+        requestedCalls: 80,
+        payload: { progress: sequence },
+        now: 100 + sequence,
+      })
+      expect(applied).toEqual({ sequence, grantedCalls: 50, idempotent: false })
+      expect(
+        ledger.applyCheckpoint({
+          executionID: "exec-slices",
+          checkpointID: `checkpoint-${sequence}`,
+          decision: "continue",
+          requestedCalls: 80,
+          payload: { progress: sequence },
+          now: 200 + sequence,
+        }),
+      ).toEqual({ sequence, grantedCalls: 50, idempotent: true })
+    }
+    expect(ledger.getPolicyState("exec-slices")).toMatchObject({ extensionCount: 4, sliceLimit: 50 })
+    ledger.close()
+    const reopened = ExecutionLedger.open(filepath)
+    expect(reopened.checkpoints("exec-slices")).toHaveLength(4)
+    expect(reopened.getPolicyState("exec-slices")).toMatchObject({ extensionCount: 4, sliceLimit: 50 })
+    reopened.close()
+  })
+
+  test("keeps blocked checkpoints active while waiting for new user input", async () => {
+    await using tmp = await tmpdir()
+    const ledger = ExecutionLedger.open(path.join(tmp.path, "ledger.sqlite"))
+    ledger.start({ id: "exec-wait", projectID: "project", rootSessionID: "session", fence: 1 })
+    ledger.claimOwner({ executionID: "exec-wait", ownerID: "owner", leaseMs: 1_000, now: 100 })
+    ledger.bind({
+      executionID: "exec-wait",
+      rootSessionID: "session",
+      invocationID: "first",
+      sessionID: "session",
+      ownerID: "owner",
+      fence: 1,
+      now: 101,
+    })
+    expect(
+      ledger.recordObjective({
+        executionID: "exec-wait",
+        messageID: "first",
+        objective: "Complete the durable execution task",
+        now: 101,
+      }),
+    ).toBe(true)
+    expect(
+      ledger.recordObjective({
+        executionID: "exec-wait",
+        messageID: "first",
+        objective: "Complete the durable execution task",
+        now: 101,
+      }),
+    ).toBe(false)
+    expect(
+      ledger.waitForInput({
+        executionID: "exec-wait",
+        invocationID: "first",
+        ownerID: "owner",
+        fence: 1,
+        reason: "credentials required",
+        now: 102,
+      }),
+    ).toEqual({ waiting: true })
+    expect(ledger.view("exec-wait")).toMatchObject({ lifecycle: "active", phase: "waiting_input" })
+    ledger.bind({
+      executionID: "exec-wait",
+      rootSessionID: "session",
+      invocationID: "second",
+      sessionID: "session",
+      ownerID: "owner",
+      fence: 1,
+      replacesInvocationID: "first",
+      now: 103,
+    })
+    expect(ledger.view("exec-wait")).toMatchObject({ lifecycle: "active", phase: "model" })
+    expect(ledger.invocation("first")).toMatchObject({ state: "completed", finishedAt: 103 })
+    expect(ledger.invocation("second")).toMatchObject({ state: "running" })
+    expect(ledger.objective("exec-wait")).toMatchObject({
+      message_id: "first",
+      objective: "Complete the durable execution task",
+    })
+    ledger.close()
+  })
+
   test("creates a versioned plan atomically and requires exact authority to waive an item", async () => {
     await using tmp = await tmpdir()
     const ledger = ExecutionLedger.open(path.join(tmp.path, "ledger.sqlite"))
@@ -1862,16 +2037,16 @@ describe("ExecutionLedger", () => {
     if (!plan.created) throw new Error("expected plan creation")
     expect(plan.blockers).toHaveLength(2)
     expect(ledger.planRevision("exec-plan")).toBe(1)
-    expect(
-      ledger.createPlan({
-        executionID: "exec-plan",
-        invocationID: "plan-invocation",
-        ownerID: "owner",
-        fence: 1,
-        items: [{ id: "replacement", resourceScope: "plan-item:replacement" }],
-        now: 103,
-      }),
-    ).toEqual({ created: false, reason: "active_plan" })
+    const revision = ledger.createPlan({
+      executionID: "exec-plan",
+      invocationID: "plan-invocation",
+      ownerID: "owner",
+      fence: 1,
+      items: [{ id: "replacement", resourceScope: "plan-item:replacement" }],
+      now: 103,
+    })
+    expect(revision).toMatchObject({ created: true, idempotent: false, revision: 2 })
+    expect(ledger.planRevision("exec-plan")).toBe(2)
 
     const item = plan.blockers[0]
     expect(
@@ -1921,7 +2096,7 @@ describe("ExecutionLedger", () => {
     const blockerEvents = ledger
       .events({ sessionID: "session" })
       .items.filter((event) => event.type === "execution.blocker.updated")
-    expect(blockerEvents).toHaveLength(2)
+    expect(blockerEvents).toHaveLength(3)
     expect(blockerEvents.at(-1)?.properties).toMatchObject({ blocker: { id: item.id, state: "waived" } })
     ledger.close()
   })

@@ -1,3 +1,4 @@
+import "./preload"
 import { describe, expect, test } from "bun:test"
 import { HarnessState } from "@/core/session/harness-state"
 import { MessageV2 } from "@/core/session/message-v2"
@@ -88,6 +89,32 @@ const mockAgentInfo: Agent.Info = {
 }
 
 describe("HarnessState Unit Tests", () => {
+  test("independent review steps require runtime reviewer evidence", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-runtime-owned-review"
+        try {
+          HarnessState.startPlan(sessionID, [
+            { id: "review", name: "Independent verification", type: "independent_review" },
+          ])
+          HarnessState.transitionStep(sessionID, "review", "running")
+
+          expect(() => HarnessState.assertRuntimeOwnedStepCompletion(sessionID, "review")).toThrow(
+            "requires reviewer invocation evidence",
+          )
+
+          HarnessState.setReviewerSession(sessionID, "reviewer-session")
+          HarnessState.recordReviewVerdict(sessionID, { status: "pass", reason: "PASS" })
+          expect(() => HarnessState.assertRuntimeOwnedStepCompletion(sessionID, "review")).not.toThrow()
+        } finally {
+          HarnessState.reset(sessionID)
+        }
+      },
+    })
+  })
+
   test("tracks edited file count and ignores duplicates", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -139,6 +166,25 @@ describe("HarnessState Unit Tests", () => {
           expect(HarnessState.hasCriticalEdit(testSession)).toBe(false)
           HarnessState.addEditedFile(testSession, file)
           expect(HarnessState.hasCriticalEdit(testSession)).toBe(true)
+        }
+      },
+    })
+  })
+
+  test("does not classify fixture, test, generated, or example paths as critical", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        for (const file of [
+          "fixtures/sample-project/backend/auth_service.ts",
+          "test/database.test.ts",
+          "generated/config.ts",
+          "examples/secret-store.ts",
+        ]) {
+          const sessionID = `non-production-${file}`
+          HarnessState.addEditedFile(sessionID, file)
+          expect(HarnessState.hasCriticalEdit(sessionID)).toBe(false)
         }
       },
     })
@@ -380,6 +426,47 @@ describe("SessionPrompt Synthetic Reminders", () => {
           step: 2,
         })
         expect(updatedTwice.length).toBe(2)
+      },
+    })
+  })
+
+  test("does not repeat an edit reminder without a new mutation", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-revision-dedup"
+        HarnessState.addEditedFile(sessionID, "src/auth/runtime.ts")
+
+        const first = SessionPrompt.insertReminders({
+          messages: [createUserMessage(sessionID, "First")],
+          agent: mockAgentInfo,
+          step: 1,
+        })
+        expect(first.at(-1)?.parts.some((part) => part.type === "text" && part.text.includes("edit_reminder"))).toBe(
+          true,
+        )
+
+        const unchanged = SessionPrompt.insertReminders({
+          messages: [createUserMessage(sessionID, "Next", "msg-user-next")],
+          agent: mockAgentInfo,
+          step: 2,
+        })
+        expect(
+          unchanged.some((message) =>
+            message.parts.some((part) => part.type === "text" && part.text.includes("edit_reminder")),
+          ),
+        ).toBe(false)
+
+        HarnessState.addEditedFile(sessionID, "src/auth/runtime.ts")
+        const changed = SessionPrompt.insertReminders({
+          messages: [createUserMessage(sessionID, "After mutation", "msg-user-mutated")],
+          agent: mockAgentInfo,
+          step: 3,
+        })
+        expect(changed.at(-1)?.parts.some((part) => part.type === "text" && part.text.includes("edit_reminder"))).toBe(
+          true,
+        )
       },
     })
   })

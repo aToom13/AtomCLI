@@ -1,6 +1,6 @@
 import "../preload"
 import { describe, test, expect } from "bun:test"
-import { TaskFlowTool } from "@/integrations/tool/taskflow"
+import { TaskFlow, TaskFlowTool } from "@/integrations/tool/taskflow"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { HarnessState } from "@/core/session/harness-state"
@@ -23,6 +23,50 @@ describe("TaskFlowTool", () => {
     const instance = await TaskFlowTool.init({})
     expect(instance.description).toContain("Unified progress tracking tool")
     expect(instance.parameters).toBeDefined()
+    expect(
+      instance.parameters.safeParse({
+        action: "start",
+        plan: Array.from({ length: 101 }, (_, index) => ({ name: `Step ${index}` })),
+      }).success,
+    ).toBe(false)
+    expect(
+      instance.parameters.safeParse({
+        action: "start",
+        plan: [{ name: "Step", todos: Array.from({ length: 101 }, (_, index) => `Todo ${index}`) }],
+      }).success,
+    ).toBe(false)
+  })
+
+  test("restores explicit independent review step types", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        const ctx = { ...dummyCtx, sessionID: session.id, messageID, extra: { execution } }
+        const tool = await TaskFlowTool.init({})
+        await tool.execute(
+          {
+            action: "start",
+            plan: [{ id: "audit", name: "Audit result", type: "independent_review" }],
+          },
+          ctx,
+        )
+
+        HarnessState.reset(session.id)
+        await TaskFlow.restore(session.id, execution.executionID)
+
+        expect(HarnessState.getSteps(session.id)[0]).toMatchObject({
+          id: "audit",
+          name: "Audit result",
+          type: "independent_review",
+        })
+        ExecutionRuntime.cancelExecution(execution)
+      },
+    })
   })
 
   test("action='start' initializes plan with steps and todos", async () => {
@@ -121,6 +165,100 @@ describe("TaskFlowTool", () => {
     })
   })
 
+  test("honors start status, serializes dependent calls and restores a durable plan after memory loss", async () => {
+    await using tmp = await tmpdir({
+      config: { review: { enabled: false, max_attempts: 1, reviewer_count: 1, policy: "off", high_risk_patterns: [] } },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        const ctx = { ...dummyCtx, sessionID: session.id, messageID, extra: { execution } }
+        const tool = await TaskFlowTool.init({})
+        await tool.execute(
+          {
+            action: "start",
+            plan: [
+              { id: "inspect", name: "Inspect source", status: "running" },
+              { id: "verify", name: "Verify observations" },
+            ],
+          },
+          ctx,
+        )
+        expect(HarnessState.getRunningStep(session.id)).toBe("inspect")
+        const [completed, next] = await Promise.all([
+          tool.execute({ action: "complete", step_id: "inspect", output: "Source read" }, ctx),
+          tool.execute({ action: "update", step_id: "verify", status: "running" }, ctx),
+        ])
+        expect(completed.metadata.status).toBe("completed")
+        expect(next.metadata.status).toBe("running")
+        HarnessState.reset(session.id)
+        await TaskFlow.restore(session.id, execution.executionID)
+        expect(HarnessState.getSteps(session.id).map((step) => [step.id, step.status])).toEqual([
+          ["inspect", "completed"],
+          ["verify", "running"],
+        ])
+        expect(HarnessState.getPlanBinding(session.id)?.executionID).toBe(execution.executionID)
+        await tool.execute({ action: "complete", step_id: "verify" }, ctx)
+        await tool.execute({ action: "clear" }, ctx)
+        HarnessState.reset(session.id)
+        await TaskFlow.restore(session.id, execution.executionID)
+        expect(HarnessState.getSteps(session.id)).toHaveLength(0)
+        ExecutionRuntime.cancelExecution(execution)
+      },
+    })
+  })
+
+  test("activates the first pending durable step before work begins", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        const ctx = { ...dummyCtx, sessionID: session.id, messageID, extra: { execution } }
+        const tool = await TaskFlowTool.init({})
+        await tool.execute(
+          {
+            action: "start",
+            plan: [
+              { id: "inspect", name: "Inspect source" },
+              { id: "verify", name: "Verify result" },
+            ],
+          },
+          ctx,
+        )
+
+        await TaskFlow.activateForWork(ctx)
+
+        expect(HarnessState.getSteps(session.id).map((step) => step.status)).toEqual(["running", "pending"])
+        const binding = HarnessState.getPlanBinding(session.id)!
+        expect(ExecutionRuntime.blocker(binding.items.inspect.blockerID)?.state).toBe("running")
+        expect(ExecutionRuntime.blocker(binding.items.verify.blockerID)?.state).toBe("pending")
+        ExecutionRuntime.cancelExecution(execution)
+      },
+    })
+  })
+
+  test("rejects unsupported initial statuses instead of silently claiming completion", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const tool = await TaskFlowTool.init({})
+        const result = await tool.execute(
+          { action: "start", plan: [{ id: "report", name: "Unwritten report", status: "completed" }] },
+          dummyCtx,
+        )
+        expect(result.metadata.status).toBe("error")
+        expect(HarnessState.getSteps(dummyCtx.sessionID)).toHaveLength(0)
+      },
+    })
+  })
+
   test("backs plan items with durable blockers and clear cannot erase unresolved work", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -178,6 +316,30 @@ describe("TaskFlowTool", () => {
         await instance.execute({ action: "update", step_id: "implement", status: "running" }, ctx)
         await instance.execute({ action: "complete", step_id: "implement" }, ctx)
         expect(ExecutionRuntime.blocker(binding.items.implement.blockerID)?.state).toBe("resolved")
+        await instance.execute(
+          { action: "update", step_id: "implement", status: "reopened", output: "new regression evidence" },
+          ctx,
+        )
+        expect(ExecutionRuntime.blocker(binding.items.implement.blockerID)?.state).toBe("reopened")
+        await instance.execute({ action: "update", step_id: "implement", status: "running" }, ctx)
+        await instance.execute({ action: "complete", step_id: "implement" }, ctx)
+
+        await instance.execute(
+          { action: "revise", plan: [{ id: "audit", name: "Audit newly discovered behavior" }] },
+          ctx,
+        )
+        const revised = HarnessState.getPlanBinding(session.id)!
+        expect(revised.revision).toBe(2)
+        expect(revised.items.implement).toBeDefined()
+        expect(revised.items.audit).toBeDefined()
+        await instance.execute({ action: "update", step_id: "audit", status: "running" }, ctx)
+        await instance.execute(
+          { action: "update", step_id: "audit", status: "blocked", output: "waiting for fixture" },
+          ctx,
+        )
+        expect(ExecutionRuntime.blocker(revised.items.audit.blockerID)?.state).toBe("blocked")
+        await instance.execute({ action: "update", step_id: "audit", status: "running" }, ctx)
+        await instance.execute({ action: "complete", step_id: "audit" }, ctx)
 
         await instance.execute({ action: "update", step_id: "verify", status: "running" }, ctx)
         await instance.execute({ action: "fail", step_id: "verify", output: "fixture failure" }, ctx)
@@ -197,6 +359,153 @@ describe("TaskFlowTool", () => {
         expect(permissions).toContain("taskflow.force")
         expect(HarnessState.getSteps(session.id)).toHaveLength(0)
         ExecutionRuntime.cancelExecution(execution)
+      },
+    })
+  })
+
+  test("continues and clears a taskflow after execution ownership changes", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const firstMessageID = Identifier.ascending("message")
+        const firstExecution = await ExecutionRuntime.resolveInvocation({
+          sessionID: session.id,
+          invocationID: firstMessageID,
+        })
+        const instance = await TaskFlowTool.init({})
+        const firstCtx = {
+          ...dummyCtx,
+          sessionID: session.id,
+          messageID: firstMessageID,
+          extra: { execution: firstExecution },
+        }
+
+        await instance.execute(
+          {
+            action: "start",
+            plan: [{ id: "verify", name: "Verify the result" }],
+          },
+          firstCtx,
+        )
+        expect(HarnessState.getPlanBinding(session.id)?.executionID).toBe(firstExecution.executionID)
+
+        ExecutionRuntime.finishInvocation(firstExecution, "completed")
+        ExecutionRuntime.cancelExecution(firstExecution)
+        const secondMessageID = Identifier.ascending("message")
+        const secondExecution = await ExecutionRuntime.resolveInvocation({
+          sessionID: session.id,
+          invocationID: secondMessageID,
+        })
+        expect(secondExecution.executionID).not.toBe(firstExecution.executionID)
+        const secondCtx = {
+          ...dummyCtx,
+          sessionID: session.id,
+          messageID: secondMessageID,
+          extra: { execution: secondExecution },
+        }
+
+        const running = await instance.execute({ action: "update", step_id: "verify", status: "running" }, secondCtx)
+        expect(running.metadata.status).toBe("running")
+        expect(HarnessState.getPlanBinding(session.id)?.executionID).toBe(secondExecution.executionID)
+        expect(ExecutionRuntime.taskflowPlan(secondExecution.executionID, session.id)).toHaveLength(1)
+
+        await instance.execute({ action: "complete", step_id: "verify" }, secondCtx)
+        const cleared = await instance.execute({ action: "clear" }, secondCtx)
+        expect(cleared.metadata.status).toBe("cleared")
+        expect(HarnessState.hasActivePlan(session.id)).toBe(false)
+        ExecutionRuntime.cancelExecution(secondExecution)
+      },
+    })
+  })
+
+  test("does not detach a taskflow while its execution is still running", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        const instance = await TaskFlowTool.init({})
+        const ctx = { ...dummyCtx, sessionID: session.id, messageID, extra: { execution } }
+
+        await instance.execute({ action: "start", plan: [{ id: "work", name: "Keep working" }] }, ctx)
+        const competingCtx = {
+          ...ctx,
+          extra: { execution: { ...execution, executionID: `${execution.executionID}:competing` } },
+        }
+        const blocked = await instance.execute({ action: "update", step_id: "work", status: "running" }, competingCtx)
+
+        expect(blocked.metadata.status).toBe("error")
+        expect(blocked.output).toContain("belongs to another execution")
+        expect(HarnessState.getPlanBinding(session.id)?.executionID).toBe(execution.executionID)
+        ExecutionRuntime.finishInvocation(execution, "completed")
+        ExecutionRuntime.cancelExecution(execution)
+        HarnessState.reset(session.id)
+      },
+    })
+  })
+
+  test("detaches taskflow bindings per session", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const parentID = `ses_parent_${crypto.randomUUID()}`
+        const childID = `ses_child_${crypto.randomUUID()}`
+        const binding = {
+          executionID: "execution",
+          revision: 1,
+          items: { work: { blockerID: "blocker", version: 1, state: "pending" } },
+        }
+        HarnessState.startPlan(parentID, [{ id: "work", name: "Parent work" }], binding)
+        HarnessState.startPlan(childID, [{ id: "work", name: "Child work" }], binding)
+
+        HarnessState.detachPlanBinding(childID)
+
+        expect(HarnessState.getPlanBinding(childID)).toBeUndefined()
+        expect(HarnessState.getPlanBinding(parentID)).toEqual(binding)
+        HarnessState.reset(parentID)
+        HarnessState.reset(childID)
+      },
+    })
+  })
+
+  test("preserves a parent execution binding when checked from a subagent session", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const parent = await Session.create({})
+        const child = await Session.create({ parentID: parent.id })
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: parent.id, invocationID: messageID })
+        const instance = await TaskFlowTool.init({})
+        HarnessState.startPlan(child.id, [{ id: "work", name: "Child work" }], {
+          executionID: execution.executionID,
+          revision: 1,
+          items: { work: { blockerID: "unused", version: 1, state: "pending" } },
+        })
+        const competingCtx = {
+          ...dummyCtx,
+          sessionID: child.id,
+          messageID: Identifier.ascending("message"),
+          extra: { execution: { ...execution, executionID: `${execution.executionID}:competing` } },
+        }
+
+        const blocked = await instance.execute({ action: "update", step_id: "work", status: "running" }, competingCtx)
+
+        expect(blocked.metadata.status).toBe("error")
+        expect(blocked.output).toContain("belongs to another execution")
+        expect(HarnessState.getPlanBinding(child.id)?.executionID).toBe(execution.executionID)
+        ExecutionRuntime.finishInvocation(execution, "completed")
+        ExecutionRuntime.cancelExecution(execution)
+        HarnessState.reset(child.id)
       },
     })
   })

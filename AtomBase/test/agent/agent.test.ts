@@ -1,10 +1,11 @@
-import { test, expect, describe } from "bun:test"
+import { test, expect, describe, spyOn } from "bun:test"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "@/services/project/instance"
 import { Agent } from "@/integrations/agent/agent"
 import { PermissionNext } from "@/util/permission/next"
 import { ToolRegistry } from "@/integrations/tool/registry"
 import { Tool } from "@/integrations/tool/tool"
+import { Config } from "@/core/config/config"
 
 // Helper to evaluate permission for a tool with wildcard pattern
 function evalPerm(agent: Agent.Info | undefined, permission: string): PermissionNext.Action | undefined {
@@ -27,6 +28,22 @@ test("returns default native agents when no config", async () => {
       expect(names).toContain("compaction")
       expect(names).toContain("title")
       expect(names).toContain("summary")
+    },
+  })
+})
+
+test("propagates config load failures instead of falling back to allow defaults", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const failure = new Error("config unreadable")
+      const get = spyOn(Config, "get").mockRejectedValue(failure)
+      try {
+        await expect(Agent.list()).rejects.toBe(failure)
+      } finally {
+        get.mockRestore()
+      }
     },
   })
 })
@@ -550,13 +567,14 @@ const EXPLORE_ALLOWED_TOOLS = [
   "grep",
   "bash",
   "lsp",
+  "browser",
   "webfetch",
   "websearch",
   "skill",
   "memory",
   "taskflow",
 ]
-const EXPLORE_DENIED_TOOLS = ["edit", "write", "todowrite", "todoread", "batch", "agent", "browser", "system_health"]
+const EXPLORE_DENIED_TOOLS = ["edit", "write", "todowrite", "todoread", "batch", "agent", "system_health"]
 
 describe("explore agent tool filtering", () => {
   test("ToolRegistry.tools() returns only allowlisted tools for explore agent", async () => {

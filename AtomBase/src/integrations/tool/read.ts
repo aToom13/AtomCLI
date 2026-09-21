@@ -38,6 +38,13 @@ function validateFilePath(filePath: string): string {
 
 export const ReadTool = Tool.define("read", {
   description: DESCRIPTION,
+  effects: {
+    workspace: "read",
+    external: "none",
+    reversible: true,
+    destructive: false,
+    privileged: false,
+  },
   parameters: z.object({
     filePath: z.string().min(1).max(4096).describe("The path to the file to read"),
     offset: z.coerce.number().int().min(0).describe("The line number to start reading from (0-based)").optional(),

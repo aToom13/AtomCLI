@@ -28,6 +28,7 @@ import { RepairPlanner } from "@/core/execution/repair-planner"
 import { AgentEval } from "@/core/eval/harness"
 import { ToolRuntime } from "@/integrations/tool/runtime"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -75,10 +76,13 @@ export namespace SessionProcessor {
   export type ProcessResult = {
     status: "compact" | "stop" | "continue"
     fallbackModel?: Provider.Model
+    terminalFinish?: string
     /** Final text held back until the session-level review gate commits it. */
     deferredTextParts?: MessageV2.TextPart[]
     /** Original local error used only to classify the durable execution outcome. */
     terminalError?: unknown
+    /** Bounded private candidates captured only for structured checkpoint parsing. */
+    checkpointReasoningCandidates?: string[]
   }
   export type Result = ProcessResult
 
@@ -110,6 +114,8 @@ export namespace SessionProcessor {
           enableAmendments?: boolean
           /** Keep text private until the caller verifies a terminal response. */
           deferText?: boolean
+          /** Capture checkpoint JSON from reasoning without persisting reasoning parts. */
+          captureCheckpointReasoning?: boolean
         },
       ) {
         log.info("process")
@@ -117,8 +123,15 @@ export namespace SessionProcessor {
         let terminalError: unknown
         const config = await Config.get()
         const evalPolicy = AgentEval.executionPolicy(input.sessionID)
-        const maxRetries =
-          evalPolicy.maxRetries ?? config.experimental?.chatMaxRetries ?? SessionRetry.DEFAULT_MAX_RETRIES
+        const executionPolicy = streamInput.execution
+          ? ExecutionRuntime.getExecutionPolicy(streamInput.execution.executionID)
+          : undefined
+        const maxRetries = streamInput.finalizationOnly
+          ? 1
+          : (evalPolicy.maxRetries ??
+            executionPolicy?.budget.maxRetries ??
+            config.experimental?.chatMaxRetries ??
+            SessionRetry.DEFAULT_MAX_RETRIES)
 
         // If we have a fallback model from previous iteration, use it
         if (currentFallbackModel) {
@@ -133,9 +146,16 @@ export namespace SessionProcessor {
 
         while (true) {
           let deferredTextParts: MessageV2.TextPart[] = []
+          let terminalFinishReason: string | undefined
           let deferredTextChars = 0
           let deferredPayloadBytes = 0
+          let capturedReasoningChars = 0
+          const checkpointReasoningCandidates: string[] = []
           let verificationParams: unknown
+          // A stream that ends without text, tool calls, or errors produced
+          // nothing showable. Surface it as an error instead of silently
+          // spinning the step loop (which burns budget with zero progress).
+          let sawStreamContent = false
           try {
             let currentText: MessageV2.TextPart | undefined
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
@@ -201,9 +221,18 @@ export namespace SessionProcessor {
                   case "reasoning-delta":
                     if (value.id in reasoningMap) {
                       const part = reasoningMap[value.id]
-                      part.text += value.text
+                      const text = options?.captureCheckpointReasoning
+                        ? value.text.slice(
+                            0,
+                            Math.max(0, ExecutionCheckpoint.MAX_REASONING_CANDIDATE_CHARS - capturedReasoningChars),
+                          )
+                        : value.text
+                      part.text += text
+                      capturedReasoningChars += options?.captureCheckpointReasoning ? text.length : 0
+                      if (options?.captureCheckpointReasoning && text) sawStreamContent = true
                       if (value.providerMetadata) part.metadata = value.providerMetadata
-                      if (part.text) await Session.updatePart({ part, delta: value.text })
+                      if (part.text && !options?.captureCheckpointReasoning)
+                        await Session.updatePart({ part, delta: value.text })
                     }
                     break
 
@@ -217,7 +246,13 @@ export namespace SessionProcessor {
                         end: Date.now(),
                       }
                       if (value.providerMetadata) part.metadata = value.providerMetadata
-                      await Session.updatePart(part)
+                      if (options?.captureCheckpointReasoning) {
+                        if (
+                          part.text &&
+                          checkpointReasoningCandidates.length < ExecutionCheckpoint.MAX_REASONING_CANDIDATES
+                        )
+                          checkpointReasoningCandidates.push(part.text)
+                      } else await Session.updatePart(part)
                       delete reasoningMap[value.id]
                     }
                     break
@@ -247,6 +282,7 @@ export namespace SessionProcessor {
 
                   case "tool-call": {
                     observedCapabilities.add("tool")
+                    sawStreamContent = true
                     const match = toolcalls[value.toolCallId]
                     if (match) {
                       const toolInput = normalizeToolInput(value.input)
@@ -294,6 +330,7 @@ export namespace SessionProcessor {
                     break
                   }
                   case "tool-result": {
+                    sawStreamContent = true
                     const match = toolcalls[value.toolCallId]
                     if (match && match.state.status === "running") {
                       await Session.updatePart({
@@ -338,6 +375,7 @@ export namespace SessionProcessor {
                   }
 
                   case "tool-error": {
+                    sawStreamContent = true
                     const match = toolcalls[value.toolCallId]
                     if (match && match.state.status === "running") {
                       const applied = value.error instanceof ToolRuntime.AppliedError
@@ -414,17 +452,20 @@ export namespace SessionProcessor {
                         reasoningChars += thought.length
                       }
                     }
+                    reasoningChars += capturedReasoningChars
                     const estimatedReasoningTokens = reasoningChars > 0 ? Token.estimate("x".repeat(reasoningChars)) : 0
                     if (estimatedReasoningTokens > usage.tokens.reasoning) {
                       usage.tokens.reasoning = estimatedReasoningTokens
                     }
-                    input.assistantMessage.finish = value.finishReason
+                    const finishReason = observedCapabilities.has("tool") ? "tool-calls" : value.finishReason
+                    if (!["tool-calls", "unknown"].includes(finishReason)) terminalFinishReason = finishReason
+                    input.assistantMessage.finish = finishReason
                     input.assistantMessage.cost += usage.cost
                     input.assistantMessage.tokens = usage.tokens
-                    const terminalFinish = !["tool-calls", "unknown"].includes(value.finishReason)
+                    const terminalFinish = !["tool-calls", "unknown"].includes(finishReason)
                     await Session.updatePart({
                       id: Identifier.ascending("part"),
-                      reason: value.finishReason,
+                      reason: finishReason,
                       snapshot: await Snapshot.track(),
                       messageID: input.assistantMessage.id,
                       sessionID: input.assistantMessage.sessionID,
@@ -440,7 +481,7 @@ export namespace SessionProcessor {
                     // Tool-producing turns are not terminal candidates. Release
                     // any buffered narration immediately so normal tool UX is
                     // preserved; only terminal text crosses the review gate.
-                    if (["tool-calls", "unknown"].includes(value.finishReason)) {
+                    if (["tool-calls", "unknown"].includes(finishReason)) {
                       for (const textPart of deferredTextParts) await Session.updatePart(textPart)
                       deferredTextParts = []
                       deferredTextChars = 0
@@ -514,6 +555,7 @@ export namespace SessionProcessor {
 
                   case "text-delta":
                     if (currentText) {
+                      if (value.text) sawStreamContent = true
                       currentText.text += value.text
                       deferredTextChars += value.text.length
                       if (options?.deferText && deferredTextChars > MAX_DEFERRED_TEXT_CHARS) {
@@ -581,6 +623,18 @@ export namespace SessionProcessor {
                 }
                 if (needsCompaction) break
               }
+              if (options?.captureCheckpointReasoning) {
+                for (const part of Object.values(reasoningMap)) {
+                  const candidate = part.text.trim()
+                  if (
+                    candidate &&
+                    checkpointReasoningCandidates.length < ExecutionCheckpoint.MAX_REASONING_CANDIDATES
+                  ) {
+                    checkpointReasoningCandidates.push(candidate)
+                  }
+                }
+                reasoningMap = {}
+              }
             } catch (error) {
               if (!executionSettled) executionAttempt?.uncertain()
               throw error
@@ -590,6 +644,9 @@ export namespace SessionProcessor {
               executionSettled = true
             } else {
               executionAttempt?.uncertain()
+            }
+            if (!sawStreamContent) {
+              throw new Error(MessageV2.EMPTY_OUTPUT_MESSAGE)
             }
             if (observedCapabilities.size > 0) {
               await recordModelEvidence(
@@ -618,7 +675,7 @@ export namespace SessionProcessor {
               await recordModelEvidence(streamInput.model, [], e, streamInput.user.variant, verificationParams)
             }
             const error = await MessageV2.fromError(e, { providerID: streamInput.model.providerID })
-            const retry = SessionRetry.retryable(error)
+            const retry = e instanceof ExecutionRuntime.BudgetExceededError ? undefined : SessionRetry.retryable(error)
             if (retry !== undefined) {
               attempt++
               const exhausted = SessionRetry.exhausted(attempt, maxRetries)
@@ -818,12 +875,40 @@ export namespace SessionProcessor {
           }
 
           if (needsCompaction)
-            return { status: "compact" as const, fallbackModel: currentFallbackModel, deferredTextParts, terminalError }
+            return {
+              status: "compact" as const,
+              fallbackModel: currentFallbackModel,
+              deferredTextParts,
+              checkpointReasoningCandidates,
+              terminalError,
+              terminalFinish: terminalFinishReason,
+            }
           if (blocked)
-            return { status: "stop" as const, fallbackModel: currentFallbackModel, deferredTextParts, terminalError }
+            return {
+              status: "stop" as const,
+              fallbackModel: currentFallbackModel,
+              deferredTextParts,
+              checkpointReasoningCandidates,
+              terminalError,
+              terminalFinish: terminalFinishReason,
+            }
           if (input.assistantMessage.error)
-            return { status: "stop" as const, fallbackModel: currentFallbackModel, deferredTextParts, terminalError }
-          return { status: "continue" as const, fallbackModel: currentFallbackModel, deferredTextParts, terminalError }
+            return {
+              status: "stop" as const,
+              fallbackModel: currentFallbackModel,
+              deferredTextParts,
+              checkpointReasoningCandidates,
+              terminalError,
+              terminalFinish: terminalFinishReason,
+            }
+          return {
+            status: "continue" as const,
+            fallbackModel: currentFallbackModel,
+            deferredTextParts,
+            checkpointReasoningCandidates,
+            terminalError,
+            terminalFinish: terminalFinishReason,
+          }
         }
       },
     }

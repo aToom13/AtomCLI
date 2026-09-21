@@ -136,12 +136,13 @@ describe("session processor retry budget", () => {
       time: { created: Date.now() },
     } as MessageV2.Assistant
     const rejection = new ExecutionRuntime.BudgetExceededError("call_limit", "exec-test")
-    spies.push(spyOn(LLM, "stream").mockRejectedValue(rejection))
-    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 0 } } as any))
-    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({ maxRetries: 0 } as any))
+    const stream = spyOn(LLM, "stream").mockRejectedValue(rejection)
+    spies.push(stream)
+    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 2 } } as any))
+    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
     spies.push(
       spyOn(MessageV2, "fromError").mockResolvedValue(
-        new MessageV2.APIError({ message: rejection.message, isRetryable: false }).toObject(),
+        new MessageV2.APIError({ message: rejection.message, statusCode: 429, isRetryable: true }).toObject(),
       ),
     )
     spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
@@ -175,6 +176,7 @@ describe("session processor retry budget", () => {
     })
 
     expect(observe).not.toHaveBeenCalled()
+    expect(stream).toHaveBeenCalledTimes(1)
   })
 
   test("does not call the model again after the retry budget is exhausted", async () => {
@@ -237,6 +239,88 @@ describe("session processor retry budget", () => {
         expect(stream).toHaveBeenCalledTimes(1)
         expect(assistantMessage.time.completed).toBeNumber()
         expect(assistantMessage.error).toEqual(retryError)
+      },
+    })
+  })
+
+  test("keeps tool-producing turns non-terminal when provider reports stop", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const model = {
+      id: "tool-stop-model",
+      providerID: "test-provider",
+      limit: { context: 100_000, output: 4_000 },
+      cost: { input: 0, output: 0 },
+    } as Provider.Model
+    const assistantMessage = {
+      id: "msg_tool_stop",
+      sessionID: "ses_tool_stop",
+      parentID: "msg_user",
+      role: "assistant",
+      agent: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: model.id,
+      providerID: model.providerID,
+      time: { created: Date.now() },
+    } as MessageV2.Assistant
+    const fullStream = (async function* () {
+      yield { type: "tool-input-start", id: "call-1", toolName: "read" }
+      yield { type: "tool-call", toolCallId: "call-1", toolName: "read", input: { filePath: "src/index.ts" } }
+      yield {
+        type: "tool-result",
+        toolCallId: "call-1",
+        input: { filePath: "src/index.ts" },
+        output: { title: "src/index.ts", output: "contents", metadata: {} },
+      }
+      yield {
+        type: "finish-step",
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }
+      yield { type: "finish" }
+    })()
+    spies.push(spyOn(LLM, "stream").mockResolvedValue({ fullStream } as any))
+    spies.push(spyOn(Config, "get").mockResolvedValue({} as any))
+    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
+    spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
+    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+    const updatePart = spyOn(Session, "updatePart").mockImplementation((async (part: any) => part.part ?? part) as any)
+    spies.push(updatePart)
+    const updateMessage = spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any)
+    spies.push(updateMessage)
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const processor = SessionProcessor.create({
+          assistantMessage,
+          sessionID: assistantMessage.sessionID,
+          model,
+          abort: new AbortController().signal,
+        })
+        const result = await processor.process(
+          {
+            user: {} as MessageV2.User,
+            agent: {} as any,
+            abort: new AbortController().signal,
+            sessionID: assistantMessage.sessionID,
+            system: [],
+            messages: [],
+            tools: {},
+            model,
+          },
+          { enableAmendments: false, deferText: true },
+        )
+
+        expect(result.status).toBe("continue")
+        expect(assistantMessage.finish).toBe("tool-calls")
+        expect(
+          updatePart.mock.calls.some(
+            (call) => (call[0] as any).type === "step-finish" && (call[0] as any).reason === "tool-calls",
+          ),
+        ).toBe(true)
+        expect(updateMessage.mock.calls.some((call) => (call[0] as any).finish === "tool-calls")).toBe(true)
       },
     })
   })
@@ -312,6 +396,217 @@ describe("session processor retry budget", () => {
         expect(updateMessage.mock.calls.every((call) => (call[0] as any).finish === undefined)).toBe(true)
         expect(updateMessage.mock.calls.every((call) => (call[0] as any).time.completed === undefined)).toBe(true)
         expect(assistantMessage.finish).toBe("stop")
+      },
+    })
+  })
+
+  test("captures checkpoint reasoning when the provider omits reasoning-end", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const model = {
+      id: "checkpoint-reasoning-model",
+      providerID: "test-provider",
+      limit: { context: 100_000, output: 4_000 },
+      cost: { input: 0, output: 0 },
+    } as Provider.Model
+    const assistantMessage = {
+      id: "msg_checkpoint_reasoning",
+      sessionID: "ses_checkpoint_reasoning",
+      parentID: "msg_user",
+      role: "assistant",
+      agent: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: model.id,
+      providerID: model.providerID,
+      time: { created: Date.now() },
+    } as MessageV2.Assistant
+    const checkpoint = JSON.stringify({ decision: "continue", requestedCalls: 10 })
+    const fullStream = (async function* () {
+      yield { type: "reasoning-start", id: "reasoning-1" }
+      yield { type: "reasoning-delta", id: "reasoning-1", text: checkpoint }
+      yield {
+        type: "finish-step",
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }
+      yield { type: "finish" }
+    })()
+    spies.push(spyOn(LLM, "stream").mockResolvedValue({ fullStream } as any))
+    spies.push(spyOn(Config, "get").mockResolvedValue({} as any))
+    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
+    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+    spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => part.part ?? part) as any))
+    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const processor = SessionProcessor.create({
+          assistantMessage,
+          sessionID: assistantMessage.sessionID,
+          model,
+          abort: new AbortController().signal,
+        })
+        const result = await processor.process(
+          {
+            user: {} as MessageV2.User,
+            agent: {} as any,
+            abort: new AbortController().signal,
+            sessionID: assistantMessage.sessionID,
+            system: [],
+            messages: [],
+            tools: {},
+            model,
+          },
+          { enableAmendments: false, deferText: true, captureCheckpointReasoning: true },
+        )
+
+        expect(result.checkpointReasoningCandidates).toEqual([checkpoint])
+      },
+    })
+  })
+
+  test("retries an ended-but-empty stream instead of stopping immediately", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const model = {
+      id: "empty-stream-model",
+      providerID: "test-provider",
+      limit: { context: 100_000, output: 4_000 },
+      cost: { input: 0, output: 0 },
+    } as Provider.Model
+    const assistantMessage = {
+      id: "msg_empty_stream",
+      sessionID: "ses_empty_stream",
+      parentID: "msg_user",
+      role: "assistant",
+      agent: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: model.id,
+      providerID: model.providerID,
+      time: { created: Date.now() },
+    } as MessageV2.Assistant
+    // Provider closes the stream without text, tool calls, or errors.
+    const fullStream = (async function* () {
+      yield {
+        type: "finish-step",
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 },
+      }
+      yield { type: "finish" }
+    })()
+    const stream = spyOn(LLM, "stream").mockResolvedValue({ fullStream } as any)
+    spies.push(stream)
+    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 2 } } as any))
+    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({ allowModelFallback: false } as any))
+    spies.push(spyOn(SessionRetry, "sleep").mockResolvedValue(undefined))
+    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+    spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => part) as any))
+    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
+    spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const processor = SessionProcessor.create({
+          assistantMessage,
+          sessionID: assistantMessage.sessionID,
+          model,
+          abort: new AbortController().signal,
+        })
+        const result = await processor.process(
+          {
+            user: {} as MessageV2.User,
+            agent: {} as any,
+            abort: new AbortController().signal,
+            sessionID: assistantMessage.sessionID,
+            system: [],
+            messages: [],
+            tools: {},
+            model,
+          },
+          { enableAmendments: false },
+        )
+
+        // Retry transient empty streams, then stop at configured retry exhaustion.
+        expect(stream).toHaveBeenCalledTimes(3)
+        expect(result.status).toBe("stop")
+        expect(assistantMessage.error).toBeDefined()
+      },
+    })
+  })
+
+  test("limits finalization-only empty output to one repair attempt", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const model = {
+      id: "empty-finalization-model",
+      providerID: "test-provider",
+      limit: { context: 100_000, output: 4_000 },
+      cost: { input: 0, output: 0 },
+    } as Provider.Model
+    const assistantMessage = {
+      id: "msg_empty_finalization",
+      sessionID: "ses_empty_finalization",
+      parentID: "msg_user",
+      role: "assistant",
+      agent: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: model.id,
+      providerID: model.providerID,
+      time: { created: Date.now() },
+    } as MessageV2.Assistant
+    const stream = spyOn(LLM, "stream").mockImplementation(
+      async () =>
+        ({
+          fullStream: (async function* () {
+            yield {
+              type: "finish-step",
+              finishReason: "stop",
+              usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 },
+            }
+            yield { type: "finish" }
+          })(),
+        }) as any,
+    )
+    spies.push(stream)
+    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 10 } } as any))
+    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({ allowModelFallback: false } as any))
+    spies.push(spyOn(SessionRetry, "sleep").mockResolvedValue(undefined))
+    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+    spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => part) as any))
+    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
+    spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const processor = SessionProcessor.create({
+          assistantMessage,
+          sessionID: assistantMessage.sessionID,
+          model,
+          abort: new AbortController().signal,
+        })
+        const result = await processor.process(
+          {
+            user: {} as MessageV2.User,
+            agent: {} as any,
+            abort: new AbortController().signal,
+            sessionID: assistantMessage.sessionID,
+            system: [],
+            messages: [],
+            tools: {},
+            model,
+            finalizationOnly: true,
+          },
+          { enableAmendments: false, deferText: true },
+        )
+
+        expect(stream).toHaveBeenCalledTimes(2)
+        expect(result.status).toBe("stop")
       },
     })
   })

@@ -9,6 +9,23 @@ import { Tool } from "@/integrations/tool/tool"
 import z from "zod"
 
 describe("ToolRuntime", () => {
+  test("normalizes bash semantic signatures across non-semantic metadata", () => {
+    const first = ToolRuntime.semanticSignature("bash", {
+      command: "npm   run test:all",
+      workdir: "/home/atom13/Projeler/RepoMap/",
+      description: "first verification",
+      timeout: 30_000,
+    })
+    const second = ToolRuntime.semanticSignature("bash", {
+      command: " npm run test:all ",
+      workdir: "/home/atom13/Projeler/RepoMap",
+      description: "repeat verification",
+      timeout: 120_000,
+    })
+
+    expect(first).toBe(second)
+  })
+
   test("marks tool argument validation failures as not applied", async () => {
     const tool = await Tool.define("validated", {
       description: "test",
@@ -399,6 +416,133 @@ describe("ToolRuntime", () => {
     })
   })
 
+  test("records explicit tool effects only after successful execution", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const active = spyOn(ExecutionRuntime, "assertActive").mockResolvedValue(undefined)
+        const reserve = spyOn(ExecutionRuntime, "reserveToolCall").mockImplementation(() => undefined as any)
+        const evidence = spyOn(ExecutionRuntime, "recordRuntimeEvidence").mockReturnValue({} as any)
+        const register = spyOn(ExecutionRuntime, "registerWork").mockResolvedValue({
+          registered: true,
+          idempotent: false,
+          state: "prepared",
+          version: 1,
+        })
+        const begin = spyOn(ExecutionRuntime, "beginWork").mockResolvedValue({ began: true, version: 2 })
+        const finish = spyOn(ExecutionRuntime, "finishWork").mockResolvedValue({
+          finished: true,
+          idempotent: false,
+          state: "completed",
+          version: 3,
+        })
+        try {
+          await ToolRuntime.execute({
+            tool: "remote-write",
+            args: { filePath: "src/auth.ts" },
+            effects: {
+              workspace: "write",
+              external: "write",
+              reversible: false,
+              destructive: true,
+              privileged: true,
+            },
+            context: {
+              sessionID: "session-effects",
+              messageID: "message-effects",
+              callID: "call-effects",
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: {
+                execution: {
+                  executionID: "execution-effects",
+                  rootSessionID: "session-effects",
+                  invocationID: "invocation-effects",
+                  ownerID: "owner-effects",
+                  fence: 1,
+                },
+              },
+              metadata() {},
+              async ask() {},
+            },
+            execute: async () => ({ title: "done", output: "done", metadata: {} }),
+          })
+
+          expect(reserve).toHaveBeenCalledWith("execution-effects")
+          expect(evidence).toHaveBeenCalledWith("execution-effects", {
+            filesRead: [],
+            filesChanged: ["src/auth.ts"],
+            mutatingCalls: 1,
+            externalCalls: 1,
+            hasDestructiveAction: true,
+            successfulToolCalls: 1,
+          })
+
+          evidence.mockClear()
+          await ToolRuntime.execute({
+            tool: "bash",
+            args: { command: "false" },
+            mutating: false,
+            context: {
+              sessionID: "session-effects",
+              messageID: "message-effects",
+              callID: "call-semantic-failure",
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: {
+                execution: {
+                  executionID: "execution-effects",
+                  rootSessionID: "session-effects",
+                  invocationID: "invocation-effects",
+                  ownerID: "owner-effects",
+                  fence: 1,
+                },
+              },
+              metadata() {},
+              async ask() {},
+            },
+            execute: async () => ({ title: "failed", output: "command failed", metadata: { exit: 1 } }),
+          })
+          expect(evidence).toHaveBeenCalledWith(
+            "execution-effects",
+            expect.objectContaining({
+              successfulToolCalls: 0,
+              failureCount: 1,
+              recentErrorFingerprints: [expect.any(String)],
+            }),
+          )
+          expect(finish).toHaveBeenLastCalledWith(expect.objectContaining({ state: "failed" }))
+        } finally {
+          active.mockRestore()
+          reserve.mockRestore()
+          evidence.mockRestore()
+          register.mockRestore()
+          begin.mockRestore()
+          finish.mockRestore()
+        }
+      },
+    })
+  })
+
+  test("promotes security, migration, and public API edit evidence", () => {
+    expect(ToolRuntime.changeRiskEvidence("edit", { filePath: "src/auth/token.ts", newString: "authorize()" })).toEqual(
+      expect.objectContaining({ hasAuthOrSecurityEffect: true }),
+    )
+    expect(
+      ToolRuntime.changeRiskEvidence("write", {
+        filePath: "db/migrations/001_users.sql",
+        content: "ALTER TABLE users ADD COLUMN role TEXT",
+      }),
+    ).toEqual(expect.objectContaining({ hasSchemaOrMigrationEffect: true }))
+    expect(
+      ToolRuntime.changeRiskEvidence("edit", {
+        filePath: "src/server/routes/users.ts",
+        newString: 'app.get("/users", handler)',
+      }),
+    ).toEqual(expect.objectContaining({ hasPublicApiEffect: true }))
+  })
+
   test("rechecks execution ownership after around middleware immediately before the tool body", async () => {
     await using project = await tmpdir()
     await Instance.provide({
@@ -480,6 +624,7 @@ describe("ToolRuntime", () => {
           state: "unknown",
           version: 3,
         })
+        const evidence = spyOn(ExecutionRuntime, "recordRuntimeEvidence").mockReturnValue({} as any)
         let bodyCalls = 0
         try {
           await expect(
@@ -521,11 +666,16 @@ describe("ToolRuntime", () => {
           expect(bodyCalls).toBe(1)
           expect(begin).toHaveBeenCalledTimes(1)
           expect(finish).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 2, state: "unknown" }))
+          expect(evidence).toHaveBeenCalledWith(
+            "execution-double-next",
+            expect.objectContaining({ failureCount: 1, uncertainOutcome: true }),
+          )
         } finally {
           active.mockRestore()
           register.mockRestore()
           begin.mockRestore()
           finish.mockRestore()
+          evidence.mockRestore()
         }
       },
     })

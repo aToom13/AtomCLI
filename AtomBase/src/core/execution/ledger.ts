@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite"
 import z from "zod"
+import { ExecutionCheckpoint } from "./checkpoint"
 import { Log } from "@/util/util/log"
 
 const log = Log.create({ service: "execution.ledger" })
@@ -8,7 +9,6 @@ const MAX_PENDING_CONTINUATIONS = 100
 const COMPLETION_PROJECTION_PAGE_SIZE = 50
 const MAX_WORK_ITEMS_PER_EXECUTION = 10_000
 const MAX_BLOCKERS_PER_EXECUTION = 1_000
-const MAX_PLAN_ITEMS = 200
 const MAX_BLOCKER_EVIDENCE_BYTES = 16 * 1024
 const MAX_ACTIVE_EXECUTIONS_PER_SNAPSHOT = 1_000
 const TERMINAL_EXECUTIONS_PER_SNAPSHOT = 20
@@ -34,7 +34,14 @@ export namespace ExecutionLedger {
     | { admitted: true; attemptID: string; state: AttemptState; idempotent: boolean }
     | {
         admitted: false
-        reason: "not_active" | "stale_fence" | "deadline" | "step_limit" | "call_limit" | "cost_limit"
+        reason:
+          | "not_active"
+          | "stale_fence"
+          | "deadline"
+          | "step_limit"
+          | "call_limit"
+          | "checkpoint_required"
+          | "cost_limit"
       }
   type RejectionReason = Extract<Admission, { admitted: false }>["reason"]
 
@@ -142,6 +149,7 @@ export namespace ExecutionLedger {
     "tools",
     "waiting_permission",
     "waiting_children",
+    "waiting_input",
     "awaiting_route_approval",
     "reviewing",
     "finalizing",
@@ -357,6 +365,8 @@ export namespace ExecutionLedger {
       "draining",
       "unknown",
       "resumable",
+      "reopened",
+      "blocked",
       "resolved",
       "failed",
       "cancelled",
@@ -433,6 +443,8 @@ export namespace ExecutionLedger {
     | "draining"
     | "unknown"
     | "resumable"
+    | "reopened"
+    | "blocked"
     | "resolved"
     | "failed"
     | "cancelled"
@@ -689,7 +701,8 @@ export namespace ExecutionLedger {
       )
     `)
       const invocationRecoveryNow = Date.now()
-      db.query<never, [number, number]>(`
+      db.query<never, [number, number]>(
+        `
         INSERT OR IGNORE INTO execution_invocation
           (id, execution_id, session_id, kind, state, owner_id, fence, created_at, finished_at)
         SELECT b.invocation_id, b.execution_id, b.session_id, 'auxiliary',
@@ -705,7 +718,8 @@ export namespace ExecutionLedger {
             ELSE b.created_at
           END
         FROM execution_binding b JOIN execution e ON e.id = b.execution_id
-      `).run(invocationRecoveryNow, invocationRecoveryNow)
+      `,
+      ).run(invocationRecoveryNow, invocationRecoveryNow)
       db.run(
         "CREATE INDEX IF NOT EXISTS execution_invocation_execution_state ON execution_invocation(execution_id, state)",
       )
@@ -844,6 +858,85 @@ export namespace ExecutionLedger {
         db.run("ALTER TABLE execution_completion ADD COLUMN projection_lease_expires_at INTEGER")
       }
       db.run(`
+      CREATE TABLE IF NOT EXISTS execution_policy_state (
+        execution_id TEXT PRIMARY KEY REFERENCES execution(id),
+        contract_json TEXT NOT NULL,
+        policy_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        promotion_reasons_json TEXT NOT NULL,
+        classifier_fallback INTEGER NOT NULL DEFAULT 0,
+        extension_count INTEGER NOT NULL DEFAULT 0,
+        slice_limit INTEGER,
+        slice_start_calls INTEGER,
+        slice_used_calls INTEGER NOT NULL DEFAULT 0,
+        checkpoint_requested INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )
+    `)
+      db.run(`
+      CREATE TABLE IF NOT EXISTS execution_checkpoint (
+        execution_id TEXT NOT NULL REFERENCES execution(id),
+        sequence INTEGER NOT NULL,
+        checkpoint_id TEXT,
+        decision TEXT NOT NULL,
+        requested_calls INTEGER,
+        granted_calls INTEGER,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (execution_id, sequence)
+      )
+    `)
+      const checkpointColumns = new Set(
+        db
+          .query<{ name: string }, []>("PRAGMA table_info(execution_checkpoint)")
+          .all()
+          .map((column) => column.name),
+      )
+      if (!checkpointColumns.has("checkpoint_id"))
+        db.run("ALTER TABLE execution_checkpoint ADD COLUMN checkpoint_id TEXT")
+      if (!checkpointColumns.has("granted_calls"))
+        db.run("ALTER TABLE execution_checkpoint ADD COLUMN granted_calls INTEGER")
+      db.run(
+        "CREATE UNIQUE INDEX IF NOT EXISTS execution_checkpoint_identity ON execution_checkpoint(execution_id, checkpoint_id) WHERE checkpoint_id IS NOT NULL",
+      )
+      db.run(`
+      CREATE TABLE IF NOT EXISTS execution_objective (
+        execution_id TEXT PRIMARY KEY REFERENCES execution(id),
+        message_id TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `)
+      db.run(
+        "CREATE INDEX IF NOT EXISTS execution_checkpoint_created ON execution_checkpoint(execution_id, created_at)",
+      )
+      db.run(`CREATE TABLE IF NOT EXISTS execution_taskflow_closed (
+        execution_id TEXT NOT NULL REFERENCES execution(id),
+        session_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        PRIMARY KEY (execution_id, session_id)
+      )`)
+      const policyStateColumns = new Set(
+        db
+          .query<{ name: string }, []>("PRAGMA table_info(execution_policy_state)")
+          .all()
+          .map((column) => column.name),
+      )
+      if (!policyStateColumns.has("slice_limit"))
+        db.run("ALTER TABLE execution_policy_state ADD COLUMN slice_limit INTEGER")
+      if (!policyStateColumns.has("slice_start_calls")) {
+        db.run("ALTER TABLE execution_policy_state ADD COLUMN slice_start_calls INTEGER")
+      }
+      if (!policyStateColumns.has("slice_used_calls")) {
+        db.run("ALTER TABLE execution_policy_state ADD COLUMN slice_used_calls INTEGER NOT NULL DEFAULT 0")
+      }
+      if (!policyStateColumns.has("checkpoint_requested")) {
+        db.run("ALTER TABLE execution_policy_state ADD COLUMN checkpoint_requested INTEGER NOT NULL DEFAULT 0")
+      }
+      if (!policyStateColumns.has("checkpoint_failures")) {
+        db.run("ALTER TABLE execution_policy_state ADD COLUMN checkpoint_failures INTEGER NOT NULL DEFAULT 0")
+      }
+      db.run(`
       CREATE TABLE IF NOT EXISTS execution_continuation (
         id TEXT PRIMARY KEY,
         execution_id TEXT NOT NULL REFERENCES execution(id),
@@ -881,7 +974,8 @@ export namespace ExecutionLedger {
       if (!workColumns.has("began_at")) db.run("ALTER TABLE execution_work ADD COLUMN began_at INTEGER")
       if (!workColumns.has("evidence")) db.run("ALTER TABLE execution_work ADD COLUMN evidence TEXT")
       if (!workColumns.has("resolution_code")) db.run("ALTER TABLE execution_work ADD COLUMN resolution_code TEXT")
-      db.query<never, [number, number]>(`
+      db.query<never, [number, number]>(
+        `
         UPDATE execution_invocation
         SET state = 'completed', revision = revision + 1, finished_at = ?
         WHERE kind = 'auxiliary'
@@ -896,7 +990,8 @@ export namespace ExecutionLedger {
             WHERE w.invocation_id = execution_invocation.id
               AND w.state IN ('prepared', 'running', 'draining', 'unknown')
           )
-      `).run(invocationRecoveryNow, invocationRecoveryNow)
+      `,
+      ).run(invocationRecoveryNow, invocationRecoveryNow)
       db.run(`
       CREATE TABLE IF NOT EXISTS execution_blocker (
         id TEXT PRIMARY KEY,
@@ -1112,6 +1207,18 @@ export namespace ExecutionLedger {
             spent = excluded.spent, reserved = excluded.reserved, uncertain = excluded.uncertain
         `)
         db.run("PRAGMA user_version = 1")
+      }
+      if (schemaVersion < 2) {
+        const columns = new Set(
+          db
+            .query<{ name: string }, []>("PRAGMA table_info(execution_policy_state)")
+            .all()
+            .map((column) => column.name),
+        )
+        if (!columns.has("extension_count")) {
+          db.run("ALTER TABLE execution_policy_state ADD COLUMN extension_count INTEGER NOT NULL DEFAULT 0")
+        }
+        db.run("PRAGMA user_version = 2")
       }
       db.run("COMMIT")
     } catch (error) {
@@ -2026,16 +2133,58 @@ export namespace ExecutionLedger {
     function blockerTransitionAllowed(from: BlockerState, to: BlockerState) {
       const transitions: Record<BlockerState, BlockerState[]> = {
         pending: ["running", "cancelled", "waived"],
-        running: ["draining", "unknown", "resolved", "failed", "cancelled", "waived"],
+        running: ["draining", "unknown", "resolved", "failed", "blocked", "cancelled", "waived"],
         draining: ["unknown", "resolved", "failed", "cancelled"],
         unknown: ["resolved", "failed", "cancelled", "waived"],
         resumable: ["running", "cancelled", "waived"],
-        resolved: [],
+        reopened: ["running", "cancelled", "waived"],
+        blocked: ["running", "cancelled", "waived"],
+        resolved: ["reopened"],
         failed: ["resolved", "waived"],
         cancelled: ["resolved", "waived"],
         waived: [],
       }
       return transitions[from].includes(to)
+    }
+
+    function hasUnresolvedExecutionTaskflow(executionID: string): boolean {
+      const row = db
+        .query<{ count: number }, [string]>(
+          `SELECT COUNT(*) AS count FROM execution_blocker
+           WHERE execution_id = ?
+             AND kind IN ('plan_item', 'workflow')
+             AND state NOT IN ('resolved', 'waived', 'cancelled')`,
+        )
+        .get(executionID)
+      return (row?.count ?? 0) > 0
+    }
+
+    function reserveToolAllowance(executionID: string): boolean {
+      return transaction(() => {
+        const row = db
+          .query<
+            { slice_limit: number | null; slice_used_calls: number },
+            [string]
+          >("SELECT slice_limit, slice_used_calls FROM execution_policy_state WHERE execution_id = ?")
+          .get(executionID)
+        if (!row) return true
+        const limit = row.slice_limit ?? 30
+        if (row.slice_used_calls >= limit) return false
+        const changed = db
+          .query(
+            "UPDATE execution_policy_state SET slice_used_calls = slice_used_calls + 1, updated_at = ? WHERE execution_id = ? AND slice_used_calls < COALESCE(slice_limit, 30)",
+          )
+          .run(Date.now(), executionID)
+        return changed.changes === 1
+      })
+    }
+
+    function releaseToolAllowance(executionID: string): void {
+      transaction(() => {
+        db.query(
+          "UPDATE execution_policy_state SET slice_used_calls = MAX(0, slice_used_calls - 1), updated_at = ? WHERE execution_id = ?",
+        ).run(Date.now(), executionID)
+      })
     }
 
     return {
@@ -2045,6 +2194,223 @@ export namespace ExecutionLedger {
 
       view(executionID: string) {
         return executionView(executionID)
+      },
+
+      hasUnresolvedExecutionTaskflow(executionID: string): boolean {
+        return hasUnresolvedExecutionTaskflow(executionID)
+      },
+
+      applyCheckpoint(input: {
+        executionID: string
+        checkpointID: string
+        decision: "continue" | "finish" | "blocked"
+        requestedCalls?: number
+        payload: unknown
+        now?: number
+      }) {
+        return transaction(() => {
+          const prior = db
+            .query<
+              { sequence: number; granted_calls: number | null },
+              [string, string]
+            >("SELECT sequence, granted_calls FROM execution_checkpoint WHERE execution_id = ? AND checkpoint_id = ?")
+            .get(input.executionID, input.checkpointID)
+          if (prior) {
+            return { sequence: prior.sequence, grantedCalls: prior.granted_calls ?? undefined, idempotent: true }
+          }
+          const sequence =
+            (db
+              .query<
+                { sequence: number },
+                [string]
+              >("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM execution_checkpoint WHERE execution_id = ?")
+              .get(input.executionID)?.sequence ?? 0) + 1
+          const policyState = this.getPolicyState(input.executionID)
+          const extensionLimitReached =
+            input.decision === "continue" && (policyState?.extensionCount ?? 0) >= ExecutionCheckpoint.MAX_EXTENSIONS
+          const grantedCalls =
+            input.decision === "continue" && !extensionLimitReached
+              ? Math.min(ExecutionCheckpoint.MAX_SLICE_CALLS, Math.max(1, Math.trunc(input.requestedCalls ?? 30)))
+              : undefined
+          if (grantedCalls !== undefined) {
+            const current = execution(input.executionID)
+            if (!current) throw new Error("execution not found")
+            const used = policyState?.evidence?.toolCalls ?? 0
+            const changed = db
+              .query(
+                "UPDATE execution_policy_state SET slice_limit = ?, slice_start_calls = ?, slice_used_calls = 0, checkpoint_requested = 0, checkpoint_failures = 0, extension_count = extension_count + 1, updated_at = ? WHERE execution_id = ?",
+              )
+              .run(grantedCalls, used, input.now ?? Date.now(), input.executionID)
+            if (changed.changes !== 1) throw new Error("execution policy state not found")
+            // Persist the grant and its policy budget in the same transaction. A
+            // crash must not leave a new slice with the previous step budget.
+            const policy = policyState?.policy
+            if (policy?.budget) {
+              policy.budget.maxToolCalls += grantedCalls
+              policy.budget.maxSteps += Math.max(1, Math.ceil(grantedCalls / 3))
+              policy.budgetExtension = {
+                count: (policy.budgetExtension?.count ?? 0) + 1,
+                progress: policyState?.evidence?.successfulToolCalls ?? 0,
+                failures: policyState?.evidence?.failureCount ?? 0,
+                reasons: [
+                  ...(policy.budgetExtension?.reasons ?? []),
+                  `Checkpoint requested next execution slice (${grantedCalls} tool calls)`,
+                ],
+              }
+              db.query("UPDATE execution_policy_state SET policy_json = ? WHERE execution_id = ?").run(
+                JSON.stringify(policy),
+                input.executionID,
+              )
+            }
+          } else {
+            db.query(
+              "UPDATE execution_policy_state SET slice_limit = slice_used_calls, checkpoint_requested = 0, checkpoint_failures = 0, updated_at = ? WHERE execution_id = ?",
+            ).run(input.now ?? Date.now(), input.executionID)
+          }
+          db.query(
+            "INSERT INTO execution_checkpoint (execution_id, sequence, checkpoint_id, decision, requested_calls, granted_calls, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          ).run(
+            input.executionID,
+            sequence,
+            input.checkpointID,
+            input.decision,
+            input.requestedCalls ?? null,
+            grantedCalls ?? null,
+            JSON.stringify(input.payload),
+            input.now ?? Date.now(),
+          )
+          return {
+            sequence,
+            grantedCalls,
+            ...(extensionLimitReached ? { extensionLimitReached: true as const } : {}),
+            idempotent: false,
+          }
+        })
+      },
+
+      requestCheckpoint(executionID: string): boolean {
+        return (
+          db
+            .query("UPDATE execution_policy_state SET checkpoint_requested = 1, updated_at = ? WHERE execution_id = ?")
+            .run(Date.now(), executionID).changes === 1
+        )
+      },
+
+      checkpointFailures(executionID: string): number {
+        return (
+          db
+            .query<
+              { checkpoint_failures: number },
+              [string]
+            >("SELECT checkpoint_failures FROM execution_policy_state WHERE execution_id = ?")
+            .get(executionID)?.checkpoint_failures ?? 0
+        )
+      },
+
+      recordCheckpointFailure(executionID: string): number {
+        return transaction(() => {
+          const changed = db
+            .query(
+              "UPDATE execution_policy_state SET checkpoint_failures = checkpoint_failures + 1, checkpoint_requested = 1 WHERE execution_id = ?",
+            )
+            .run(executionID)
+          if (changed.changes !== 1) throw new Error("execution policy state not found")
+          return this.checkpointFailures(executionID)
+        })
+      },
+
+      checkpoints(executionID: string) {
+        return db
+          .query<
+            {
+              sequence: number
+              decision: string
+              requested_calls: number | null
+              granted_calls: number | null
+              payload: string
+              created_at: number
+            },
+            [string]
+          >(
+            "SELECT sequence, decision, requested_calls, granted_calls, payload, created_at FROM execution_checkpoint WHERE execution_id = ? ORDER BY sequence",
+          )
+          .all(executionID)
+          .map((row) => ({
+            sequence: row.sequence,
+            decision: row.decision,
+            requestedCalls: row.requested_calls ?? undefined,
+            grantedCalls: row.granted_calls ?? undefined,
+            payload: JSON.parse(row.payload),
+            createdAt: row.created_at,
+          }))
+      },
+
+      recordObjective(input: { executionID: string; messageID: string; objective: string; now?: number }) {
+        return transaction(() => {
+          const previous = db
+            .query<
+              { message_id: string; objective: string },
+              [string]
+            >("SELECT message_id, objective FROM execution_objective WHERE execution_id = ?")
+            .get(input.executionID)
+          if (previous) {
+            if (previous.message_id !== input.messageID || previous.objective !== input.objective) {
+              throw new Error("execution root objective is immutable")
+            }
+            return false
+          }
+          db.query(
+            "INSERT INTO execution_objective (execution_id, message_id, objective, created_at) VALUES (?, ?, ?, ?)",
+          ).run(input.executionID, input.messageID, input.objective, input.now ?? Date.now())
+          return true
+        })
+      },
+
+      objective(executionID: string) {
+        return db
+          .query<
+            { message_id: string; objective: string; created_at: number },
+            [string]
+          >("SELECT message_id, objective, created_at FROM execution_objective WHERE execution_id = ?")
+          .get(executionID)
+      },
+
+      reserveToolAllowance(executionID: string): boolean {
+        return reserveToolAllowance(executionID)
+      },
+
+      releaseToolAllowance(executionID: string): void {
+        releaseToolAllowance(executionID)
+      },
+
+      sliceCheckpointRequired(executionID: string): boolean {
+        return this.sliceCheckpointReason(executionID) !== undefined
+      },
+
+      sliceCheckpointReason(executionID: string): string | undefined {
+        const row = db
+          .query<
+            { slice_limit: number | null; slice_used_calls: number; checkpoint_requested: number },
+            [string]
+          >("SELECT slice_limit, slice_used_calls, checkpoint_requested FROM execution_policy_state WHERE execution_id = ?")
+          .get(executionID)
+        if (row?.checkpoint_requested === 1) return "requested"
+        const limit = row?.slice_limit ?? 30
+        const used = row?.slice_used_calls ?? 0
+        if (used >= limit) return "slice_exhausted"
+        if (limit > 3 && used >= Math.ceil(limit * 0.8)) return "slice_threshold"
+        return undefined
+      },
+
+      sliceUsedCalls(executionID: string): number {
+        return (
+          db
+            .query<
+              { slice_used_calls: number },
+              [string]
+            >("SELECT slice_used_calls FROM execution_policy_state WHERE execution_id = ?")
+            .get(executionID)?.slice_used_calls ?? 0
+        )
       },
 
       list(input: { sessionID: string; cursor?: string; limit?: number }): ExecutionList {
@@ -2792,6 +3158,41 @@ export namespace ExecutionLedger {
         }
       },
 
+      waitingInput(sessionID: string): Context | undefined {
+        const row = db
+          .query<
+            {
+              execution_id: string
+              root_session_id: string
+              invocation_id: string
+              owner_id: string
+              fence: number
+            },
+            [string]
+          >(
+            `SELECT current.id AS execution_id, current.root_session_id,
+               invocation.id AS invocation_id, current.owner_id, current.fence
+             FROM session_execution binding
+             JOIN execution current ON current.id = binding.execution_id
+             JOIN execution_invocation invocation
+               ON invocation.execution_id = current.id AND invocation.session_id = binding.session_id
+             WHERE binding.session_id = ?
+               AND current.lifecycle = 'active' AND current.outcome IS NULL
+               AND current.phase = 'waiting_input' AND current.owner_id IS NOT NULL
+               AND invocation.kind = 'root' AND invocation.state = 'waiting'
+             ORDER BY invocation.created_at DESC, invocation.rowid DESC LIMIT 1`,
+          )
+          .get(sessionID)
+        if (!row) return
+        return {
+          executionID: row.execution_id,
+          rootSessionID: row.root_session_id,
+          invocationID: row.invocation_id,
+          ownerID: row.owner_id,
+          fence: row.fence,
+        }
+      },
+
       completion(executionID: string) {
         return completion(executionID)
       },
@@ -3282,6 +3683,39 @@ export namespace ExecutionLedger {
         return ids.map((row) => blocker(row.id)!)
       },
 
+      taskflowPlan(executionID: string, sessionID: string) {
+        const cleared =
+          db
+            .query<
+              { revision: number },
+              [string, string]
+            >("SELECT revision FROM execution_taskflow_closed WHERE execution_id = ? AND session_id = ?")
+            .get(executionID, sessionID)?.revision ?? 0
+        return this.blockers(executionID).filter(
+          (item) =>
+            item.kind === "plan_item" &&
+            (item.planRevision ?? 0) > cleared &&
+            invocation(item.invocationID)?.sessionID === sessionID,
+        )
+      },
+
+      closeTaskflow(input: { executionID: string; sessionID: string; ownerID: string; fence: number }) {
+        return transaction(() => {
+          const current = execution(input.executionID)
+          if (!current || !ownershipValid(current, input.ownerID, input.fence, Date.now())) {
+            throw new Error("Taskflow ownership is stale")
+          }
+          const items = this.taskflowPlan(input.executionID, input.sessionID)
+          if (items.some((item) => !["resolved", "waived", "cancelled"].includes(item.state))) {
+            throw new Error("Cannot close unresolved durable taskflow items")
+          }
+          db.query(
+            `INSERT INTO execution_taskflow_closed (execution_id, session_id, revision) VALUES (?, ?, ?)
+            ON CONFLICT(execution_id, session_id) DO UPDATE SET revision = excluded.revision`,
+          ).run(input.executionID, input.sessionID, current.plan_revision)
+        })
+      },
+
       createPlan(input: {
         executionID: string
         invocationID: string
@@ -3290,9 +3724,6 @@ export namespace ExecutionLedger {
         items: Array<{ id: string; resourceScope: string }>
         now?: number
       }) {
-        if (input.items.length > MAX_PLAN_ITEMS) {
-          return { created: false as const, reason: "plan_item_limit" as const }
-        }
         if (new Set(input.items.map((item) => item.id)).size !== input.items.length) {
           return { created: false as const, reason: "duplicate_plan_item" as const }
         }
@@ -3315,24 +3746,6 @@ export namespace ExecutionLedger {
             !["accepted", "running", "waiting"].includes(producerInvocation.state)
           ) {
             return { created: false as const, reason: "invalid_invocation" as const }
-          }
-          const openPlanItems = db
-            .query<{ count: number }, [string]>(
-              `SELECT COUNT(*) AS count FROM execution_blocker
-               WHERE execution_id = ? AND kind = 'plan_item' AND state NOT IN ('resolved', 'waived')`,
-            )
-            .get(input.executionID)?.count
-          if ((openPlanItems ?? 0) > 0) {
-            return { created: false as const, reason: "active_plan" as const }
-          }
-          const blockerCount = db
-            .query<
-              { count: number },
-              [string]
-            >("SELECT COUNT(*) AS count FROM execution_blocker WHERE execution_id = ?")
-            .get(input.executionID)?.count
-          if ((blockerCount ?? 0) + input.items.length > MAX_BLOCKERS_PER_EXECUTION) {
-            return { created: false as const, reason: "blocker_limit" as const }
           }
           if (input.items.length === 0) {
             return {
@@ -3525,7 +3938,7 @@ export namespace ExecutionLedger {
           }
           if (
             (["unknown", "failed", "cancelled"].includes(record.state) ||
-              ["resolved", "waived"].includes(input.state)) &&
+              ["resolved", "waived", "reopened", "blocked"].includes(input.state)) &&
             (!input.evidence || !input.resolutionCode)
           ) {
             return { transitioned: false as const, reason: "evidence_required" as const, blocker: record }
@@ -4738,15 +5151,14 @@ export namespace ExecutionLedger {
           const parentInvocationID = input.parentInvocationID ?? sessionLink?.parent_invocation_id ?? null
           const invocationKind = input.kind ?? (parentInvocationID ? "child" : "root")
           if (invocationKind === "root") {
-            const unknownMutatingRows =
-              db
-                .query<{ id: string; kind: string; execution_id: string }, [string]>(
-                  `SELECT w.id, w.kind, w.execution_id FROM execution_work w
+            const unknownMutatingRows = db
+              .query<{ id: string; kind: string; execution_id: string }, [string]>(
+                `SELECT w.id, w.kind, w.execution_id FROM execution_work w
                  JOIN execution e ON e.id = w.execution_id
                  WHERE e.root_session_id = ? AND w.mutating = 1 AND w.state = 'unknown'
                  ORDER BY w.created_at, w.id`,
-                )
-                .all(input.sessionID)
+              )
+              .all(input.sessionID)
             if (unknownMutatingRows.length > 0) {
               const details = unknownMutatingRows.map((row) => `${row.kind}:${row.id}`).join(", ")
               const reasonMessage = `Session has unknown mutating work that must be reconciled (${details}).`
@@ -4908,7 +5320,43 @@ export namespace ExecutionLedger {
             now,
             parentInvocationID,
           )
+          if (invocationKind === "root") {
+            db.query("UPDATE execution SET phase = 'model', version = version + 1, updated_at = ? WHERE id = ?").run(
+              now,
+              input.executionID,
+            )
+          }
           return this.binding(input.invocationID)!
+        })
+      },
+
+      waitForInput(input: {
+        executionID: string
+        invocationID: string
+        ownerID: string
+        fence: number
+        reason: string
+        now?: number
+      }) {
+        return transaction(() => {
+          const current = execution(input.executionID)
+          const now = input.now ?? Date.now()
+          if (!current || current.status !== "active") return { waiting: false as const, reason: "not_active" as const }
+          if (!ownershipValid(current, input.ownerID, input.fence, now)) {
+            return { waiting: false as const, reason: "stale_fence" as const }
+          }
+          const active = invocation(input.invocationID)
+          if (!active || active.executionID !== input.executionID) {
+            return { waiting: false as const, reason: "invalid_invocation" as const }
+          }
+          db.query("UPDATE execution_invocation SET state = 'waiting', revision = revision + 1 WHERE id = ?").run(
+            input.invocationID,
+          )
+          db.query(
+            "UPDATE execution SET phase = 'waiting_input', reason_message = ?, version = version + 1, updated_at = ? WHERE id = ?",
+          ).run(input.reason, now, input.executionID)
+          appendExecutionEvent(input.executionID, "execution.updated", now)
+          return { waiting: true as const }
         })
       },
 
@@ -5132,6 +5580,7 @@ export namespace ExecutionLedger {
         invocationID?: string
         ownerID?: string
         fence: number
+        maxSteps?: number
         now?: number
       }) {
         return transaction(
@@ -5161,7 +5610,13 @@ export namespace ExecutionLedger {
               return { admitted: false, reason: "deadline" }
             const executionScope = executionBudgetScope(current)
             if (expertLimitReached(current, "steps", 1)) return { admitted: false, reason: "step_limit" }
-            if (current.max_steps !== null && total(executionScope).steps + 1 > current.max_steps) {
+            const maxSteps =
+              current.max_steps === null
+                ? input.maxSteps
+                : input.maxSteps === undefined
+                  ? current.max_steps
+                  : Math.min(current.max_steps, input.maxSteps)
+            if (maxSteps !== undefined && total(executionScope).steps + 1 > maxSteps) {
               return { admitted: false, reason: "step_limit" }
             }
             db.query("INSERT INTO execution_step (id, execution_id, created_at) VALUES (?, ?, ?)").run(
@@ -5432,6 +5887,122 @@ export namespace ExecutionLedger {
 
       planRevision(executionID: string) {
         return execution(executionID)?.plan_revision
+      },
+
+      stepCount(executionID: string) {
+        const row = db
+          .query<{ count: number }, [string]>("SELECT COUNT(*) as count FROM execution_step WHERE execution_id = ?")
+          .get(executionID)
+        return row?.count ?? 0
+      },
+
+      savePolicyState(input: {
+        executionID: string
+        contract: any
+        policy: any
+        evidence: any
+        promotionReasons: string[]
+        classifierFallback: boolean
+        extensionCount: number
+        sliceLimit?: number
+        sliceStartCalls?: number
+        sliceUsedCalls?: number
+      }) {
+        return transaction(() => {
+          const previous = this.getPolicyState(input.executionID)
+          const policy =
+            input.policy?.budget && previous?.policy?.budget
+              ? {
+                  ...input.policy,
+                  budget: {
+                    ...input.policy.budget,
+                    maxSteps: Math.max(input.policy.budget.maxSteps, previous.policy.budget.maxSteps),
+                    maxToolCalls: Math.max(input.policy.budget.maxToolCalls, previous.policy.budget.maxToolCalls),
+                  },
+                  budgetExtension:
+                    previous.extensionCount > input.extensionCount
+                      ? previous.policy.budgetExtension
+                      : input.policy.budgetExtension,
+                }
+              : input.policy
+          db.query(
+            `
+          INSERT INTO execution_policy_state
+            (execution_id, contract_json, policy_json, evidence_json, promotion_reasons_json, classifier_fallback, extension_count, slice_limit, slice_start_calls, slice_used_calls, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(execution_id) DO UPDATE SET
+            contract_json = excluded.contract_json,
+            policy_json = excluded.policy_json,
+            evidence_json = excluded.evidence_json,
+            promotion_reasons_json = excluded.promotion_reasons_json,
+            classifier_fallback = excluded.classifier_fallback,
+            -- Slice counters belong exclusively to reservation/checkpoint transactions.
+            -- Evidence saves may contain stale values, including during an awaited tool registration.
+            updated_at = excluded.updated_at
+        `,
+          ).run(
+            input.executionID,
+            JSON.stringify(input.contract),
+            JSON.stringify(policy),
+            JSON.stringify(input.evidence),
+            JSON.stringify(input.promotionReasons),
+            input.classifierFallback ? 1 : 0,
+            input.extensionCount,
+            input.sliceLimit ?? null,
+            input.sliceStartCalls ?? null,
+            input.sliceUsedCalls ?? 0,
+            Date.now(),
+          )
+        })
+      },
+
+      getPolicyState(executionID: string):
+        | {
+            contract: any
+            policy: any
+            evidence: any
+            promotionReasons: string[]
+            classifierFallback: boolean
+            extensionCount: number
+            sliceLimit: number | null
+            sliceStartCalls: number | null
+            sliceUsedCalls: number
+          }
+        | undefined {
+        const row = db
+          .query<
+            {
+              contract_json: string
+              policy_json: string
+              evidence_json: string
+              promotion_reasons_json: string
+              classifier_fallback: number
+              extension_count: number
+              slice_limit: number | null
+              slice_start_calls: number | null
+              slice_used_calls: number
+            },
+            [string]
+          >(
+            "SELECT contract_json, policy_json, evidence_json, promotion_reasons_json, classifier_fallback, extension_count, slice_limit, slice_start_calls, slice_used_calls FROM execution_policy_state WHERE execution_id = ?",
+          )
+          .get(executionID)
+        if (!row) return undefined
+        try {
+          return {
+            contract: JSON.parse(row.contract_json),
+            policy: JSON.parse(row.policy_json),
+            evidence: JSON.parse(row.evidence_json),
+            promotionReasons: JSON.parse(row.promotion_reasons_json),
+            classifierFallback: row.classifier_fallback === 1,
+            extensionCount: row.extension_count,
+            sliceLimit: row.slice_limit,
+            sliceStartCalls: row.slice_start_calls,
+            sliceUsedCalls: row.slice_used_calls,
+          }
+        } catch {
+          return undefined
+        }
       },
 
       close() {

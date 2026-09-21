@@ -38,6 +38,12 @@ export namespace MessageV2 {
   )
   export type APIError = z.infer<typeof APIError.Schema>
 
+  // A provider can close the SSE stream without text, tool calls, or an error
+  // frame. That is a transient transport failure, not a completed turn, so it
+  // must stay retryable and fall back instead of terminating the execution.
+  export const EMPTY_OUTPUT_MESSAGE =
+    "Model returned an empty response: the stream ended without text, tool calls, or error output. Send your message again or switch model."
+
   const PartBase = z.object({
     id: z.string(),
     sessionID: z.string(),
@@ -93,6 +99,37 @@ export namespace MessageV2 {
     ref: "ReasoningPart",
   })
   export type ReasoningPart = z.infer<typeof ReasoningPart>
+
+  export const CheckpointPart = PartBase.extend({
+    type: z.literal("checkpoint"),
+    sequence: z.number().int().positive(),
+    decision: z.enum(["continue", "finish", "blocked"]),
+    requestedCalls: z.number().int().positive().optional(),
+    grantedCalls: z.number().int().positive().max(50).optional(),
+    objectiveAssessment: z.string(),
+    progressSummary: z.string(),
+    discoveries: z.string().array(),
+    completedWork: z.string().array(),
+    remainingWork: z.string().array(),
+    failures: z.string().array(),
+    blockers: z.string().array(),
+    routeAssessment: z.string(),
+    nextActions: z.string().array(),
+    runtime: z
+      .object({
+        executionID: z.string(),
+        reason: z.string(),
+        model: z.string(),
+        allowance: z.object({
+          limit: z.number().int().nonnegative(),
+          used: z.number().int().nonnegative(),
+          extensions: z.number().int().nonnegative(),
+          toolCalls: z.number().int().nonnegative(),
+        }),
+      })
+      .optional(),
+  }).meta({ ref: "CheckpointPart" })
+  export type CheckpointPart = z.infer<typeof CheckpointPart>
 
   const FilePartSourceBase = z.object({
     text: z
@@ -334,6 +371,7 @@ export namespace MessageV2 {
       TextPart,
       SubtaskPart,
       ReasoningPart,
+      CheckpointPart,
       FilePart,
       ToolPart,
       StepStartPart,
@@ -514,6 +552,19 @@ export namespace MessageV2 {
           parts: [],
         }
         for (const part of msg.parts) {
+          if (part.type === "checkpoint") {
+            assistantMessage.parts.push({
+              type: "text",
+              text: `Execution checkpoint #${part.sequence}: ${JSON.stringify({
+                decision: part.decision,
+                grantedCalls: part.grantedCalls,
+                progressSummary: part.progressSummary,
+                remainingWork: part.remainingWork,
+                nextActions: part.nextActions,
+                runtime: part.runtime,
+              }).slice(0, 12_000)}`,
+            })
+          }
           if (part.type === "text")
             assistantMessage.parts.push({
               type: "text",

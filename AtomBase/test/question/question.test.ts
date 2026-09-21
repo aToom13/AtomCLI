@@ -196,7 +196,7 @@ test("reject - removes from pending list", async () => {
       expect(pending.length).toBe(1)
 
       await Question.reject(pending[0].id)
-      askPromise.catch(() => { }) // Ignore rejection
+      askPromise.catch(() => {}) // Ignore rejection
 
       const pendingAfter = await Question.list()
       expect(pendingAfter.length).toBe(0)
@@ -305,6 +305,58 @@ test("list - returns empty when no pending", async () => {
     fn: async () => {
       const pending = await Question.list()
       expect(pending.length).toBe(0)
+    },
+  })
+})
+
+test("ask - rejects after timeout without an answer instead of hanging forever", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const askPromise = Question.ask(
+        {
+          sessionID: "ses_timeout",
+          questions: [
+            {
+              question: "Are you still there?",
+              header: "Ping",
+              type: "select",
+              options: [{ label: "Yes", description: "Yes" }],
+            },
+          ],
+        },
+        { timeoutMs: 50 },
+      )
+      await expect(askPromise).rejects.toThrow("timed out")
+      expect(await Question.list()).toEqual([])
+    },
+  })
+})
+
+test("ask - rejects on abort instead of hanging forever", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const controller = new AbortController()
+      const askPromise = Question.ask(
+        {
+          sessionID: "ses_abort",
+          questions: [
+            {
+              question: "Are you still there?",
+              header: "Ping",
+              type: "select",
+              options: [{ label: "Yes", description: "Yes" }],
+            },
+          ],
+        },
+        { signal: controller.signal, timeoutMs: 60_000 },
+      )
+      controller.abort(new Error("session cancelled"))
+      await expect(askPromise).rejects.toThrow("session cancelled")
+      expect(await Question.list()).toEqual([])
     },
   })
 })

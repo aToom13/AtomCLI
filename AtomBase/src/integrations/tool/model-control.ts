@@ -93,6 +93,26 @@ export namespace ModelControl {
         throw new Error("The user pinned this model; request a conversation model change for approval")
       if (args.scope === "thinking" && (view.route?.manualThinkingPin ?? message.info.thinkingPinned))
         throw new Error("The user pinned the thinking level")
+      if (args.scope === "expert") {
+        const executionPolicy = ExecutionRuntime.getExecutionPolicy(execution.executionID)
+        if (executionPolicy) {
+          if (executionPolicy.budget.allowExpertRouting === false) {
+            throw new Error("Expert routing is disabled by current execution policy")
+          }
+          if (executionPolicy.budget.allowExpertRouting === "on_failure") {
+            const evidence = ExecutionRuntime.getExecutionEvidence(execution.executionID)
+            const hasFailure =
+              (evidence?.failureCount ?? 0) > 0 ||
+              ExecutionRuntime.routeProposalHistory(execution.executionID).some(
+                (proposal) =>
+                  proposal.invocationID === execution.invocationID && ["rejected", "expired"].includes(proposal.state),
+              )
+            if (!hasFailure) {
+              throw new Error("Expert routing is only permitted after a failure under current execution policy")
+            }
+          }
+        }
+      }
       if (args.scope === "expert" && !settings.expert_models.includes(`${target.providerID}/${target.id}`))
         throw new Error(
           "Expert target is not in adaptive_routing.expert_models; request a conversation model change for approval",
@@ -131,25 +151,28 @@ export namespace ModelControl {
       let approval: "once" | "execution" | "reject" | undefined
       if (approvalMode === "ask") {
         const route = `${target.providerID}/${target.id}${args.variant ? ` (${args.variant})` : ""}`
-        const answers = await Question.ask({
-          sessionID: ctx.sessionID,
-          tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
-          questions: [
-            {
-              header: args.scope === "thinking" ? "Thinking level" : "Model switch",
-              question: `Switch to ${route}?\nReason: ${args.reason}`,
-              type: "select",
-              options: [
-                { label: SWITCH_ONCE, description: "Use this route for the current request." },
-                {
-                  label: SWITCH_FOR_EXECUTION,
-                  description: "Allow this exact verified route for the rest of this execution.",
-                },
-                { label: "Keep current", description: "Continue with the current model and thinking level." },
-              ],
-            },
-          ],
-        })
+        const answers = await Question.ask(
+          {
+            sessionID: ctx.sessionID,
+            tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
+            questions: [
+              {
+                header: args.scope === "thinking" ? "Thinking level" : "Model switch",
+                question: `Switch to ${route}?\nReason: ${args.reason}`,
+                type: "select",
+                options: [
+                  { label: SWITCH_ONCE, description: "Use this route for the current request." },
+                  {
+                    label: SWITCH_FOR_EXECUTION,
+                    description: "Allow this exact verified route for the rest of this execution.",
+                  },
+                  { label: "Keep current", description: "Continue with the current model and thinking level." },
+                ],
+              },
+            ],
+          },
+          { signal: ctx.abort },
+        )
         approval =
           answers[0]?.[0] === SWITCH_ONCE ? "once" : answers[0]?.[0] === SWITCH_FOR_EXECUTION ? "execution" : "reject"
       }

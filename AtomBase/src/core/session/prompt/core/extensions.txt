@@ -27,9 +27,9 @@ Skills are specialized instruction sets in `SKILL.md` files, discovered from:
 
 MCP servers appear in `<mcp_servers>` block in your context. Tools are namespaced as `{serverName}_{toolName}`.
 
-**Use MCP tools when they benefit the task:**
-- User preference → `memory_store`
-- Complex decision or multi-step planning → `sequential_thinking`
+**Use MCP tools when they benefit the task (only if listed in `<mcp_servers>` — never invent server or tool names):**
+- User preference → built-in `memory` tool (`action="save"`); MCP memory tools only when connected
+- Complex decision or multi-step planning → break it down with `taskflow`, or MCP planning tools when connected
 </mcp_system>
 
 ---

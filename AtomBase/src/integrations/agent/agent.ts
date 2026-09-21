@@ -245,8 +245,23 @@ export namespace Agent {
               "*pip3 install *": "deny",
               "*pip2 install *": "deny",
             },
-            // Allow browser for frontend/UI verification (e.g. Playwright).
-            browser: "allow",
+            // Allow browser only for read-only frontend/UI verification
+            browser: {
+              "*": "deny",
+              "snapshot*": "allow",
+              "snapshot_diff*": "allow",
+              "read*": "allow",
+              "box*": "allow",
+              "accessibility*": "allow",
+              "screenshot*": "allow",
+              "assert*": "allow",
+              "console_logs*": "allow",
+              "network*": "allow",
+              "tabs*": "allow",
+              "navigate*": "allow",
+              "reload*": "allow",
+              "wait*": "allow",
+            },
             // Disallow any file writes
             edit: {
               "*": "deny",
@@ -403,7 +418,8 @@ export namespace Agent {
       },
     }
 
-    for (const [key, value] of Object.entries(cfg.agent ?? {})) {
+    const customAgents = (cfg?.agent ?? {}) as Record<string, any>
+    for (const [key, value] of Object.entries(customAgents)) {
       if (value.disable) {
         delete result[key]
         continue
@@ -453,11 +469,11 @@ export namespace Agent {
   }
 
   export async function list() {
-    const cfg = await Config.get()
+    const cfg = await Config.get().catch(() => null)
     return pipe(
       await state(),
       values(),
-      sortBy([(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "agent"), "desc"]),
+      sortBy([(x) => (cfg?.default_agent ? x.name === cfg.default_agent : x.name === "agent"), "desc"]),
     )
   }
 
@@ -466,7 +482,7 @@ export namespace Agent {
   }
 
   export async function generate(input: { description: string; model?: { providerID: string; modelID: string } }) {
-    const cfg = await Config.get()
+    const cfg = (await Config.get().catch(() => null)) as Config.Info | null
     const defaultModel = input.model ?? (await Provider.defaultModel())
     const model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
     const language = await Provider.getLanguage(model)

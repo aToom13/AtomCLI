@@ -8,9 +8,180 @@ import { Instance } from "@/services/project/instance"
 import { Config } from "@/core/config/config"
 import { Storage } from "@/core/storage/storage"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { HarnessState } from "@/core/session/harness-state"
+import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
+import { ExecutionContract } from "@/core/routing/execution-contract"
+import { SessionCompaction } from "@/core/session/compaction"
 import { tmpdir } from "../fixture/fixture"
 
 describe("session prompt turn context", () => {
+  test("checkpoint is a first-class message part", () => {
+    expect(
+      MessageV2.Part.parse({
+        id: "part-checkpoint",
+        messageID: "message-checkpoint",
+        sessionID: "session-checkpoint",
+        type: "checkpoint",
+        sequence: 4,
+        decision: "continue",
+        requestedCalls: 80,
+        grantedCalls: 50,
+        objectiveAssessment: "Objective remains unchanged.",
+        progressSummary: "Core implementation complete.",
+        discoveries: [],
+        completedWork: ["runtime"],
+        remainingWork: ["verification"],
+        failures: [],
+        blockers: [],
+        routeAssessment: "Current route remains suitable.",
+        nextActions: ["run tests"],
+      }),
+    ).toMatchObject({ type: "checkpoint", sequence: 4, grantedCalls: 50 })
+  })
+
+  test("checkpoint mode disables every tool to force a structured response", () => {
+    expect(
+      Object.keys(
+        SessionPrompt._internals.checkpointTools({
+          bash: 1,
+          read: 1,
+          edit: 1,
+          taskflow: 1,
+          model_control: 1,
+        }),
+      ),
+    ).toEqual([])
+  })
+
+  test("parseCheckpointJson extracts valid JSON from clean and markdown-wrapped text", () => {
+    const raw = JSON.stringify({ decision: "continue", requestedCalls: 20 })
+    expect(SessionPrompt._internals.parseCheckpointJson(raw)).toEqual({ decision: "continue", requestedCalls: 20 })
+
+    const fenced = "Here is my evaluation:\n```json\n" + raw + "\n```\nHope this helps."
+    expect(SessionPrompt._internals.parseCheckpointJson(fenced)).toEqual({ decision: "continue", requestedCalls: 20 })
+
+    const inline = "Some preamble text: " + raw + " and trailing text."
+    expect(SessionPrompt._internals.parseCheckpointJson(inline)).toEqual({ decision: "continue", requestedCalls: 20 })
+
+    const multiple = `${JSON.stringify({ note: "preface" })}\n${raw}`
+    expect(SessionPrompt._internals.parseCheckpointJsonCandidates(multiple)).toEqual([
+      { note: "preface" },
+      { decision: "continue", requestedCalls: 20 },
+    ])
+
+    expect(SessionPrompt._internals.parseCheckpointJson("not json at all")).toBeUndefined()
+  })
+
+  test("finish checkpoint requires and stages a user-facing final response", () => {
+    const base = {
+      objectiveAssessment: "done",
+      progressSummary: "verified",
+      discoveries: [],
+      completedWork: ["implementation"],
+      remainingWork: [],
+      failures: [],
+      blockers: [],
+      routeAssessment: "appropriate",
+      planChanged: false,
+      routeChanged: false,
+      estimatedRemainingCalls: 0,
+      nextActions: [],
+    }
+    expect(ExecutionCheckpoint.Result.safeParse({ ...base, decision: "finish" }).success).toBe(false)
+    expect(ExecutionCheckpoint.Result.safeParse({ ...base, decision: "continue" }).success).toBe(false)
+    expect(
+      ExecutionCheckpoint.Result.safeParse({ ...base, decision: "finish", finalResponse: "Task complete." }).success,
+    ).toBe(true)
+
+    const parts = SessionPrompt._internals.checkpointFinalParts(
+      [
+        {
+          id: "checkpoint-json",
+          messageID: "assistant",
+          sessionID: "session",
+          type: "text",
+          text: JSON.stringify({ decision: "finish", finalResponse: "Task complete." }),
+        },
+      ],
+      { sessionID: "session", messageID: "assistant", finalResponse: "Task complete." },
+    )
+    expect(parts).toHaveLength(1)
+    expect(parts[0].text).toBe("Task complete.")
+  })
+
+  test("normalizes a finish checkpoint while taskflow is still open", () => {
+    const checkpoint = ExecutionCheckpoint.Result.parse({
+      decision: "finish",
+      finalResponse: "Everything is complete.",
+      objectiveAssessment: "done",
+      progressSummary: "verified",
+      discoveries: [],
+      completedWork: ["implementation"],
+      remainingWork: [],
+      failures: [],
+      blockers: [],
+      routeAssessment: "appropriate",
+      planChanged: false,
+      routeChanged: false,
+      estimatedRemainingCalls: 0,
+      nextActions: [],
+    })
+    const normalized = SessionPrompt._internals.normalizeCheckpointForOpenTaskflow(checkpoint, true)
+    expect(normalized).toMatchObject({
+      decision: "continue",
+      requestedCalls: ExecutionCheckpoint.MIN_CHECKPOINT_CALLS,
+      estimatedRemainingCalls: 1,
+    })
+    expect(normalized.finalResponse).toBeUndefined()
+    expect(normalized.blockers.join(" ")).toContain("durable taskflow")
+    expect(SessionPrompt._internals.normalizeCheckpointForOpenTaskflow(checkpoint, false)).toEqual(checkpoint)
+  })
+
+  test("final-gate rejection becomes an event-driven checkpoint", () => {
+    expect(
+      SessionPrompt._internals.isCheckpointContinuation({
+        info: { id: "retry", sessionID: "session", role: "user", time: { created: 1 } },
+        parts: [
+          {
+            id: "part",
+            messageID: "retry",
+            sessionID: "session",
+            type: "text",
+            synthetic: true,
+            text: SessionPrompt._internals.reviewRetryText("Completion preconditions failed: open todo"),
+          },
+        ],
+      } as any),
+    ).toBe(true)
+  })
+
+  test("checkpoint delta preserves meaningful results without dumping raw output", () => {
+    const delta = SessionPrompt._internals.checkpointDelta([
+      {
+        info: { id: "assistant", sessionID: "session", role: "assistant", time: { created: 20 } },
+        parts: [
+          {
+            id: "tool",
+            messageID: "assistant",
+            sessionID: "session",
+            type: "tool",
+            callID: "call",
+            tool: "bash",
+            state: {
+              status: "error",
+              input: {},
+              error: "test failed",
+              time: { start: 20, end: 21 },
+            },
+          },
+          { id: "compact", messageID: "assistant", sessionID: "session", type: "compaction", auto: true },
+        ],
+      } as any,
+    ])
+    expect(delta).toContain("tool bash [error]: test failed")
+    expect(delta).toContain("conversation compaction recorded")
+  })
+
   test("bounds shell output while preserving the newest complete text", () => {
     const limit = 96
     let output = SessionPrompt._internals.appendShellOutput("", "old:" + "x".repeat(120), limit)
@@ -107,6 +278,79 @@ describe("session prompt turn context", () => {
         ],
       }),
     ).toBe(false)
+    const compaction: MessageV2.CompactionPart = {
+      id: "part-compaction",
+      messageID: base.id,
+      sessionID: base.sessionID,
+      type: "compaction",
+      auto: true,
+    }
+    for (const auto of [true, false]) {
+      expect(SessionPrompt._internals.isSyntheticContinuation({ info: base, parts: [{ ...compaction, auto }] })).toBe(
+        true,
+      )
+    }
+    expect(
+      SessionPrompt._internals.isSyntheticContinuation({
+        info: base,
+        parts: [compaction, { ...compaction, type: "text", text: "new user request" }],
+      }),
+    ).toBe(false)
+  })
+
+  test("compaction continuation retains execution, objective, plan and consumed allowance", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const user = (await Session.updateMessage({
+          id: Identifier.ascending("message"),
+          sessionID: session.id,
+          role: "user",
+          time: { created: Date.now() },
+          agent: "agent",
+          model: { providerID: "test", modelID: "fixture" },
+        })) as MessageV2.User
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: user.id })
+        ExecutionRuntime.recordObjective(execution.executionID, user.id, "Read-only audit")
+        ExecutionRuntime.setExecutionContract(execution.executionID, ExecutionContract.fallback("test"))
+        await ExecutionRuntime.createPlan({
+          sessionID: session.id,
+          execution,
+          items: [{ id: "audit", resourceScope: "plan-item:audit" }],
+        })
+        ExecutionRuntime.admitToolCall(execution.executionID)
+        const release = ExecutionRuntime.holdLease(execution)
+        try {
+          await SessionCompaction.create({ sessionID: session.id, agent: user.agent, model: user.model, auto: true })
+          const compact = (await Session.messages({ sessionID: session.id })).at(-1)!
+          expect(compact.parts).toEqual([expect.objectContaining({ type: "compaction", auto: true })])
+          expect(SessionPrompt._internals.isSyntheticContinuation(compact)).toBe(true)
+          const continued = await ExecutionRuntime.bindContinuation({
+            sessionID: session.id,
+            invocationID: compact.info.id,
+            execution,
+          })
+          expect(continued.executionID).toBe(execution.executionID)
+          expect(ExecutionRuntime.view(execution.executionID)?.lifecycle).toBe("active")
+          expect(ExecutionRuntime.leaseSignal(continued).aborted).toBe(false)
+          expect(ExecutionRuntime.snapshot(session.id).activeInvocations).toEqual([
+            expect.objectContaining({ id: compact.info.id, state: "running" }),
+          ])
+          expect(ExecutionRuntime.objective(execution.executionID)?.objective).toBe("Read-only audit")
+          expect(ExecutionRuntime.hasUnresolvedExecutionTaskflow(execution.executionID)).toBe(true)
+          expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)?.toolCalls).toBe(1)
+          ExecutionRuntime.admitToolCall(continued.executionID)
+          expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)?.toolCalls).toBe(2)
+          for (let call = 2; call < 30; call++) ExecutionRuntime.reserveToolCall(continued.executionID)
+          expect(() => ExecutionRuntime.reserveToolCall(continued.executionID)).toThrow("checkpoint_required")
+        } finally {
+          release()
+        }
+      },
+    })
   })
 
   test("a cancellation response does not answer later user messages", () => {
@@ -184,10 +428,78 @@ describe("session prompt turn context", () => {
     expect(decide("Selam")).toBe(false)
     expect(decide("Naber?")).toBe(false)
     expect(decide("HI")).toBe(false)
+    expect(decide("Selam, nasılsın")).toBe(false)
     expect(decide("Add an endpoint")).toBe(true)
     expect(decide("Yeni bir endpoint ekle")).toBe(true)
     expect(decide("Find why the app is slow")).toBe(true)
     expect(decide("Devam et")).toBe(true)
+    // Greeting + substantive task must still load tools; otherwise the model
+    // hallucinates calls the provider rejects as unavailable.
+    expect(decide("Selam. Codex ile bu sessionda bir sürü şey yaptık devam edelim")).toBe(true)
+    expect(decide("Selam, aracı düzelt ve test et")).toBe(true)
+  })
+
+  test("resolves common tool-call hallucinations instead of routing to invalid", async () => {
+    const { LLM } = await import("@/core/session/llm")
+    const available = { read: {}, bash: {}, skill: {}, taskflow: {}, agent: {}, grep: {} }
+    expect(LLM.resolveToolCallName("Read", available)).toBe("read")
+    expect(LLM.resolveToolCallName("read_file", available)).toBe("read")
+    expect(LLM.resolveToolCallName("shell", available)).toBe("bash")
+    expect(LLM.resolveToolCallName("default.skill", available)).toBe("skill")
+    expect(LLM.resolveToolCallName("mcp__server__read", available)).toBe("read")
+    // `task` is the legacy subagent-spawning name (permission id is still
+    // `task`); it must resolve to `agent`, never to progress-tracking `taskflow`.
+    expect(LLM.resolveToolCallName("task", available)).toBe("agent")
+    expect(LLM.resolveToolCallName("subtask", available)).toBe("agent")
+    expect(LLM.resolveToolCallName("taskflow_tool", available)).toBe("taskflow")
+    expect(LLM.resolveToolCallName("totally_unknown_tool", available)).toBeUndefined()
+  })
+
+  test("skips taskflow reminders when taskflow is unavailable", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { SessionPrompt } = await import("@/core/session/prompt")
+        const base = {
+          id: "message-reminder",
+          sessionID: "session-reminder",
+          role: "user" as const,
+          time: { created: Date.now() },
+          agent: "build",
+          model: { providerID: "test", modelID: "fixture" },
+        }
+        const messages = [
+          {
+            info: base,
+            parts: [
+              {
+                id: "part-reminder",
+                messageID: base.id,
+                sessionID: base.sessionID,
+                type: "text" as const,
+                text: "do a multi-step task",
+              },
+            ],
+          },
+        ]
+        // Unavailable: no taskflow instruction may be injected.
+        const blocked = SessionPrompt._internals.insertReminders({
+          messages: structuredClone(messages) as never,
+          agent: { name: "build" } as never,
+          step: 5,
+          taskflowAvailable: false,
+        })
+        expect(JSON.stringify(blocked)).not.toContain("taskflow")
+        // Default (available): existing behavior unchanged, no throw.
+        const allowed = SessionPrompt._internals.insertReminders({
+          messages: structuredClone(messages) as never,
+          agent: { name: "build" } as never,
+          step: 5,
+        })
+        expect(Array.isArray(allowed)).toBe(true)
+      },
+    })
   })
 
   test("preserves tools for explicit agents, tool overrides, and continuing tool sessions", () => {
@@ -201,6 +513,9 @@ describe("session prompt turn context", () => {
       })
 
     expect(decide({ explicitTools: true })).toBe(true)
+    expect(decide({ providerID: "atomcli" })).toBe(true)
+    expect(decide({ providerID: "opencode" })).toBe(true)
+    expect(decide({ providerID: "openai" })).toBe(false)
     expect(decide({ bypassAgentCheck: true })).toBe(true)
     expect(decide({ prompt: "Continue", hasPriorToolActivity: true })).toBe(true)
   })
@@ -213,6 +528,188 @@ describe("session prompt turn context", () => {
     expect(retry).toContain("src/a.ts must be fixed")
     expect(blocked).toContain("Completion is blocked")
     expect(blocked).toContain("Reviewer unavailable")
+  })
+
+  test("commits edits when review policy does not require a reviewer", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        review: {
+          enabled: false,
+          policy: "off",
+          reviewer_count: 1,
+          max_attempts: 1,
+          high_risk_patterns: [],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const user = (await Session.updateMessage({
+          id: Identifier.ascending("message"),
+          sessionID: session.id,
+          role: "user",
+          time: { created: Date.now() },
+          agent: "agent",
+          model: { providerID: "test", modelID: "fixture" },
+        })) as MessageV2.User
+        await Session.updatePart({
+          id: Identifier.ascending("part"),
+          messageID: user.id,
+          sessionID: session.id,
+          type: "text",
+          text: "update the tracked file",
+        })
+        const execution = await ExecutionRuntime.resolveInvocation({
+          sessionID: session.id,
+          invocationID: user.id,
+        })
+        const filepath = "tracked.txt"
+        await Bun.write(`${tmp.path}/${filepath}`, "done")
+        HarnessState.restoreEditedFile(session.id, filepath)
+        const messageID = Identifier.ascending("message")
+        await Session.updateMessage({
+          id: messageID,
+          parentID: user.id,
+          sessionID: session.id,
+          role: "assistant",
+          agent: user.agent,
+          path: { cwd: tmp.path, root: tmp.path },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: user.model.modelID,
+          providerID: user.model.providerID,
+          time: { created: Date.now() },
+        })
+        const part: MessageV2.TextPart = {
+          id: Identifier.ascending("part"),
+          messageID,
+          sessionID: session.id,
+          type: "text",
+          text: "Completed.",
+        }
+        const { evaluateReviewDecision } = await import("@/integrations/tool/review-gate")
+        const reviewDecision = (await evaluateReviewDecision(session.id)).decision
+        const candidate = await ExecutionRuntime.stageCompletion({
+          sessionID: session.id,
+          messageID,
+          finish: "stop",
+          parts: [part],
+          editedFiles: [filepath],
+          requiresReview: false,
+          reviewDecision,
+          execution,
+        })
+
+        expect(HarnessState.needsReview(session.id)).toBe(true)
+        expect(
+          await SessionPrompt._internals.resolveCompletion({
+            sessionID: session.id,
+            lastUser: user,
+            execution,
+            candidate,
+            abort: new AbortController().signal,
+          }),
+        ).toBe("committed")
+        expect(ExecutionRuntime.pendingContinuations(session.id)).toHaveLength(0)
+        expect(ExecutionRuntime.execution(execution.executionID)).toMatchObject({
+          lifecycle: "terminal",
+          outcome: "completed",
+        })
+      },
+    })
+  })
+
+  test("reports an open taskflow when the final step cannot retry", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        review: {
+          enabled: false,
+          policy: "off",
+          reviewer_count: 1,
+          max_attempts: 1,
+          high_risk_patterns: [],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const user = (await Session.updateMessage({
+          id: Identifier.ascending("message"),
+          sessionID: session.id,
+          role: "user",
+          time: { created: Date.now() },
+          agent: "agent",
+          model: { providerID: "test", modelID: "fixture" },
+        })) as MessageV2.User
+        const execution = await ExecutionRuntime.resolveInvocation({
+          sessionID: session.id,
+          invocationID: user.id,
+        })
+        const messageID = Identifier.ascending("message")
+        const part: MessageV2.TextPart = {
+          id: Identifier.ascending("part"),
+          messageID,
+          sessionID: session.id,
+          type: "text",
+          text: "Candidate response",
+        }
+        await Session.updateMessage({
+          id: messageID,
+          parentID: user.id,
+          sessionID: session.id,
+          role: "assistant",
+          agent: user.agent,
+          path: { cwd: tmp.path, root: tmp.path },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: user.model.modelID,
+          providerID: user.model.providerID,
+          time: { created: Date.now() },
+        })
+        HarnessState.startPlan(session.id, [{ id: "unfinished", name: "Unfinished work" }])
+        const candidate = await ExecutionRuntime.stageCompletion({
+          sessionID: session.id,
+          messageID,
+          finish: "stop",
+          parts: [part],
+          editedFiles: [],
+          requiresReview: false,
+          execution,
+        })
+
+        expect(
+          await SessionPrompt._internals.resolveCompletion({
+            sessionID: session.id,
+            lastUser: user,
+            execution,
+            candidate,
+            abort: new AbortController().signal,
+            allowRetry: false,
+          }),
+        ).toBe("blocked")
+        expect(ExecutionRuntime.pendingContinuations(session.id)).toHaveLength(0)
+        expect(ExecutionRuntime.execution(execution.executionID)).toMatchObject({
+          lifecycle: "terminal",
+          outcome: "budget_exhausted",
+          reason: { code: "step_limit" },
+        })
+        const messages = await Session.messages({ sessionID: session.id })
+        const assistant = messages.find((message) => message.info.id === messageID)
+        expect(assistant?.info).toMatchObject({ finish: "error" })
+        const finalPart = assistant?.parts.find((item) => item.type === "text")
+        expect(finalPart?.text).toContain("Candidate response")
+        expect(finalPart?.text).toContain("the taskflow plan is still open")
+        expect(finalPart?.metadata).toMatchObject({ blockerKind: "technical" })
+      },
+    })
   })
 
   test("projects an already identical completion without rewriting parts or finish", async () => {

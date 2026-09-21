@@ -173,3 +173,25 @@ Keybindings live under `keybinds`. The default leader is `ctrl+x`:
 ```
 
 Use `none` to disable a binding. Avoid assigning the same key sequence to conflicting actions.
+
+## Adaptive execution and classification
+
+Adaptive execution pipelines (`direct`, `focused`, `coordinated`) are active by default. Enable the optional model-based semantic classifier:
+
+```jsonc
+{
+  "experimental": {
+    "execution_classification": true,
+  },
+}
+```
+
+Execution contracts use these pipelines:
+
+- `direct`: Single goal, max 2 steps, max 3 tool calls, restricted tools, no subagents or expert routing.
+- `focused`: Targeted fix, max 6 steps, max 10 tool calls, targeted tools, expert routing only on failure.
+- `coordinated`: Multi-subsystem work, initially 30 steps and 30 tool calls, full tool set, taskflow allowed. At 80% consumption, tool-free checkpoint requests may grant up to 50 more tool calls per slice. Runtime stops new work after six extensions, or earlier when repeated calls, targets, errors, or consecutive no-progress slices indicate a loop, then uses a separate tool-free finalization phase to return the result and blocker status.
+
+When enabled, the classifier call runs with the user's selected model and is admitted against the execution call and cost budget. Scope and risk promote dynamically based on observable runtime evidence. Adaptive policy extensions never raise explicit `execution_budget` limits; those user limits remain hard ledger-enforced ceilings.
+
+When this option is absent or `false`, AtomCLI skips the classifier model call and uses conservative defaults: normal build work is coordinated, plan/explore work is focused, and reviewer work is direct. Adaptive limits, checkpoints, watchdogs, and finalization remain active.

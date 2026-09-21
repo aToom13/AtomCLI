@@ -99,6 +99,13 @@ export namespace EditDiff {
 
 export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
+  effects: {
+    workspace: "write",
+    external: "none",
+    reversible: true,
+    destructive: false,
+    privileged: false,
+  },
   parameters: z.object({
     filePath: z.string().min(1).max(4096).describe("The absolute path to the file to modify"),
     oldString: z

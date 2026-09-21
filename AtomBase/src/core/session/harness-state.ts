@@ -22,6 +22,7 @@ export interface TaskFlowStep {
   id: string
   name: string
   status: TaskFlowStatus
+  type?: "work" | "independent_review"
 }
 
 export interface ExecutionLog {
@@ -73,7 +74,7 @@ export interface SessionHarness {
   planBinding?: {
     executionID: string
     revision: number
-    items: Record<string, { blockerID: string; version: number; state: string }>
+    items: Record<string, { blockerID: string; version: number; state: string; planRevision?: number }>
   }
   /** Cadence and revision state for bounded taskflow prompt reminders. */
   taskflowReminder?: {
@@ -87,6 +88,8 @@ export interface SessionHarness {
   editedFiles: Set<string>
   /** Increments for every observed applied mutation, including repeat edits to the same path. */
   revision: number
+  /** Last mutation revision for which an edit reminder was emitted. */
+  editReminderRevision: number
   /** Last child revision merged into this session, preventing duplicate aggregation. */
   mergedSourceRevisions: Map<string, number>
   /** Ring buffer of last N bash executions */
@@ -109,7 +112,9 @@ export const MAX_EDITED_FILES_TRACKED = 1_000
 export const REVIEW_TOTAL_ATTEMPT_MULTIPLIER = 3
 
 /** Files matching this pattern trigger an immediate critical-edit warning */
-const CRITICAL_FILE_RE = /(auth|config|database|migration|\.env|secret|password|credential)/i
+const CRITICAL_FILE_RE = /(^|[._/\\-])(auth|config|database|migration|\.env|secret|password|credentials?)([._/\\-]|$)/i
+const NON_PRODUCTION_PATH_RE =
+  /(^|[/\\])(fixtures?|tests?|testdata|__fixtures__|__tests__|generated|examples?|samples?|mocks?)([/\\]|$)/i
 
 /**
  * Escape untrusted text for embedding inside XML-tagged prompt sections.
@@ -139,7 +144,14 @@ function getSession(sessionID: string): SessionHarness {
   const map = store()
   let session = map.get(sessionID)
   if (!session) {
-    session = { steps: [], editedFiles: new Set(), revision: 0, mergedSourceRevisions: new Map(), executionLogs: [] }
+    session = {
+      steps: [],
+      editedFiles: new Set(),
+      revision: 0,
+      editReminderRevision: 0,
+      mergedSourceRevisions: new Map(),
+      executionLogs: [],
+    }
     map.set(sessionID, session)
   }
   return session
@@ -158,12 +170,23 @@ function sameFileSet(a: string[], b: string[]): boolean {
 export namespace HarnessState {
   // ── TaskFlow ──────────────────────────────────────────────────────────────
 
+  export function restorePlan(
+    sessionID: string,
+    steps: TaskFlowStep[],
+    binding: NonNullable<SessionHarness["planBinding"]>,
+  ) {
+    const session = getSession(sessionID)
+    if (!session.taskflowReminder) startPlan(sessionID, steps, binding)
+    session.planBinding = binding
+    session.steps = steps
+  }
+
   /**
    * Register a new plan, resetting any existing state for this session.
    */
   export function startPlan(
     sessionID: string,
-    steps: { id: string; name: string }[],
+    steps: { id: string; name: string; type?: TaskFlowStep["type"] }[],
     binding?: SessionHarness["planBinding"],
   ): void {
     const s = getSession(sessionID)
@@ -177,6 +200,50 @@ export namespace HarnessState {
       lastStatusUpdateAt: now,
     }
     log.info("taskflow plan started", { sessionID, count: steps.length })
+  }
+
+  export function revisePlan(
+    sessionID: string,
+    steps: { id: string; name: string; type?: TaskFlowStep["type"] }[],
+    binding?: SessionHarness["planBinding"],
+  ): void {
+    const s = getSession(sessionID)
+    const existing = new Set(s.steps.map((step) => step.id))
+    s.steps.push(
+      ...steps.filter((step) => !existing.has(step.id)).map((step) => ({ ...step, status: "pending" as const })),
+    )
+    if (binding) {
+      s.planBinding = {
+        executionID: binding.executionID,
+        revision: binding.revision,
+        items: { ...(s.planBinding?.items ?? {}), ...binding.items },
+      }
+    }
+    recordPlanStatusUpdate(sessionID)
+  }
+
+  export function reopenStep(sessionID: string, stepID: string): void {
+    const step = getSession(sessionID).steps.find((item) => item.id === stepID)
+    if (!step || step.status !== "completed") throw new Error(`Taskflow step "${stepID}" is not completed`)
+    step.status = "pending"
+    recordPlanStatusUpdate(sessionID)
+  }
+
+  export function blockStep(sessionID: string, stepID: string): void {
+    const step = getSession(sessionID).steps.find((item) => item.id === stepID)
+    if (!step || step.status !== "running") throw new Error(`Taskflow step "${stepID}" is not running`)
+    step.status = "failed"
+    recordPlanStatusUpdate(sessionID)
+  }
+
+  export function resumeBlockedStep(sessionID: string, stepID: string): void {
+    const s = getSession(sessionID)
+    const step = s.steps.find((item) => item.id === stepID)
+    if (!step || step.status !== "failed") throw new Error(`Taskflow step "${stepID}" is not blocked`)
+    const running = s.steps.find((item) => item.status === "running")
+    if (running) throw new Error(`Taskflow step "${running.id}" is already running`)
+    step.status = "running"
+    recordPlanStatusUpdate(sessionID)
   }
 
   /**
@@ -241,6 +308,10 @@ export namespace HarnessState {
 
   export function getPlanBinding(sessionID: string) {
     return getSession(sessionID).planBinding
+  }
+
+  export function detachPlanBinding(sessionID: string): void {
+    getSession(sessionID).planBinding = undefined
   }
 
   export function updatePlanItemBinding(sessionID: string, stepID: string, update: { version: number; state: string }) {
@@ -324,9 +395,14 @@ export namespace HarnessState {
     return { warnings }
   }
 
-  /** True if there is at least one registered step (even if some are completed). */
-  export function hasActivePlan(sessionID: string): boolean {
+  /** True if there is an active registered step (optionally checked against an execution ID). */
+  export function hasActivePlan(sessionID: string, executionID?: string): boolean {
     const s = getSession(sessionID)
+    if (s.steps.length === 0) return false
+    if (executionID) {
+      if (!s.planBinding) return true
+      return s.planBinding.executionID === executionID
+    }
     return s.steps.length > 0
   }
 
@@ -338,6 +414,19 @@ export namespace HarnessState {
   /** Raw copy of all steps (for introspection / system reminders). */
   export function getSteps(sessionID: string): ReadonlyArray<TaskFlowStep> {
     return getSession(sessionID).steps
+  }
+
+  export function assertRuntimeOwnedStepCompletion(sessionID: string, stepID: string): void {
+    const step = getSession(sessionID).steps.find((item) => item.id === stepID)
+    const isReview =
+      step?.type === "independent_review" || (step?.name ? /independent\s+(review|verif)/i.test(step.name) : false)
+    if (!isReview) return
+    const reviewerSessionID = getReviewerSession(sessionID)
+    const verdict = getReviewVerdict(sessionID)
+    if (reviewerSessionID && verdict?.status === "pass" && verdict.revision === getSession(sessionID).revision) return
+    throw new Error(
+      `Independent review step "${stepID}" requires reviewer invocation evidence and a current PASS verdict.`,
+    )
   }
 
   // ── EditedFilesTracker ────────────────────────────────────────────────────
@@ -388,9 +477,18 @@ export namespace HarnessState {
   /** True if any edited file matches the critical file regex. */
   export function hasCriticalEdit(sessionID: string): boolean {
     for (const f of getSession(sessionID).editedFiles) {
-      if (CRITICAL_FILE_RE.test(f)) return true
+      if (!NON_PRODUCTION_PATH_RE.test(f) && CRITICAL_FILE_RE.test(f)) return true
     }
     return false
+  }
+
+  export function consumeEditReminder(
+    sessionID: string,
+  ): { count: number; critical: boolean; revision: number } | undefined {
+    const s = getSession(sessionID)
+    if (s.editedFiles.size === 0 || s.revision <= s.editReminderRevision) return undefined
+    s.editReminderRevision = s.revision
+    return { count: s.editedFiles.size, critical: hasCriticalEdit(sessionID), revision: s.revision }
   }
 
   /** Returns a copy of all edited file paths. */
@@ -406,6 +504,7 @@ export namespace HarnessState {
   export function clearReviewScope(sessionID: string): void {
     const s = getSession(sessionID)
     s.editedFiles.clear()
+    s.editReminderRevision = s.revision
     s.reviewVerdict = undefined
     clearReviewerSessions(sessionID)
   }

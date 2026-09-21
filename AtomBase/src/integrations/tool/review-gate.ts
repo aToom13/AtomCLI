@@ -198,7 +198,7 @@ export async function aggregateDescendantEdits(sessionID: string): Promise<numbe
   return total
 }
 
-export async function evaluateReviewDecision(sessionID: string): Promise<ReviewAssessment> {
+export async function evaluateReviewDecision(sessionID: string, executionID?: string): Promise<ReviewAssessment> {
   const config = await Config.get()
   const snapshot = ReviewPolicy.snapshot({
     enabled: config.review?.enabled !== false,
@@ -213,11 +213,16 @@ export async function evaluateReviewDecision(sessionID: string): Promise<ReviewA
   const originalPrompt = await findOriginalUserRequest(sessionID)
   const diff = await ChangeImpact.diff(editedFiles).catch(() => "")
   const impact = ChangeImpact.analyze({ files: editedFiles, diff, prompt: originalPrompt })
+  const executionPolicy = executionID
+    ? (await import("@/core/execution/runtime")).ExecutionRuntime.getExecutionPolicy(executionID)
+    : undefined
   const required = ReviewPolicy.requiresIndependentReview(snapshot.effectivePolicy, {
     editedFiles,
     prompt: originalPrompt,
     diff,
     impact,
+    scope: executionPolicy?.scope,
+    risk: executionPolicy?.risk,
     extraHighRiskPatterns: snapshot.highRiskPatterns,
   })
   return {
@@ -261,11 +266,12 @@ export async function runBlockingReview(
     signal?: AbortSignal
     authorizeSession?: (sessionID: string) => void | Promise<void>
     decision?: ExecutionRuntime.ReviewDecision
+    executionID?: string
   } = {},
 ): Promise<ReviewResult> {
   options.signal?.throwIfAborted()
   const config = await Config.get()
-  const assessment = await evaluateReviewDecision(sessionID)
+  const assessment = await evaluateReviewDecision(sessionID, options.executionID)
   const { decision, editedFiles, originalPrompt, impact, policy, diff } = assessment
   if (
     options.decision &&

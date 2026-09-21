@@ -5,8 +5,10 @@ import { Bus } from "@/core/bus"
 import { Config } from "@/core/config/config"
 import { ExecutionLedger } from "@/core/execution/ledger"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { Global } from "@/core/global"
 import { Identifier } from "@/core/id/id"
+import { ExecutionContract } from "@/core/routing/execution-contract"
 import { Session } from "@/core/session"
 import { Instance } from "@/services/project/instance"
 import type { Provider } from "@/integrations/provider/provider"
@@ -83,6 +85,19 @@ describe("ExecutionRuntime", () => {
     expect(ExecutionRuntime.estimateMicrousd(model, "hello", 100)).toBeUndefined()
   })
 
+  test("does not create an execution policy while recording unclassified tool activity", () => {
+    const executionID = `unclassified-${Date.now()}`
+
+    ExecutionRuntime.admitToolCall(executionID, { filesRead: ["README.md"] })
+    ExecutionRuntime.recordRuntimeEvidence(executionID, {
+      filesRead: ["README.md"],
+      successfulToolCalls: 1,
+    })
+
+    expect(ExecutionRuntime.getExecutionContract(executionID)).toBeUndefined()
+    expect(ExecutionRuntime.getExecutionPolicy(executionID)).toBeUndefined()
+  })
+
   test("shares the root call budget with child sessions", async () => {
     await using tmp = await tmpdir({
       config: { execution_budget: { max_calls: 1, unknown_price: "block" } },
@@ -137,6 +152,61 @@ describe("ExecutionRuntime", () => {
     })
   })
 
+  test("continues the session execution when a fresh root turn answers waiting input", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const firstUser = await addUserMessage(root.id, "implement the durable task")
+        const first = await ExecutionRuntime.resolveInvocation({
+          sessionID: root.id,
+          invocationID: firstUser,
+          kind: "root",
+        })
+        const policy = ExecutionRuntime.setExecutionContract(
+          first.executionID,
+          ExecutionContract.fallback("waiting-input-test"),
+        )
+        ExecutionRuntime.recordObjective(first.executionID, firstUser, "Implement the durable task")
+        await ExecutionRuntime.createPlan({
+          sessionID: root.id,
+          execution: first,
+          items: [{ id: "implement", resourceScope: "plan-item:implement" }],
+        })
+        await ExecutionRuntime.waitForInput({
+          sessionID: root.id,
+          execution: first,
+          reason: "credentials required",
+        })
+
+        const secondUser = await addUserMessage(root.id, "use these credentials")
+        const continued = await ExecutionRuntime.resolveInvocation({
+          sessionID: root.id,
+          invocationID: secondUser,
+          kind: "root",
+        })
+
+        expect(continued.executionID).toBe(first.executionID)
+        expect(continued.invocationID).toBe(secondUser)
+        expect(ExecutionRuntime.view(first.executionID)).toMatchObject({ lifecycle: "active", phase: "model" })
+        expect(ExecutionRuntime.objective(first.executionID)).toMatchObject({
+          message_id: firstUser,
+          objective: "Implement the durable task",
+        })
+        expect(ExecutionRuntime.getExecutionPolicy(first.executionID)).toEqual(policy)
+        expect(ExecutionRuntime.taskflowPlan(first.executionID, root.id)).toEqual([
+          expect.objectContaining({ producerID: "1:implement", state: "pending" }),
+        ])
+        expect(ExecutionRuntime.snapshot(root.id).activeInvocations).toEqual([
+          expect.objectContaining({ id: secondUser, executionID: first.executionID, state: "running" }),
+        ])
+        expect(ExecutionRuntime.view(`${root.id}:${secondUser}`)).toBeUndefined()
+      },
+    })
+  })
+
   test("keeps an in-flight child invocation on its original execution when the root receives a new turn", async () => {
     await using tmp = await tmpdir({ config: { execution_budget: { max_calls: 3, unknown_price: "block" } } })
     await Instance.provide({
@@ -167,6 +237,43 @@ describe("ExecutionRuntime", () => {
         })
         expect(attempt?.executionID).toBe(first.executionID)
         attempt?.settle(0)
+      },
+    })
+  })
+
+  test("atomically replaces an active invocation when a reviewer session is reused", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const reviewer = await Session.create({ parentID: root.id })
+        const rootUser = await addUserMessage(root.id, "review this change")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: rootUser })
+        await ExecutionRuntime.inheritSession(root.id, reviewer.id)
+        const firstUser = await addUserMessage(reviewer.id, "first review")
+        const first = await ExecutionRuntime.resolveInvocation({
+          sessionID: reviewer.id,
+          invocationID: firstUser,
+          kind: "reviewer",
+        })
+        const secondUser = await addUserMessage(reviewer.id, "retry review")
+
+        const second = await ExecutionRuntime.resolveInvocation({
+          sessionID: reviewer.id,
+          invocationID: secondUser,
+          kind: "reviewer",
+        })
+
+        expect(second.executionID).toBe(execution.executionID)
+        expect(ExecutionRuntime.snapshot(root.id).activeInvocations).toContainEqual(
+          expect.objectContaining({ id: secondUser, sessionID: reviewer.id, kind: "reviewer", state: "running" }),
+        )
+        expect(ExecutionRuntime.snapshot(root.id).activeInvocations).not.toContainEqual(
+          expect.objectContaining({ id: first.invocationID }),
+        )
+        ExecutionRuntime.cancelExecution(execution)
       },
     })
   })

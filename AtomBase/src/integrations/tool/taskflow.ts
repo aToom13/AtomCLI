@@ -1,3 +1,4 @@
+import path from "path"
 import z from "zod"
 import { Tool } from "./tool"
 import { Bus } from "@/core/bus"
@@ -7,6 +8,7 @@ import { Session } from "@/core/session"
 import { HarnessState } from "@/core/session/harness-state"
 import { Log } from "@/util/util/log"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
+import { Lock } from "@/util/util/lock"
 
 const log = Log.create({ service: "taskflow" })
 
@@ -19,6 +21,7 @@ const TaskFlowTodoSchema = z.object({
 const TaskFlowStepSchema = z.object({
   id: z.string().max(100).optional(),
   name: z.string().min(1).max(200),
+  type: z.enum(["work", "independent_review"]).optional(),
   status: z.enum(["pending", "running", "completed", "failed"]).optional(),
   todos: z
     .array(z.union([z.string().max(1000), TaskFlowTodoSchema]))
@@ -28,14 +31,19 @@ const TaskFlowStepSchema = z.object({
 
 const parameters = z.object({
   action: z
-    .enum(["start", "update", "complete", "fail", "clear"])
-    .describe("Taskflow action: 'start' plan, 'update' step/todo status, 'complete', 'fail', or 'clear'"),
+    .enum(["start", "revise", "checkpoint", "update", "complete", "fail", "clear"])
+    .describe(
+      "Taskflow action: start, append a revision, request an execution checkpoint, update, complete, fail, or clear",
+    ),
   plan: parseJsonIfString(z.array(TaskFlowStepSchema).max(100))
     .optional()
     .describe("List of steps with optional todos for action='start'"),
   step_id: z.string().max(100).optional().describe("Step ID or index (0-based) for update/complete/fail"),
   todo_id: z.string().max(100).optional().describe("Optional Todo ID or index (0-based) for update"),
-  status: z.enum(["pending", "running", "completed", "failed"]).optional().describe("Step status for update"),
+  status: z
+    .enum(["pending", "running", "completed", "failed", "blocked", "reopened"])
+    .optional()
+    .describe("Step status for update"),
   todo_status: z
     .enum(["pending", "in_progress", "completed", "cancelled"])
     .optional()
@@ -59,14 +67,102 @@ function executionContext(ctx: Tool.Context) {
   return ctx.extra?.execution as ExecutionRuntime.Context | undefined
 }
 
-async function createDurablePlan(ctx: Tool.Context, steps: Array<{ id: string; name: string }>) {
+async function restoreDurablePlan(sessionID: string, executionID: string) {
+  const binding = HarnessState.getPlanBinding(sessionID)
+  if (binding && binding.executionID !== executionID) return
+  if (!binding && HarnessState.getSteps(sessionID).length) return
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  const items = ExecutionRuntime.taskflowPlan(executionID, sessionID)
+  if (!items.length) return
+  const steps = items.map((item) => {
+    const encodedID = item.producerID.slice(item.producerID.indexOf(":") + 1)
+    const type = encodedID.endsWith(":independent_review") ? "independent_review" : "work"
+    const id = encodedID.endsWith(`:${type}`) ? encodedID.slice(0, -type.length - 1) : encodedID
+    const prefix = `plan-item:${id}:`
+    return {
+      id,
+      name: item.resourceScope.startsWith(prefix) ? item.resourceScope.slice(prefix.length) : item.resourceScope,
+      type,
+      status: (["resolved", "waived", "cancelled"].includes(item.state)
+        ? "completed"
+        : item.state === "running"
+          ? "running"
+          : ["failed", "blocked", "unknown"].includes(item.state)
+            ? "failed"
+            : "pending") as "pending" | "running" | "completed" | "failed",
+    }
+  })
+  HarnessState.restorePlan(sessionID, steps, {
+    executionID,
+    revision: Math.max(...items.map((item) => item.planRevision ?? 0)),
+    items: Object.fromEntries(
+      items.map((item, index) => [
+        steps[index].id,
+        {
+          blockerID: item.id,
+          version: item.version,
+          state: item.state,
+          planRevision: item.planRevision,
+        },
+      ]),
+    ),
+  })
+}
+
+export namespace TaskFlow {
+  export async function restore(sessionID: string, executionID: string) {
+    using lock = await Lock.write(`taskflow:${sessionID}`)
+    await restoreDurablePlan(sessionID, executionID)
+  }
+
+  export async function activateForWork(ctx: Tool.Context, work?: { tool: string; args: any }) {
+    using lock = await Lock.write(`taskflow:${ctx.sessionID}`)
+    const steps = HarnessState.getSteps(ctx.sessionID)
+    if (!steps.length || steps.some((step) => step.status === "running")) return
+    const pendingSteps = steps.filter((step) => step.status === "pending")
+    if (!pendingSteps.length) return
+
+    let matched: (typeof pendingSteps)[0] | undefined
+    if (work) {
+      const tool = work.tool
+      const args = work.args
+      const targetPath =
+        typeof args?.filePath === "string" ? args.filePath : typeof args?.path === "string" ? args.path : ""
+      const command = typeof args?.command === "string" ? args.command : ""
+      if (tool === "bash" && /test|vitest|jest|check|tsc|lint|verify/i.test(command)) {
+        matched = pendingSteps.find((step) => /test|check|lint|verif|qa/i.test(step.name))
+      }
+      if (!matched && targetPath) {
+        const base = path.basename(targetPath, path.extname(targetPath)).toLowerCase()
+        const segments = targetPath.toLowerCase().split(/[/\\]/).filter(Boolean)
+        matched = pendingSteps.find((step) => {
+          const lower = step.name.toLowerCase()
+          return (base.length > 2 && lower.includes(base)) || segments.some((s) => s.length > 3 && lower.includes(s))
+        })
+      }
+    }
+
+    const next = matched ?? pendingSteps[0]
+    await transitionTaskflowStep(ctx, next.id, "running")
+    const stepIndex = steps.findIndex((step) => step.id === next.id)
+    await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex, status: "running", sessionID: ctx.sessionID })
+  }
+}
+
+async function createDurablePlan(
+  ctx: Tool.Context,
+  steps: Array<{ id: string; name: string; type?: "work" | "independent_review" }>,
+) {
   const execution = executionContext(ctx)
   if (!execution) return undefined
   const { ExecutionRuntime } = await import("@/core/execution/runtime")
   const plan = await ExecutionRuntime.createPlan({
     sessionID: ctx.sessionID,
     execution,
-    items: steps.map((step) => ({ id: step.id, resourceScope: `plan-item:${step.id}:${step.name}` })),
+    items: steps.map((step) => ({
+      id: `${step.id}:${step.type ?? "work"}`,
+      resourceScope: `plan-item:${step.id}:${step.name}`,
+    })),
   })
   return {
     executionID: execution.executionID,
@@ -74,7 +170,10 @@ async function createDurablePlan(ctx: Tool.Context, steps: Array<{ id: string; n
     items: Object.fromEntries(
       steps.map((step, index) => {
         const blocker = plan.blockers[index]
-        return [step.id, { blockerID: blocker.id, version: blocker.version, state: blocker.state }]
+        return [
+          step.id,
+          { blockerID: blocker.id, version: blocker.version, state: blocker.state, planRevision: blocker.planRevision },
+        ]
       }),
     ),
   }
@@ -83,19 +182,69 @@ async function createDurablePlan(ctx: Tool.Context, steps: Array<{ id: string; n
 async function transitionDurablePlanItem(
   ctx: Tool.Context,
   stepID: string,
-  state: "running" | "resolved" | "failed" | "waived",
+  state: "running" | "resolved" | "failed" | "waived" | "reopened" | "blocked",
   evidence?: string,
   resolutionCode?: string,
 ) {
-  const binding = HarnessState.getPlanBinding(ctx.sessionID)
+  let binding = HarnessState.getPlanBinding(ctx.sessionID)
   if (!binding) return
   const execution = executionContext(ctx)
-  if (!execution || execution.executionID !== binding.executionID) {
-    throw new Error("The active taskflow belongs to another execution and must be reconciled before it can change")
+  if (!execution) {
+    throw new Error("The active taskflow requires an execution context before it can change")
+  }
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  if (execution.executionID !== binding.executionID) {
+    const previous = ExecutionRuntime.view(binding.executionID)
+    const previousInvocationActive = ExecutionRuntime.snapshot(execution.rootSessionID).activeInvocations.some(
+      (invocation) => invocation.executionID === binding.executionID,
+    )
+    if (previous?.lifecycle !== "terminal" && (previousInvocationActive || previous?.recoveryRequired)) {
+      throw new Error("The active taskflow belongs to another execution and must be reconciled before it can change")
+    }
+    // Adopt the visible plan rather than silently turning durable work into
+    // memory-only state after a provider failure/new explicit user turn.
+    const previousExecutionID = binding.executionID
+    const steps = HarnessState.getSteps(ctx.sessionID)
+    const adopted = await createDurablePlan(
+      ctx,
+      steps.map((step) => ({ id: step.id, name: step.name, type: step.type })),
+    )
+    if (!adopted) throw new Error("Taskflow adoption requires an execution context")
+    for (const step of steps) {
+      if (step.status === "pending") continue
+      const item = adopted.items[step.id]
+      const running = await ExecutionRuntime.transitionBlocker({
+        sessionID: ctx.sessionID,
+        execution,
+        blockerID: item.blockerID,
+        expectedVersion: item.version,
+        state: "running",
+      })
+      item.version = running.version
+      item.state = running.state
+      if (step.status === "running") continue
+      const restored = await ExecutionRuntime.transitionBlocker({
+        sessionID: ctx.sessionID,
+        execution,
+        blockerID: item.blockerID,
+        expectedVersion: item.version,
+        state: step.status === "completed" ? "resolved" : "failed",
+        evidence: `Inherited recorded plan status from execution ${previousExecutionID}; not new verification`,
+        resolutionCode: "plan_adopted",
+      })
+      item.version = restored.version
+      item.state = restored.state
+    }
+    HarnessState.restorePlan(ctx.sessionID, [...steps], adopted)
+    binding = adopted
+    log.info("adopted taskflow execution binding", {
+      sessionID: ctx.sessionID,
+      previousExecutionID,
+      executionID: execution.executionID,
+    })
   }
   const item = binding.items[stepID]
   if (!item) throw new Error(`Taskflow step "${stepID}" has no durable plan item`)
-  const { ExecutionRuntime } = await import("@/core/execution/runtime")
   const blocker = await ExecutionRuntime.transitionBlocker({
     sessionID: ctx.sessionID,
     execution,
@@ -105,7 +254,7 @@ async function transitionDurablePlanItem(
     evidence,
     resolutionCode,
     authority: state === "waived" ? "user" : undefined,
-    planRevision: state === "waived" ? binding.revision : undefined,
+    planRevision: state === "waived" ? (item.planRevision ?? binding.revision) : undefined,
   })
   HarnessState.updatePlanItemBinding(ctx.sessionID, stepID, {
     version: blocker.version,
@@ -114,6 +263,7 @@ async function transitionDurablePlanItem(
 }
 
 async function transitionTaskflowStep(ctx: Tool.Context, stepID: string, state: "running" | "completed" | "failed") {
+  if (state === "completed") HarnessState.assertRuntimeOwnedStepCompletion(ctx.sessionID, stepID)
   HarnessState.assertStepTransition(ctx.sessionID, stepID, state)
   await transitionDurablePlanItem(
     ctx,
@@ -130,19 +280,27 @@ async function transitionTaskflowStep(ctx: Tool.Context, stepID: string, state: 
 }
 
 export const TaskFlowTool = Tool.define("taskflow", {
+  effects: { workspace: "none", external: "none", reversible: true, destructive: false, privileged: false },
   description: [
     "Unified progress tracking tool combining step planning and todo item management.",
     "Use action='start' with a plan array to initialize your workflow.",
+    "Use action='revise' to append newly discovered work without overwriting prior revisions.",
     "Use action='update' to update step or todo status as you execute.",
     "Use action='complete' when a step or the whole flow finishes.",
     "Use action='clear' when done.",
     "",
-    "IMPORTANT: Steps must follow the state machine: pending → running → completed/failed.",
+    "IMPORTANT: Steps follow pending → running → completed/blocked/failed; blocked work may resume and completed work may reopen with evidence.",
     "You CANNOT complete or fail a step that has not been explicitly set to running first.",
     "Only one step can be in 'running' state at a time.",
   ].join("\n"),
   parameters,
   async execute(params, ctx) {
+    // Parallel model tool calls may depend on an earlier step transition. Keep
+    // the ledger, memory projection and TUI event in one ordered session lane.
+    using lock = await Lock.write(`taskflow:${ctx.sessionID}`)
+    ctx.abort.throwIfAborted()
+    const activeExecution = executionContext(ctx)
+    if (activeExecution) await restoreDurablePlan(ctx.sessionID, activeExecution.executionID)
     await ctx.ask({
       permission: "taskflow",
       patterns: ["*"],
@@ -151,13 +309,64 @@ export const TaskFlowTool = Tool.define("taskflow", {
     })
 
     switch (params.action) {
-      case "start": {
+      case "checkpoint": {
+        const execution = executionContext(ctx)
+        if (!execution) throw new Error("Execution checkpoint requires an active execution")
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (!ExecutionRuntime.requestCheckpoint(execution.executionID))
+          throw new Error("Execution checkpoint unavailable")
+        return {
+          title: "Execution checkpoint requested",
+          output: "Checkpoint will run on the next model turn.",
+          metadata: { steps: undefined, step_id: undefined, status: "checkpoint" },
+        }
+      }
+      case "start":
+      case "revise": {
         if (params.plan && params.plan.length > 0) {
+          if (params.plan.some((step) => step.status && !["pending", "running"].includes(step.status))) {
+            return {
+              title: "Invalid taskflow",
+              output:
+                "New plan items may only start pending or running; record completion with an explicit transition and evidence.",
+              metadata: { steps: undefined, step_id: undefined, status: "error" },
+            }
+          }
+          if (
+            params.plan.filter((step) => step.status === "running").length > 1 ||
+            (params.plan.some((step) => step.status === "running") && HarnessState.getRunningStep(ctx.sessionID))
+          ) {
+            return {
+              title: "Invalid taskflow",
+              output: "Only one step can be running at a time",
+              metadata: { steps: undefined, step_id: undefined, status: "error" },
+            }
+          }
+          if (params.action === "start" && HarnessState.getSteps(ctx.sessionID).length) {
+            return {
+              title: "Taskflow start blocked",
+              output: "An existing plan must be completed and cleared, or extended with revise.",
+              metadata: { steps: undefined, step_id: undefined, status: "blocked" },
+            }
+          }
+          if (
+            params.action === "revise" &&
+            params.plan.some((step, index) =>
+              HarnessState.getSteps(ctx.sessionID).some((existing) => existing.id === (step.id ?? String(index))),
+            )
+          ) {
+            return {
+              title: "Invalid taskflow",
+              output: "Revisions must use new step IDs",
+              metadata: { steps: undefined, step_id: undefined, status: "error" },
+            }
+          }
           const smSteps = params.plan
             .filter((step) => step.name && step.name.length >= 2)
             .map((step, idx) => ({
               id: step.id ?? String(idx),
               name: step.name,
+              type: step.type,
             }))
           if (new Set(smSteps.map((step) => step.id)).size !== smSteps.length) {
             return {
@@ -177,10 +386,13 @@ export const TaskFlowTool = Tool.define("taskflow", {
             }
           }
 
-          HarnessState.startPlan(ctx.sessionID, smSteps, binding)
-          await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
-          await new Promise((resolve) => setTimeout(resolve, 10))
-          await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
+          if (params.action === "revise") HarnessState.revisePlan(ctx.sessionID, smSteps, binding)
+          else {
+            HarnessState.startPlan(ctx.sessionID, smSteps, binding)
+            await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            await Bus.publish(TuiEvent.ChainStart, { mode: "safe", sessionID: ctx.sessionID })
+          }
 
           for (let idx = 0; idx < params.plan.length; idx++) {
             const step = params.plan[idx]
@@ -205,7 +417,14 @@ export const TaskFlowTool = Tool.define("taskflow", {
               sessionID: ctx.sessionID,
             })
           }
-          await Bus.publish(TuiEvent.ChainUpdateStep, { status: "running", sessionID: ctx.sessionID })
+          const runningIndex = params.plan.findIndex((step) => step.status === "running")
+          if (runningIndex >= 0) {
+            await transitionTaskflowStep(ctx, params.plan[runningIndex].id ?? String(runningIndex), "running")
+            const stepIndex = HarnessState.getSteps(ctx.sessionID).findIndex(
+              (step) => step.id === (params.plan![runningIndex].id ?? String(runningIndex)),
+            )
+            await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex, status: "running", sessionID: ctx.sessionID })
+          }
         }
 
         return {
@@ -225,6 +444,59 @@ export const TaskFlowTool = Tool.define("taskflow", {
         }
 
         if (params.status) {
+          const stepID = params.step_id ?? ""
+          const durableItem = HarnessState.getPlanBinding(ctx.sessionID)?.items[stepID]
+          if (params.status === "blocked") {
+            await transitionDurablePlanItem(
+              ctx,
+              stepID,
+              "blocked",
+              params.output ?? "Plan item blocked",
+              "plan_item_blocked",
+            )
+            HarnessState.blockStep(ctx.sessionID, stepID)
+            await Bus.publish(TuiEvent.ChainFailStep, {
+              error: params.output ?? "Taskflow step blocked",
+              sessionID: ctx.sessionID,
+            })
+            return {
+              title: "Taskflow item blocked",
+              output: params.output ?? `Blocked step ${stepID}`,
+              metadata: { steps: undefined, step_id: stepID, status: "blocked" },
+            }
+          }
+          if (params.status === "running" && durableItem?.state === "blocked") {
+            await transitionDurablePlanItem(ctx, stepID, "running")
+            HarnessState.resumeBlockedStep(ctx.sessionID, stepID)
+            return {
+              title: "Taskflow item resumed",
+              output: `Resumed blocked step ${stepID}`,
+              metadata: { steps: undefined, step_id: stepID, status: "running" },
+            }
+          }
+          if (params.status === "reopened") {
+            await transitionDurablePlanItem(
+              ctx,
+              stepID,
+              "reopened",
+              params.output ?? "New evidence reopened this plan item",
+              "new_evidence",
+            )
+            HarnessState.reopenStep(ctx.sessionID, stepID)
+            const stepIndex = HarnessState.getSteps(ctx.sessionID).findIndex((step) => step.id === stepID)
+            if (stepIndex >= 0) {
+              await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                stepIndex,
+                status: "pending",
+                sessionID: ctx.sessionID,
+              })
+            }
+            return {
+              title: "Taskflow item reopened",
+              output: params.output ?? `Reopened step ${stepID} because new evidence requires more work`,
+              metadata: { steps: undefined, step_id: stepID, status: "reopened" },
+            }
+          }
           const mappedStatus =
             params.status === "completed"
               ? "complete"
@@ -423,7 +695,8 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
         if (!isSubAgent) {
           const { runBlockingReview } = await import("./review-gate")
-          const review = await runBlockingReview(ctx.sessionID)
+          const execution = ctx.extra?.execution as ExecutionRuntime.Context | undefined
+          const review = await runBlockingReview(ctx.sessionID, { executionID: execution?.executionID })
 
           if (!review.passed && !params.force) {
             const verdict = HarnessState.getReviewVerdict(ctx.sessionID)
@@ -478,6 +751,13 @@ export const TaskFlowTool = Tool.define("taskflow", {
         }
 
         // Option B: warn + force clear
+        if (
+          activeExecution &&
+          HarnessState.getPlanBinding(ctx.sessionID)?.executionID === activeExecution.executionID
+        ) {
+          const { ExecutionRuntime } = await import("@/core/execution/runtime")
+          await ExecutionRuntime.closeTaskflow({ sessionID: ctx.sessionID, execution: activeExecution })
+        }
         const { warnings } = HarnessState.clearPlan(ctx.sessionID)
         await Bus.publish(TuiEvent.ChainClear, { sessionID: ctx.sessionID })
 

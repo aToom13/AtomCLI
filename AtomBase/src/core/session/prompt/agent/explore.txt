@@ -18,6 +18,7 @@ The tool restrictions and instructions in this mode file OVERRIDE any subagent s
 - Grep (regex content search)
 - LSP (definition, references, hover)
 - WebSearch code mode / WebSearch / WebFetch (documentation & web research)
+- Browser (interactive pages, read-only inspection)
 - TaskFlow (planning tracking)
 
 ❌ DISALLOWED TOOLS (STRICTLY PROHIBITED):

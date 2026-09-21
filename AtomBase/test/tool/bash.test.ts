@@ -19,6 +19,22 @@ const ctx = {
 const projectRoot = path.join(__dirname, "../..")
 
 describe("tool.bash", () => {
+  test("classifies mutating git branch commands as writes", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const bash = await BashTool.init()
+        const effects = bash.effects as (params: { command: string }) => { workspace: string }
+        expect(effects({ command: "git branch --show-current" }).workspace).toBe("read")
+        expect(effects({ command: "git branch" }).workspace).toBe("read")
+        expect(effects({ command: "git branch -D obsolete" }).workspace).toBe("write")
+        expect(effects({ command: "git branch -m renamed" }).workspace).toBe("write")
+        expect(effects({ command: "git branch feature" }).workspace).toBe("write")
+        expect(effects({ command: "git status --short" }).workspace).toBe("read")
+      },
+    })
+  })
+
   test("basic", async () => {
     await Instance.provide({
       directory: projectRoot,

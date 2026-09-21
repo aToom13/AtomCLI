@@ -23,7 +23,7 @@
 ### Edit Patterns
 - **Small (<5 lines):** Direct `edit({ oldString, newString })`
 - **Medium (5–20 lines):** Include surrounding context for unique match
-- **Large (20+ lines):** `MultiEdit` for multiple related changes, or `write` for full rewrites
+- **Large (20+ lines):** Sequential `edit` calls (one per hunk, re-reading between them), or `write` for full rewrites
 
 ### Edit Errors
 - `"oldString not found"` → Re-read file, check tabs vs spaces, try smaller/larger context

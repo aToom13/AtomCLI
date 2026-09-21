@@ -23,6 +23,64 @@ export namespace LLM {
 
   export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
 
+  // Common model hallucinations / renames for real tool IDs. Repairing them here
+  // avoids the generic `invalid` round-trip (which the provider surfaces as
+  // `tried to call unavailable tool 'invalid'`).
+  // NOTE: `task` is the legacy name of the subagent-spawning tool now registered
+  // as `agent` (permission id is still `task`; explore/checker prompts also use
+  // "Agent / Task" for spawning). It must NOT map to `taskflow` (progress
+  // tracking) — a misrouted spawn would fail schema validation and land in
+  // `invalid` anyway.
+  export const TOOL_CALL_ALIASES: Record<string, string> = {
+    read_file: "read",
+    readfile: "read",
+    write_file: "write",
+    writefile: "write",
+    edit_file: "edit",
+    shell: "bash",
+    terminal: "bash",
+    command: "bash",
+    exec: "bash",
+    search: "grep",
+    find_files: "find",
+    glob: "find",
+    web_fetch: "webfetch",
+    fetch: "webfetch",
+    web_search: "websearch",
+    task: "agent",
+    subtask: "agent",
+    spawn: "agent",
+    subagent: "agent",
+    taskflow_tool: "taskflow",
+    skill_tool: "skill",
+    "default.skill": "skill",
+    memory_tool: "memory",
+    invalid_tool: "invalid",
+  }
+
+  export function resolveToolCallName(toolName: string, available: Record<string, unknown>): string | undefined {
+    if (available[toolName]) return toolName
+    const lower = toolName.toLowerCase()
+    if (lower !== toolName && available[lower]) return lower
+    // Strip namespace prefixes like `default.skill`, `tool.read`, `mcp__server__read`.
+    const segments = lower.split(/[.:/_]+/).filter(Boolean)
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const candidate = segments[i]
+      if (available[candidate]) return candidate
+      const aliased = TOOL_CALL_ALIASES[candidate]
+      if (aliased && available[aliased]) return aliased
+    }
+    const normalized = lower.replace(/[^a-z0-9]/g, "")
+    for (const id of Object.keys(available)) {
+      if (id.replace(/[^a-z0-9]/g, "") === normalized) return id
+      const aliased = TOOL_CALL_ALIASES[normalized]
+      if (aliased && available[aliased]) return aliased
+    }
+    const direct = TOOL_CALL_ALIASES[lower]
+    if (direct && available[direct]) return direct
+    return undefined
+  }
+
   export type StreamInput = {
     user: MessageV2.User
     sessionID: string
@@ -35,6 +93,8 @@ export namespace LLM {
     tools: Record<string, Tool>
     retries?: number
     execution?: ExecutionRuntime.Context
+    /** Completion report generation is admitted separately from bounded work. */
+    finalizationOnly?: boolean
   }
 
   export type StreamOutput = StreamTextResult<ToolSet, unknown> & {
@@ -56,11 +116,14 @@ export namespace LLM {
     })
     const [language, cfg] = await Promise.all([Provider.getLanguage(input.model), Config.get()])
 
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    const execPolicy = input.execution ? ExecutionRuntime.getExecutionPolicy(input.execution.executionID) : undefined
+
     const system = SystemPrompt.header(input.model.providerID)
     system.push(
       [
         // Always include PromptManager system prompt (core + provider + agent prompts)
-        ...SystemPrompt.provider(input.model, input.agent.name),
+        ...SystemPrompt.provider(input.model, input.agent.name, execPolicy?.scope, execPolicy?.risk),
         // Append agent-specific prompt as additional context (if any)
         ...(input.agent.prompt ? [input.agent.prompt] : []),
         // any custom prompt passed into this call
@@ -144,16 +207,18 @@ export namespace LLM {
 
     const startTime = Date.now()
     const estimatedOutputTokens = maxOutputTokens ?? Math.min(input.model.limit.output, OUTPUT_TOKEN_MAX)
-    const executionAttempt = await ExecutionRuntime.admitModelCall({
-      sessionID: input.sessionID,
-      purpose: `agent:${input.agent.name}`,
-      execution: input.execution,
-      estimateMicrousd: ExecutionRuntime.estimateMicrousd(
-        input.model,
-        JSON.stringify(finalMessages),
-        estimatedOutputTokens,
-      ),
-    })
+    const executionAttempt = input.finalizationOnly
+      ? undefined
+      : await ExecutionRuntime.admitModelCall({
+          sessionID: input.sessionID,
+          purpose: `agent:${input.agent.name}`,
+          execution: input.execution,
+          estimateMicrousd: ExecutionRuntime.estimateMicrousd(
+            input.model,
+            JSON.stringify(finalMessages),
+            estimatedOutputTokens,
+          ),
+        })
     const abortSignal = executionAttempt ? AbortSignal.any([input.abort, executionAttempt.signal]) : input.abort
     let result: StreamTextResult<ToolSet, unknown>
     try {
@@ -164,17 +229,30 @@ export namespace LLM {
           })
         },
         async experimental_repairToolCall(failed) {
-          const lower = failed.toolCall.toolName.toLowerCase()
-          if (lower !== failed.toolCall.toolName && tools[lower]) {
+          const repaired = LLM.resolveToolCallName(failed.toolCall.toolName, tools)
+          if (repaired && repaired !== failed.toolCall.toolName) {
             l.info("repairing tool call", {
               tool: failed.toolCall.toolName,
-              repaired: lower,
+              repaired,
             })
             return {
               ...failed.toolCall,
-              toolName: lower,
+              toolName: repaired,
             }
           }
+          if (!tools["invalid"]) {
+            l.warn("unresolvable tool call, invalid tool not available", {
+              tool: failed.toolCall.toolName,
+              error: failed.error.message,
+              available: Object.keys(tools),
+            })
+            return null
+          }
+          l.warn("unresolvable tool call, routing to invalid", {
+            tool: failed.toolCall.toolName,
+            error: failed.error.message,
+            available: Object.keys(tools).filter((x) => x !== "invalid"),
+          })
           return {
             ...failed.toolCall,
             input: JSON.stringify({
@@ -190,6 +268,11 @@ export namespace LLM {
         providerOptions: ProviderTransform.providerOptions(input.model, params.options),
         activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
         tools,
+        // When no tools are advertised (last step, answer-only turn), force
+        // text-only at the protocol level. Otherwise weaker models still emit
+        // tool calls that the SDK rejects as `tried to call unavailable tool`,
+        // which then loops through repair:unknown on every retry.
+        ...(Object.keys(tools).length === 0 ? { toolChoice: "none" as const } : {}),
         maxOutputTokens,
         abortSignal,
         headers: {
@@ -282,6 +365,11 @@ export namespace LLM {
     const disabled = PermissionNext.disabled(Object.keys(input.tools), input.agent.permission)
     for (const tool of Object.keys(input.tools)) {
       if (input.user.tools?.[tool] === false || disabled.has(tool)) {
+        log.debug("Pruning tool before dispatch", {
+          tool,
+          reason: input.user.tools?.[tool] === false ? "user_disabled" : "permission_disabled",
+          agent: input.agent.name,
+        })
         delete input.tools[tool]
       }
     }

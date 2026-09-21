@@ -60,6 +60,8 @@ The main agent review gate is enabled by default. Its configuration is backward 
 
 `reviewer_count` accepts 1 through 4. The `adaptive` policy reviews high-risk changes, `always` reviews every edit set, and `off` disables policy-triggered independent review. The blocking gate still respects the existing review lifecycle and attempt limits.
 
+Reviewer sessions are reused serially: a retry atomically replaces the previous reviewer invocation instead of racing it. A reviewer transport, session, or harness failure is reported as a procedural/harness blocker, not as evidence that the implementation itself failed; AtomCLI preserves the normal final summary and marks independent verification as unavailable. Source-backed reviewer findings remain verification blockers.
+
 ## Posting behavior
 
 GitHub posting creates a summary review and then attempts line comments for validated findings. GitLab posting creates a merge request note containing the structured summary. A rejected or inconclusive local result exits with a nonzero status.

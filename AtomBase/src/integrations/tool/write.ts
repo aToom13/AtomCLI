@@ -21,6 +21,13 @@ const LSP_DIAGNOSTICS_TIMEOUT_MS = 2_000
 
 export const WriteTool = Tool.define("write", {
   description: DESCRIPTION,
+  effects: {
+    workspace: "write",
+    external: "none",
+    reversible: true,
+    destructive: false,
+    privileged: false,
+  },
   parameters: z.object({
     content: z.string().max(MAX_WRITE_BYTES).describe("The content to write to the file"),
     filePath: z

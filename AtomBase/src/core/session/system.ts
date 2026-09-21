@@ -33,7 +33,12 @@ export namespace SystemPrompt {
     return ""
   }
 
-  export function provider(model: Provider.Model, agentName?: string) {
+  export function provider(
+    model: Provider.Model,
+    agentName?: string,
+    scope?: "direct" | "focused" | "coordinated",
+    risk?: "low" | "elevated" | "critical",
+  ) {
     // Map agent name to PromptManager AgentType
     // Known agent types get their specific prompts; others fall back to "agent"
     const knownAgentTypes = ["agent", "explore", "plan", "build", "checker", "reviewer"] as const
@@ -46,6 +51,8 @@ export namespace SystemPrompt {
     const prompt = PromptManager.build({
       modelId: model.api.id,
       agent: agentType,
+      scope,
+      risk,
     })
     return [prompt]
   }
