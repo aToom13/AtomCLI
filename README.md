@@ -65,6 +65,8 @@ Run `atomcli <command> --help` for the current options. The complete top-level c
 
 Inside the interactive TUI, use `/model` or `/models` to open the model picker. The picker supports search by model name, ID, provider, and capability; it also exposes favorites and free/reasoning filters. OAuth-backed ChatGPT/Codex models are marked as subscription models rather than free models.
 
+The session transcript follows live output only while the viewport is at the tail. Manual upward scrolling preserves the visible message and line while tokens, tool results, taskflow events, or terminal resizes change transcript height; returning to the bottom resumes follow-tail. `PageUp`/`PageDown`, `Home`/`End`, and the configured first/last-message bindings remain available for long sessions.
+
 Pressing Ctrl+C opens a safe exit confirmation with **Cancel** selected by default. Use the arrow keys or H/J/K/L to move between Cancel and Confirm, then press Enter; Escape cancels the dialog.
 
 Prompt, slash-command, and shell submissions show a delivery state. A server rejection is marked **FAILED**; a connection loss before acknowledgement is marked **DELIVERY UNKNOWN** so AtomCLI does not silently resend a command that may already have run. Focus that message and press Enter to restore its draft for inspection or retry.

@@ -34,6 +34,8 @@ atomcli import https://atomcli.ai/share/<slug>
 
 In the TUI, `/session` exposes switching, new session, history/transcript, compact, rename, export, and sharing actions. Session sharing may expose conversation content externally; confirm the user's intent before enabling or posting a share URL.
 
+Live transcript output follows the tail only while the viewport remains at the bottom. Scrolling upward preserves the visible message and line across streaming tokens, tool output, taskflow updates, and terminal resizes; returning to the bottom resumes follow-tail. Use `PageUp`/`PageDown`, `Home`/`End`, or configured first/last-message bindings to traverse long sessions.
+
 ## Memory
 
 Inspect learned profile data:

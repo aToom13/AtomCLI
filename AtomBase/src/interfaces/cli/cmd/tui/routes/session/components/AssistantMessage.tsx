@@ -9,12 +9,14 @@ import type { AssistantMessage as AssistantMessageType, Part } from "@atomcli/sd
 import { ReasoningPart } from "./ReasoningPart"
 import { TextPart } from "./TextPart"
 import { ToolPart } from "./ToolPart"
+import { CheckpointPart } from "./CheckpointPart"
 import { useSession } from "../context"
 
 const PART_MAPPING = {
   text: TextPart,
   tool: ToolPart,
   reasoning: ReasoningPart,
+  checkpoint: CheckpointPart,
 }
 
 export function AssistantMessage(props: { message: AssistantMessageType; parts: Part[]; last: boolean }) {

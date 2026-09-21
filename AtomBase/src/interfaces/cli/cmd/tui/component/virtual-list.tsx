@@ -4,6 +4,7 @@ import type { ScrollBoxRenderable, BoxRenderable } from "@opentui/core"
 interface VirtualListProps<T> {
   data: T[]
   scrollRef: () => ScrollBoxRenderable | undefined
+  followTail?: boolean
   renderItem: (item: T, index: () => number) => any
   itemKey?: (item: T, index: number) => string
   itemHeight?: number | ((item: T) => number)
@@ -75,6 +76,41 @@ export namespace VirtualWindow {
       if (!active.has(key)) cache.delete(key)
     }
   }
+
+  export interface Anchor {
+    index: number
+    offset: number
+  }
+
+  export function anchor(prefixHeights: number[], scrollTop: number, total: number): Anchor | undefined {
+    if (total === 0) return undefined
+    const top = Math.max(0, scrollTop)
+    let low = 0
+    let high = total
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2)
+      if ((prefixHeights[middle + 1] ?? 0) <= top) low = middle + 1
+      else high = middle
+    }
+    const index = Math.min(low, total - 1)
+    return { index, offset: Math.max(0, top - (prefixHeights[index] ?? 0)) }
+  }
+
+  export function restoreAnchor(
+    prefixHeights: number[],
+    anchor: Anchor | undefined,
+    viewportHeight: number,
+    total: number,
+  ) {
+    if (!anchor || total === 0) return 0
+    const index = Math.min(anchor.index, total - 1)
+    const top = (prefixHeights[index] ?? 0) + anchor.offset
+    return Math.min(top, Math.max(0, (prefixHeights[total] ?? 0) - Math.max(1, viewportHeight)))
+  }
+
+  export function isAtTail(scrollTop: number, viewportHeight: number, totalHeight: number, tolerance = 3) {
+    return scrollTop >= Math.max(0, totalHeight - Math.max(1, viewportHeight)) - tolerance
+  }
 }
 
 /**
@@ -90,25 +126,28 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   let activeMeasurementKeys = new Map<string, string>()
   let previousData: T[] | undefined
   let previousMeasurementKey: string | number | undefined
-  let measurementFrame = 0
+  let previousPrefix: number[] = []
+  let previousKeys: string[] = []
+  let previousViewportHeight = 40
+  let previousFollowTail = props.followTail !== false
+  let followingTail = previousFollowTail
+  let lastScrollTop = 0
 
   const stableKey = (item: T, index: number) => props.itemKey?.(item, index) ?? String(index)
   const measuredKey = (item: T, index: number) =>
     `${String(props.measurementKey ?? "default")}\u0000${stableKey(item, index)}`
 
-  const windowed = createMemo(() => props.data.length >= 30)
-
-  // Poll only while windowing is active because TUI lacks traditional DOM scroll events.
+  // ponytail: Polling interval handles TUI layout timing and anchor preservation; upgrade to scroll event if OpenTUI exposes ScrollBox events.
   createEffect(() => {
-    if (!windowed()) return
     const timer = setInterval(() => {
       const data = props.data
       const scroll = props.scrollRef()
-      if (scroll) {
-        if (scrollTop() !== scroll.scrollTop) setScrollTop(Math.max(0, scroll.scrollTop))
-        const height = scroll.viewport?.height ?? scroll.height
-        if (viewportHeight() !== height) setViewportHeight(Math.max(1, height))
-      }
+      if (!scroll) return
+
+      const height = Math.max(1, scroll.viewport?.height ?? scroll.height)
+      const actualTop = Math.max(0, scroll.scrollTop)
+      if (viewportHeight() !== height) setViewportHeight(height)
+      if (scrollTop() !== actualTop) setScrollTop(actualTop)
 
       const layoutKey = props.measurementKey
       if (data !== previousData || layoutKey !== previousMeasurementKey) {
@@ -120,24 +159,63 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
         previousMeasurementKey = layoutKey
       }
 
-      // Scroll position needs responsive sampling for fluid windowing, while
-      // layout measurement is intentionally throttled to avoid extra work.
-      measurementFrame++
-      if (measurementFrame % 2 === 0) {
-        let heightsChanged = false
-        for (const [stableItemKey, ref] of visibleRefs.entries()) {
-          const key = activeMeasurementKeys.get(stableItemKey)
-          if (ref && key) {
-            const h = ref.height
-            if (h > 0 && heightsCache.get(key) !== h) {
-              heightsCache.set(key, h)
-              heightsChanged = true
-            }
+      let heightsChanged = false
+      for (const [stableItemKey, ref] of visibleRefs.entries()) {
+        const key = activeMeasurementKeys.get(stableItemKey)
+        if (ref && key) {
+          const h = ref.height
+          if (h > 0 && heightsCache.get(key) !== h) {
+            heightsCache.set(key, h)
+            heightsChanged = true
           }
         }
-        if (heightsChanged) setHeightsTick((t) => t + 1)
       }
-    }, 32)
+      if (heightsChanged) setHeightsTick((t) => t + 1)
+
+      const currentPrefix = prefixHeights()
+      const currentKeys = data.map((item, index) => stableKey(item, index))
+      const layoutChanged = currentPrefix !== previousPrefix
+      const followEnabled = props.followTail !== false
+      const prefixTotal = currentPrefix[data.length] ?? 0
+      const totalHeight = Math.max(prefixTotal, scroll.scrollHeight)
+      const maxScroll = Math.max(0, totalHeight - height)
+      const atBottom = actualTop >= maxScroll - 2
+
+      if (followEnabled) {
+        if (!followingTail && atBottom) {
+          followingTail = true
+          ;(scroll as any)._hasManualScroll = false
+        } else if (followingTail && actualTop < lastScrollTop - 2 && !atBottom) {
+          followingTail = false
+        }
+
+        if (followingTail && actualTop < maxScroll) {
+          scroll.scrollTo(scroll.scrollHeight)
+          scroll.requestRender()
+        }
+      }
+
+      if (!followingTail && layoutChanged) {
+        const previousAnchor = VirtualWindow.anchor(previousPrefix, actualTop, previousKeys.length)
+        const anchorKey = previousAnchor ? previousKeys[previousAnchor.index] : undefined
+        const currentIndex = anchorKey ? currentKeys.indexOf(anchorKey) : -1
+        const nextTop = VirtualWindow.restoreAnchor(
+          currentPrefix,
+          previousAnchor && currentIndex >= 0 ? { ...previousAnchor, index: currentIndex } : previousAnchor,
+          height,
+          data.length,
+        )
+        if (Math.abs(nextTop - actualTop) > 1) {
+          scroll.scrollTo(nextTop)
+          scroll.requestRender()
+        }
+      }
+      previousPrefix = currentPrefix
+      previousKeys = currentKeys
+      previousViewportHeight = height
+      previousFollowTail = followEnabled
+      lastScrollTop = actualTop
+    }, 16)
     onCleanup(() => clearInterval(timer))
   })
 

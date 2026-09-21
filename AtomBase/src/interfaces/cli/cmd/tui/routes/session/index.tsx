@@ -260,7 +260,11 @@ export function Session() {
 
   function toBottom() {
     queueMicrotask(() => {
-      if (scroll) scroll.scrollTo(scroll.scrollHeight)
+      if (scroll) {
+        ;(scroll as any)._hasManualScroll = false
+        scroll.scrollTo(scroll.scrollHeight)
+        scroll.requestRender()
+      }
     })
   }
 
@@ -378,6 +382,7 @@ export function Session() {
               <VirtualList
                 data={messages()}
                 scrollRef={() => scroll}
+                followTail={autoFollow()}
                 itemKey={(message) => message.id}
                 measurementKey={[
                   contentWidth(),

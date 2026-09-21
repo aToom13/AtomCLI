@@ -68,6 +68,14 @@ export function formatAssistantHeader(msg: AssistantMessage, includeMetadata: bo
 }
 
 export function formatPart(part: Part, options: TranscriptOptions): string {
+  if (part.type === "checkpoint") {
+    const list = (title: string, values: string[]) =>
+      values.length ? `${title}\n${values.map((x) => `- ${x}`).join("\n")}\n\n` : ""
+    const runtime = part.runtime
+      ? `Execution: ${part.runtime.executionID}\nTrigger: ${part.runtime.reason}\nSlice: ${part.runtime.allowance.used}/${part.runtime.allowance.limit}; total tools: ${part.runtime.allowance.toolCalls}\nDispatch: ${part.runtime.model}\n\n`
+      : ""
+    return `◆ Checkpoint #${part.sequence}\n\n${runtime}${part.progressSummary}\n\n${list("Completed", part.completedWork)}${list("Remaining", part.remainingWork)}${list("Failures", part.failures)}${list("Blockers", part.blockers)}Route: ${part.routeAssessment}\n\n${part.requestedCalls ? `Allowance: requested ${part.requestedCalls}, granted ${part.grantedCalls ?? 0}\n\n` : ""}`
+  }
   if (part.type === "text" && !part.synthetic) {
     return `${part.text}\n\n`
   }
