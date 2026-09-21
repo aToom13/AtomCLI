@@ -2,7 +2,7 @@ name: atomcli_companion
 description: "AtomCLI Mobile Companion App"
 publish_to: "none"
 
-version: 3.4.3-debug2+30403
+version: 3.4.4+30404
 
 environment:
   sdk: ^3.10.3
