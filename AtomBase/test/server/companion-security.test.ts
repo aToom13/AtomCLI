@@ -39,7 +39,7 @@ function messages(socket: WebSocket) {
 
 describe("companion authentication", () => {
   test("starts the control API before an automatically assigned companion listener", async () => {
-    await using tmp = await tmpdir({ git: true })
+    await using tmp = await tmpdir({ git: true, config: { watcher: { ignore: [".git"] } } })
     const control = Server.listen({ hostname: "127.0.0.1", port: 0 })
     const companion = Server.listenCompanion({ port: 0, directory: tmp.path })
     try {
@@ -56,7 +56,7 @@ describe("companion authentication", () => {
   })
 
   test("allows automatically assigned companion listeners to coexist", async () => {
-    await using tmp = await tmpdir({ git: true })
+    await using tmp = await tmpdir({ git: true, config: { watcher: { ignore: [".git"] } } })
     const first = Server.listenCompanion({ port: 0, directory: tmp.path })
     const second = Server.listenCompanion({ port: 0, directory: tmp.path })
     try {
@@ -67,7 +67,7 @@ describe("companion authentication", () => {
   })
 
   test("does not silently move a companion listener to another port", async () => {
-    await using tmp = await tmpdir({ git: true })
+    await using tmp = await tmpdir({ git: true, config: { watcher: { ignore: [".git"] } } })
     const first = Server.listenCompanion({ port: 0, directory: tmp.path })
     try {
       expect(() => Server.listenCompanion({ port: first.port, directory: tmp.path })).toThrow(
@@ -79,7 +79,7 @@ describe("companion authentication", () => {
   })
 
   test("sends no snapshot before challenge authentication and rejects replayed mutations", async () => {
-    await using tmp = await tmpdir({ git: true })
+    await using tmp = await tmpdir({ git: true, config: { watcher: { ignore: [".git"] } } })
     const keyPair = generateKeyPairSync("ed25519")
     const publicDer = keyPair.publicKey.export({ format: "der", type: "spki" })
     const deviceName = `test-device-${crypto.randomUUID()}`
@@ -461,8 +461,6 @@ describe("companion authentication", () => {
         })
       }
       await server.stop(true)
-      // ponytail: Bun exposes no WebSocket handler-drain API; remove when one is available.
-      await Bun.sleep(100)
       await Instance.disposeAll()
       CompanionAuth.removeDevice(deviceName)
     }
