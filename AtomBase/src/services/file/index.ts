@@ -343,6 +343,7 @@ export namespace File {
   }
 
   export async function read(file: string, sessionID?: string): Promise<Content> {
+    file = file.replace(/\0/g, "")
     using _ = log.time("read", { file })
     const project = Instance.project
     const full = path.join(Instance.directory, file)
