@@ -95,14 +95,15 @@ export namespace Snapshot {
       pending += decoder.decode(chunk, { stream: true })
       let separator = pending.indexOf("\0")
       while (separator !== -1) {
-        const file = pending.slice(0, separator)
+        // Git's `-z` output is NUL-delimited; never let delimiter bytes reach filesystem APIs.
+        const file = pending.slice(0, separator).replace(/\0/g, "")
         pending = pending.slice(separator + 1)
         if (file) await onFile(file)
         separator = pending.indexOf("\0")
       }
     }
     pending += decoder.decode()
-    if (pending) await onFile(pending)
+    if (pending) await onFile(pending.replace(/\0/g, ""))
     return { exitCode: await process.exited, stderr: await stderr }
   }
 
