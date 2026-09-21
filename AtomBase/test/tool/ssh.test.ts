@@ -87,7 +87,7 @@ afterAll(async () => {
     directory: projectDirectory,
     fn: async () => Instance.dispose(),
   }).catch(() => {})
-  await server.close()
+  await server?.close()
   const globalConfigPath = path.join(Global.Path.config, "atomcli.jsonc")
   if (previousGlobalConfig === undefined) await fs.rm(globalConfigPath, { force: true })
   else await fs.writeFile(globalConfigPath, previousGlobalConfig)
