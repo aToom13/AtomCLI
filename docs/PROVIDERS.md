@@ -58,6 +58,8 @@ Antigravity OAuth models are subscription/plan entitlements. Their internal zero
 
 `atomcli/atomcli-auto` and `atomcli/atomcli-free` resolve at execution time. They do not treat catalog presence or an HTTP success status as proof that a model works. AtomCLI first requires fresh, capability-specific evidence from a bounded text or side-effect-free tool-call probe; completed real requests refresh the same evidence. Evidence expires after a TTL and is isolated by the effective provider, real model, endpoint, credentials/configuration fingerprint, and capability without storing credentials.
 
+OpenCode Zen models marked for anonymous access work without login. AtomCLI sends `Bearer public` with the current OpenCode request identity (`User-Agent: opencode/<version>` and `x-opencode-*` metadata); OpenCode then applies its anonymous-model and IP limits. AtomCLI keeps this OpenCode protocol version separate from its own release version so upstream compatibility can be updated independently. An API key remains optional for account-backed Zen access.
+
 By default, both aliases consider explicitly zero-cost models from connected providers. `AtomCLI Free` always carries a hard free-only route policy through retries, fallback, later tool turns, compaction, memory helpers, and orchestrated child sessions. Unknown pricing is not considered free, and a paid fallback is never selected silently. `AtomCLI Auto` may consider verified paid models only when `experimental.auto_router.allow_paid_models` is explicitly enabled. Paid verification probes require the separate `allow_paid_probes` opt-in because probing can incur cost. Use `allowed_providers` to bound the candidate set.
 
 ```jsonc
@@ -176,4 +178,5 @@ The models.dev catalog is cached at `~/.atomcli/cache/models.json`. It is an imp
 - Run `atomcli models <provider>` to confirm the local model identifier.
 - Use `atomcli --print-logs` for diagnostics.
 - Check the configured `provider` entry and any project-level override before changing global configuration.
-- If every anonymous `atomcli/*-free` model reports that the free tier only works in OpenCode, update AtomCLI; current builds forward the Zen session identity required by the gateway.
+- If the gateway reports `OpenCode's free tier can only be used from within OpenCode`, this is a client rejection, not evidence that login is required. Both chat and verification requests need consistent OpenCode metadata. AtomCLI generates `ses_`/`msg_` IDs for helper calls and isolates cached SDK clients by provider. Restart the running development process after source changes; a successful call to one model does not verify every route.
+- Zen greeting turns retain the real coding tools: sending only `model_control` caused this rejection even with correct headers. Explicit permission and execution-policy restrictions remain in force; tool-free helper requests are not covered by this fix.

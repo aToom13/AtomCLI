@@ -9,6 +9,7 @@ import { ProviderTransform } from "@/integrations/provider/transform"
 import { Env } from "@/core/env"
 import { Config } from "@/core/config/config"
 import { ModelFallback } from "@/integrations/provider/fallback"
+import { Installation } from "@/services/installation"
 
 test("Auto and Free complete text and tool verification for one batch before probing more models", async () => {
   await using tmp = await tmpdir()
@@ -61,19 +62,29 @@ test("provider requests have a finite default timeout", () => {
   expect(Provider.requestTimeout({ timeout: false })).toBe(false)
 })
 
-test("AtomCLI Zen headers include the OpenCode session aliases", () => {
-  const headers = Provider._internals.zenHeaders({
-    "x-atomcli-project": "project",
-    "x-atomcli-session": "session",
-    "x-atomcli-request": "request",
-    "x-atomcli-client": "client",
-    "x-opencode-client": "preserved",
-  })
+test("AtomCLI Zen requests use the current OpenCode client identity", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const headers = Provider._internals.openCodeHeaders({
+        "x-opencode-session": "session",
+        "x-opencode-request": "request",
+        "User-Agent": "ai-sdk/default",
+      })
 
-  expect(headers.get("x-opencode-project")).toBe("project")
-  expect(headers.get("x-opencode-session")).toBe("session")
-  expect(headers.get("x-opencode-request")).toBe("request")
-  expect(headers.get("x-opencode-client")).toBe("preserved")
+      expect(headers.get("x-opencode-project")).toBeTruthy()
+      expect(headers.get("x-opencode-session")).toBe("session")
+      expect(headers.get("x-opencode-request")).toBe("request")
+      expect(headers.get("x-opencode-client")).toBe("cli")
+      expect(headers.get("User-Agent")).toBe(`opencode/${Installation.OPENCODE_VERSION}`)
+      expect(Installation.OPENCODE_VERSION).toBe("1.18.31")
+      expect(headers.has("x-atomcli-session")).toBe(false)
+      const probeHeaders = Provider._internals.openCodeHeaders()
+      expect(probeHeaders.get("x-opencode-session")).toMatch(/^ses_[a-zA-Z0-9]{26}$/)
+      expect(probeHeaders.get("x-opencode-request")).toMatch(/^msg_[a-zA-Z0-9]{26}$/)
+    },
+  })
 })
 
 test("AtomCLI public catalog excludes deprecated and paid models", () => {
@@ -1660,6 +1671,7 @@ test("completely new provider not in database can be configured", async () => {
               },
               options: {
                 apiKey: "new-key",
+                modelDiscovery: false,
               },
             },
           },

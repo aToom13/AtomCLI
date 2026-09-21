@@ -362,6 +362,8 @@ export namespace Installation {
   }
 
   export const VERSION = typeof ATOMCLI_VERSION === "string" ? ATOMCLI_VERSION : "local"
+  // OpenCode gateway compatibility version. Update with the upstream request protocol.
+  export const OPENCODE_VERSION = "1.18.31"
   export const CHANNEL = typeof ATOMCLI_CHANNEL === "string" ? ATOMCLI_CHANNEL : "local"
   export const USER_AGENT = `atomcli/${CHANNEL}/${VERSION}/${Flag.ATOMCLI_CLIENT}`
 

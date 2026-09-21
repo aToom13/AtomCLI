@@ -100,11 +100,14 @@ export namespace SessionPrompt {
   }
 
   function shouldLoadTools(input: {
+    providerID?: string
     prompt: string
     explicitTools: boolean
     bypassAgentCheck: boolean
     hasPriorToolActivity: boolean
   }) {
+    // Zen rejects anonymous greeting requests with only model_control advertised.
+    if (input.providerID === "atomcli" || input.providerID === "opencode") return true
     if (input.explicitTools || input.bypassAgentCheck || input.hasPriorToolActivity) return true
     const normalized = input.prompt
       .toLowerCase()
@@ -126,7 +129,20 @@ export namespace SessionPrompt {
       "teşekkürler",
       "teşekkür ederim",
     ])
-    return !casual.has(normalized)
+    // Exact greeting -> text-only turn is fine. But "Selam, <real task>" must load tools;
+    // otherwise the model gets zero tool schemas and hallucinates calls the provider
+    // rejects as unavailable (seen as `tried to call unavailable tool 'invalid'`).
+    if (casual.has(normalized)) return false
+    const firstWord = normalized.split(" ")[0]
+    if (firstWord && (casual.has(firstWord) || casual.has(firstWord.replace(/\?+$/, "")))) {
+      // Single greeting word (optionally with punctuation already stripped) -> casual.
+      // Greeting + substantive content -> needs tools.
+      const rest = normalized.slice(firstWord.length).trim().replace(/^\?+/, "").trim()
+      if (!rest) return false
+      if (rest.split(" ").length < 3 && rest.length < 12) return false
+      return true
+    }
+    return true
   }
 
   function shouldResolveTools(isLastStep: boolean) {
@@ -1687,6 +1703,7 @@ export namespace SessionPrompt {
     using _ = log.time("resolveTools")
     const explicitTools = Object.values(input.tools ?? {}).some((enabled) => enabled === true)
     const loadAll = shouldLoadTools({
+      providerID: input.model.providerID,
       prompt: input.prompt,
       explicitTools,
       bypassAgentCheck: input.bypassAgentCheck,

@@ -202,10 +202,10 @@ export namespace LLM {
             : undefined),
           ...(input.model.providerID.startsWith("atomcli") || input.model.providerID === "opencode"
             ? {
-                "x-atomcli-project": Instance.project.id,
-                "x-atomcli-session": input.sessionID,
-                "x-atomcli-request": input.user.id,
-                "x-atomcli-client": Flag.ATOMCLI_CLIENT,
+                "x-opencode-project": Instance.project.id,
+                "x-opencode-session": input.sessionID,
+                "x-opencode-request": input.user.id,
+                "x-opencode-client": Flag.ATOMCLI_CLIENT,
               }
             : undefined),
           ...input.model.headers,

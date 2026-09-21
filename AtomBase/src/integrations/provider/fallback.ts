@@ -314,8 +314,7 @@ export namespace ModelFallback {
                       ...(model.providerID.startsWith("atomcli") || model.providerID === "opencode"
                         ? {
                             headers: {
-                              "x-atomcli-session":
-                                options?.sessionID ?? concreteUser?.sessionID ?? "model-verification",
+                              "x-opencode-session": options?.sessionID ?? concreteUser?.sessionID,
                             },
                           }
                         : {}),

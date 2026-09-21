@@ -47,6 +47,8 @@ import type { ExecutionRuntime } from "@/core/execution/runtime"
 import { RouteEligibility } from "@/core/routing/route-eligibility"
 import { fetchOpenAICompatibleModels } from "./custom"
 import { ModelBilling } from "./billing"
+import { Installation } from "@/services/installation"
+import { Identifier } from "@/core/id/id"
 
 const PROVIDER_REFRESH_INTERVAL_MS = 15_000
 
@@ -880,13 +882,13 @@ export namespace Provider {
       if (existingModel) return catalogStillApplies ? existingModel.variants : {}
       return ProviderTransform.variants(parsedModel)
     },
-    zenHeaders(input?: HeadersInit) {
+    openCodeHeaders(input?: HeadersInit) {
       const headers = new Headers(input)
-      if (!headers.has("x-atomcli-session")) return headers
-      for (const name of ["project", "session", "request", "client"]) {
-        const value = headers.get(`x-atomcli-${name}`)
-        if (value && !headers.has(`x-opencode-${name}`)) headers.set(`x-opencode-${name}`, value)
-      }
+      if (!headers.has("x-opencode-project")) headers.set("x-opencode-project", Instance.project.id)
+      if (!headers.get("x-opencode-session")) headers.set("x-opencode-session", Identifier.ascending("session"))
+      if (!headers.get("x-opencode-request")) headers.set("x-opencode-request", Identifier.ascending("message"))
+      if (!headers.has("x-opencode-client")) headers.set("x-opencode-client", Flag.ATOMCLI_CLIENT)
+      headers.set("User-Agent", `opencode/${Installation.OPENCODE_VERSION}`)
       return headers
     },
   }
@@ -1449,7 +1451,8 @@ export namespace Provider {
           ...model.headers,
         }
 
-      const key = Bun.hash.xxHash32(JSON.stringify({ npm: model.api.npm, options }))
+      // The cached fetch closure captures provider identity and its request transforms.
+      const key = Bun.hash.xxHash32(JSON.stringify({ providerID: model.providerID, npm: model.api.npm, options }))
       const existing = s.sdk.get(key)
       if (existing) return existing
 
@@ -1483,7 +1486,7 @@ export namespace Provider {
         }
 
         if (model.providerID.startsWith("atomcli") || model.providerID === "opencode") {
-          opts.headers = _internals.zenHeaders(opts.headers as HeadersInit | undefined)
+          opts.headers = _internals.openCodeHeaders(opts.headers as HeadersInit | undefined)
         }
 
         let response = await fetchFn(input, {
@@ -1491,6 +1494,21 @@ export namespace Provider {
           // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
           timeout: false,
         })
+
+        if (response.status === 403 && (model.providerID.startsWith("atomcli") || model.providerID === "opencode")) {
+          const headers = new Headers(opts.headers)
+          log.warn("Zen request rejected", {
+            providerID: model.providerID,
+            modelID: requestModel.api.id,
+            sdk: model.api.npm,
+            userAgent: headers.get("user-agent"),
+            hasProject: Boolean(headers.get("x-opencode-project")),
+            hasSession: Boolean(headers.get("x-opencode-session")),
+            hasRequest: Boolean(headers.get("x-opencode-request")),
+            hasClient: Boolean(headers.get("x-opencode-client")),
+            customFetch: Boolean(customFetch),
+          })
+        }
 
         const isStreaming = (() => {
           try {
