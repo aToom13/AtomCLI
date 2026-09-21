@@ -113,6 +113,8 @@ coverage/
 .nyc_output/
 *.lcov
 test-results/
+test-output/
+test-outputs/
 playwright-report/
 blob-report/
 junit*.xml
@@ -128,6 +130,7 @@ scratch/
 /astra-*.md
 /calisma-plani.md
 /model-gorev-dagilimi.md
+/docs/OPENCODE-AUTH-VALIDATION.md
 
 # Local release helper (never commit)
 .local-release-*.sh
