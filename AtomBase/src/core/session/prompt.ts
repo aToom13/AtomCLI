@@ -301,12 +301,12 @@ export namespace SessionPrompt {
     ]
   }
 
-  function buildDeterministicFinalResponse(input: {
+  async function buildDeterministicFinalResponse(input: {
     sessionID: string
     executionID: string
     reasons: string[]
-  }): string {
-    const { ExecutionRuntime } = require("@/core/execution/runtime")
+  }): Promise<string> {
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
     const checkpoints = ExecutionRuntime.checkpoints(input.executionID)
     const lastPayload = checkpoints.at(-1)?.payload as { checkpoint?: ExecutionCheckpoint.Result } | undefined
     const cp = lastPayload?.checkpoint
@@ -2355,7 +2355,7 @@ export namespace SessionPrompt {
           continue
         }
         const reason = `Execution stopped by runtime constraints: ${finalResponseOnly.reasons.join("; ")}`
-        const fallbackText = buildDeterministicFinalResponse({
+        const fallbackText = await buildDeterministicFinalResponse({
           sessionID,
           executionID: executionContext.executionID,
           reasons: finalResponseOnly.reasons,

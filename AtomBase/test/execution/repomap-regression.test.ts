@@ -136,7 +136,7 @@ describe("RepoMap Transcript Regression Suite", () => {
 
         // Verify deterministic fallback generator produces rich final response
         const fallbackText = SessionPrompt._internals.checkpointFinalParts
-          ? (SessionPrompt as any)._internals?.buildDeterministicFinalResponse?.({
+          ? await (SessionPrompt as any)._internals?.buildDeterministicFinalResponse?.({
               sessionID: root.id,
               executionID,
               reasons: ["Execution extension limit reached."],
