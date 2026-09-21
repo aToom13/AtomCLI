@@ -159,6 +159,18 @@ describe("companion authentication", () => {
           project_directory: tmp.path,
         },
       })
+      await next((value) => value.type === "snapshot")
+      const modelList = await next((value) => value.type === "models_list")
+      expect(Array.isArray(modelList.models)).toBe(true)
+      const firstModel = (modelList.models as Array<Record<string, unknown>>)[0]
+      if (firstModel) {
+        expect(typeof firstModel.free).toBe("boolean")
+        expect(typeof firstModel.reasoning).toBe("boolean")
+        expect(Array.isArray(firstModel.variants)).toBe(true)
+      }
+      expect(Array.isArray((await next((value) => value.type === "session_list")).sessions)).toBe(true)
+      await next((value) => value.type === "agents_list")
+
       socket.send(
         JSON.stringify({
           type: "sync",
@@ -171,14 +183,7 @@ describe("companion authentication", () => {
         snapshot_follows: true,
         bridge_epoch: authenticated.bridge_epoch,
       })
-      const modelList = await next((value) => value.type === "models_list")
-      expect(Array.isArray(modelList.models)).toBe(true)
-      const firstModel = (modelList.models as Array<Record<string, unknown>>)[0]
-      if (firstModel) {
-        expect(typeof firstModel.free).toBe("boolean")
-        expect(typeof firstModel.reasoning).toBe("boolean")
-        expect(Array.isArray(firstModel.variants)).toBe(true)
-      }
+      await next((value) => value.type === "snapshot")
       expect(Array.isArray((await next((value) => value.type === "session_list")).sessions)).toBe(true)
 
       const directoryRequestID = crypto.randomUUID()
@@ -312,6 +317,9 @@ describe("companion authentication", () => {
       expect((snapshot.payload as Record<string, unknown>).pending_questions).toContainEqual(
         expect.objectContaining({ sessionID: "session_mobile_test", directory: tmp.path }),
       )
+      await next((value) => value.type === "session_list")
+      await next((value) => value.type === "models_list")
+      await next((value) => value.type === "agents_list")
 
       const questionPayload = question.payload as Record<string, unknown>
       const questionRequestID = crypto.randomUUID()
@@ -446,7 +454,12 @@ describe("companion authentication", () => {
       socket.send(JSON.stringify({ type: "request_snapshot" }))
       expect((await next((value) => value.error === "authentication_required")).error).toBe("authentication_required")
     } finally {
-      socket.close()
+      if (socket.readyState !== WebSocket.CLOSED) {
+        await new Promise<void>((resolve) => {
+          socket.addEventListener("close", () => resolve(), { once: true })
+          if (socket.readyState === WebSocket.OPEN) socket.close()
+        })
+      }
       await server.stop(true)
       await Instance.disposeAll()
       CompanionAuth.removeDevice(deviceName)
