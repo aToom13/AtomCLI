@@ -40,6 +40,35 @@ beforeEach(() => {
 })
 
 describe("ReviewGate - runBlockingReview", () => {
+  test("skips stale required decisions when no mutations exist", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "session-gate-no-mutations"
+        const assessment = await evaluateReviewDecision(sessionID)
+        const result = await runBlockingReview(sessionID, {
+          decision: {
+            ...assessment.decision,
+            requirement: "required",
+            reasonCode: "no_mutations",
+            requiredReviewers: 2,
+          },
+          authorizeSession: async () => {},
+        })
+
+        expect(assessment.decision).toMatchObject({
+          requirement: "not_required",
+          reasonCode: "no_mutations",
+          requiredReviewers: 0,
+        })
+        expect(result).toMatchObject({ passed: true, skipped: true })
+        expect(spawnMock).not.toHaveBeenCalled()
+      },
+    })
+  })
+
   test("records policy skip as not_required rather than a reviewer PASS", async () => {
     await using tmp = await tmpdir({
       config: {

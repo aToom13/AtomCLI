@@ -16,6 +16,7 @@ AtomCLI 3.4.4 adds durable adaptive execution, stronger recovery and verificatio
 - Prevented stale owners, cancelled invocations, exhausted retries, final-step continuations, and repeated no-progress verification from extending execution incorrectly.
 - Added deterministic final-response fallback so exhausted executions do not leave empty assistant turns.
 - Kept filesystem permission failures, invalid arguments, missing edit matches, rejected permissions, and browser locator timeouts from creating false unknown-work records when no mutation occurred.
+- Prevented conversation-only and read-only turns from launching independent reviewer agents when no workspace mutation exists.
 
 ## Providers and Models
 
@@ -37,7 +38,7 @@ AtomCLI 3.4.4 adds durable adaptive execution, stronger recovery and verificatio
 ## Validation
 
 - Root monorepo typecheck passed.
-- Root monorepo tests passed: 1,766 tests passed, 10 opt-in tests skipped, 0 failed.
+- Root monorepo tests passed: 1,768 tests passed, 10 opt-in tests skipped, 0 failed.
 - Bundled `atomcli-guide` discovery and its three focused tests passed.
 - Live provider checks and physical-device behavior remain opt-in and environment-dependent.
 

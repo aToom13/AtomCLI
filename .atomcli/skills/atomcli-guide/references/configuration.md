@@ -195,3 +195,5 @@ Execution contracts use these pipelines:
 When enabled, the classifier call runs with the user's selected model and is admitted against the execution call and cost budget. Scope and risk promote dynamically based on observable runtime evidence. Adaptive policy extensions never raise explicit `execution_budget` limits; those user limits remain hard ledger-enforced ceilings.
 
 When this option is absent or `false`, AtomCLI skips the classifier model call and uses conservative defaults: normal build work is coordinated, plan/explore work is focused, and reviewer work is direct. Adaptive limits, checkpoints, watchdogs, and finalization remain active.
+
+Independent review requires workspace mutation evidence. Conversation-only and read-only turns do not launch reviewer agents, even under the conservative coordinated default.

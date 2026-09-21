@@ -15,6 +15,17 @@ describe("ReviewPolicy", () => {
     expect(ReviewPolicy.requiresIndependentReview("off", { editedFiles: ["src/auth.ts"] })).toBe(false)
   })
 
+  test("never requires independent review without mutations", () => {
+    expect(
+      ReviewPolicy.requiresIndependentReview("adaptive", {
+        editedFiles: [],
+        scope: "coordinated",
+        risk: "elevated",
+      }),
+    ).toBe(false)
+    expect(ReviewPolicy.requiresIndependentReview("adaptive", { editedFiles: [], risk: "critical" })).toBe(false)
+  })
+
   test("fast feedback skips prototype manifests but retains critical review", () => {
     expect(
       ReviewPolicy.requiresIndependentReview("fast", {

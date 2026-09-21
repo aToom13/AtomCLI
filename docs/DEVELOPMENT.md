@@ -165,6 +165,8 @@ Adaptive execution pipelines (`direct`, `focused`, `coordinated`) are active by 
 
 `experimental.execution_classification: true` additionally asks the selected model to classify each root turn before work begins. The classifier call is admitted against the active execution call/cost budget. When the option is absent or `false`, AtomCLI skips that model call and installs a conservative default contract: normal build work uses the coordinated pipeline, plan/explore use focused, and reviewer uses direct. Runtime evidence can still promote scope and risk, but never downgrade them.
 
+Independent review requires workspace mutation evidence. Conversation-only and read-only turns do not launch reviewer agents, including when conservative defaults select the coordinated pipeline.
+
 Coordinated executions must establish durable taskflow work before normal tools are exposed. Before a real work tool begins, the runtime atomically advances the first pending step to `running`, preserving `pending → running → evidence → completed/failed` ordering even when the model omitted an explicit status update. Use `taskflow(action="revise")` to append newly discovered work; revision history and earlier items remain intact. A model-reported external blocker leaves the execution active in `waiting_input`, so later user input resumes the same execution and allowance state; watchdog and extension-ceiling blockers instead produce the final report immediately.
 
 ## Architecture

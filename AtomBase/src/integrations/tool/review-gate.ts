@@ -270,9 +270,12 @@ export async function runBlockingReview(
   } = {},
 ): Promise<ReviewResult> {
   options.signal?.throwIfAborted()
-  const config = await Config.get()
   const assessment = await evaluateReviewDecision(sessionID, options.executionID)
   const { decision, editedFiles, originalPrompt, impact, policy, diff } = assessment
+  if (editedFiles.length === 0) {
+    log.info("review gate not required without mutations", { sessionID, policy, impact })
+    return { passed: true, exhausted: false, skipped: true }
+  }
   if (
     options.decision &&
     (options.decision.policyDigest !== decision.policyDigest ||

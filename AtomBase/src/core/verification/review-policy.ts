@@ -103,9 +103,10 @@ export namespace ReviewPolicy {
 
   export function requiresIndependentReview(policy: Mode, input: Input) {
     if (policy === "off") return false
+    if ((input.editedFiles?.length ?? 0) === 0) return false
     if (input.risk === "critical") return true
     if (input.risk === "elevated" && input.scope === "coordinated") return true
-    if (policy === "always") return (input.editedFiles?.length ?? 0) > 0
+    if (policy === "always") return true
     if (policy === "fast") {
       if ((input.editedFiles?.length ?? 0) === 0) return false
       if (input.testsFailed || (input.retries ?? 0) >= 2) return true
