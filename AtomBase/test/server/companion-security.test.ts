@@ -461,6 +461,8 @@ describe("companion authentication", () => {
         })
       }
       await server.stop(true)
+      // ponytail: Bun exposes no WebSocket handler-drain API; remove when one is available.
+      await Bun.sleep(100)
       await Instance.disposeAll()
       CompanionAuth.removeDevice(deviceName)
     }
