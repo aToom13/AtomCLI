@@ -14,7 +14,7 @@ Windows PowerShell installer:
 irm https://raw.githubusercontent.com/aToom13/AtomCLI/main/install.ps1 | iex
 ```
 
-The installers automatically scan required commands and browser libraries, install missing dependencies with the available platform package manager, synchronize release-matched Playwright and Chromium, and perform a real browser launch check. They report setup-stage progress, and the Unix installer shows download progress in interactive terminals. Linux package installation may request `sudo`. Alpine uses the matching musl binary and requires `libstdc++` and `libgcc`; the installer checks and adds both packages when missing.
+The installers automatically scan required commands and browser libraries, install missing dependencies with the available platform package manager, synchronize release-matched Playwright and Chromium, and perform a real browser launch check. They retry transient downloads and select baseline x64 builds on processors without AVX2; set `ATOMCLI_BASELINE=1` to force this selection. Windows PowerShell 5.1 is supported without treating native command stderr as an installation failure. They report setup-stage progress, and the Unix installer shows download progress in interactive terminals. Linux package installation may request `sudo`. Alpine uses the matching musl binary and requires `libstdc++` and `libgcc`; the installer checks and adds both packages when missing.
 
 Verify the installed command:
 

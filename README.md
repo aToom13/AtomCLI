@@ -48,7 +48,7 @@ bun run build
 
 Build output is written to `AtomBase/dist/` and is removed at the beginning of every build. Releases are triggered only by pushing a `v*` tag.
 
-Native release binaries target Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64. Stable releases also attach a signed, checksum-covered Android Companion APK. Baseline x64 builds support older CPUs without AVX2. FreeBSD is not a release target because the Bun runtime does not provide a FreeBSD executable target; the bundled ripgrep integration can use a system `rg` on FreeBSD when embedded in a future supported runtime.
+Native release binaries target Linux x64/ARM64 (glibc and musl), macOS x64/ARM64, and Windows x64/ARM64. Stable releases also attach a signed, checksum-covered Android Companion APK. Installers retry transient downloads and select baseline x64 builds on processors without AVX2; set `ATOMCLI_BASELINE=1` to force this selection. The Windows installer supports Windows PowerShell 5.1 without treating native command stderr as installation failure. FreeBSD is not a release target because the Bun runtime does not provide a FreeBSD executable target; the bundled ripgrep integration can use a system `rg` on FreeBSD when embedded in a future supported runtime.
 
 ## Start
 

@@ -30,10 +30,14 @@ install_dir="$fixture_dir/install"
 mkdir -p "$release_dir"
 printf 'mock release binary\n' > "$release_dir/atomcli-linux-x64"
 printf 'mock musl release binary\n' > "$release_dir/atomcli-linux-x64-musl"
+printf 'mock baseline release binary\n' > "$release_dir/atomcli-linux-x64-baseline"
+printf 'mock baseline musl release binary\n' > "$release_dir/atomcli-linux-x64-baseline-musl"
 release_hash=$(sha256sum "$release_dir/atomcli-linux-x64" | awk '{print $1}')
 musl_release_hash=$(sha256sum "$release_dir/atomcli-linux-x64-musl" | awk '{print $1}')
-printf '%s  atomcli-linux-x64\n%s  atomcli-linux-x64-musl\n' \
-    "$release_hash" "$musl_release_hash" > "$release_dir/SHA256SUMS"
+baseline_hash=$(sha256sum "$release_dir/atomcli-linux-x64-baseline" | awk '{print $1}')
+baseline_musl_hash=$(sha256sum "$release_dir/atomcli-linux-x64-baseline-musl" | awk '{print $1}')
+printf '%s  atomcli-linux-x64\n%s  atomcli-linux-x64-musl\n%s  atomcli-linux-x64-baseline\n%s  atomcli-linux-x64-baseline-musl\n' \
+    "$release_hash" "$musl_release_hash" "$baseline_hash" "$baseline_musl_hash" > "$release_dir/SHA256SUMS"
 
 download_file() {
     local url="$1"
@@ -42,6 +46,8 @@ download_file() {
     case "$url" in
         */atomcli-linux-x64) cp "$release_dir/atomcli-linux-x64" "$destination" ;;
         */atomcli-linux-x64-musl) cp "$release_dir/atomcli-linux-x64-musl" "$destination" ;;
+        */atomcli-linux-x64-baseline) cp "$release_dir/atomcli-linux-x64-baseline" "$destination" ;;
+        */atomcli-linux-x64-baseline-musl) cp "$release_dir/atomcli-linux-x64-baseline-musl" "$destination" ;;
         */SHA256SUMS) cp "$release_dir/SHA256SUMS" "$destination" ;;
         *) return 1 ;;
     esac
@@ -52,6 +58,7 @@ ARCH_TYPE="x64"
 VERSION="9.8.7"
 INSTALL_DIR="$install_dir"
 CONFIG_DIR="$fixture_dir/config"
+is_baseline_required() { return 1; }
 install_binary >/dev/null
 
 cmp "$release_dir/atomcli-linux-x64" "$install_dir/atomcli"
@@ -69,6 +76,25 @@ install_binary >/dev/null
 cmp "$release_dir/atomcli-linux-x64-musl" "$musl_install_dir/atomcli"
 grep -Fxq \
     "https://github.com/aToom13/AtomCLI/releases/download/v9.8.7/atomcli-linux-x64-musl" \
+    "$fixture_dir/downloads"
+
+is_baseline_required() { return 0; }
+is_musl_linux() { return 1; }
+baseline_install_dir="$fixture_dir/baseline-install"
+INSTALL_DIR="$baseline_install_dir"
+install_binary >/dev/null
+cmp "$release_dir/atomcli-linux-x64-baseline" "$baseline_install_dir/atomcli"
+grep -Fxq \
+    "https://github.com/aToom13/AtomCLI/releases/download/v9.8.7/atomcli-linux-x64-baseline" \
+    "$fixture_dir/downloads"
+
+is_musl_linux() { return 0; }
+baseline_musl_install_dir="$fixture_dir/baseline-musl-install"
+INSTALL_DIR="$baseline_musl_install_dir"
+install_binary >/dev/null
+cmp "$release_dir/atomcli-linux-x64-baseline-musl" "$baseline_musl_install_dir/atomcli"
+grep -Fxq \
+    "https://github.com/aToom13/AtomCLI/releases/download/v9.8.7/atomcli-linux-x64-baseline-musl" \
     "$fixture_dir/downloads"
 
 # Browser runtime setup must run independently of the source-build fallback so

@@ -220,6 +220,27 @@ is_musl_linux() {
     ldd --version 2>&1 | grep -qi musl
 }
 
+is_baseline_required() {
+    [ "$ARCH_TYPE" = "x64" ] || return 1
+    [ "${ATOMCLI_BASELINE:-0}" = "1" ] && return 0
+
+    case "$OS_TYPE" in
+        linux)
+            [ -r /proc/cpuinfo ] || return 1
+            grep -qiE '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo && return 1
+            return 0
+            ;;
+        darwin)
+            local features
+            features=$(sysctl -n machdep.cpu.leaf7_features machdep.cpu.features 2>/dev/null || true)
+            [ -n "$features" ] || return 1
+            printf '%s\n' "$features" | grep -qiE '(^|[[:space:]])AVX2([[:space:]]|$)' && return 1
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 ensure_alpine_runtime_dependencies() {
     [ "$OS_TYPE" = "linux" ] || return 0
     has apk || return 0
@@ -332,15 +353,15 @@ download_file() {
     local destination="$2"
     if has curl; then
         if [ -t 2 ]; then
-            curl -fL --progress-bar "$url" -o "$destination"
+            curl -fL --retry 3 --retry-delay 1 --connect-timeout 15 --progress-bar "$url" -o "$destination"
         else
-            curl -fsSL "$url" -o "$destination"
+            curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 15 "$url" -o "$destination"
         fi
     else
         if [ -t 2 ]; then
-            wget "$url" -O "$destination"
+            wget --tries=3 --timeout=15 "$url" -O "$destination"
         else
-            wget -q "$url" -O "$destination"
+            wget -q --tries=3 --timeout=15 "$url" -O "$destination"
         fi
     fi
 }
@@ -466,6 +487,9 @@ EOF
     fi
     RESOLVED_VERSION="$version"
     local binary_name="atomcli-${OS_TYPE}-${ARCH_TYPE}"
+    if is_baseline_required; then
+        binary_name="${binary_name}-baseline"
+    fi
     if is_musl_linux; then
         binary_name="${binary_name}-musl"
     fi

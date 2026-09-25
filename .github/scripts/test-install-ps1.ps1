@@ -19,6 +19,37 @@ try {
         throw "PowerShell installer release mapping is incorrect"
     }
 
+    $baselineRelease = Get-ReleaseDownloadInfo -Version "9.8.7" -Arch "x64" -Baseline $true
+    if ($baselineRelease.AssetName -ne "atomcli-windows-x64-baseline.exe") {
+        throw "PowerShell installer baseline release mapping is incorrect"
+    }
+    $armBaselineRelease = Get-ReleaseDownloadInfo -Version "9.8.7" -Arch "arm64" -Baseline $true
+    if ($armBaselineRelease.AssetName -ne "atomcli-windows-arm64.exe") {
+        throw "PowerShell installer must ignore baseline mode for ARM64"
+    }
+
+    $savedNonInteractive = $env:NONINTERACTIVE
+    try {
+        $env:NONINTERACTIVE = "1"
+        if (Test-InteractiveConsole) { throw "NONINTERACTIVE mode was treated as interactive" }
+        if (-not (Prompt-YesNo "test default" $true)) { throw "noninteractive prompt ignored true default" }
+        if (Prompt-YesNo "test default" $false) { throw "noninteractive prompt ignored false default" }
+    } finally {
+        if ($null -eq $savedNonInteractive) { Remove-Item Env:NONINTERACTIVE -ErrorAction SilentlyContinue }
+        else { $env:NONINTERACTIVE = $savedNonInteractive }
+    }
+
+    $installerText = Get-Content -Raw (Join-Path $repositoryRoot "install.ps1")
+    if ($installerText -notmatch '\$ErrorActionPreference = "Continue"[\s\S]{0,500}\& bun --conditions=browser') {
+        throw "Chromium launch verification is not protected from Windows PowerShell 5.1 NativeCommandError"
+    }
+    if ($installerText -notmatch 'Chromium launch verification failed with exit code \$verifyExitCode') {
+        throw "Chromium launch verification does not inspect the native exit code"
+    }
+    if ($installerText -notmatch 'Bun installer completed but bun\.exe was not found') {
+        throw "Bun installation does not verify bun.exe"
+    }
+
     $Version = "3.4.2'; Remove-Item C:\\*"
     try {
         Select-Version

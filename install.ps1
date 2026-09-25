@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # Installation directories
 $InstallDir = if ($env:ATOMCLI_INSTALL_DIR) { $env:ATOMCLI_INSTALL_DIR } else { "$env:LOCALAPPDATA\AtomCLI\bin" }
@@ -149,6 +150,22 @@ function Refresh-Path {
                 [System.Environment]::GetEnvironmentVariable("Path","User")
 }
 
+function Test-InteractiveConsole {
+    if ($env:NONINTERACTIVE -eq "1") { return $false }
+    try { return -not [Console]::IsInputRedirected } catch { return $true }
+}
+
+function Test-BaselineRequired {
+    param([Parameter(Mandatory)][string]$Arch)
+    if ($Arch -ne "x64") { return $false }
+    if ($env:ATOMCLI_BASELINE -eq "1") { return $true }
+    try {
+        $avx2 = [Type]::GetType("System.Runtime.Intrinsics.X86.Avx2, System.Private.CoreLib", $false)
+        if ($null -ne $avx2) { return -not [bool]$avx2.GetProperty("IsSupported").GetValue($null) }
+    } catch { }
+    return $false
+}
+
 # ─────────────────────────────────────────────────────────────
 # Dependency checks + auto-install
 # ─────────────────────────────────────────────────────────────
@@ -165,9 +182,17 @@ function Test-Dependencies {
         Write-Warn "git not found"
         if (Test-WingetAvailable) {
             Write-Step "Installing git via winget..."
-            winget install --id Git.Git -e --source winget `
-                --accept-package-agreements --accept-source-agreements `
-                --silent 2>&1 | Out-Null
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                winget install --id Git.Git -e --source winget `
+                    --accept-package-agreements --accept-source-agreements `
+                    --silent 2>&1 | Out-Null
+                $wingetExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            if ($wingetExitCode -ne 0) { throw "winget failed with exit code $wingetExitCode" }
             Refresh-Path
             if (Test-Command "git") {
                 Write-Success "git installed"
@@ -198,22 +223,20 @@ function Install-Bun {
     Write-Step "Installing Bun..."
     try {
         Invoke-WithSpinner -Message "Installing Bun..." -Action {
-            powershell -c "irm https://bun.sh/install.ps1 | iex" 2>&1 | Out-Null
+            $ErrorActionPreference = "Stop"
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            Invoke-Expression (Invoke-RestMethod -Uri "https://bun.sh/install.ps1" -ErrorAction Stop)
         }
         Refresh-Path
         $bunPath = "$env:USERPROFILE\.bun\bin"
         if (Test-Path $bunPath) { $env:Path += ";$bunPath" }
-
-        if (Test-Command "bun") {
-            Write-Success "Bun $(bun --version) installed"
-            $script:BunInstalled = $true
-        } else {
-            Write-Warn "Bun installed but not in PATH. Please restart terminal after setup."
-        }
+        if (-not (Test-Command "bun")) { throw "Bun installer completed but bun.exe was not found" }
+        Write-Success "Bun $(bun --version) installed"
+        $script:BunInstalled = $true
     } catch {
-        Write-Err "Failed to install Bun: $_"
+        Write-Err "Failed to install Bun: $($_.Exception.Message)"
         Write-Info "Install manually: https://bun.sh"
-        exit 1
+        throw
     }
 }
 
@@ -267,11 +290,13 @@ function Test-ReleaseChecksum {
 function Get-ReleaseDownloadInfo {
     param(
         [Parameter(Mandatory)][string]$Version,
-        [Parameter(Mandatory)][ValidateSet("x64", "arm64")][string]$Arch
+        [Parameter(Mandatory)][ValidateSet("x64", "arm64")][string]$Arch,
+        [bool]$Baseline = $false
     )
 
     $normalizedVersion = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
-    $assetName = "atomcli-windows-$Arch.exe"
+    $suffix = if ($Arch -eq "x64" -and $Baseline) { "-baseline" } else { "" }
+    $assetName = "atomcli-windows-$Arch$suffix.exe"
     $releaseBase = "https://github.com/aToom13/AtomCLI/releases/download/$normalizedVersion"
     [PSCustomObject]@{
         Version = $normalizedVersion
@@ -295,7 +320,7 @@ function Select-Version {
         return
     }
 
-    if ($env:NONINTERACTIVE -eq "1") {
+    if (-not (Test-InteractiveConsole)) {
         $latest = Get-LatestRelease
         if ($latest) { $script:SelectedVersion = $latest -replace '^v','' }
         return
@@ -406,7 +431,7 @@ function Install-Binary {
     $version = if ($script:SelectedVersion) { "v$($script:SelectedVersion)" } else { Get-LatestRelease }
 
     if ($version) {
-        $release = Get-ReleaseDownloadInfo -Version $version -Arch $script:ArchType
+        $release = Get-ReleaseDownloadInfo -Version $version -Arch $script:ArchType -Baseline:(Test-BaselineRequired -Arch $script:ArchType)
         $binaryName = $release.AssetName
         $url = $release.AssetUrl
         $checksumUrl = $release.ChecksumUrl
@@ -416,10 +441,14 @@ function Install-Binary {
         try {
             Invoke-WithSpinner -Message "Downloading $version..." -Action {
                 param($u, $t, $cu, $ct)
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
                 $web = New-Object System.Net.WebClient
-                $web.DownloadFile($u, $t)
-                $web.DownloadFile($cu, $ct)
+                foreach ($item in @(@($u, $t), @($cu, $ct))) {
+                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                        try { $web.DownloadFile($item[0], $item[1]); break }
+                        catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }
+                    }
+                }
             } -ArgumentList $url, $partialPath, $checksumUrl, $manifestPath
 
             if (-not (Test-Path -LiteralPath $partialPath) -or (Get-Item -LiteralPath $partialPath).Length -eq 0) {
@@ -457,11 +486,13 @@ function Invoke-SourceBuild {
         $cloneJob = Start-Job -ScriptBlock {
             param($wd, $version)
             Set-Location $wd
+            $ErrorActionPreference = "Continue"
             if ($version) {
-                git clone --depth 1 --branch $version https://github.com/aToom13/AtomCLI.git 2>&1
+                git clone --depth 1 --branch $version https://github.com/aToom13/AtomCLI.git 2>&1 | Out-Null
             } else {
-                git clone --depth 1 https://github.com/aToom13/AtomCLI.git 2>&1
+                git clone --depth 1 https://github.com/aToom13/AtomCLI.git 2>&1 | Out-Null
             }
+            $LASTEXITCODE
         } -ArgumentList $tempDir, $Version
         $chars = @('|','/','-','\'); $ci = 0
         while ($cloneJob.State -eq 'Running') {
@@ -469,7 +500,12 @@ function Invoke-SourceBuild {
             Start-Sleep -Milliseconds 150; $ci++
         }
         Write-Host "`r                            `r" -NoNewline
-        Receive-Job $cloneJob | Out-Null; Remove-Job $cloneJob
+        $cloneState = $cloneJob.State
+        $cloneExitCode = Receive-Job $cloneJob | Select-Object -Last 1
+        Remove-Job $cloneJob
+        if ($cloneState -ne "Completed" -or $cloneExitCode -ne 0) {
+            throw "Repository clone failed with exit code $cloneExitCode"
+        }
         Write-Success "Cloned repository"
 
         Set-Location AtomCLI
@@ -477,7 +513,13 @@ function Invoke-SourceBuild {
         # Install deps
         Write-Step "Installing dependencies..."
         Write-Info "(may take 1-3 minutes)"
-        $depsJob = Start-Job -ScriptBlock { param($wd); Set-Location $wd; bun install 2>&1 } -ArgumentList $PWD.Path
+        $depsJob = Start-Job -ScriptBlock {
+            param($wd)
+            Set-Location $wd
+            $ErrorActionPreference = "Continue"
+            bun install 2>&1 | Out-Null
+            $LASTEXITCODE
+        } -ArgumentList $PWD.Path
         $elapsed = 0
         while ($depsJob.State -eq 'Running') {
             Write-Host "`r$($chars[$elapsed % 4]) Installing dependencies... ($elapsed`s)   " -NoNewline -ForegroundColor Blue
@@ -485,7 +527,12 @@ function Invoke-SourceBuild {
             if ($elapsed -gt 900) { Stop-Job $depsJob; throw "Dependency install timed out" }
         }
         Write-Host "`r                                                     `r" -NoNewline
-        $depsOut = Receive-Job $depsJob; Remove-Job $depsJob
+        $depsState = $depsJob.State
+        $depsExitCode = Receive-Job $depsJob | Select-Object -Last 1
+        Remove-Job $depsJob
+        if ($depsState -ne "Completed" -or $depsExitCode -ne 0) {
+            throw "Dependency installation failed with exit code $depsExitCode"
+        }
         Write-Success "Dependencies installed"
 
         Set-Location AtomBase
@@ -511,7 +558,12 @@ function Invoke-SourceBuild {
             if ($be -gt 1200) { Stop-Job $buildJob; throw "Build timed out after 20 minutes" }
         }
         Write-Host "`r                              `r" -NoNewline
-        Receive-Job $buildJob | Out-Null; Remove-Job $buildJob
+        $buildState = $buildJob.State
+        $buildExitCode = Receive-Job $buildJob | Select-Object -Last 1
+        Remove-Job $buildJob
+        if ($buildState -ne "Completed" -or $buildExitCode -ne 0) {
+            throw "AtomCLI source build failed with exit code $buildExitCode"
+        }
 
         Write-Host "  [3/4] Build completed" -ForegroundColor Yellow
         Write-Host "  [4/4] Locating binary..." -ForegroundColor Yellow
@@ -585,7 +637,9 @@ function Install-PlaywrightBrowsers {
             $pwJob = Start-Job -ScriptBlock {
                 param($wd, $version)
                 Set-Location $wd
+                $ErrorActionPreference = "Continue"
                 bun init -y 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "bun init failed with exit code $LASTEXITCODE" }
                 bun add --exact "playwright@$version" 2>&1 | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "bun add failed with exit code $LASTEXITCODE" }
             } -ArgumentList $PWD.Path, $desiredVersion
@@ -607,6 +661,7 @@ function Install-PlaywrightBrowsers {
         $chromJob = Start-Job -ScriptBlock {
             param($wd)
             Set-Location $wd
+            $ErrorActionPreference = "Continue"
             bunx playwright install --no-shell chromium 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Chromium install failed with exit code $LASTEXITCODE" }
         } -ArgumentList $PWD.Path
@@ -622,8 +677,15 @@ function Install-PlaywrightBrowsers {
         Remove-Job $chromJob -ErrorAction SilentlyContinue
         if ($chromState -ne 'Completed') { throw "Chromium installation failed: $chromOutput" }
 
-        & bun --conditions=browser -e 'import { chromium } from "playwright"; const headless = process.platform !== "darwin" && process.platform !== "win32" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY; const browser = await chromium.launch({ headless, ...(headless ? { channel: "chromium" } : {}) }); await browser.close()' 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Chromium was downloaded but failed its launch verification" }
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $verifyOutput = & bun --conditions=browser -e 'import { chromium } from "playwright"; const headless = process.platform !== "darwin" && process.platform !== "win32" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY; const browser = await chromium.launch({ headless, ...(headless ? { channel: "chromium" } : {}) }); await browser.close()' 2>&1
+            $verifyExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        if ($verifyExitCode -ne 0) { throw "Chromium launch verification failed with exit code $verifyExitCode`: $verifyOutput" }
         Write-Success "Browser automation runtime verified"
     } finally {
         Pop-Location
@@ -739,10 +801,14 @@ function Install-SkillsBundle {
         try {
             Invoke-WithSpinner -Message "Downloading skills bundle..." -Action {
                 param($u, $t, $cu, $ct)
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
                 $web = New-Object System.Net.WebClient
-                $web.DownloadFile($u, $t)
-                $web.DownloadFile($cu, $ct)
+                foreach ($item in @(@($u, $t), @($cu, $ct))) {
+                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                        try { $web.DownloadFile($item[0], $item[1]); break }
+                        catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }
+                    }
+                }
             } -ArgumentList "$releaseBase/$archiveName", (Join-Path $tmpDir $archiveName), "$releaseBase/SHA256SUMS", (Join-Path $tmpDir "SHA256SUMS")
 
             if (-not (Test-ReleaseChecksum -BinaryPath (Join-Path $tmpDir $archiveName) -ManifestPath (Join-Path $tmpDir "SHA256SUMS") -AssetName $archiveName)) {
@@ -791,6 +857,7 @@ Generate commit messages following Conventional Commits format: feat, fix, docs,
 # ─────────────────────────────────────────────────────────────
 function Prompt-YesNo {
     param([string]$Question, [bool]$Default = $true)
+    if (-not (Test-InteractiveConsole)) { return $Default }
     $hint = if ($Default) { "[Y/n]" } else { "[y/N]" }
     Write-Host "  $Question $hint " -NoNewline -ForegroundColor White
     $key = [Console]::ReadKey($true)
@@ -883,12 +950,16 @@ function Test-Installation {
     Write-Step "Verifying installation..."
     $binary = Join-Path $InstallDir "atomcli.exe"
     if (Test-Path $binary) {
+        $previousPreference = $ErrorActionPreference
         try {
-            $v = & $binary --version 2>$null
-            Write-Success "AtomCLI $v ready!"
-        } catch {
-            Write-Success "AtomCLI installed at $binary"
+            $ErrorActionPreference = "Continue"
+            $v = & $binary --version 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
         }
+        if ($exitCode -ne 0) { throw "AtomCLI binary failed verification with exit code $exitCode`: $v" }
+        Write-Success "AtomCLI $v ready!"
 
         if ($script:EnableKilocode) {
             Write-Host ""
@@ -969,9 +1040,7 @@ function Uninstall-AtomCLI {
     Write-Host "  Remove configuration and data? ($ConfigDir)" -ForegroundColor Yellow
     Write-Info "  (includes skills, sessions, settings)"
     Write-Host ""
-    $key = [Console]::ReadKey($true)
-    Write-Host "  [y/N]: $($key.KeyChar)"
-    if ($key.KeyChar -match '^[Yy]$') {
+    if (Prompt-YesNo "Remove configuration and data?" $false) {
         if (Test-Path $ConfigDir) {
             Remove-Item -Recurse -Force $ConfigDir
             Write-Success "Removed $ConfigDir"
@@ -1100,6 +1169,8 @@ function Install-AtomCLI {
 # ─────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────
+if ($Version) { $env:NONINTERACTIVE = "1" }
+
 if ($env:ATOMCLI_INSTALLER_LIBRARY_ONLY -eq "1") { return }
 elseif ($Help)      { Show-Help }
 elseif ($Uninstall) { Uninstall-AtomCLI }
