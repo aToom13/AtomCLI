@@ -30,6 +30,15 @@ AtomCLI refreshes Cline credentials automatically. Its model list is dynamic: it
 
 Matching OpenRouter metadata, cached for five minutes, supplies context limits, modalities, and reasoning controls. Reasoning-capable Cline models expose their thinking variants in the TUI and through `--variant`. Cline catalog loading continues without enrichment if the metadata endpoint is unavailable.
 
+Use the separate `cline-pass` provider for a Cline API token:
+
+```sh
+atomcli auth login --provider cline-pass
+atomcli models cline-pass
+```
+
+API-token authentication loads the complete live Cline `/models` catalog without the OAuth free-only filter and adds the current `clinePass` aliases. Published prices remain metered metadata, `:free` entries remain free, and Pass aliases are labeled as subscription access.
+
 Log out through the interactive provider selection:
 
 ```sh
@@ -214,6 +223,7 @@ Project overrides take precedence over global settings. Check both scopes when a
 - `UNKNOWN` means the provider catalog omitted usable prices. Internal zero defaults never prove free access.
 
 OpenAI-compatible custom providers refresh `/models` every 15 seconds while AtomCLI runs, so gateway changes appear without logout/login. Authenticated catalogs with missing prices are classified as subscription access and excluded from AtomCLI Free. Explicit zero pricing remains required for `FREE`; use `provider.<id>.options.modelDiscovery: false` for a deliberately static model list.
+
 - Metered catalog prices are informational and may not reflect account-specific billing or negotiated limits.
 
 For financial decisions, tell the user to confirm current billing with the provider.

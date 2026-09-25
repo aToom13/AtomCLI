@@ -10,7 +10,7 @@ import { Flag } from "@/interfaces/flag/flag"
 import { CodexAuthPlugin } from "./codex"
 import { KilocodeAuthPlugin } from "./kilocode"
 import { AntigravityAuthPlugin } from "./antigravity"
-import { ClineAuthPlugin } from "./cline"
+import { ClineApiAuthPlugin, ClineAuthPlugin } from "./cline"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
@@ -19,8 +19,8 @@ export namespace Plugin {
 
   // Built-in plugins (exclude Antigravity if disabled via flag)
   const INTERNAL_PLUGINS: PluginInstance[] = Flag.ATOMCLI_DISABLE_ANTIGRAVITY
-    ? [CodexAuthPlugin, KilocodeAuthPlugin, ClineAuthPlugin]
-    : [CodexAuthPlugin, KilocodeAuthPlugin, AntigravityAuthPlugin, ClineAuthPlugin]
+    ? [CodexAuthPlugin, KilocodeAuthPlugin, ClineAuthPlugin, ClineApiAuthPlugin]
+    : [CodexAuthPlugin, KilocodeAuthPlugin, AntigravityAuthPlugin, ClineAuthPlugin, ClineApiAuthPlugin]
 
   const state = Instance.state(
     async () => {

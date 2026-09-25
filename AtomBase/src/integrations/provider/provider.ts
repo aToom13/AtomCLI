@@ -1285,6 +1285,7 @@ export namespace Provider {
           source: "custom",
           options: options,
         })
+        providers[plugin.auth.provider].models = database[plugin.auth.provider].models
         if (options?.getModel) {
           modelLoaders[plugin.auth.provider] = options.getModel
         }

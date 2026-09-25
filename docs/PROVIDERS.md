@@ -26,6 +26,15 @@ Both groups are marked explicitly zero-cost and can participate in `atomcli/atom
 
 AtomCLI enriches matching Cline entries from OpenRouter's public model metadata, cached for five minutes. Reasoning-capable models then expose supported thinking variants in the TUI and through `--variant`; catalog loading still works if metadata enrichment is unavailable.
 
+For a Cline API token, connect the separate `cline-pass` provider. Unlike browser OAuth, this provider loads the complete live `/models` catalog without applying the free-only filter, and also includes Cline's current `clinePass` aliases:
+
+```sh
+atomcli auth login --provider cline-pass
+atomcli models cline-pass
+```
+
+The API-token catalog refreshes while AtomCLI runs. Models with published pricing retain that metadata; `:free` entries remain explicitly free, while Cline Pass aliases are labeled as subscription access.
+
 The interactive TUI also exposes provider and model selection. Enter `/model` or `/models` to open the model picker. Search matches model names, IDs, providers, families, and capabilities. The picker groups favorites and recent models before provider sections and shows the current model with a dot. `Ctrl+A` includes providers that expose an authentication method even before they have a connected model catalog, so Cline can be selected there before login.
 
 Model picker shortcuts:
@@ -48,6 +57,7 @@ The model picker distinguishes these access types:
 - `UNKNOWN`: the provider did not publish usable pricing. Zero-filled internal defaults are never proof of free access.
 
 OpenAI-compatible custom providers refresh `/models` every 15 seconds while AtomCLI runs. Newly linked gateway models therefore appear without logout/login. Authenticated custom catalogs that omit pricing are shown as subscription access and remain excluded from AtomCLI Free; explicit zero pricing is required for `FREE`. Set `provider.<id>.options.modelDiscovery` to `false` only for a deliberately static catalog.
+
 - Models with metered catalog pricing do not receive a free badge; their per-million-token input and output prices appear in the details panel.
 
 Pricing metadata is informational and may differ from account-specific billing or entitlement. Confirm current limits and charges with the provider before relying on a model for paid workloads.

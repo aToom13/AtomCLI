@@ -223,3 +223,62 @@ export async function ClineAuthPlugin(input: PluginInput): Promise<Hooks> {
     dispose: async () => ClineOAuth.stopServer(),
   }
 }
+
+export async function ClineApiAuthPlugin(): Promise<Hooks> {
+  return {
+    auth: {
+      provider: Cline.API_PROVIDER_ID,
+      async loader(getAuth, provider) {
+        const auth = await getAuth()
+        if (auth.type !== "api") return {}
+
+        const authenticatedFetch = async (requestInput: RequestInfo | URL, init?: RequestInit) => {
+          const url = Cline.resolveRequestUrl(requestInput)
+          const headers = new Headers(requestInput instanceof Request ? requestInput.headers : undefined)
+          for (const [name, value] of new Headers(init?.headers)) headers.set(name, value)
+          const target = requestInput instanceof Request ? new Request(url, requestInput) : url
+          const response = await fetch(target, { ...init, headers: Cline.buildApiHeaders(auth.key, headers) })
+          return Cline.normalizeResponse(response)
+        }
+
+        try {
+          const catalogResponse = await authenticatedFetch(Cline.MODELS_URL, {
+            signal: AbortSignal.timeout(15_000),
+          })
+          if (!catalogResponse.ok) throw new Error(`Cline models endpoint returned ${catalogResponse.status}`)
+          const [recommended, metadata] = await Promise.all([
+            authenticatedFetch(Cline.RECOMMENDED_MODELS_URL, { signal: AbortSignal.timeout(15_000) })
+              .then(async (response) => {
+                if (!response.ok) throw new Error(`endpoint returned ${response.status}`)
+                return Cline.readJsonBounded<Cline.RecommendedModels>(response)
+              })
+              .catch((error) => {
+                log.warn("failed to load Cline Pass aliases; using full catalog", { error })
+                return {}
+              }),
+            Cline.loadModelMetadata().catch((error) => {
+              log.warn("failed to load Cline API model metadata; using catalog IDs", { error })
+              return []
+            }),
+          ])
+          const count = Cline.applyAllModels(
+            provider.models,
+            await Cline.readJsonBounded(catalogResponse),
+            recommended,
+            metadata,
+          )
+          log.info("refreshed Cline API models", { count })
+        } catch (error) {
+          log.warn("failed to refresh Cline API models", { error })
+        }
+
+        return {
+          apiKey: auth.key,
+          baseURL: Cline.API_BASE_URL,
+          fetch: authenticatedFetch,
+        }
+      },
+      methods: [{ label: "Cline API Token", type: "api" as const }],
+    },
+  }
+}

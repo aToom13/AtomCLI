@@ -9,6 +9,7 @@ const METADATA_CACHE_MS = 5 * 60 * 1000
 
 export namespace Cline {
   export const PROVIDER_ID = "cline"
+  export const API_PROVIDER_ID = "cline-pass"
   export const API_BASE_URL = "https://api.cline.bot/api/v1"
   export const MODELS_URL = `${API_BASE_URL}/models`
   export const RECOMMENDED_MODELS_URL = `${API_BASE_URL}/ai/cline/recommended-models`
@@ -25,6 +26,7 @@ export namespace Cline {
 
   export type RecommendedModels = {
     free?: RecommendedModel[]
+    clinePass?: RecommendedModel[]
   }
 
   export type Tokens = {
@@ -60,11 +62,11 @@ export namespace Cline {
     return value.startsWith("workos:") ? value : `workos:${value}`
   }
 
-  export function buildHeaders(access: string, existing?: HeadersInit) {
+  function requestHeaders(authorization: string, existing?: HeadersInit) {
     const headers = new Headers(existing)
     const taskID = headers.get("x-atomcli-session") || headers.get("x-task-id") || crypto.randomUUID()
     headers.delete("x-atomcli-session")
-    headers.set("Authorization", `Bearer ${tokenValue(access)}`)
+    headers.set("Authorization", `Bearer ${authorization}`)
     headers.set("HTTP-Referer", "https://cline.bot")
     headers.set("X-Title", "Cline")
     headers.set("User-Agent", `AtomCLI/${Installation.VERSION}`)
@@ -76,6 +78,14 @@ export namespace Cline {
     headers.set("X-IS-MULTIROOT", "false")
     headers.set("X-Task-ID", taskID)
     return headers
+  }
+
+  export function buildHeaders(access: string, existing?: HeadersInit) {
+    return requestHeaders(tokenValue(access), existing)
+  }
+
+  export function buildApiHeaders(key: string, existing?: HeadersInit) {
+    return requestHeaders(key.trim(), existing)
   }
 
   export function resolveRequestUrl(input: RequestInfo | URL) {
@@ -164,9 +174,15 @@ export namespace Cline {
     }
   }
 
-  function modelFrom(raw: RawOpenAIModel, promoted?: RecommendedModel): Provider.Model {
+  function modelFrom(
+    raw: RawOpenAIModel,
+    promoted?: RecommendedModel,
+    access: "free" | "subscription" | "catalog" = "free",
+  ): Provider.Model {
     const parsed = parseDiscoveredModel({ ...raw, name: promoted?.name ?? raw.name })
     const source = promoted && raw.id.endsWith(":free") ? "both" : promoted ? "promoted" : "catalog-suffix"
+    const free = access === "free"
+    const cost = free ? { input: 0, output: 0 } : parsed.cost
     const model: Provider.Model = {
       id: parsed.id,
       providerID: PROVIDER_ID,
@@ -194,12 +210,13 @@ export namespace Cline {
         },
         interleaved: parsed.interleaved ?? false,
       },
-      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      cost: { input: cost?.input ?? 0, output: cost?.output ?? 0, cache: { read: 0, write: 0 } },
       limit: parsed.limit,
       status: "active",
       options: {
-        _catalogCostKnown: true,
-        _clineFreeSource: source,
+        _catalogCostKnown: free || cost !== undefined,
+        ...(free && { _clineFreeSource: source }),
+        ...(access === "subscription" && { _billing: "subscription" }),
         ...(promoted?.description && { description: promoted.description }),
       },
       headers: {},
@@ -241,6 +258,30 @@ export namespace Cline {
     for (const id of Object.keys(models)) delete models[id]
     Object.assign(models, next)
     return freeIDs.size
+  }
+
+  export function applyAllModels(
+    models: Provider.Info["models"],
+    catalog: { data?: RawOpenAIModel[] } | RawOpenAIModel[],
+    recommended: RecommendedModels = {},
+    metadata: RawOpenAIModel[] = [],
+  ) {
+    const entries = Array.isArray(catalog) ? catalog : catalog?.data
+    if (!Array.isArray(entries)) throw new Error("Cline model catalog is missing data")
+    const pass = new Map((recommended.clinePass ?? []).filter((item) => item?.id).map((item) => [item.id, item]))
+    const catalogByID = new Map(entries.filter((item) => typeof item?.id === "string").map((item) => [item.id, item]))
+    const metadataByID = new Map(metadata.filter((item) => typeof item?.id === "string").map((item) => [item.id, item]))
+    const ids = new Set([...catalogByID.keys(), ...pass.keys()])
+    const next: Provider.Info["models"] = {}
+    for (const id of ids) {
+      const raw = { ...metadataByID.get(id), ...catalogByID.get(id), id }
+      const access = pass.has(id) ? "subscription" : id.endsWith(":free") ? "free" : "catalog"
+      next[id] = modelFrom(raw, pass.get(id), access)
+      next[id].providerID = API_PROVIDER_ID
+    }
+    for (const id of Object.keys(models)) delete models[id]
+    Object.assign(models, next)
+    return ids.size
   }
 
   function streamError(data: string) {

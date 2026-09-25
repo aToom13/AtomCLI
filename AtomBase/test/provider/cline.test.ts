@@ -68,6 +68,29 @@ describe("provider.cline", () => {
     })
   })
 
+  test("keeps the full API-token catalog and refreshes Cline Pass aliases", () => {
+    const models = { stale: { id: "stale" } } as unknown as Provider.Info["models"]
+
+    const count = Cline.applyAllModels(
+      models,
+      [{ id: "paid/model" }, { id: "free/model:free" }],
+      { clinePass: [{ id: "cline-pass/current", name: "Current Pass Model" }] },
+      [{ id: "paid/model", pricing: { prompt: "0.000001", completion: "0.000002" } }],
+    )
+
+    expect(count).toBe(3)
+    expect(Object.keys(models).sort()).toEqual(["cline-pass/current", "free/model:free", "paid/model"])
+    expect(models.stale).toBeUndefined()
+    expect(models["paid/model"].providerID).toBe("cline-pass")
+    expect(models["paid/model"].cost).toEqual({ input: 1, output: 2, cache: { read: 0, write: 0 } })
+    expect(models["paid/model"].options._catalogCostKnown).toBe(true)
+    expect(models["free/model:free"].cost).toEqual({ input: 0, output: 0, cache: { read: 0, write: 0 } })
+    expect(models["cline-pass/current"].options).toMatchObject({
+      _billing: "subscription",
+      _catalogCostKnown: false,
+    })
+  })
+
   test("serializes selected thinking budget in Cline request body", async () => {
     const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible")
     const { generateText } = await import("ai")
@@ -107,6 +130,7 @@ describe("provider.cline", () => {
     expect(second.get("x-task-id")).toBe("task-2")
     expect(first.get("x-client-type")).toBe("atomcli")
     expect(first.has("x-atomcli-session")).toBe(false)
+    expect(Cline.buildApiHeaders("api-token").get("authorization")).toBe("Bearer api-token")
   })
 
   test("rejects credential forwarding outside exact Cline API paths", () => {
