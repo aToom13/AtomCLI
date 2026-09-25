@@ -1,45 +1,38 @@
-# AtomCLI v3.4.4
+# AtomCLI v3.4.4-debug
 
-AtomCLI 3.4.4 adds durable adaptive execution, stronger recovery and verification controls, improved provider compatibility, and stable long-session transcript scrolling. Companion remains a beta product under active development; Android, iOS, background execution, and OEM integrations are not universally stable.
-
-## Adaptive Execution
-
-- Added default adaptive execution pipelines for direct, focused, and coordinated work, with conservative agent-specific defaults when semantic classification is disabled.
-- Added optional model-based semantic classification through `experimental.execution_classification`, charged against the active execution budget.
-- Added durable tool-free checkpoints, bounded slice extensions, semantic loop detection, immutable plan revisions, and user-visible finalization when work cannot safely continue.
-- Preserved execution objectives, plans, allowances, and durable blockers across compaction, restart, user-input waits, and linked resume segments.
-- Required coordinated work to establish durable taskflow state before normal tools run and prevented independent review steps from completing without reviewer evidence.
-
-## Reliability and Safety
-
-- Recorded mutating work admission and outcomes durably so restart recovery can distinguish applied, not-applied, and unknown operations.
-- Prevented stale owners, cancelled invocations, exhausted retries, final-step continuations, and repeated no-progress verification from extending execution incorrectly.
-- Added deterministic final-response fallback so exhausted executions do not leave empty assistant turns.
-- Kept filesystem permission failures, invalid arguments, missing edit matches, rejected permissions, and browser locator timeouts from creating false unknown-work records when no mutation occurred.
-- Prevented conversation-only and read-only turns from launching independent reviewer agents when no workspace mutation exists.
+AtomCLI 3.4.4-debug is a prerelease focused on live Cline model discovery, stable project identity in Git worktrees, and more reliable cross-platform installation. Companion remains a beta product under active development; Android, iOS, background execution, and OEM integrations are not universally stable.
 
 ## Providers and Models
 
-- Updated OpenCode Zen request identity and anonymous free-tier compatibility, including helper-call session/request IDs and provider-isolated SDK caching.
-- Kept real permitted coding tools available for Zen greeting turns that reject a `model_control`-only request.
-- Retained current-model retry before fallback and hardened provider-native response replay across provider changes.
+- Added a first-party `cline-pass` API-token provider that loads the complete live Cline `/models` catalog without the OAuth free-only filter.
+- Added current Cline Pass aliases from `recommended-models.clinePass` and refreshes the catalog while AtomCLI runs.
+- Preserved the existing `cline` browser OAuth behavior: only promoted free models and catalog IDs ending in `:free` are exposed.
+- Preserved published pricing when available, explicitly classified `:free` entries as free, and labeled Cline Pass aliases as subscription access.
 
-## TUI and SDK
+## Project and Worktree Reliability
 
-- Preserved the visible message and line while streaming content, tool results, taskflow events, or terminal resizing changes transcript height; returning to the bottom resumes follow-tail.
-- Added user-visible checkpoint transcript parts and execution checkpoint events.
-- Regenerated the JavaScript SDK for checkpoint parts, execution events, waiting-input state, and new reconciliation states.
+- Stored project identity in the shared Git directory so primary checkouts and linked or isolated worktrees use the same project ID.
+- Added regression coverage for normal Git worktrees and isolated sub-agent workspaces.
+
+## Installer Reliability
+
+- Added automatic baseline x64 binary selection for processors without AVX2, with `ATOMCLI_BASELINE=1` available as an explicit override.
+- Added baseline release coverage for glibc, musl, and Windows assets.
+- Added bounded retries and connection timeouts for release and skills downloads.
+- Hardened Windows PowerShell 5.1 handling for native command stderr, exit-code validation, non-interactive prompts, Bun installation, source builds, Chromium verification, and installed binary verification.
 
 ## Companion Beta
 
-- No Flutter Companion source changed; only the version advanced to `3.4.4+30404`.
+- Added clearer Flutter SDK path validation during Android project configuration.
 - Companion remains beta. Android, iOS, background execution, and OEM integrations are not universally stable.
 
 ## Validation
 
-- Root monorepo typecheck passed.
-- Root monorepo tests passed: 1,768 tests passed, 10 opt-in tests skipped, 0 failed.
-- Bundled `atomcli-guide` discovery and its three focused tests passed.
-- Live provider checks and physical-device behavior remain opt-in and environment-dependent.
+- AtomBase typecheck passed.
+- AtomBase test suite passed: 1,770 tests passed, 10 opt-in tests skipped, 0 failed.
+- Bundled `atomcli-guide` validation passed.
+- Unix installer fixture tests passed.
+- Live Cline checks exposed 25 OAuth free models and 474 API-token models at validation time.
+- PowerShell installer tests and ShellCheck remain CI-validated because `pwsh` and `shellcheck` were unavailable locally.
 
-Version `3.4.4` is released only by pushing the exact `v3.4.4` tag.
+Version `3.4.4-debug` is released only by pushing the exact `v3.4.4-debug` tag.
