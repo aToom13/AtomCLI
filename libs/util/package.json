@@ -20,6 +20,6 @@
     "typescript": "catalog:",
     "@types/bun": "catalog:",
     "ai": "catalog:",
-    "@opentui/core": "0.1.72"
+    "@opentui/core": "0.5.3"
   }
 }
