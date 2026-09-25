@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import { Project } from "@/services/project/project"
 import { Log } from "@/util/util/log"
@@ -54,12 +55,17 @@ describe("Project.fromDirectory with worktrees", () => {
 
   test("should set worktree to root when called from a worktree", async () => {
     await using tmp = await tmpdir({ git: true })
+    const projectID = "stable-worktree-project-id"
+    await Bun.write(path.join(tmp.path, ".git", "atomcli"), projectID)
+    const root = await Project.fromDirectory(tmp.path)
 
     const worktreePath = path.join(tmp.path, "..", "worktree-test")
     await $`git worktree add ${worktreePath} -b test-branch`.cwd(tmp.path).quiet()
 
     const { project, sandbox } = await Project.fromDirectory(worktreePath)
 
+    expect(root.project.id).toBe(projectID)
+    expect(project.id).toBe(root.project.id)
     expect(project.worktree).toBe(tmp.path)
     expect(sandbox).toBe(worktreePath)
     expect(project.sandboxes).toContain(worktreePath)

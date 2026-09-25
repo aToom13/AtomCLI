@@ -56,9 +56,19 @@ export namespace Project {
         let sandbox = path.dirname(git)
 
         const gitBinary = Bun.which("git")
+        const commonGitDir = gitBinary
+          ? await $`git rev-parse --git-common-dir`
+              .quiet()
+              .nothrow()
+              .cwd(sandbox)
+              .text()
+              .then((x) => path.resolve(sandbox, x.trim()))
+              .catch(() => undefined)
+          : undefined
+        const projectIDFile = path.join(commonGitDir ?? git, "atomcli")
 
         // cached id calculation
-        let id = await Bun.file(path.join(git, "atomcli"))
+        let id = await Bun.file(projectIDFile)
           .text()
           .then((x) => x.trim())
           .catch(() => undefined)
@@ -99,7 +109,7 @@ export namespace Project {
 
           id = roots[0]
           if (id) {
-            void Bun.file(path.join(git, "atomcli"))
+            void Bun.file(projectIDFile)
               .write(id)
               .catch(() => undefined)
           }
@@ -133,17 +143,7 @@ export namespace Project {
 
         sandbox = top
 
-        const worktree = await $`git rev-parse --git-common-dir`
-          .quiet()
-          .nothrow()
-          .cwd(sandbox)
-          .text()
-          .then((x) => {
-            const dirname = path.dirname(x.trim())
-            if (dirname === ".") return sandbox
-            return dirname
-          })
-          .catch(() => undefined)
+        const worktree = commonGitDir ? path.dirname(commonGitDir) : undefined
 
         if (!worktree) {
           return {

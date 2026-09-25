@@ -6,6 +6,27 @@ import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
 describe("SubAgentIsolation", () => {
+  test("preserves project identity inside an isolated worktree", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const parentProjectID = Instance.project.id
+        const workspace = await SubAgentIsolation.create("project-identity")
+        try {
+          const isolatedProjectID = await Instance.provide({
+            directory: workspace.directory,
+            fn: () => Instance.project.id,
+          })
+          expect(isolatedProjectID).toBe(parentProjectID)
+        } finally {
+          await workspace.dispose()
+        }
+      },
+    })
+  })
+
   test("applies an isolated patch without exposing intermediate writes", async () => {
     await using tmp = await tmpdir({ git: true })
     const target = path.join(tmp.path, "feature.ts")
