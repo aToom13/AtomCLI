@@ -1,6 +1,6 @@
 ---
 name: create-design-system
-description: Protocols for architecting complete, reusable design systems (tokens, UI primitives, guidelines, assets, and UI kits) within AtomCLI projects.
+description: Build reusable design tokens, UI primitives, and component documentation across product screens. Use for a shared design system or UI kit; use frontend-design for one page or its interaction flow.
 trigger_words: [design system, component library, design tokens, style guide, ui kit, tasarım sistemi, token, css variables, ui primitives, design architecture]
 ---
 

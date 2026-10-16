@@ -15,7 +15,7 @@ atomcli mcp auth <name>
 atomcli mcp logout <name>
 ```
 
-`mcp add` is interactive, but it does not write configuration. For local and OAuth-free remote servers it only collects or tests the connection details, so create the matching `mcp.json` entry yourself. For an OAuth remote server it prints a configuration snippet to copy. `mcp install` prepares a registry or package-based server configuration and prints the entry to add; it does not silently install or enable a server. Use `mcp list` to inspect the effective result.
+`mcp add` is interactive, but it does not write configuration. For local and OAuth-free remote servers it only collects or tests the connection details, so create the matching `mcp.json` entry yourself. For an OAuth remote server it prints a configuration snippet to copy. If a client secret is needed, the snippet contains a placeholder; insert the secret locally without printing it to the terminal or committing it. `mcp install` prepares a registry or package-based server configuration and prints the entry to add; it does not silently install or enable a server. Use `mcp list` to inspect the effective result.
 
 ## Configuration
 
@@ -70,4 +70,4 @@ For a remote server that requires OAuth, use the interactive `atomcli mcp add` f
 
 An MCP server is an external program or network service with the permissions you grant it. Review its command, arguments, environment, and access scope before enabling it. Prefer a narrowly scoped directory argument for filesystem servers.
 
-Use `atomcli mcp debug <name>` for OAuth connection diagnostics and `atomcli --print-logs` for broader runtime logs.
+Use `atomcli mcp debug <name>` for OAuth connection diagnostics and `atomcli --print-logs` for broader runtime logs. Debug output shows the remote origin and token presence, never token bytes or URL credentials/query parameters. The OAuth callback listens only on `127.0.0.1`; a busy callback port fails explicitly. Authorization URLs, callback codes, and state values are omitted from logs.

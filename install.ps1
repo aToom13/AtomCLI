@@ -781,75 +781,53 @@ function Install-SkillsBundle {
     if ($PSScriptRoot) {
         $bundledSkills = Join-Path $PSScriptRoot ".atomcli\skills"
         if (Test-Path $bundledSkills) {
-            Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction SilentlyContinue
+            $sourceFiles = @(Get-ChildItem -Path $bundledSkills -Recurse -File)
+            $sourceCount = @($sourceFiles | Where-Object { $_.Name -eq "SKILL.md" }).Count
+            Copy-Item -Path "$bundledSkills\*" -Destination $skillsDir -Recurse -Force -ErrorAction Stop
+            foreach ($sourceFile in $sourceFiles) {
+                $relativePath = $sourceFile.FullName.Substring($bundledSkills.Length).TrimStart([char[]]@('\', '/'))
+                $installedFile = Join-Path $skillsDir $relativePath
+                if (-not (Test-Path -LiteralPath $installedFile -PathType Leaf) -or
+                    (Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -ne
+                    (Get-FileHash -LiteralPath $installedFile -Algorithm SHA256).Hash) {
+                    throw "Bundled skill file missing or differs: $relativePath"
+                }
+            }
+            if ($sourceCount -gt 0) {
+                Write-Success "Installed bundled skills from repository ($sourceCount skills)"
+                return
+            }
+            throw "Local bundled skills are incomplete (no SKILL.md files)"
         }
-    }
-    $installedCount = @(Get-ChildItem -Path $skillsDir -Filter "SKILL.md" -Recurse -ErrorAction SilentlyContinue).Count
-    if ($installedCount -gt 0) {
-        Write-Success "Installed bundled skills from repository ($installedCount skills)"
-        return
     }
 
     # Verified release archive: skills.zip ships next to the binaries since v* releases
     $version = if ($script:SelectedVersion) { "v$($script:SelectedVersion)" } else { Get-LatestRelease }
-    if ($version) {
-        $normalizedVersion = if ($version.StartsWith("v")) { $version } else { "v$version" }
-        $archiveName = "skills.zip"
-        $releaseBase = "https://github.com/aToom13/AtomCLI/releases/download/$normalizedVersion"
-        $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "atomcli-skills-$PID"
-        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-        try {
-            Invoke-WithSpinner -Message "Downloading skills bundle..." -Action {
-                param($u, $t, $cu, $ct)
-                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-                $web = New-Object System.Net.WebClient
-                foreach ($item in @(@($u, $t), @($cu, $ct))) {
-                    for ($attempt = 1; $attempt -le 3; $attempt++) {
-                        try { $web.DownloadFile($item[0], $item[1]); break }
-                        catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }
-                    }
+    if (-not $version) { throw "No release found for bundled skills" }
+    $normalizedVersion = if ($version.StartsWith("v")) { $version } else { "v$version" }
+    $archiveName = "skills.zip"
+    $releaseBase = "https://github.com/aToom13/AtomCLI/releases/download/$normalizedVersion"
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "atomcli-skills-$PID"
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+    try {
+        Invoke-WithSpinner -Message "Downloading skills bundle..." -Action {
+            param($u, $t, $cu, $ct)
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            $web = New-Object System.Net.WebClient
+            foreach ($item in @(@($u, $t), @($cu, $ct))) {
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    try { $web.DownloadFile($item[0], $item[1]); break }
+                    catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }
                 }
-            } -ArgumentList "$releaseBase/$archiveName", (Join-Path $tmpDir $archiveName), "$releaseBase/SHA256SUMS", (Join-Path $tmpDir "SHA256SUMS")
-
-            if (-not (Test-ReleaseChecksum -BinaryPath (Join-Path $tmpDir $archiveName) -ManifestPath (Join-Path $tmpDir "SHA256SUMS") -AssetName $archiveName)) {
-                throw "SHA-256 checksum verification failed"
             }
-            Expand-Archive -LiteralPath (Join-Path $tmpDir $archiveName) -DestinationPath $ConfigDir -Force
-            Write-Success "Installed bundled skills ($normalizedVersion)"
-            return
-        } catch {
-            Write-Warn "Skills bundle download failed, creating core skills only... ($($_.Exception.Message))"
-        } finally {
-            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-        }
-    } else {
-        Write-Warn "Could not resolve a release for the skills bundle, creating core skills only..."
+        } -ArgumentList "$releaseBase/$archiveName", (Join-Path $tmpDir $archiveName), "$releaseBase/SHA256SUMS", (Join-Path $tmpDir "SHA256SUMS")
+        if (-not (Test-ReleaseChecksum -BinaryPath (Join-Path $tmpDir $archiveName) -ManifestPath (Join-Path $tmpDir "SHA256SUMS") -AssetName $archiveName)) { throw "SHA-256 checksum verification failed" }
+        Expand-Archive -LiteralPath (Join-Path $tmpDir $archiveName) -DestinationPath $ConfigDir -Force
+        Write-Success "Installed bundled skills ($normalizedVersion)"
+    } finally {
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
     }
 
-    # Offline fallback: minimal core skills so the feature still works out of the box
-    $ralph = Join-Path $skillsDir "ralph"
-    New-Item -ItemType Directory -Force -Path $ralph | Out-Null
-    Set-Content -Path (Join-Path $ralph "SKILL.md") -Value @"
----
-name: Ralph
-description: Friendly AI coding assistant with personality
----
-
-You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
-"@ -Encoding UTF8
-
-    $gc = Join-Path $skillsDir "git-commit"
-    New-Item -ItemType Directory -Force -Path $gc | Out-Null
-    Set-Content -Path (Join-Path $gc "SKILL.md") -Value @"
----
-name: git-commit
-description: Generate conventional commit messages
----
-
-Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
-"@ -Encoding UTF8
-
-    Write-Success "Installed core skills into ~/.atomcli/skills/"
 }
 
 # ─────────────────────────────────────────────────────────────

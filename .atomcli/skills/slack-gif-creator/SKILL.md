@@ -1,7 +1,7 @@
 ---
 name: Slack GIF Creator
 description: Automate GIF creation for code reviews and demos
-trigger_words: [slack, gif, emoji, animated gif, screen recording, ffmpeg, code review gif, demo gif, gif oluştur, video to gif]
+trigger_words: [slack gif, animated gif, code review gif, demo gif, gif oluştur, video to gif]
 ---
 
 # Slack GIF Automator

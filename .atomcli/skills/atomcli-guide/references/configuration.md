@@ -176,12 +176,12 @@ Use `none` to disable a binding. Avoid assigning the same key sequence to confli
 
 ## Adaptive execution and classification
 
-Adaptive execution pipelines (`direct`, `focused`, `coordinated`) are active by default. Enable the optional model-based semantic classifier:
+Adaptive execution pipelines (`direct`, `focused`, `coordinated`) and model-based semantic classification are active by default. Disable classification only when needed:
 
 ```jsonc
 {
   "experimental": {
-    "execution_classification": true,
+    "execution_classification": false,
   },
 }
 ```
@@ -190,10 +190,19 @@ Execution contracts use these pipelines:
 
 - `direct`: Single goal, max 2 steps, max 3 tool calls, restricted tools, no subagents or expert routing.
 - `focused`: Targeted fix, max 6 steps, max 10 tool calls, targeted tools, expert routing only on failure.
-- `coordinated`: Multi-subsystem work, initially 30 steps and 30 tool calls, full tool set, taskflow allowed. At 80% consumption, tool-free checkpoint requests may grant up to 50 more tool calls per slice. Runtime stops new work after six extensions, or earlier when repeated calls, targets, errors, or consecutive no-progress slices indicate a loop, then uses a separate tool-free finalization phase to return the result and blocker status.
+- `coordinated`: Multi-subsystem work, initially 30 steps and 30 tool calls, full tool set, taskflow allowed. At 80% consumption, tool-free checkpoint requests may grant up to 50 more tool calls per slice. Runtime stops new work after twenty extensions, or earlier when repeated calls, targets, errors, or consecutive no-progress slices indicate a loop, then uses a separate tool-free finalization phase to return the result and blocker status.
 
-When enabled, the classifier call runs with the user's selected model and is admitted against the execution call and cost budget. Scope and risk promote dynamically based on observable runtime evidence. Adaptive policy extensions never raise explicit `execution_budget` limits; those user limits remain hard ledger-enforced ceilings.
+An empty tool allowlist means the scope states no tool preference; it never means no tools are advertised. A turn is only treated as conversational when it is a short question or greeting that names no work surface, so continuations such as "devam et" keep the full toolset. A chat turn still collapses to `model_control` alone. If a turn receives no tools, the agent is instructed to say so rather than guess.
 
-When this option is absent or `false`, AtomCLI skips the classifier model call and uses conservative defaults: normal build work is coordinated, plan/explore work is focused, and reviewer work is direct. Adaptive limits, checkpoints, watchdogs, and finalization remain active.
+When enabled, the classifier call runs with the user's selected model and is admitted against the execution call and cost budget. Scope and risk promote dynamically based on observable runtime evidence. Checkpoint `continue` grants extend the adaptive work slice in the same durable transaction, but explicit `max_calls`/`max_steps` remain hard admission ceilings. Slice growth stays bounded by the twenty-grant extension ceiling and 50-call slice clamps. Cost ceilings and the duration deadline are never raised by adaptive policy.
 
-Independent review requires workspace mutation evidence. Conversation-only and read-only turns do not launch reviewer agents, even under the conservative coordinated default.
+Each checkpoint also requires a structured self-critique: `routeDecision` (`keep` or `revise`), `selfCritique`, `failedApproaches`, and `whatToChanges`. A `revise` verdict or any recorded failed approach steers the next work slice through a route-guidance block instead of merely being stored, and four consecutive `revise` verdicts without progress are treated as a stall.
+
+When `execution_classification` is explicitly `false`, AtomCLI skips the classifier model call and uses conservative defaults: normal agent/build/plan/explore work is focused, and reviewer work is direct. Runtime evidence may promote focused work to coordinated when cross-package, public API, schema, wide-change, repeated-failure, or delegated-work signals require it. Adaptive limits, checkpoints, watchdogs, and finalization remain active.
+
+Scope may be raised during an active execution with the `scope_control` tool. Only the main conversation may escalate or reset; child agents may inspect status but cannot change the root execution scope. Reset clears the session floor for future turns, not the active execution's scope. `experimental.scope_escalation.mode` accepts `ask` (default), `auto`, or `off`; `max_per_session` bounds repeated escalation. `cooldown_ms` defaults to 0 and may be set to add a delay. Escalation is monotonic; per-session count and configured cooldown state persist across restart. Manual model and thinking pins still override adaptive routing.
+`scope_control(action="status")` reports current scope/floor, next scope's policy-level tool allowance and subagent eligibility, plus persisted escalation use and cooldown. Agent allowlists and user permissions may still narrow the actual advertised tools.
+
+Policy-triggered review requires workspace mutation evidence. Conversation-only and read-only turns do not automatically launch reviewers. Explicit reviewer agent calls can inspect existing code without edits.
+
+Independent review is optional for all scopes and risks. Without `review.auto: true`, code tasks complete after their own tests and validation, with durable `not_required`, not PASS. The optional block defaults to `adaptive`, one reviewer, three attempts. Multiple reviewers require explicit `reviewer_count` (1–4) or multiple requested reviewer tasks. Use `agent(action="spawn", subagent_type="reviewer", prompt="Review changes and test results independently")` for an independent report. `off` or `enabled: false` disables policy-triggered review, not explicit agent calls. Incomplete optional review is reported separately, never approval; failed tests and unresolved work still block success. `high_risk_patterns` also applies in Companion `fast`. Policy/content conflicts retry at most three times; lifecycle rejections such as `stale_fence` never retry.

@@ -116,6 +116,7 @@ test-results/
 test-output/
 test-outputs/
 playwright-report/
+.playwright-cli/
 blob-report/
 junit*.xml
 .screenshots/

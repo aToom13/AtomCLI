@@ -1,7 +1,7 @@
 ---
 name: Rube MCP Connector
 description: Guide for connecting to 500+ apps via Composio Rube
-trigger_words: [rube, connector, composio, integration, bağlantı, connect apps, mcp connector, external app, github integration, slack integration]
+trigger_words: [rube, composio, rube connector, composio connector]
 ---
 
 # Rube MCP Integration Specialist

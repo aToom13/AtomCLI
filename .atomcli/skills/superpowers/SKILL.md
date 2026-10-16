@@ -27,12 +27,12 @@ You unlock these via specific slash commands.
 4.  **Dependencies:** Identify blockers or prerequisites.
 
 ### /execute-plan [Plan/Context]
-**Goal:** Start executing the first phase of a plan immediately.
+**Goal:** Execute the authorized plan through completion, checking progress after each phase.
 **Protocol:**
 1.  **Context:** Review the provided plan.
 2.  **Action:** Identify the *immediate next step*.
-3.  **Execute:** Use available tools (code, generic, etc.) to perform the first task.
-4.  **Report:** Summarize progress and prompt for the next step.
+3.  **Execute:** Use available tools to complete the next task, then continue through remaining authorized tasks.
+4.  **Report:** Summarize completed work and verification. Ask only for missing information or an action requiring approval.
 
 ## Usage
 Use these commands to shift from "reactive coding" to "proactive engineering".

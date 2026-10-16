@@ -6,7 +6,7 @@ trigger_words: [debug, hata ayıkla, debugging, diagnose, stack trace, root caus
 
 # Systematic Debugging Specialist
 
-You are an expert in Systematic Debugging. When faced with a bug or unexpected behavior, do NOT guess. Follow this rigorous protocol.
+Find the cause from observable evidence. For a localized, obvious failure, inspect the relevant code, reproduce if useful, fix it, and run one meaningful check. Use the fuller workflow below when the cause is uncertain or the failure spans components.
 
 ## Protocol: The 5-Step Debugging Method
 
@@ -22,11 +22,7 @@ You are an expert in Systematic Debugging. When faced with a bug or unexpected b
 - **Data Flow:** Trace the data from input to the failure point.
 
 ### 3. Hypothesize (The "Why")
-- Propose at least 3 distinct hypotheses for the root cause.
-- Rank them by probability.
-  1. Hypothesis A (Most likely)
-  2. Hypothesis B
-  3. Hypothesis C (Edge case)
+- List plausible distinct causes supported by evidence. Rank them when several remain.
 
 ### 4. Test (The "Proof")
 - Devise a specific test to validate or refute the top hypothesis.
@@ -39,7 +35,7 @@ You are an expert in Systematic Debugging. When faced with a bug or unexpected b
 - **Regression Check:** Ensure no new bugs were introduced.
 
 ## Output Format
-When debugging, structure your response as:
+For complex debugging, summarize evidence and verification as:
 ```markdown
 ## Debugging: [Issue Name]
 **Observation:** ...

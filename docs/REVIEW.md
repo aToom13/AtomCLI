@@ -1,6 +1,6 @@
 # Review V2
 
-Review V2 provides one structured validation pipeline for the blocking agent review gate, isolated workflow quality checks, and remote pull or merge request review.
+Review V2 provides one structured validation pipeline for optional independent agent review, isolated workflow quality checks, and remote pull or merge request review.
 
 ## Command-line review
 
@@ -42,25 +42,34 @@ Reviewer output is accepted only after it passes the shared Zod schema and is ch
 
 Large diffs are divided into bounded chunks with continuation headers. Content is not discarded because a file exceeds a line threshold.
 
-## Automatic review gate
+## Optional independent review
 
-The main agent review gate is enabled by default. Its configuration is backward compatible:
+Independent review is optional, including coordinated, multi-file, and critical work. After tests and validation, the main agent may complete without a reviewer. Use `agent(action="spawn", subagent_type="reviewer", prompt="Review the changes and test results independently")` when requested or useful. One reviewer is the default; multiple reviewers require explicit tasks or configuration. The explicit `atomcli review` command remains available. Configuration stays backward compatible:
 
 ```jsonc
 {
   "review": {
+    "auto": false,
     "enabled": true,
     "policy": "adaptive",
-    "reviewer_count": 2,
+    "reviewer_count": 1,
     "max_attempts": 3,
     "high_risk_patterns": [],
   },
 }
 ```
 
-`reviewer_count` accepts 1 through 4. The `adaptive` policy reviews high-risk changes, `always` reviews every edit set, and `off` disables policy-triggered independent review. The blocking gate still respects the existing review lifecycle and attempt limits.
+`reviewer_count` accepts 1 through 4, default 1. Set `review.auto: true` to opt into automatic review; risk or file count alone never enables it. `advisory` recommends without spawning; `adaptive` and `enforced` select high-risk changes; `always` selects every edit. `off` or `enabled: false` disables policy-triggered review, not explicit reviewer agent calls. An explicit taskflow `independent_review` or reviewer acceptance criterion remains a requested verification obligation. `high_risk_patterns` applies in every mode, including Companion `fast`.
 
-Reviewer sessions are reused serially: a retry atomically replaces the previous reviewer invocation instead of racing it. A reviewer transport, session, or harness failure is reported as a procedural/harness blocker, not as evidence that the implementation itself failed; AtomCLI preserves the normal final summary and marks independent verification as unavailable. Source-backed reviewer findings remain verification blockers.
+Without a `review` block, no automatic reviewer runs. Skipped completion review uses durable `not_required` (equivalent to `not_requested`), never PASS; the tool result also exposes `status: "not_requested"`. The review gate and execution ledger share one policy snapshot. Policy changes during commit produce `stale_policy`, retried up to three times. Lifecycle rejections such as `not_active`, `terminal_outcome`, and `stale_fence` are never retried.
+
+The same retry applies to every optimistic-concurrency rejection at commit time — `stale_revision`, `stale_plan_revision`, `stale_route`, `stale_content_snapshot`, and `stale_candidate`. A file edited by something other than a tracked tool call (a formatter, a watcher, a git hook, a second AtomCLI process) changes the content snapshot without advancing the revision, so the completion is re-hydrated and re-reviewed rather than failing the turn.
+
+Reviewer sessions are reused serially. Timeout, reviewer cancellation, transport errors, and `inconclusive` are recorded separately from the code-task outcome. A verified code task may commit with an explicit incomplete-review warning and a durable `inconclusive` claim, never PASS. Actual failed checks, validated findings, unresolved tasks, uncertain effects, and root cancellation still prevent success. Limits remain 30 tool operations, 12 native steps, and 180 seconds per reviewer; permissions, isolation, fencing, shared hard budgets, and late-result rejection remain enforced. Reviewers never start reviewers for themselves.
+
+Suggested handoff: "Yapılan değişiklikleri bağımsız bir değerlendirme için reviewer agent'a gönderebilirsin. Reviewer, kodu ve test sonuçlarını ayrı bir bakış açısıyla inceleyerek olası sorunları raporlayabilir."
+
+Each change revision gets a single durable review decision. Orchestrator task QA records a PASS for the reviewed workspace revision in the execution ledger; when the completion gate later evaluates the same revision it reuses that decision instead of spawning a second reviewer set. A previously decided claim for the same staged digest and revision is likewise reused, so retries or crash recovery cannot re-run reviewers for a verdict that is already final. A new mutation advances the revision and therefore requires a fresh decision.
 
 ## Posting behavior
 

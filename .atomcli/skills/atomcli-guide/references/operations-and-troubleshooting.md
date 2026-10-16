@@ -35,6 +35,12 @@ atomcli import https://atomcli.ai/share/<slug>
 In the TUI, `/session` exposes switching, new session, history/transcript, compact, rename, export, and sharing actions. Session sharing may expose conversation content externally; confirm the user's intent before enabling or posting a share URL.
 
 Live transcript output follows the tail only while the viewport remains at the bottom. Scrolling upward preserves the visible message and line across streaming tokens, tool output, taskflow updates, and terminal resizes; returning to the bottom resumes follow-tail. Use `PageUp`/`PageDown`, `Home`/`End`, or configured first/last-message bindings to traverse long sessions.
+Whitespace-only model output and invalid tool-free checkpoints are retried within their limits without leaving empty assistant messages.
+
+Ordinary coordinated turns use the advertised optional `todo` checklist and `agent` delegation, without requiring a legacy `taskflow` call. Classification sees the full request and retains extracted non-game acceptance; the original objective remains authoritative. The project map includes function hints for Python, Go, Rust, Kotlin and Swift as well as JavaScript/TypeScript; it is not a complete language parser.
+
+Tool errors remain in model history when a later provider failure occurs. Pruned tool output stops replaying its image attachments, while stored originals remain available. Failed or cancelled browser flows release held keys and mouse buttons, including nested input-sequence holds; successful explicit holds remain intentional.
+For an execution with an explicit acceptance contract, a structured `continue` checkpoint with remaining work cannot become successful completion without subsequent tools. The existing repair continuation resumes work; later tools or a `finish` assessment supersede this unchanged assessment. This consistency check does not certify product quality or make arbitrary checkpoint prose a hard acceptance gate. Explicit English exclusions (`without WebGL`, `WebGL is not required`) do not add renderer or 3D acceptance requirements.
 
 ## Memory
 
@@ -99,9 +105,37 @@ atomcli setup --yes
 
 The check performs a real Chromium launch matching the current desktop/headless environment rather than only checking whether files exist. The install form writes the Playwright module beneath `~/.atomcli/playwright`, where a compiled AtomCLI binary can resolve it; it also installs missing Arch/CachyOS or Fedora libraries and uses Playwright's dependency installer on Debian/Ubuntu. It downloads software and may request `sudo`, so explain this before running it.
 
+When resuming browser work, navigate to the served artifact before testing. Reloading or capturing `about:blank` records a successful tool operation, but supplies no artifact navigation, verification, or checkpoint progress evidence. A blank new browser context does not prove the application is broken.
+
+The semantic-repeat watchdog blocks three consecutive unchanged results. A recovery step repeated between distinct successful observations is not an unchanged streak; no-progress slices and extension limits still bound loops. Screenshot attachments follow their producing tool call/result in model history, identified by call ID. Each attachment retains an adjacent filename label even when the provider omits image-file metadata; name screenshots by view/state when comparing camera angles or before/after repairs.
+
+Browser `fill` replaces a field value atomically, including within a flow. `type` fills by default; use `type` with `delay` for physical sequential keyboard input. `fill` remains atomic even with `delay`. Both require an element target and text; validation, ownership and flow limits are unchanged.
+
+For game movement, use a bounded flow with physical `key_down`, a condition observed through text/locator `wait` or a bounded asynchronous `evaluate`, then `key_up`. Failed/aborted flows release keys held by their `key_down` steps; successful holds can intentionally continue into later calls. `wait` does not execute `script`, and observation scripts must include their own deadline. Existing evaluate permissions still apply.
+
+The completion navigation check refers to source edits and later write-effect tools, including arbitrary Bash verification scripts. If a parallel Bash check finishes after navigation, earlier navigation evidence is invalidated. A successful shell exit does not prove unrelated files, dependencies, or server state stayed unchanged; inspect tool completion order before treating the missing navigation evidence as a gate failure.
+
 ## Long-running taskflow checkpoints
 
+Root completion retries preserve checkpoint progress history across synthetic repair messages. Changing the invocation ID does not reset consecutive no-progress slices. Child checkpoint history remains separate.
+
 While a taskflow is active, AtomCLI gives the primary working agent a compact progress checkpoint after every five tool calls or five minutes. The five-minute threshold is checked on the next model turn and does not create background model traffic while the session is idle. If recorded step states have not changed since the previous checkpoint, the reminder asks the agent to reconcile them with `taskflow update`, `complete`, or `fail`. It never completes work automatically, and taskflow state remains isolated to its owning session.
+
+## Reviewer completion
+
+A legacy owned coding assignment requires a valid `agent_result` even when no edit succeeded. Return `incomplete`/`blocked` for unfinished work; no-op correctness can return `complete` with evidence. Read-only analysis remains compatible with ordinary reports. Atomic Work uses its existing durable task acceptance rather than a duplicate legacy no-edit report gate. A missing or foreign child-session target rejected before dispatch is not applied; the rejection does not mean uncertain work occurred.
+
+If tests pass but the requested directory is empty, inspect actual `write`/`edit` paths and Bash `workdir`. `mkdir` does not move the shell, and package managers can use an ancestor's project configuration. Completion checks supported explicit directory targets against deliverable files, not checkpoint prose; unresolved placement produces a repair continuation or a terminal non-success report. A permission rejection must not be worked around through another tool: common Bash paths and redirections require external-directory authorization as well as command permission. These checks are not an OS sandbox.
+
+Inline HTML static diagnostics report the original HTML line and column, including when several scripts share the file. TS/JSX diagnostics still use emitted JavaScript positions. Use the reported HTML location for targeted reads and edits.
+
+Diagnostic `node --check` probes report their actual exit status; current static checks own source syntax at completion and child acceptance. Changing a diagnostic method does not leave its old command as an implicit acceptance obligation. Failed test/build/typecheck commands still block completion, and explicit automatic acceptance commands remain required, including requested Node checks.
+
+Bash timeouts return exit status 124; cancellation returns 130, even if the parent shell exited successfully before a background child closed captured output. Harness logs preserve that non-success status. Interrupted commands with write effects retain unknown work until reconciled; killing their processes does not prove their side effects were rolled back.
+
+Review is optional by default. Requested reviewers retain native permissions, concrete claim authorization during finalizing, 30 tool operations, 12 native steps, 180 seconds, shared hard budgets, and late-result rejection. Timeout/cancellation/inconclusive is recorded separately from a completed code outcome with an explicit warning, never PASS. Validated findings, failed tests, unresolved tasks, and unknown effects still block success.
+
+`Session event stream ended before completion` means the CLI lost streaming output, not that the task succeeded. Prompt runs attempt bounded, version-checked cancellation of their exact execution without cancelling a newer user turn. If the control plane is unreachable or keeps conflicting, cancellation may not persist; inspect durable session execution state before resuming rather than treating CLI termination as completion.
 
 ## Status and diagnostics
 
@@ -142,6 +176,8 @@ A source edit does not change the globally installed binary until it is rebuilt 
 
 ## Common failure patterns
 
+Verification history treats Bun test `--reporter=dots` and `--reporter=verbose` (including separate-value syntax) as presentation-only. A passing equivalent retires a failure only for the same check and working directory; focused runs or a different directory do not clear a whole-suite failure.
+
 ### Model not found or unavailable
 
 1. Run `atomcli auth list`.
@@ -154,6 +190,10 @@ A source edit does not change the globally installed binary until it is rebuilt 
 
 Check precedence in this order: `ATOMCLI_CONFIG_CONTENT`, project config, `ATOMCLI_CONFIG`, global config, remote well-known config. Also verify whether the active process needs a restart or config reload.
 
+### Prompt fails with `Execution blocked: stale_policy`
+
+Independent review is optional for every scope and risk. `review.auto: true` explicitly opts into policy-triggered review. `agent(action="spawn", subagent_type="reviewer", prompt="Review changes and test results independently")` remains available. Count defaults to one; multiple reviewers require explicit requests or configuration. Skipped completion review is durable `not_required`, never PASS. Timeout, cancellation, and inconclusive review remain separate from the code outcome, with a persisted warning and `inconclusive` claim. Failed checks, validated findings, unresolved work, uncertain effects, root cancellation, fencing, isolation, and hard budgets still prevent false success. Policy/content conflicts retry up to three times; lifecycle and fence failures never retry.
+
 ### Skill or agent is missing
 
 - Confirm exact filename and directory.
@@ -164,7 +204,7 @@ Check precedence in this order: `ATOMCLI_CONFIG_CONTENT`, project config, `ATOMC
 
 ### MCP server fails
 
-Use `atomcli mcp debug <name>`, inspect the effective `mcp.json`, verify local command availability or remote URL/OAuth settings, then retry with `--print-logs`.
+Use `atomcli mcp debug <name>`, inspect the effective `mcp.json`, verify local command availability or remote URL/OAuth settings, then retry with `--print-logs`. Debug output shows token presence and remote origin without printing token bytes or URL credentials/query parameters. OAuth callbacks bind only to `127.0.0.1` and fail explicitly if the callback port is busy; authorization URLs, codes, and state values stay out of logs.
 
 ### Port already in use
 
@@ -190,3 +230,10 @@ atomcli uninstall
 ```
 
 Uninstalling the executable and deleting `~/.atomcli/` are different operations. Do not delete configuration, credentials, sessions, or memory unless the user explicitly requests that data removal and understands the consequence.
+Long minified lines: `read` returns complete lines within its 50 KiB budget; `grep` retains captured matching lines within its existing bounds. Oversized reads report truncation without splitting UTF-8 characters. Use the returned source hashes/anchors for Edit; stale checks still apply. Line offsets cannot resume inside an oversized line.
+
+Native Edit can omit `contentHash`: execution remembers trusted Read and own-write hashes. An explicit incorrect hash still fails. Native Write shares that revision record and rejects known stale content even when its mtime was restored; permission and post-permission freshness checks still apply.
+
+For an Edit batch, put all replacements in `operations`. Nonempty top-level `oldString/newString` alongside a nonempty batch rejects the whole request before writing; neither replacement is silently dropped. Empty provider-generated top-level strings remain compatible.
+
+Native model Edit schemas omit hash/anchor parameters; the existing revision record enforces freshness. Direct integrations still support explicit hashes/anchors and reject mismatches. After a stale edit, read current source and use an exact unique replacement, adding surrounding text if needed. For direct scoped calls, copy Read's returned anchor pair; the end hash covers the entire returned range.

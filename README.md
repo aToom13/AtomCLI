@@ -65,11 +65,18 @@ Run `atomcli <command> --help` for the current options. The complete top-level c
 
 Inside the interactive TUI, use `/model` or `/models` to open the model picker. The picker supports search by model name, ID, provider, and capability; it also exposes favorites and free/reasoning filters. OAuth-backed ChatGPT/Codex models are marked as subscription models rather than free models.
 
-The session transcript follows live output only while the viewport is at the tail. Manual upward scrolling preserves the visible message and line while tokens, tool results, taskflow events, or terminal resizes change transcript height; returning to the bottom resumes follow-tail. `PageUp`/`PageDown`, `Home`/`End`, and the configured first/last-message bindings remain available for long sessions.
+Up/down prompt recall is scoped to the current working directory, so prompts from another project do not appear.
+
+The session transcript loads the full saved message history. A temporary history request failure retries automatically instead of marking a partial response complete or closing the session. It follows live output only while the viewport is at the tail. Manual upward scrolling preserves the visible message and line while tokens, tool results, taskflow events, or terminal resizes change transcript height; returning to the bottom resumes follow-tail. `PageUp`/`PageDown`, `Home`/`End`, and the configured first/last-message bindings remain available for long sessions.
+
+Use `/session path` inside the TUI to switch working directory with the integrated home-rooted picker, or `/session path /absolute/path` for an existing directory. Arrow keys enter directories; `✓ OK` activates the current directory and `✕ Cancel` leaves it unchanged. The switch reloads directory-scoped sessions, transcript state, VCS, and prompt history. Use `/session recover` to reconcile an interrupted mutating tool call after verifying whether its side effect happened.
 
 Pressing Ctrl+C opens a safe exit confirmation with **Cancel** selected by default. Use the arrow keys or H/J/K/L to move between Cancel and Confirm, then press Enter; Escape cancels the dialog.
 
 Prompt, slash-command, and shell submissions show a delivery state. A server rejection is marked **FAILED**; a connection loss before acknowledgement is marked **DELIVERY UNKNOWN** so AtomCLI does not silently resend a command that may already have run. Focus that message and press Enter to restore its draft for inspection or retry.
+The TUI keeps the normal chat prompt visible when a prior operation has an uncertain outcome. The server still requires explicit reconciliation of uncertain mutating work before accepting another turn.
+The task panel follows the execution lifecycle: stopped or blocked executions and turns waiting for input no longer show open steps as running. Open work stays unfinished. A new message during a running tool joins the next model step after that tool's result is recorded; it does not cancel or repeat the operation.
+Messages sent while an agent is running join the current execution on its next model step, keeping its scope and budget.
 
 Interactive shell output is published to the session in 50 ms batches and keeps at most the newest 2 MiB. When older output is removed, the stored result starts with an explicit truncation marker; command completion and the newest diagnostics remain visible without unbounded session growth.
 
@@ -89,7 +96,21 @@ atomcli stats
 atomcli review --help
 ```
 
+## v3.4.5 architecture
+
+AtomCLI 3.4.5 records every long-running execution in a durable ledger with leases, checkpoints, atomic work plans, ownership fencing, orphan recovery, review claims, and idempotent restart projection. `/atomic-work <goal>` uses that ledger to keep task ownership, dependencies, scope floors, and criterion-level verification together; `scope_control` prevents delegated work from exceeding the authorized target.
+
+`StaticGate` and `static_check` provide deterministic full-source checks for undefined symbols and redeclarations in JavaScript, TypeScript, TSX, and HTML. `RepairPlanner` resolves nested `error.cause` chains into bounded repair steps. Completion requires persisted evidence from `task-verification.ts` rather than plan status alone.
+
+The session prompt path is modular: turn execution, checkpoints, completion, finalization, reminders, context, routing, and tools are separate stages. Compaction uses explicit policy and transaction modules, while `HarnessState` truncates UTF-8 text without corrupting multi-byte characters. Provider discovery and runtime verification are split into catalog, auth, config, filtering, custom-loader, model-selection, runtime, schema, and verification modules.
+
+Tool and UI runtimes are modularized around `orchestrate/*` and `browser/*`, with atomic work, static checks, task dispatch, todo tracking, recovery dialogs, directory and skill pickers, prompt command and paste handling, and syntax/system themes. The Companion bridge is split under `AtomBase/src/server/companion/`; Flutter models, providers, screens, and services live under `companion/lib/`; the OpenAPI v2 SDK is generated under `libs/sdk/js/src/v2/gen/`.
+
+Bundled skills now use focused reference files under `.atomcli/skills/*`. Architecture and operations details live in [Atomic Work](docs/ATOMIC-WORK.md), the [Skills guide](docs/SKILLS-GUIDE.md), [Providers](docs/PROVIDERS.md), [Review V2](docs/REVIEW.md), [MCP](docs/MCP-GUIDE.md), and [Development](docs/DEVELOPMENT.md).
+
 ## Built-in AtomCLI guide
+
+`/atomic-work <goal>` starts durable decomposition and execution with task ownership, dependencies, required skills, and criterion-level verification. Send a normal message to amend the goal while work runs. [Atomic Work guide](docs/ATOMIC-WORK.md) covers acceptance, amendments, and recovery.
 
 Release builds include the `atomcli-guide` skill. It covers everyday CLI use, configuration, providers, extensions, server and Companion workflows, troubleshooting, and source development. Ask a natural-language question such as “How do I add a skill in AtomCLI?” or “How should I test an AtomCLI server change?” and the agent can load the relevant part of the guide.
 
@@ -173,6 +194,7 @@ Use `atomcli auth login` for credentials. Provider overrides use the `provider` 
 ## Documentation
 
 - [Development guide](docs/DEVELOPMENT.md)
+- [Atomic Work specification](docs/ATOMIC-WORK.md)
 - [Provider and model guide](docs/PROVIDERS.md)
 - [MCP guide](docs/MCP-GUIDE.md)
 - [Skills guide](docs/SKILLS-GUIDE.md)

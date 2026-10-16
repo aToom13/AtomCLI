@@ -148,3 +148,16 @@ run_privileged() {
 OS_TYPE="linux"
 ensure_alpine_runtime_dependencies >/dev/null
 grep -Fxq "apk add --no-cache libstdc++ libgcc" "$fixture_dir/privileged-command"
+
+# Local checkout installs every bundled reference without rejecting existing
+# user skills, even when their count exceeds the bundled count.
+CONFIG_DIR="$fixture_dir/skills-config"
+mkdir -p "$CONFIG_DIR/skills/custom-user-skill"
+printf '%s\n' '# User skill' > "$CONFIG_DIR/skills/custom-user-skill/SKILL.md"
+OS_TYPE="linux"
+install_skills_bundle >/dev/null
+cmp "$CONFIG_DIR/skills/custom-user-skill/SKILL.md" <(printf '%s\n' '# User skill')
+while IFS= read -r -d '' source_file; do
+    relative_file=${source_file#"$repository_root/.atomcli/skills/"}
+    cmp "$source_file" "$CONFIG_DIR/skills/$relative_file"
+done < <(find "$repository_root/.atomcli/skills" -type f -print0)

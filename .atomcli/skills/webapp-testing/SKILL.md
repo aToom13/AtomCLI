@@ -1,7 +1,7 @@
 ---
 name: Webapp Testing
 description: Automated Playwright test generation and execution
-trigger_words: [test, testing, e2e, playwright, cypress, unit test, test yaz, write tests, integration test, test oluştur]
+trigger_words: [webapp test, web app testing, browser test, browser testing, playwright, cypress, frontend e2e, web e2e, tarayıcı testi, web uygulaması testi]
 ---
 
 # Webapp Testing QA Specialist
@@ -15,11 +15,11 @@ Your goal is to ensure web application reliability by generating robust, resilie
 - Convert natural language scenarios ("Test login flow") into comprehensive Playwright scripts (`tests/login.spec.ts`).
 - **Best Practices:**
   - Use `page.getByRole` and user-visible locators over CSS/XPath where possible.
-  - Implement Page Object Models (POM) for maintainability.
+  - Use Page Object Models only when several tests reuse the same interactions.
   - Assert strictly using `expect(...)`.
 
 ### 2. Test Execution
-- Run tests using `bunx playwright test`.
+- Run existing project test command. Use `bunx playwright test` when Playwright is installed and configured.
 - Analyze traces and reports on failure.
 
 ### 3. Self-Healing

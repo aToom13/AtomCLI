@@ -1,36 +1,30 @@
 ---
 name: Document Suite
-description: Processing for PDF, Excel, Word, Swagger, and PlantUML
-trigger_words: [document, documentation, readme, docs, dökümantasyon, belge yaz, pdf, excel, swagger, openapi]
+description: Inspect, transform, generate, and verify PDF, Word, Excel, PowerPoint, CSV, API specifications, and diagrams using available local tools. Use for document extraction, conversion, report generation, spreadsheet analysis, slide decks, or PDF workflows; do not assume binary files are plain text.
+trigger_words: [pdf, pdf file, docx, word document, xlsx, excel spreadsheet, csv analysis, powerpoint, pptx, slide deck, presentation, openapi, swagger, plantuml, mermaid diagram, pdf dönüştür, excel dosyası, powerpoint sunumu, word dosyası]
 ---
 
-# Document Processing Specialist
+# Document suite
 
-You are an expert in handling various document formats and converting them into structured data or code.
+Identify format, desired output, fidelity requirement, privacy boundary, and available toolchain first. Inspect before mutating. Keep source files intact, use explicit output paths, and verify rendered output rather than trusting a successful command.
 
-## Supported Formats
+## Route to references
+- PDF: [references/pdf.md](references/pdf.md)
+- Word: [references/word.md](references/word.md)
+- Spreadsheets: [references/spreadsheets.md](references/spreadsheets.md)
+- PowerPoint: [references/presentations.md](references/presentations.md)
+- OCR and scans: [references/ocr-and-scans.md](references/ocr-and-scans.md)
+- Conversion: [references/document-conversion.md](references/document-conversion.md)
+- Filing and batch organization: [references/document-filing.md](references/document-filing.md)
+- Verification: [references/verification.md](references/verification.md)
 
-### 1. PDF / Word (.pdf, .docx)
-- **Extraction:** Read content to extract text, tables, or specific fields (e.g., "Invoice Number").
-- **Summarization:** Distill long reports into executive summaries.
-- **Tools:** Use `read_file` (if text-based) or suggest using CLI tools like `pdftotext` or `pandoc` if native reading fails.
+## Tool reality
+The `read` tool can extract PDF attachments but treats `.docx`, `.xlsx`, and `.pptx` as binary. Discover installed tools such as `pdftotext`, `pdfinfo`, LibreOffice, Pandoc, Python libraries, or format-specific utilities before choosing a workflow. Do not claim a binary was parsed when only its filename was seen.
 
-### 2. Excel / CSV (.xlsx, .csv)
-- **Analysis:** Read headers and rows to understand data structure.
-- **Manipulation:** Generate Python/Pandas scripts to filter, sort, or visualize the data.
-- **Conversion:** Convert CSV data to JSON or SQL for database insertion.
+## Related skills
+- `media-analysis` for transcript, keyframe, or audio inputs.
+- `frontend-design` for document viewers and review interfaces.
+- `presentation-design` only when a dedicated slide design workflow is needed.
 
-### 3. API Specs (Swagger/OpenAPI)
-- **Code Gen:** Generate client SDKs (TypeScript, Python) from a provided Swagger JSON/YAML.
-- **Doc Gen:** Create human-readable Markdown documentation from raw API specs.
-
-### 4. Diagrams (PlantUML / Mermaid)
-- **Visualization:** Convert code logic or textual descriptions into PlantUML or Mermaid syntax.
-- **Reverse Engineering:** Read code modules and generate a Class Diagram or Sequence Diagram to explain the architecture.
-
-## Workflow Example
-**User:** "Here is an Excel file `data.xlsx` with sales info. Plot the monthly growth."
-**You:**
-1.  Use Python (if available) or read the CSV export.
-2.  Analyze columns (Date, Amount).
-3.  Write a script to aggregate by month and plot using Matplotlib or simple ASCII bar charts.
+## Acceptance loop
+Inspect → plan → transform a copy → render or reopen → compare key content → report artifacts and limitations.

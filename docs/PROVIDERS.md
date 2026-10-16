@@ -34,6 +34,7 @@ atomcli models cline-pass
 ```
 
 The API-token catalog refreshes while AtomCLI runs. Models with published pricing retain that metadata; `:free` entries remain explicitly free, while Cline Pass aliases are labeled as subscription access.
+If a `cline-pass` request fails, retry fallback checks `cline/cline-free/deepseek-v4.1-flash` before generic fallback models.
 
 The interactive TUI also exposes provider and model selection. Enter `/model` or `/models` to open the model picker. Search matches model names, IDs, providers, families, and capabilities. The picker groups favorites and recent models before provider sections and shows the current model with a dot. `Ctrl+A` includes providers that expose an authentication method even before they have a connected model catalog, so Cline can be selected there before login.
 
@@ -92,6 +93,8 @@ Retryable provider failures receive one retry on the current model before fallba
 
 Provider-native response state, including Responses API item IDs and encrypted reasoning, is retained when history, resume, or compaction continues on the provider that created it. A model switch or fallback to a different provider replays the conversation content without those opaque handles because response item IDs are scoped to their producing provider, even when an OpenAI-compatible gateway reports them in the `openai` metadata namespace.
 
+The TUI shows readable reasoning only when the provider sends it and thinking visibility is enabled with `/model visibility`. A reasoning token count or selected thinking level does not guarantee readable text; some providers send only token usage or encrypted/redacted reasoning. During checkpoint turns, ordinary reasoning remains visible, while structured checkpoint JSON is kept out of the conversation display.
+
 Automatic verification examines ranked candidates within a shared time bound rather than repeatedly stopping at the first three. Text and tool probes have separate bounded output allowances. A timeout or an output-limit completion without visible proof is recorded as inconclusive and retried only after its cooldown; it is not accepted as verification. When a provider returns usage before content validation fails, the real usage is still accounted. `atomcli fallback --probe --capability text` (or `tool`) makes real provider requests and updates the shared verification evidence; `--force` explicitly ignores fresh evidence and cooldowns. A probe may consume provider quota.
 
 Verification evidence is also bound to the selected reasoning variant and its adapter options. A `high` result cannot authorize `max`, and a stale or unsupported variant is rejected visibly instead of silently using the model default.
@@ -104,7 +107,7 @@ ChatGPT OAuth verification uses streaming Responses requests, like normal conver
 
 For “set the model to GPT 5.6 Luna”, the model should call `model_control` with `action: "list"` to discover exact connected IDs, then `action: "request"` with the target and a reason. It must not edit configuration or search repository files to change the conversation model. Ambiguous names should be clarified. This uses the current model's tool-calling capability; it is not a guaranteed offline natural-language command. The model picker remains available if the provider cannot call tools reliably.
 
-`scope: "model"` changes the conversation selection, `thinking` changes the current model's supported reasoning variant, and `expert` starts a bounded read-only episode using a configured expert. Main conversations alone can request switches. Automatic expert/thinking recommendations respect manual pins. In the default `ask` mode, model changes use the same inline question flow as other agent questions, including Companion delivery; the answer is then recorded as the durable route decision. A pending request pauses further model calls until approval, rejection, cancellation or expiry. Rejection and expiry leave the model unchanged.
+`scope: "model"` changes the conversation selection, `thinking` changes the current model's supported reasoning variant, and `expert` starts a bounded read-only episode using a configured expert. Main conversations alone can request switches. Automatic model, expert, and thinking routes cannot override manual pins; the ledger rejects auto-accepted proposals even when an earlier grant exists. An explicitly approved change remains possible. In the default `ask` mode, model changes use the same inline question flow as other agent questions, including Companion delivery; the answer is then recorded as the durable route decision. A pending request pauses further model calls until approval, rejection, cancellation or expiry. Rejection and expiry leave the model unchanged.
 
 Approval is not yet application: effective parameters and credential identity must still match and text/tool verification must succeed before the safe-boundary switch. Failure is visible; it never silently continues with the old model while claiming success. A confirmed concrete model change can leave Free, with paid/subscription verification deferred until after approval. Auto/Free targets retain their alias in the conversation selection and their pricing/verification constraints in dispatch. TUI selection updates only after application, not merely approval.
 
@@ -158,6 +161,8 @@ Provider overrides use the singular `provider` object:
 ```
 
 `apiKey`, `baseURL`, `timeout`, model overrides, `whitelist`, and `blacklist` are supported provider configuration fields.
+
+Normal generation uses the model's declared `limit.output`; AtomCLI no longer imposes a default 32,000-token output cap that can exhaust reasoning before any answer or tool call. `ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX` remains an explicit override. Provider limits and selected thinking variants still apply. The 16,000-token compaction headroom is a context estimate, not a generation limit. Missing output metadata retains a 32,000-token fallback; configure `limit.output` when the provider supports more. Small verification probes retain their separate output allowances.
 
 Two substitution placeholders are available in configuration files:
 

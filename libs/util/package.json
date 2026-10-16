@@ -1,6 +1,6 @@
 {
   "name": "@atomcli/util",
-  "version": "3.4.4-debug",
+  "version": "3.4.5",
   "private": true,
   "type": "module",
   "main": "src/index.ts",

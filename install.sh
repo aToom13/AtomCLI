@@ -972,7 +972,8 @@ prefetch_models_cache() {
 
 # Install bundled skills so they are available on first run.
 # Preference order: local repository checkout -> verified release archive
-# (skills.tar.gz) -> minimal core-skill stubs as offline fallback.
+# A missing or unverifiable archive is a hard failure: partial skill installs
+# make a clean install appear successful while silently dropping capabilities.
 # This runs automatically and must not depend on interactive prompts,
 # because curl | bash leaves $SCRIPT_DIR empty.
 install_skills_bundle() {
@@ -989,11 +990,24 @@ install_skills_bundle() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -d "$script_dir/.atomcli/skills" ]; then
-        cp -r "$script_dir/.atomcli/skills/"* "$skills_dir/" 2>/dev/null || true
-        if ls "$skills_dir"/*/SKILL.md >/dev/null 2>&1; then
-            success "Installed bundled skills from repository"
+        local source_count installed_count source_file relative_file
+        source_count=$(find "$script_dir/.atomcli/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md -print | wc -l | tr -d ' ')
+        cp -r "$script_dir/.atomcli/skills/"* "$skills_dir/"
+        installed_count=0
+        while IFS= read -r -d '' source_file; do
+            relative_file=${source_file#"$script_dir/.atomcli/skills/"}
+            if ! cmp -s "$source_file" "$skills_dir/$relative_file"; then
+                error "Bundled skill file missing or differs: $relative_file"
+                return 1
+            fi
+            case "$relative_file" in */SKILL.md) installed_count=$((installed_count + 1));; esac
+        done < <(find "$script_dir/.atomcli/skills" -type f -print0)
+        if [ "$source_count" -gt 0 ] && [ "$installed_count" -eq "$source_count" ]; then
+            success "Installed bundled skills from repository ($installed_count skills)"
             return 0
         fi
+        error "Local bundled skills are incomplete ($installed_count/$source_count); installation aborted"
+        return 1
     fi
 
     local version=""
@@ -1020,34 +1034,14 @@ install_skills_bundle() {
             success "Installed bundled skills (${version})"
             return 0
         fi
-
         rm -rf "$download_dir"
-        warn "Skills bundle download failed, creating core skills only..."
-    else
-        warn "Could not resolve a release for the skills bundle, creating core skills only..."
+        error "Bundled skills archive failed verification; installation aborted"
+        return 1
     fi
 
-    mkdir -p "$skills_dir/ralph"
-    cat > "$skills_dir/ralph/SKILL.md" << 'EOF'
----
-name: Ralph
-description: Friendly AI coding assistant with personality
----
+    error "No release found for bundled skills; installation aborted"
+    return 1
 
-You are Ralph, a friendly and enthusiastic AI coding assistant. You have a warm personality and enjoy helping developers solve problems.
-EOF
-
-    mkdir -p "$skills_dir/git-commit"
-    cat > "$skills_dir/git-commit/SKILL.md" << 'EOF'
----
-name: git-commit
-description: Generate conventional commit messages
----
-
-Generate commit messages following Conventional Commits format: feat, fix, docs, style, refactor, test, chore.
-EOF
-
-    success "Installed core skills into ~/.atomcli/skills/"
 }
 
 # Setup default config

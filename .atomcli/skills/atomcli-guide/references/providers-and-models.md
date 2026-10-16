@@ -35,6 +35,8 @@ Use the separate `cline-pass` provider for a Cline API token:
 ```sh
 atomcli auth login --provider cline-pass
 atomcli models cline-pass
+
+When `cline-pass` fails, retry fallback checks `cline/cline-free/deepseek-v4.1-flash` before generic fallback models.
 ```
 
 API-token authentication loads the complete live Cline `/models` catalog without the OAuth free-only filter and adds the current `clinePass` aliases. Published prices remain metered metadata, `:free` entries remain free, and Pass aliases are labeled as subscription access.
@@ -95,6 +97,8 @@ Only levels supported by the active model should be offered. Thinking visibility
 /model visibility
 ```
 
+Readable reasoning appears only when the provider supplies it. A token count or thinking level alone does not mean text is available; encrypted/redacted reasoning cannot be displayed. Ordinary reasoning in checkpoint turns is visible, while checkpoint JSON stays hidden.
+
 For non-interactive execution, use the provider-specific variant:
 
 ```sh
@@ -102,6 +106,8 @@ atomcli run --variant high "Solve this task"
 ```
 
 Do not claim a variant exists without checking the active model.
+
+Normal generation uses the model's declared `limit.output`, without a default 32,000-token cap that can consume the whole reasoning allowance before an answer. `ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX` is an explicit override; provider limits and selected variants remain authoritative. Compaction's 16,000-token headroom is independent. Unknown output metadata uses a 32,000-token fallback; set `limit.output` for larger supported outputs. Verification probes remain separately bounded.
 
 ## Adaptive model and thinking proposals
 
@@ -113,7 +119,7 @@ Use `model_control` with `action: "list"` (optional `query`) to discover connect
 
 In the default `ask` mode, model and thinking approval uses the normal inline question flow, so the same request reaches the TUI and Companion question inbox/notification path. The answer is recorded as the durable route decision. The runtime pauses subsequent model calls while approval is pending. Rejection, cancellation or expiry does not apply the route. After approval, parameters, credentials and text/tool verification must pass before application. Never describe a pending or merely accepted request as a completed switch. The TUI changes its selection only after application.
 
-For example, “set the model to GPT 5.6 Luna” should use the list/request tool sequence. This depends on the current model's tool-calling reliability, not an offline intent parser; the model picker remains the direct fallback. Approving a concrete model change can leave Free, with paid/subscription verification deferred until confirmation. Auto/Free requests retain the alias selection and its pricing/verification restrictions. Automatic recommendations respect manual pins and require exact grants for auto-acceptance.
+For example, “set the model to GPT 5.6 Luna” should use the list/request tool sequence. This depends on the current model's tool-calling reliability, not an offline intent parser; the model picker remains the direct fallback. Approving a concrete model change can leave Free, with paid/subscription verification deferred until confirmation. Auto/Free requests retain the alias selection and its pricing/verification restrictions. Automatic model, expert, and thinking routes cannot override manual pins: the ledger rejects auto-accepted proposals even when an earlier grant exists. An explicitly approved change remains possible.
 
 Eligibility is fail-closed: connection, provider/model allowlists, Free pricing, permission, capabilities, modalities, context/output limits, variant support, and current verification must all pass. A score cannot relax these constraints, and an accepted proposal changes nothing until a safe step boundary applies it.
 

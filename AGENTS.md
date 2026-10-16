@@ -7,14 +7,12 @@ Guidance for agentic coding agents working in this monorepo. `AtomBase/` is the 
 - **Bun only** — no npm or yarn anywhere. Package manager is pinned to `bun@1.3.14`.
 - **Monorepo root is not the main package.** All primary development happens in `AtomBase/`. Root `bun turbo` delegates to packages; run package-specific commands from within each package dir.
 - Run the app with `bun run --conditions=browser ./src/index.ts` (from `AtomBase/`). The `--conditions=browser` flag is required for TUI and SolidJS imports; missing it causes silent import failures.
-- **SDK codegen is required after any server API change.** After modifying routes in `AtomBase/src/server/`, regenerate the SDK:
+- **SDK codegen is required after any server API change.** After modifying routes in `AtomBase/src/server/`, regenerate the SDK from within `libs/sdk/js`:
   ```sh
-  cd AtomBase
-  bun run dev generate > ../libs/sdk/js/openapi.json
-  cd ../libs/sdk/js
+  cd libs/sdk/js
   bun run build
   ```
-  Do not manually edit files in `libs/sdk/js/src/v2/gen/` — they are auto-generated.
+  The build script (`script/build.ts`) runs `bun dev generate` against `AtomBase/`, writes a temporary `openapi.json` next to the script, regenerates `src/v2/gen/`, and removes that temporary file. `openapi.json` is gitignored and not committed; commit the regenerated `src/v2/gen/` output. Do not manually edit files in `libs/sdk/js/src/v2/gen/` — they are auto-generated.
 - **Releases are triggered by `v*` git tags only.** CI builds and publishes on tag push. No release helper is tracked; maintainer-specific helpers must remain ignored. Do not manually push to `AtomBase/dist/` or `release_assets/`.
 - **`AtomBase/dist/` is wiped on every build.** `build.ts` runs `rm -rf dist` unconditionally. Never store anything in `dist/`.
 - **Tracked release assets under `.atomcli/` and `.claude/` are bundled into every binary release.** Local configuration, credentials, package manifests/locks, dependencies, plans, runs, and session state in those directories must remain ignored and must never be force-added.

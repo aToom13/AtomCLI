@@ -7,6 +7,7 @@ This directory contains the maintained, source-checked documentation for AtomCLI
 - [Agent-quality benchmark](../AtomBase/evals/README.md): the internal coding-agent benchmark suite and how to run it.
 - [MCP guide](MCP-GUIDE.md): MCP configuration and CLI workflows.
 - [Skills guide](SKILLS-GUIDE.md): discovery, installation, and authoring of `SKILL.md` files.
+- [Atomic Work](ATOMIC-WORK.md): durable goal decomposition, ownership, verification, amendments, and recovery.
 - [Built-in AtomCLI guide](../.atomcli/skills/atomcli-guide/SKILL.md): runtime help shipped with releases, split into focused references for product use and source development.
 - [Android Companion guide](../companion/README.md): pairing, concurrent listeners, security, transfers, previews, and device validation.
 - [Review V2 guide](REVIEW.md): structured GitHub and GitLab review, verdicts, validation, and reviewer configuration.
