@@ -47,7 +47,7 @@ export namespace ExecutionWorld {
       prepare(command, policy) {
         const binary = Bun.which("bwrap")!
         const rootMount = policy.filesystem === "full" ? ["--bind", "/", "/"] : ["--ro-bind", "/", "/"]
-        const args = ["--die-with-parent", "--new-session", ...rootMount, "--proc", "/proc", "--dev", "/dev"]
+        const args = ["--die-with-parent", "--new-session", "--unshare-user", ...rootMount, "--proc", "/proc", "--dev", "/dev"]
         if (policy.processVisibility === "restricted") args.push("--unshare-pid")
         if (policy.network === "deny") args.push("--unshare-net")
         if (policy.filesystem === "workspace-write") {
