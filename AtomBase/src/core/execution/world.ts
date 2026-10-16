@@ -36,7 +36,8 @@ export namespace ExecutionWorld {
       .replace(/\.exe$/, "")
     if (name === "cmd") return ["/d", "/s", "/c", command]
     if (name === "powershell" || name === "pwsh") return ["-NoProfile", "-Command", command]
-    return ["-c", command]
+    if (["bash", "zsh", "ksh"].includes(name)) return ["-e", "-o", "pipefail", "-c", command]
+    return ["-e", "-c", command]
   }
 
   function bubblewrap(): Provider {

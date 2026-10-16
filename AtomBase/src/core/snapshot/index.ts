@@ -89,21 +89,31 @@ export namespace Snapshot {
     const decoder = new TextDecoder()
     let pending = ""
     const reader = process.stdout.getReader()
-    while (true) {
-      const { done, value: chunk } = await reader.read()
-      if (done) break
-      pending += decoder.decode(chunk, { stream: true })
-      let separator = pending.indexOf("\0")
-      while (separator !== -1) {
-        // Git's `-z` output is NUL-delimited; never let delimiter bytes reach filesystem APIs.
-        const file = pending.slice(0, separator).replace(/\0/g, "")
-        pending = pending.slice(separator + 1)
-        if (file) await onFile(file)
-        separator = pending.indexOf("\0")
+    // `onFile` does filesystem work and can throw. Without this guard the git
+    // child is orphaned holding an undrained stdout and stderr pipe, which is the
+    // classic two-pipe deadlock, and the stderr promise is abandoned un-awaited.
+    let completed = false
+    try {
+      while (true) {
+        const { done, value: chunk } = await reader.read()
+        if (done) break
+        pending += decoder.decode(chunk, { stream: true })
+        let separator = pending.indexOf("\0")
+        while (separator !== -1) {
+          // Git's `-z` output is NUL-delimited; never let delimiter bytes reach filesystem APIs.
+          const file = pending.slice(0, separator).replace(/\0/g, "")
+          pending = pending.slice(separator + 1)
+          if (file) await onFile(file)
+          separator = pending.indexOf("\0")
+        }
       }
+      pending += decoder.decode()
+      if (pending) await onFile(pending.replace(/\0/g, ""))
+      completed = true
+    } finally {
+      if (!completed) process.kill()
+      reader.releaseLock()
     }
-    pending += decoder.decode()
-    if (pending) await onFile(pending.replace(/\0/g, ""))
     return { exitCode: await process.exited, stderr: await stderr }
   }
 

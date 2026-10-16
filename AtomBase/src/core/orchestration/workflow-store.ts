@@ -6,10 +6,18 @@ export namespace WorkflowStore {
   }
 
   export async function load<T>(workflowID: string): Promise<T | undefined> {
-    return Storage.read<T>(["workflow", workflowID]).catch(() => undefined)
+    return Storage.read<T>(["workflow", workflowID]).catch((error) => {
+      if (error instanceof Storage.NotFoundError) return undefined
+      throw error
+    })
   }
 
   export async function remove(workflowID: string) {
-    await Storage.remove(["workflow", workflowID]).catch(() => {})
+    try {
+      await Storage.remove(["workflow", workflowID])
+    } catch (error) {
+      if (error instanceof Storage.NotFoundError) return
+      throw error
+    }
   }
 }

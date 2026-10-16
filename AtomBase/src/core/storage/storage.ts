@@ -441,14 +441,18 @@ export namespace Storage {
         }
       }
 
-      while (true) {
-        const { done, value } = await reader.read()
-        const found = consume(decoder.decode(value, { stream: !done }))
-        if (found !== undefined) {
-          await reader.cancel()
-          return found
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          const found = consume(decoder.decode(value, { stream: !done }))
+          if (found !== undefined) {
+            await reader.cancel()
+            return found
+          }
+          if (done) return
         }
-        if (done) return
+      } finally {
+        reader.releaseLock()
       }
     })
   }

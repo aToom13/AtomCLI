@@ -17,7 +17,7 @@ export namespace Bus {
 
   export const GlobalDisposed = BusEvent.define("global.disposed", z.object({}))
 
-  const state = Instance.state(
+  const state = Instance.sessionState(
     () => {
       const subscriptions = new Map<any, Subscription[]>()
 
@@ -31,7 +31,7 @@ export namespace Bus {
       const event = {
         type: InstanceDisposed.type,
         properties: {
-          directory: Instance.directory,
+          directory: Instance.sessionDirectory,
         },
       }
       for (const sub of [...wildcard]) {
@@ -59,7 +59,7 @@ export namespace Bus {
       }
     }
     GlobalBus.emit("event", {
-      directory: Instance.directory,
+      directory: Instance.sessionDirectory,
       payload,
     })
     return Promise.all(pending)

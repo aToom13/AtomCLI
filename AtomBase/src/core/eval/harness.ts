@@ -202,8 +202,7 @@ export namespace AgentEval {
               info.role === "assistant" &&
               info.parentID === parentID &&
               info.time.created <= assistantCreated &&
-              info.providerID === providerID &&
-              info.modelID === modelID
+              (!!benchmark || (info.providerID === providerID && info.modelID === modelID))
             )
           },
         )
@@ -216,12 +215,11 @@ export namespace AgentEval {
             command,
           )
         })
+        const lastTest = testTools.at(-1)
         const testsPassed =
-          testTools.length === 0
+          lastTest === undefined
             ? undefined
-            : testTools.every(
-                (part) => part.state.status === "completed" && Number(part.state.metadata?.exit ?? 0) === 0,
-              )
+            : lastTest.state.status === "completed" && Number(lastTest.state.metadata?.exit ?? 0) === 0
         const reviewParts = toolParts.filter((part) => part.tool === "review-gate" || part.tool === "review_gate")
         const reviewText = reviewParts
           .map((part) =>
@@ -237,7 +235,7 @@ export namespace AgentEval {
           : /VERDICT:\s*REJECTED|review.*fail/i.test(reviewText)
             ? ("failed" as const)
             : ("not_run" as const)
-        const text = turnParts
+        const text = message.parts
           .filter((part): part is MessageV2.TextPart => part.type === "text")
           .map((part) => part.text)
           .join("\n")

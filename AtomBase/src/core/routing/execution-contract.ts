@@ -7,6 +7,12 @@ export namespace ExecutionContract {
   export const Scope = z.enum(["direct", "focused", "coordinated"])
   export type Scope = z.infer<typeof Scope>
 
+  export const SCOPE_RANK: Record<Scope, number> = {
+    direct: 0,
+    focused: 1,
+    coordinated: 2,
+  }
+
   export const Risk = z.enum(["low", "elevated", "critical"])
   export type Risk = z.infer<typeof Risk>
 
@@ -22,6 +28,21 @@ export namespace ExecutionContract {
     risk: Risk.default("low"),
     confidence: z.number().min(0).max(1),
     deliverables: z.array(z.string()).max(8).default([]),
+    acceptance: z.array(z.string().min(1).max(1000)).max(16).optional(),
+    acceptanceRevision: z.number().int().nonnegative().optional(),
+    acceptanceChange: z
+      .object({
+        reason: z.enum([
+          "initial_classification",
+          "user_input",
+          "mandatory_skill",
+          "platform_constraint",
+          "runtime_evidence",
+        ]),
+        detail: z.string().min(1).max(2000),
+        invalidatedEvidence: z.array(z.string().max(2000)).max(100),
+      })
+      .optional(),
     expectedSurfaces: z.array(Surface).max(6).default(["conversation"]),
     assumptions: z.array(z.string()).max(5).default([]),
     uncertainty: Uncertainty.default("low"),
@@ -32,6 +53,31 @@ export namespace ExecutionContract {
     rationale: z.string().max(500).default(""),
   })
   export type Info = z.infer<typeof Info>
+
+  export function acceptanceFor(prompt: string): string[] {
+    const text = prompt.toLowerCase()
+    const requiresWebGL =
+      /\bwebgl\b/.test(text) &&
+      !/\b(?:without|no)\s+webgl\b|\bwebgl\s+(?:is\s+)?not\s+(?:(?:an?\s+)?(?:extra\s+)?)?(?:required|necessary|requirement)\b/.test(
+        text,
+      )
+    if ((!/\b3d\b/.test(text) && !requiresWebGL) || !/\b(?:game|games|gameplay)\b|oyun/.test(text)) return []
+    // ponytail: explicit 3D game requests; other domains retain their original user criteria.
+    return [
+      "3D: each requested game has world coordinates, non-trivial projection, depth/occlusion and spatial movement that change the rendered scene; canvas existence and HUD changes alone are insufficient.",
+      ...(/camera|kamera/.test(text)
+        ? [
+            "Camera: requested controls change the projected world view while preserving a usable scene in forward, quarter-turn and reverse views.",
+          ]
+        : []),
+      "Gameplay: sustained input in every documented movement direction changes world position consistently with elapsed time; reach an actual objective and observe progression feedback.",
+      "Interaction: real browser pointer/keyboard input verifies documented controls and app behavior; helper calls, state mutations and DOM .click() are setup, not input proof. fill() does not prove physical keypress handling.",
+      ...(requiresWebGL ? ["Renderer: an active WebGL context renders the requested game."] : []),
+      ...(/collision|boundar|çarpış|sınır/.test(text)
+        ? ["Collision: player interaction with obstacles or world boundaries prevents invalid spatial movement."]
+        : []),
+    ]
+  }
 
   export function fallback(reason = "classifier_unavailable", overrides?: Partial<Info>): Info {
     return {
@@ -50,6 +96,10 @@ export namespace ExecutionContract {
       rationale: reason,
       ...overrides,
     }
+  }
+
+  export function conservativeScope(agentMode?: string): Scope {
+    return agentMode === "reviewer" ? "direct" : "focused"
   }
 
   export function parseSafe(raw: unknown, reason = "invalid_classifier_output"): Info {

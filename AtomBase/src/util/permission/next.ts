@@ -102,7 +102,7 @@ export namespace PermissionNext {
     ),
   }
 
-  const state = Instance.state(async () => {
+  const state = Instance.sessionState(async () => {
     const projectID = Instance.project.id
     let stored: Ruleset = []
     try {
@@ -189,11 +189,14 @@ export namespace PermissionNext {
       const hardDenies = ruleset.filter(
         (rule) => rule.action === "deny" && !(rule.permission === "*" && rule.pattern === "*"),
       )
-      for (const pattern of request.patterns ?? []) {
-        const rule = evaluate(request.permission, pattern, ruleset, s.approved, hardDenies)
+      const evaluated = (request.patterns ?? []).map((pattern) => ({
+        pattern,
+        rule: evaluate(request.permission, pattern, ruleset, s.approved, hardDenies),
+      }))
+      if (evaluated.some(({ rule }) => rule.action === "deny"))
+        throw new DeniedError(ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)))
+      for (const { pattern, rule } of evaluated) {
         log.info("evaluated", { permission: request.permission, pattern, action: rule })
-        if (rule.action === "deny")
-          throw new DeniedError(ruleset.filter((r) => Wildcard.match(request.permission, r.permission)))
         if (rule.action === "ask") {
           const id = input.id ?? Identifier.ascending("permission")
           return new Promise<void>((resolve, reject) => {

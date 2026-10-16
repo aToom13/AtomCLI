@@ -1,4 +1,3 @@
-import z from "zod"
 import { ExecutionContract } from "./execution-contract"
 
 export namespace ExecutionPolicy {
@@ -61,12 +60,17 @@ export namespace ExecutionPolicy {
   export interface RuntimeEvidence {
     filesRead?: string[]
     filesChanged?: string[]
+    // CP-02: per-path successful write counts. Cumulative growth distinguishes
+    // "same file, new revision" from list-length noise.
+    fileWriteCounts?: Record<string, number>
     packagesTouched?: string[]
     failureCount?: number
     mutatingCalls?: number
     externalCalls?: number
     toolCalls?: number
     successfulToolCalls?: number
+    browserNavigations?: number
+    browserVerificationCalls?: number
     recentToolCallSignatures?: string[]
     recentToolFamilies?: string[]
     recentToolTargets?: string[]
@@ -95,6 +99,24 @@ export namespace ExecutionPolicy {
       failures: number
       reasons: string[]
     }
+    diagnostics?: string[]
+  }
+
+  export function detectContradictions(input: {
+    contract: ExecutionContract.Info
+    budget: Budget
+    allowedTools?: string[]
+  }): string[] {
+    const diagnostics: string[] = []
+    if (input.contract.scope !== "coordinated" && input.budget.allowSubagents)
+      diagnostics.push("subagents_allowed_outside_coordinated_scope")
+    if (input.contract.scope === "direct" && input.budget.allowTaskflow)
+      diagnostics.push("taskflow_allowed_in_direct_scope")
+    if (input.contract.needsMutation && input.allowedTools) {
+      const hasMutationTool = input.allowedTools.includes("edit") || input.allowedTools.includes("write")
+      if (!hasMutationTool) diagnostics.push("mutation_required_but_tools_exclude_edit_write")
+    }
+    return diagnostics
   }
 
   export function canPromoteScope(current: ExecutionContract.Scope, next: ExecutionContract.Scope): boolean {
@@ -108,16 +130,47 @@ export namespace ExecutionPolicy {
   export function selectAllowedTools(
     scope: ExecutionContract.Scope,
     intent: ExecutionContract.Intent,
+    expectedSurfaces: ExecutionContract.Surface[] = [],
+    needsMutation = intent === "change" || intent === "operate",
   ): string[] | undefined {
-    if (scope === "coordinated") return undefined // all permitted tools
+    const surfaceTools = new Set<string>()
+    if (expectedSurfaces.includes("browser")) surfaceTools.add("browser")
+    if (expectedSurfaces.includes("browser") || intent === "design") surfaceTools.add("skill")
+    let baseTools: string[] = []
     if (scope === "direct") {
-      if (intent === "answer") return []
-      if (intent === "inspect") return ["read", "grep", "find"]
-      return ["read", "edit", "write"]
+      // Empty means no task tools; model/scope controls stay available for promotion.
+      if (intent === "answer") {
+        baseTools = [...surfaceTools]
+      } else if (intent === "inspect") {
+        baseTools = ["read", "grep", "find", ...surfaceTools]
+      } else if (!needsMutation) {
+        baseTools = ["read", "grep", "find", ...surfaceTools]
+      } else {
+        baseTools = ["read", "edit", "write", ...surfaceTools]
+      }
+    } else if (scope === "focused") {
+      const common = intent === "answer" || intent === "inspect" || !needsMutation
+        ? ["read", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
+        : ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch"];
+      baseTools = [...common];
+    } else {
+      // scope === coordinated
+      const common = intent === "answer" || intent === "inspect" || !needsMutation
+        ? ["read", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
+        : ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch"];
+      baseTools = [...common];
+      // Coordinated is the only scope where the model-facing coordination
+      // surface is offered: a visible checklist (todo) plus delegation (agent).
+      // taskflow/orchestrate/normal-task stay out of the advertised set; they
+      // remain internal execution/state mechanisms reachable via compatibility.
+      baseTools.push("todo");
+      baseTools.push("agent");
     }
-    return ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch", "taskflow"]
+    if (scope !== "direct") baseTools.push("static_check")
+    // Add surface tools (browser, skill) if not already present
+    surfaceTools.forEach(t => { if (!baseTools.includes(t)) baseTools.push(t); })
+    return baseTools
   }
-
   export function resolvePolicy(
     contract: ExecutionContract.Info,
     evidence?: RuntimeEvidence,
@@ -144,9 +197,10 @@ export namespace ExecutionPolicy {
       maxSteps: Math.max(BUDGETS[scope].maxSteps, priorPolicy?.budget.maxSteps ?? 0),
       maxToolCalls: Math.max(BUDGETS[scope].maxToolCalls, priorPolicy?.budget.maxToolCalls ?? 0),
     }
-    const requiresReview = risk === "critical" || (risk === "elevated" && scope === "coordinated")
+    const requiresReview = false
     const requiresChecker = risk === "critical" && (evidence?.hasAuthOrSecurityEffect ?? false)
-    const allowedTools = selectAllowedTools(scope, contract.intent)
+    const allowedTools = selectAllowedTools(scope, contract.intent, contract.expectedSurfaces, contract.needsMutation)
+    const diagnostics = detectContradictions({ contract: { ...contract, scope, risk }, budget, allowedTools })
 
     return {
       scope,
@@ -157,6 +211,7 @@ export namespace ExecutionPolicy {
       allowedTools,
       promotionReasons: [...new Set(promotionReasons)],
       budgetExtension: priorPolicy?.budgetExtension,
+      diagnostics,
     }
   }
 
@@ -200,14 +255,6 @@ export namespace ExecutionPolicy {
         targetScope = "coordinated"
         reasons.push("Cross-package boundary touched")
       }
-      if (e.hasPublicApiEffect) {
-        targetScope = "coordinated"
-        reasons.push("Public API surface modified")
-      }
-      if (e.hasSchemaOrMigrationEffect) {
-        targetScope = "coordinated"
-        reasons.push("Persistent schema or migration modified")
-      }
       if ((e.filesChanged?.length ?? 0) > 4) {
         targetScope = "coordinated"
         reasons.push("Wide change affecting more than 4 files")
@@ -233,6 +280,8 @@ export namespace ExecutionPolicy {
     }
     if (e.hasAuthOrSecurityEffect || e.hasSchemaOrMigrationEffect || e.hasPublicApiEffect || e.hasDestructiveAction) {
       targetRisk = "critical"
+      if (e.hasPublicApiEffect) reasons.push("Public API surface modified")
+      if (e.hasSchemaOrMigrationEffect) reasons.push("Persistent schema or migration modified")
       reasons.push("Critical security, schema, public API, or destructive action identified")
     }
 

@@ -5,21 +5,37 @@ import { Global } from "@/core/global"
 import { Session } from "@/core/session"
 import { MessageV2 } from "@/core/session/message-v2"
 import type { Provider } from "@/integrations/provider/provider"
-import { Instance } from "@/services/project/instance"
 import { Token } from "@/util/util/token"
 import type { LanguageModelUsage, ProviderMetadata } from "ai"
 import { Log } from "@/util/util/log"
 import { ExecutionLedger } from "./ledger"
-import { ReviewPolicy } from "@/core/verification/review-policy"
-import { SessionExecutionProfile } from "@/core/session/execution-profile"
 import { Storage } from "@/core/storage/storage"
 import { Bus } from "@/core/bus"
 import { BusEvent } from "@/core/bus/bus-event"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { ExecutionPolicy } from "@/core/routing/execution-policy"
-import { ExecutionCheckpoint } from "./checkpoint"
+import * as RouteGuidanceStore from "./route-guidance"
+import { createLeaseManager } from "./lease"
+import { createExecutionStateStore } from "./runtime/state"
+import {
+  parseClaimOrRecordRecovery as parseClaimOrRecordRecoveryImpl,
+  parseCompletion as parseCompletionImpl,
+} from "./runtime/completion"
+import { createCheckpointRuntimeModule } from "./runtime/checkpoint-runtime"
+import { createWorkRuntimeModule } from "./runtime/work"
+import { createCompletionLifecycle } from "./runtime/completion-lifecycle"
+import { createRouteRuntimeModule } from "./runtime/routing"
+import { createEvidenceRuntime } from "./runtime/evidence"
+import { createTaskRuntimeModule } from "./runtime/task"
+import type { RuntimeTypes } from "./runtime/types"
+import {
+  configuredReviewPolicy as configuredReviewPolicyImpl,
+  contentSnapshotDigest as contentSnapshotDigestImpl,
+  policy as policyImpl,
+} from "./runtime/policy"
 
 export namespace ExecutionRuntime {
+  export type ExecutionState = import("./runtime/state").ExecutionState
   const log = Log.create({ service: "execution-runtime" })
   const runID = `${process.pid}:${crypto.randomUUID()}`
   const OWNER_LEASE_MS = 30_000
@@ -28,40 +44,14 @@ export namespace ExecutionRuntime {
   const MAX_COMPLETION_PAYLOAD_BYTES = 2 * 1024 * 1024
   const MAX_COMPLETION_REVIEW_BYTES = 512 * 1024
   const MAX_CONTINUATION_PAYLOAD_BYTES = 64 * 1024
+  const MAX_COMPLETION_EDITED_FILES = 1_000
   const ledgers = new Map<string, ReturnType<typeof ExecutionLedger.open>>()
 
   function hasRepeatedTail(values: string[] | undefined, count: number) {
     if (!values || values.length < count) return false
     const tail = values.slice(-count)
-    return tail.every((value) => value === tail[0])
+    return Boolean(tail[0]) && tail.every((value) => value === tail[0])
   }
-
-  function hasRepeatedValue(values: string[] | undefined, count: number) {
-    if (!values || values.length < count) return false
-    const counts = new Map<string, number>()
-    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
-    return [...counts.values()].some((value) => value >= count)
-  }
-  const leases = new Map<
-    string,
-    {
-      ownerID: string
-      fence: number
-      controller: AbortController
-      heartbeat: ReturnType<typeof setInterval>
-      deadline: ReturnType<typeof setTimeout> | undefined
-      holders: Map<string, number>
-    }
-  >()
-  const leaseScope = Instance.state(
-    () => ({ directory: Instance.directory }),
-    async ({ directory }) => {
-      for (const [executionID, lease] of leases) {
-        if (!lease.holders.delete(directory)) continue
-        if (lease.holders.size === 0) stopLease(executionID, "not_active")
-      }
-    },
-  )
 
   export const Event = {
     RouteProposal: BusEvent.define(
@@ -85,11 +75,36 @@ export namespace ExecutionRuntime {
         executionID: z.string(),
       }),
     ),
+    TaskUpdated: BusEvent.define(
+      "execution.task.updated",
+      z.object({
+        sessionID: z.string(),
+        executionID: z.string(),
+        taskID: z.string(),
+        status: ExecutionLedger.TaskStatus,
+        revision: z.number().int().positive(),
+        version: z.number().int().positive(),
+      }),
+    ),
+    ScopeChanged: BusEvent.define(
+      "execution.scope.changed",
+      z.object({
+        sessionID: z.string(),
+        executionID: z.string(),
+        from: ExecutionContract.Scope,
+        to: ExecutionContract.Scope,
+        reason: z.string(),
+      }),
+    ),
     Checkpoint: BusEvent.define(
       "execution.checkpoint",
       z.object({
         sessionID: z.string(),
         executionID: z.string(),
+        // Assistant message that owns the checkpoint part; lets event
+        // consumers (Companion live stream) bind the checkpoint to a message.
+        messageID: z.string(),
+        triggerMessageID: z.string().optional(),
         sequence: z.number().int().positive(),
         checkpoint: z.unknown(),
       }),
@@ -132,89 +147,89 @@ export namespace ExecutionRuntime {
     return current
   }
 
-  const MAX_EXECUTION_STATES = 500
-  const executionStates = new Map<
-    string,
-    {
-      contract: ExecutionContract.Info
-      policy: ExecutionPolicy.PolicyInfo
-      evidence: ExecutionPolicy.RuntimeEvidence
-      promotionReasons: string[]
-      classifierFallback: boolean
-      extensionCount: number
-      sliceLimit: number
-      sliceStartCalls: number
-      sliceUsedCalls: number
-    }
-  >()
-
-  function getExecutionState(executionID: string) {
-    let current = executionStates.get(executionID)
-    {
-      try {
-        const persisted = ledger().getPolicyState(executionID)
-        if (persisted) {
-          current = {
-            ...persisted,
-            extensionCount: persisted.extensionCount ?? 0,
-            sliceLimit: persisted.sliceLimit ?? 30,
-            sliceStartCalls: persisted.sliceStartCalls ?? persisted.evidence?.toolCalls ?? 0,
-            sliceUsedCalls: persisted.sliceUsedCalls ?? 0,
-          }
-          executionStates.set(executionID, current)
-        }
-      } catch {}
-    }
-    return current
+  export function scopeFloor(sessionID: string) {
+    return ledger().scopeFloor(sessionID)
   }
 
-  function setExecutionState(
-    executionID: string,
-    state: {
-      contract: ExecutionContract.Info
-      policy: ExecutionPolicy.PolicyInfo
-      evidence: ExecutionPolicy.RuntimeEvidence
-      promotionReasons: string[]
-      classifierFallback: boolean
-      extensionCount?: number
-      sliceLimit?: number
-      sliceStartCalls?: number
-      sliceUsedCalls?: number
+  export function scopeEscalationStatus(sessionID: string) {
+    return ledger().scopeEscalationStatus(sessionID)
+  }
+
+  export function raiseScopeFloor(sessionID: string, scope: ExecutionContract.Scope) {
+    return ledger().raiseScopeFloor(sessionID, scope)
+  }
+
+  export function resetScopeFloor(sessionID: string) {
+    ledger().resetScopeFloor(sessionID)
+  }
+
+  const leaseManager = createLeaseManager({
+    ledger: {
+      deadline: (executionID) => ledger().deadline(executionID),
+      renewOwner: (input) => ledger().renewOwner(input),
     },
-  ) {
-    const entry = {
-      ...state,
-      // The ledger-owned CAS counter must survive evidence/promotion merges that
-      // don't explicitly set it; only admit paths that won a grant may bump it.
-      extensionCount: state.extensionCount ?? executionStates.get(executionID)?.extensionCount ?? 0,
-      sliceLimit: state.sliceLimit ?? executionStates.get(executionID)?.sliceLimit ?? 30,
-      sliceStartCalls: state.sliceStartCalls ?? executionStates.get(executionID)?.sliceStartCalls ?? 0,
-      sliceUsedCalls: state.sliceUsedCalls ?? executionStates.get(executionID)?.sliceUsedCalls ?? 0,
-    }
-    executionStates.set(executionID, entry)
-    try {
-      ledger().savePolicyState({ executionID, ...entry })
-    } catch (err) {
-      log.warn("failed to persist policy state to ledger", { executionID, err })
-    }
-    pruneExecutionStates()
-  }
+    log,
+    ownerLeaseMs: OWNER_LEASE_MS,
+    heartbeatMs: OWNER_HEARTBEAT_MS,
+    makeError: (reason, executionID) => new BudgetExceededError(reason, executionID),
+  })
+  const { stopLease, ensureLease } = leaseManager
+  export const renewLease = leaseManager.renewLease
+  export const leaseSignal = leaseManager.leaseSignal
+  export const holdLease = leaseManager.holdLease
 
-  function pruneExecutionStates() {
-    if (executionStates.size <= MAX_EXECUTION_STATES) return
-    for (const executionID of executionStates.keys()) {
-      if (executionStates.size <= MAX_EXECUTION_STATES) break
-      if (ledger().view(executionID)?.lifecycle === "terminal") executionStates.delete(executionID)
-    }
+  // Route guidance accumulates self-critique and failed approaches across
+  // checkpoints so the next work slice prompt can steer the model away from
+  // repeated failures. Keyed by executionID; lightweight and append-only.
+  // Unlike execution policy state this is not reloadable from the ledger, so it
+  // is bounded by TTL and by a hard cap instead — it is a soft steering hint, and
+  // losing an idle entry only costs a less-informed next slice.
+  const executionState = createExecutionStateStore({
+    ledger,
+    warn: (message, data) => log.warn(message, data),
+  })
+  const getExecutionState = executionState.get
+  const setExecutionState = executionState.set
+  const pruneExecutionStates = executionState.prune
+
+  export const _internals = {
+    pruneExecutionStates,
+    EXECUTION_STATE_TTL_MS: executionState.limits.ttlMs,
+    MAX_EXECUTION_STATES: executionState.limits.maxEntries,
+    pruneRouteGuidance: (now = Date.now()) =>
+      RouteGuidanceStore.prune(now, (executionID) => ledger().view(executionID)?.lifecycle === "terminal"),
+    ROUTE_GUIDANCE_TTL_MS: RouteGuidanceStore.limits.ttlMs,
+    MAX_ROUTE_GUIDANCE: RouteGuidanceStore.limits.maxEntries,
+    seedRouteGuidance: RouteGuidanceStore.seed,
   }
 
   export function setExecutionContract(
     executionID: string,
     contract: ExecutionContract.Info,
-    options?: { classifierFallback?: boolean },
+    options?: { classifierFallback?: boolean; acceptanceChange?: ExecutionContract.Info["acceptanceChange"] },
   ): ExecutionPolicy.PolicyInfo {
     const existing = getExecutionState(executionID)
-    const evidence = existing?.evidence ?? {}
+    let evidence = existing?.evidence ?? {}
+    const acceptance = contract.acceptance ?? existing?.contract.acceptance
+    const changed = !Bun.deepEquals(acceptance, existing?.contract.acceptance)
+    if (changed && existing?.contract.acceptance?.length && !options?.acceptanceChange)
+      throw new Error("Acceptance revision requires a concrete user, skill, platform or runtime reason")
+    contract = {
+      ...contract,
+      acceptance,
+      acceptanceRevision: (existing?.contract.acceptanceRevision ?? 0) + (changed ? 1 : 0),
+      acceptanceChange: changed
+        ? ExecutionContract.Info.shape.acceptanceChange.parse(
+            options?.acceptanceChange ?? {
+              reason: "initial_classification",
+              detail: "Evidence requirements derived before mutation",
+              invalidatedEvidence: [],
+            },
+          )
+        : existing?.contract.acceptanceChange,
+    }
+    if (changed && existing?.contract.acceptance?.length)
+      evidence = { ...evidence, browserNavigations: 0, browserVerificationCalls: 0 }
     const policy = ExecutionPolicy.resolvePolicy(contract, evidence, existing?.promotionReasons ?? [], existing?.policy)
     setExecutionState(executionID, {
       contract,
@@ -223,7 +238,12 @@ export namespace ExecutionRuntime {
       promotionReasons: policy.promotionReasons,
       classifierFallback: options?.classifierFallback ?? false,
     })
-    log.info("execution contract set", { executionID, scope: contract.scope, risk: contract.risk })
+    log.info("execution contract set", {
+      executionID,
+      scope: contract.scope,
+      risk: contract.risk,
+      diagnostics: policy.diagnostics,
+    })
     return policy
   }
 
@@ -243,304 +263,111 @@ export namespace ExecutionRuntime {
     return getExecutionState(executionID)?.classifierFallback ?? false
   }
 
-  export function resolveExecutionPolicy(
-    executionID: string,
-    evidence?: ExecutionPolicy.RuntimeEvidence,
-  ): ExecutionPolicy.PolicyInfo {
-    const existing = getExecutionState(executionID)
-    const contract = existing?.contract ?? ExecutionContract.fallback("default_runtime_policy")
-    const prev = existing?.evidence ?? {}
-    const next = evidence ?? {}
-    const mergedEvidence: ExecutionPolicy.RuntimeEvidence = {
-      ...prev,
-      ...next,
-      filesRead: [...new Set([...(prev.filesRead ?? []), ...(next.filesRead ?? [])])],
-      filesChanged: [...new Set([...(prev.filesChanged ?? []), ...(next.filesChanged ?? [])])],
-      packagesTouched: [...new Set([...(prev.packagesTouched ?? []), ...(next.packagesTouched ?? [])])],
-      mutatingCalls: (prev.mutatingCalls ?? 0) + (next.mutatingCalls ?? 0),
-      externalCalls: (prev.externalCalls ?? 0) + (next.externalCalls ?? 0),
-      toolCalls: (prev.toolCalls ?? 0) + (next.toolCalls ?? 0),
-      successfulToolCalls: (prev.successfulToolCalls ?? 0) + (next.successfulToolCalls ?? 0),
-      recentToolCallSignatures: [
-        ...(prev.recentToolCallSignatures ?? []),
-        ...(next.recentToolCallSignatures ?? []),
-      ].slice(-6),
-      recentToolFamilies: [...(prev.recentToolFamilies ?? []), ...(next.recentToolFamilies ?? [])].slice(-6),
-      recentToolTargets: [...(prev.recentToolTargets ?? []), ...(next.recentToolTargets ?? [])].slice(-6),
-      recentSemanticActionResults:
-        (next.mutatingCalls ?? 0) > 0
-          ? []
-          : [...(prev.recentSemanticActionResults ?? []), ...(next.recentSemanticActionResults ?? [])].slice(-24),
-      recentErrorFingerprints:
-        (next.successfulToolCalls ?? 0) > 0 && (next.failureCount ?? 0) === 0
-          ? []
-          : [...(prev.recentErrorFingerprints ?? []), ...(next.recentErrorFingerprints ?? [])].slice(-6),
-      failureCount: (prev.failureCount ?? 0) + (next.failureCount ?? 0),
-      subtasksSpawned: (prev.subtasksSpawned ?? 0) + (next.subtasksSpawned ?? 0),
-      hasAuthOrSecurityEffect: Boolean(prev.hasAuthOrSecurityEffect || next.hasAuthOrSecurityEffect),
-      hasSchemaOrMigrationEffect: Boolean(prev.hasSchemaOrMigrationEffect || next.hasSchemaOrMigrationEffect),
-      hasPublicApiEffect: Boolean(prev.hasPublicApiEffect || next.hasPublicApiEffect),
-      hasDestructiveAction: Boolean(prev.hasDestructiveAction || next.hasDestructiveAction),
-      uncertainOutcome: Boolean(prev.uncertainOutcome || next.uncertainOutcome),
+  export async function escalateScope(input: {
+    sessionID: string
+    execution: Context
+    scope: ExecutionContract.Scope
+    reason: string
+    actorID: string
+  }) {
+    if (input.sessionID !== input.execution.rootSessionID)
+      throw new BudgetExceededError("scope_escalation_root_only", input.execution.executionID)
+    const resolved = await context(input.sessionID, input.execution)
+    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
+    const existing = getExecutionState(input.execution.executionID)
+    if (!existing) throw new BudgetExceededError("policy_unavailable", input.execution.executionID)
+    const currentScope = existing.policy.scope
+    if (ExecutionPolicy.SCOPE_RANK[input.scope] <= ExecutionPolicy.SCOPE_RANK[currentScope]) {
+      return { changed: false as const, scope: currentScope, policy: existing.policy }
+    }
+    const config = await Config.get()
+    const settings = {
+      maxPerSession: config.experimental?.scope_escalation?.max_per_session ?? 20,
+      cooldownMs: config.experimental?.scope_escalation?.cooldown_ms ?? 0,
+    }
+    const contract = {
+      ...existing.contract,
+      scope: input.scope,
+      likelyCrossBoundary: input.scope === "coordinated" || existing.contract.likelyCrossBoundary,
+      rationale: `${existing.contract.rationale} Scope escalated: ${input.reason}`.trim(),
     }
     const policy = ExecutionPolicy.resolvePolicy(
       contract,
-      mergedEvidence,
-      existing?.promotionReasons ?? [],
-      existing?.policy,
+      existing.evidence,
+      [...existing.promotionReasons, `Scope escalated to ${input.scope}: ${input.reason}`],
+      existing.policy,
     )
-    setExecutionState(executionID, {
+    const budget = resolved.store.view(input.execution.executionID)?.budget.execution
+    const grantedCalls =
+      budget?.calls.limit === undefined
+        ? Math.max(0, policy.budget.maxToolCalls - existing.policy.budget.maxToolCalls)
+        : 0
+    const grantedSteps =
+      budget?.steps.limit === undefined ? Math.max(0, policy.budget.maxSteps - existing.policy.budget.maxSteps) : 0
+    const applied = resolved.store.applyScopeEscalation({
+      executionID: input.execution.executionID,
+      scope: input.scope,
       contract,
       policy,
-      evidence: mergedEvidence,
       promotionReasons: policy.promotionReasons,
-      classifierFallback: existing?.classifierFallback ?? false,
+      reason: input.reason,
+      actorID: input.actorID,
+      grantedCalls,
+      grantedSteps,
+      maxPerSession: settings.maxPerSession,
+      cooldownMs: settings.cooldownMs,
     })
-    return policy
-  }
-
-  export function promoteScope(executionID: string, targetScope: ExecutionContract.Scope, reason: string): boolean {
-    const existing = getExecutionState(executionID)
-    if (!existing) return false
-    if (!ExecutionPolicy.canPromoteScope(existing.policy.scope, targetScope)) return false
-    const contract: ExecutionContract.Info = { ...existing.contract, scope: targetScope }
-    const reasons = [...existing.promotionReasons, reason]
-    const policy = ExecutionPolicy.resolvePolicy(contract, existing.evidence, reasons, existing.policy)
-    setExecutionState(executionID, {
+    if (!applied.allowed) throw new BudgetExceededError(applied.reason, input.execution.executionID)
+    setExecutionState(input.execution.executionID, {
+      ...existing,
       contract,
       policy,
-      evidence: existing.evidence,
       promotionReasons: policy.promotionReasons,
-      classifierFallback: existing.classifierFallback,
     })
-    log.info("execution scope promoted", { executionID, from: existing.policy.scope, to: targetScope, reason })
-    return true
-  }
-
-  export function promoteRisk(executionID: string, targetRisk: ExecutionContract.Risk, reason: string): boolean {
-    const existing = getExecutionState(executionID)
-    if (!existing) return false
-    if (!ExecutionPolicy.canPromoteRisk(existing.policy.risk, targetRisk)) return false
-    const contract: ExecutionContract.Info = { ...existing.contract, risk: targetRisk }
-    const reasons = [...existing.promotionReasons, reason]
-    const policy = ExecutionPolicy.resolvePolicy(contract, existing.evidence, reasons, existing.policy)
-    setExecutionState(executionID, {
-      contract,
-      policy,
-      evidence: existing.evidence,
-      promotionReasons: policy.promotionReasons,
-      classifierFallback: existing.classifierFallback,
+    await Bus.publish(Event.ScopeChanged, {
+      sessionID: input.sessionID,
+      executionID: input.execution.executionID,
+      from: currentScope,
+      to: input.scope,
+      reason: input.reason,
     })
-    log.info("execution risk promoted", { executionID, from: existing.policy.risk, to: targetRisk, reason })
-    return true
+    return { changed: true as const, scope: input.scope, policy, grantedCalls, grantedSteps }
   }
 
-  export function recordRuntimeEvidence(
-    executionID: string,
-    evidence: ExecutionPolicy.RuntimeEvidence,
-  ): ExecutionPolicy.PolicyInfo {
-    if (!getExecutionState(executionID)) return
-    return resolveExecutionPolicy(executionID, evidence)
-  }
-
-  export function isCheckpointRequired(executionID: string): boolean {
-    return checkpointReason(executionID) !== undefined
-  }
-
-  export function checkpointReason(executionID: string): string | undefined {
-    const sliceReason = ledger().sliceCheckpointReason(executionID)
-    if (sliceReason) return sliceReason
-    const existing = getExecutionState(executionID)
-    if (!existing) return undefined
-    const maxSteps = existing.policy?.budget?.maxSteps
-    if (maxSteps && maxSteps > 2) {
-      const steps = ledger().stepCount(executionID)
-      if (steps >= Math.ceil(maxSteps * 0.8)) return "step_threshold"
-    }
-    const callsSinceCheckpoint = Math.max(
-      ledger().sliceUsedCalls(executionID),
-      (existing.evidence.toolCalls ?? 0) - (existing.sliceStartCalls ?? 0),
-    )
-    if (
-      existing.policy.scope === "coordinated" &&
-      callsSinceCheckpoint >= 10 &&
-      !ledger().hasUnresolvedExecutionTaskflow(executionID)
-    ) {
-      return "missing_plan"
-    }
-    const previous = ledger().checkpoints(executionID).at(-1)?.payload as
-      | { evidence?: ExecutionPolicy.RuntimeEvidence; routeRevision?: number; planRevision?: number }
-      | undefined
-    if ((existing.evidence.failureCount ?? 0) >= (previous?.evidence?.failureCount ?? 0) + 3) return "repeated_failures"
-    if ((existing.evidence.noProgressSlices ?? 0) >= ExecutionCheckpoint.MAX_NO_PROGRESS_SLICES) return "no_progress"
-    if (hasRepeatedTail(existing.evidence.recentToolCallSignatures, 3)) return "repeated_tool_call"
-    if (hasRepeatedValue(existing.evidence.recentSemanticActionResults, 3)) return "repeated_semantic_action"
-    if (hasRepeatedTail(existing.evidence.recentToolTargets, 3)) return "repeated_tool_target"
-    if (hasRepeatedTail(existing.evidence.recentErrorFingerprints, 3)) return "repeated_error"
-    if (!previous) return undefined
-    const view = ledger().view(executionID)
-    const changed = Boolean(
-      view &&
-        (view.routeRevision > (previous.routeRevision ?? view.routeRevision) ||
-          (ledger().planRevision(executionID) ?? 0) >
-            (previous.planRevision ?? ledger().planRevision(executionID) ?? 0)),
-    )
-    return changed ? "route_or_plan_changed" : undefined
-  }
-
-  export function requestCheckpoint(executionID: string): boolean {
-    return ledger().requestCheckpoint(executionID)
-  }
-
-  export function admitToolCall(
-    executionID: string,
-    evidence?: ExecutionPolicy.RuntimeEvidence,
-    options?: { signature?: string; family?: string; target?: string },
-  ) {
-    let existing = getExecutionState(executionID)
-    if (!existing) return
-    reserveToolCall(executionID)
-    return recordToolCall(executionID, evidence, options)
-  }
-
-  export function reserveToolCall(executionID: string) {
-    if (!getExecutionState(executionID)) return
-    if (!ledger().reserveToolAllowance(executionID)) throw new BudgetExceededError("checkpoint_required", executionID)
-  }
-
-  export function releaseToolCall(executionID: string) {
-    ledger().releaseToolAllowance(executionID)
-  }
-
-  export function recordToolCall(
-    executionID: string,
-    evidence?: ExecutionPolicy.RuntimeEvidence,
-    options?: { signature?: string; family?: string; target?: string },
-  ) {
-    let existing = getExecutionState(executionID)
-    if (!existing) return
-    existing = getExecutionState(executionID)!
-    existing.sliceUsedCalls = ledger().sliceUsedCalls(executionID)
-    executionStates.set(executionID, existing)
-    return resolveExecutionPolicy(executionID, {
-      ...(evidence ?? {}),
-      toolCalls: 1,
-      recentToolCallSignatures: options?.signature ? [options.signature] : [],
-      recentToolFamilies: options?.family ? [options.family] : [],
-      recentToolTargets: options?.target ? [options.target] : [],
-    })
-  }
-
-  export function recordSemanticActionResult(executionID: string, signature: string, resultFingerprint: string) {
-    return resolveExecutionPolicy(executionID, {
-      recentSemanticActionResults: [`${signature}:${resultFingerprint}`],
-    })
-  }
-
-  function stopLease(executionID: string, reason?: string) {
-    const current = leases.get(executionID)
-    if (!current) return
-    clearInterval(current.heartbeat)
-    if (current.deadline) clearTimeout(current.deadline)
-    leases.delete(executionID)
-    if (reason && !current.controller.signal.aborted) {
-      current.controller.abort(new BudgetExceededError(reason, executionID))
-    }
-  }
-
-  function ensureLease(input: Context) {
-    const existing = leases.get(input.executionID)
-    if (existing?.ownerID === input.ownerID && existing.fence === input.fence) return existing.controller.signal
-    if (existing) stopLease(input.executionID, "stale_fence")
-
-    const controller = new AbortController()
-    const heartbeat = setInterval(() => {
-      try {
-        renewLease(input)
-      } catch (error) {
-        log.error("execution owner lease renewal failed", { executionID: input.executionID, error })
-        stopLease(input.executionID, "lease_error")
-      }
-    }, OWNER_HEARTBEAT_MS)
-    heartbeat.unref?.()
-    const expiresAt = ledger().deadline(input.executionID)
-    const deadline =
-      expiresAt === undefined
-        ? undefined
-        : setTimeout(() => stopLease(input.executionID, "deadline"), Math.max(0, expiresAt - Date.now()))
-    deadline?.unref?.()
-    leases.set(input.executionID, {
-      ownerID: input.ownerID,
-      fence: input.fence,
-      controller,
-      heartbeat,
-      deadline,
-      holders: new Map(),
-    })
-    return controller.signal
-  }
-
-  export function renewLease(input: Context) {
-    const current = leases.get(input.executionID)
-    if (!current || current.ownerID !== input.ownerID || current.fence !== input.fence) return false
-    const renewal = ledger().renewOwner({
-      executionID: input.executionID,
-      ownerID: input.ownerID,
-      fence: input.fence,
-      leaseMs: OWNER_LEASE_MS,
-    })
-    if (renewal.renewed) return true
-    log.warn("execution owner lease was lost", { executionID: input.executionID, reason: renewal.reason })
-    stopLease(input.executionID, renewal.reason)
-    return false
-  }
-
-  export function leaseSignal(input: Context) {
-    const current = leases.get(input.executionID)
-    if (!current || current.ownerID !== input.ownerID || current.fence !== input.fence) {
-      const controller = new AbortController()
-      controller.abort(new BudgetExceededError("stale_fence", input.executionID))
-      return controller.signal
-    }
-    return current.controller.signal
-  }
-
-  export function holdLease(input: Context) {
-    ensureLease(input)
-    const current = leases.get(input.executionID)
-    if (!current || current.ownerID !== input.ownerID || current.fence !== input.fence) {
-      throw new BudgetExceededError("stale_fence", input.executionID)
-    }
-    const directory = leaseScope().directory
-    current.holders.set(directory, (current.holders.get(directory) ?? 0) + 1)
-    let released = false
-    return () => {
-      if (released) return
-      released = true
-      const active = leases.get(input.executionID)
-      if (active !== current) return
-      const count = active.holders.get(directory) ?? 0
-      if (count <= 1) active.holders.delete(directory)
-      else active.holders.set(directory, count - 1)
-      if (active.holders.size === 0) stopLease(input.executionID)
-    }
-  }
+  const evidenceRuntime = createEvidenceRuntime({
+    ledger,
+    getState: getExecutionState,
+    setState: setExecutionState,
+    updateState: executionState.update,
+    makeBudgetError: (reason, executionID) => new BudgetExceededError(reason, executionID),
+    logPromotion: (kind, data) => log.info(`execution ${kind} promoted`, data),
+    hasRepeatedTail,
+  })
+  const hasNewEvidencePath = evidenceRuntime.hasNewEvidencePath
+  export const resolveExecutionPolicy = evidenceRuntime.resolveExecutionPolicy
+  export const promoteScope = evidenceRuntime.promoteScope
+  export const promoteRisk = evidenceRuntime.promoteRisk
+  export const recordRuntimeEvidence = evidenceRuntime.recordRuntimeEvidence
+  export const isCheckpointRequired = evidenceRuntime.isCheckpointRequired
+  export const checkpointReason = evidenceRuntime.checkpointReason
+  export const requestCheckpoint = evidenceRuntime.requestCheckpoint
+  export const admitToolCall = evidenceRuntime.admitToolCall
+  export const reserveToolCall = evidenceRuntime.reserveToolCall
+  export const releaseToolCall = evidenceRuntime.releaseToolCall
+  export const recordToolCall = evidenceRuntime.recordToolCall
+  export const recordSemanticActionResult = evidenceRuntime.recordSemanticActionResult
 
   async function rootSession(sessionID: string) {
     let current = await Session.get(sessionID)
+    const projectID = current.projectID
     const visited = new Set<string>()
-    while (current.parentID && !visited.has(current.id)) {
+    while (current.parentID) {
+      if (visited.has(current.id)) throw new Error("Cyclic session ancestry")
       visited.add(current.id)
       current = await Session.get(current.parentID)
+      if (current.projectID !== projectID) throw new Error("Session ancestry crosses project boundary")
     }
     return current
-  }
-
-  function microusd(value: number | undefined) {
-    if (value === undefined) return undefined
-    const converted = Math.ceil(value * 1_000_000)
-    if (!Number.isSafeInteger(converted)) throw new Error("Execution cost limit exceeds the supported range")
-    return converted
   }
 
   export function estimateMicrousd(model: Provider.Model, input: string, maxOutputTokens: number) {
@@ -561,43 +388,22 @@ export namespace ExecutionRuntime {
     uncertain(): void
   }
 
-  export type Context = ExecutionLedger.Context
-  export type Completion = Omit<
-    ExecutionLedger.Completion,
-    "payload" | "reviewFiles" | "deliveryPayload" | "deliveryFinish"
-  > & {
-    parts: MessageV2.TextPart[]
-    editedFiles: string[]
-  }
-  export type CompletionClaim = Completion & {
-    projectorID: string
-    projectionToken: string
-    projectionLeaseExpiresAt: number
-    sessionGeneration: number
-  }
-
-  export type ReviewDecision = {
-    policyVersion: number
-    policyDigest: string
-    requirement: "required" | "not_required" | "user_bypass"
-    reasonCode: string
-    requiredReviewers: number
-    attemptLimit: number
-  }
-
-  export type TerminalFailure = {
-    outcome: "failed" | "cancelled" | "budget_exhausted" | "blocked"
-    reasonCode: ExecutionLedger.ReasonCode
-    reasonMessage: string
-    retryable: boolean
-  }
+  export type Context = RuntimeTypes.Context
+  export type Completion = RuntimeTypes.Completion
+  export type CompletionClaim = RuntimeTypes.CompletionClaim
+  export type ReviewDecision = RuntimeTypes.ReviewDecision
+  export type TerminalFailure = RuntimeTypes.TerminalFailure
 
   export function classifyTerminalFailure(error: unknown, aborted = false): TerminalFailure {
+    const errorRecord =
+      typeof error === "object" && error !== null
+        ? (error as { name?: unknown; reason?: unknown; detail?: unknown })
+        : undefined
     const budgetReason =
       error instanceof BudgetExceededError
         ? error.reason
-        : (error as any)?.name === "ExecutionBudgetExceededError"
-          ? (error as any)?.reason
+        : errorRecord?.name === "ExecutionBudgetExceededError" && typeof errorRecord.reason === "string"
+          ? errorRecord.reason
           : undefined
     if (budgetReason === "checkpoint_required") {
       throw new Error("checkpoint_required is a resumable control signal and cannot become a terminal outcome")
@@ -622,9 +428,11 @@ export namespace ExecutionRuntime {
         reasonCode: "recovery_required",
         reasonMessage:
           (error instanceof BudgetExceededError && error.detail) ||
-          (error as any)?.detail ||
+          (typeof errorRecord?.detail === "string" ? errorRecord.detail : undefined) ||
           "The session has unknown mutating work that must be reconciled.",
-        retryable: true,
+        // Reconciliation must happen before a new root can start. Resuming this
+        // execution would replay the uncertain mutating call.
+        retryable: false,
       }
     }
     if (aborted || (error instanceof Error && error.name === "AbortError")) {
@@ -660,99 +468,19 @@ export namespace ExecutionRuntime {
     }
   }
 
-  function parseCompletion(candidate: ExecutionLedger.Completion): Completion {
-    const { payload, reviewFiles, deliveryPayload, deliveryFinish, ...info } = candidate
-    return {
-      ...info,
-      finish: deliveryFinish ?? info.finish,
-      parts: MessageV2.TextPart.array().parse(JSON.parse(deliveryPayload ?? payload)),
-      editedFiles: z.string().array().parse(JSON.parse(reviewFiles)),
-    }
-  }
+  const parseCompletion = parseCompletionImpl
+  const parseClaimOrRecordRecovery = (candidate: ExecutionLedger.CompletionClaim) =>
+    parseClaimOrRecordRecoveryImpl(
+      candidate,
+      (input) => ledger().markProjectionRecovery(input),
+      (error, executionID) => log.error("completion projection payload is invalid", { error, executionID }),
+    )
 
-  function parseCompletionClaim(candidate: ExecutionLedger.CompletionClaim): CompletionClaim {
-    const { projectorID, projectionToken, projectionLeaseExpiresAt, sessionGeneration, ...completion } = candidate
-    return {
-      ...parseCompletion(completion),
-      projectorID,
-      projectionToken,
-      projectionLeaseExpiresAt,
-      sessionGeneration,
-    }
-  }
+  const policy = policyImpl
 
-  function parseClaimOrRecordRecovery(candidate: ExecutionLedger.CompletionClaim): CompletionClaim | undefined {
-    try {
-      return parseCompletionClaim(candidate)
-    } catch (error) {
-      log.error("completion projection payload is invalid", { error, executionID: candidate.executionID })
-      ledger().markProjectionRecovery({
-        executionID: candidate.executionID,
-        digest: candidate.digest,
-        projectorID: candidate.projectorID,
-        projectionToken: candidate.projectionToken,
-        sessionGeneration: candidate.sessionGeneration,
-        reasonCode: "invalid_payload",
-      })
-      return undefined
-    }
-  }
+  const configuredReviewPolicy = configuredReviewPolicyImpl
 
-  function policy(budget: NonNullable<Awaited<ReturnType<typeof Config.get>>["execution_budget"]>) {
-    return {
-      maxCalls: budget.max_calls,
-      maxSteps: budget.max_steps,
-      maxDurationMs: budget.max_duration_ms,
-      maxCostMicrousd: microusd(budget.max_cost_usd),
-      rootMaxCostMicrousd: microusd(budget.session_max_cost_usd),
-      projectMaxCostMicrousd: microusd(budget.project_max_cost_usd),
-      unknownPriceBlocked:
-        budget.unknown_price !== "allow" &&
-        (budget.max_cost_usd !== undefined ||
-          budget.session_max_cost_usd !== undefined ||
-          budget.project_max_cost_usd !== undefined),
-    }
-  }
-
-  function configuredReviewPolicy(config: Awaited<ReturnType<typeof Config.get>>, sessionID: string) {
-    return ReviewPolicy.snapshot({
-      enabled: config.review?.enabled !== false,
-      configuredPolicy: config.review?.policy ?? "adaptive",
-      executionProfile: SessionExecutionProfile.get(sessionID),
-      reviewerCount: config.review?.reviewer_count ?? 2,
-      attemptLimit: config.review?.max_attempts ?? 3,
-      highRiskPatterns: config.review?.high_risk_patterns ?? [],
-    })
-  }
-
-  async function contentSnapshotDigest(files: string[]) {
-    const hasher = new Bun.CryptoHasher("sha256")
-    for (const filename of [...files].sort()) {
-      const filepath = path.isAbsolute(filename) ? filename : path.resolve(Instance.directory, filename)
-      hasher.update(`${filename}\0`)
-      try {
-        const file = Bun.file(filepath)
-        if (!(await file.exists())) {
-          hasher.update("missing\0")
-          continue
-        }
-        const reader = file.stream().getReader()
-        try {
-          while (true) {
-            const chunk = await reader.read()
-            if (chunk.done) break
-            hasher.update(chunk.value)
-          }
-        } finally {
-          reader.releaseLock()
-        }
-      } catch (error) {
-        hasher.update(`unreadable:${error instanceof Error ? error.name : "unknown"}\0`)
-      }
-      hasher.update("\0")
-    }
-    return hasher.digest("hex")
-  }
+  const contentSnapshotDigest = contentSnapshotDigestImpl
 
   export async function resolveInvocation(input: {
     sessionID: string
@@ -794,7 +522,7 @@ export namespace ExecutionRuntime {
       rootSessionID: candidate.rootSessionID,
       fence: candidate.fence,
       sessionGeneration: sessionGuard?.generation ?? 1,
-      resumesExecutionID: input.resumesExecutionID,
+      resumesExecutionID: input.resumesExecutionID ?? store.view(candidate.executionID)?.resumesExecutionID,
       policy: config.execution_budget ? policy(config.execution_budget) : {},
     })
     const ownership = store.claimOwner({
@@ -871,264 +599,6 @@ export namespace ExecutionRuntime {
     return bound
   }
 
-  export async function assertActive(input: { sessionID: string; execution: Context }) {
-    await context(input.sessionID, input.execution)
-  }
-
-  export async function registerWork(input: {
-    sessionID: string
-    execution: Context
-    operationID: string
-    kind: string
-    mutating: boolean
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const registered = resolved.store.registerWork({
-      id: input.operationID,
-      executionID: input.execution.executionID,
-      invocationID: input.execution.invocationID,
-      kind: input.kind,
-      mutating: input.mutating,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-    })
-    if (!registered.registered) throw new BudgetExceededError(registered.reason, input.execution.executionID)
-    return registered
-  }
-
-  export async function beginWork(input: {
-    sessionID: string
-    execution: Context
-    operationID: string
-    expectedVersion: number
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const began = resolved.store.beginWork({
-      id: input.operationID,
-      executionID: input.execution.executionID,
-      invocationID: input.execution.invocationID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      expectedVersion: input.expectedVersion,
-    })
-    if (!began.began) throw new BudgetExceededError(began.reason, input.execution.executionID)
-    return began
-  }
-
-  export async function finishWork(input: {
-    sessionID: string
-    execution: Context
-    operationID: string
-    expectedVersion: number
-    state: "completed" | "failed" | "cancelled" | "unknown"
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const finished = resolved.store.finishWork({
-      id: input.operationID,
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      expectedVersion: input.expectedVersion,
-      state: input.state,
-    })
-    if (!finished.finished) throw new BudgetExceededError(finished.reason, input.execution.executionID)
-    if (input.state === "unknown") {
-      Bus.publish(Event.Updated, { sessionID: input.sessionID, executionID: input.execution.executionID })
-    }
-    return finished
-  }
-
-  export async function reconcileWork(input: {
-    sessionID: string
-    execution: Context
-    operationID: string
-    state: "completed" | "failed" | "cancelled"
-    expectedVersion: number
-    evidence: string
-    resolutionCode: string
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const reconciled = resolved.store.reconcileWork({
-      id: input.operationID,
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      state: input.state,
-      expectedVersion: input.expectedVersion,
-      evidence: input.evidence,
-      resolutionCode: input.resolutionCode,
-    })
-    if (!reconciled.reconciled) throw new BudgetExceededError(reconciled.reason, input.execution.executionID)
-    return reconciled
-  }
-
-  export async function registerBlocker(input: {
-    sessionID: string
-    execution: Context
-    blockerID: string
-    parentBlockerID?: string
-    kind: ExecutionLedger.BlockerKind
-    producerID: string
-    resourceScope: string
-    planRevision?: number
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const registered = resolved.store.registerBlocker({
-      id: input.blockerID,
-      executionID: input.execution.executionID,
-      invocationID: input.execution.invocationID,
-      parentBlockerID: input.parentBlockerID,
-      kind: input.kind,
-      producerID: input.producerID,
-      resourceScope: input.resourceScope,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      planRevision: input.planRevision,
-    })
-    if (!registered.registered) throw new BudgetExceededError(registered.reason, input.execution.executionID)
-    return registered.blocker
-  }
-
-  export async function createPlan(input: {
-    sessionID: string
-    execution: Context
-    items: Array<{ id: string; resourceScope: string }>
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const created = resolved.store.createPlan({
-      executionID: input.execution.executionID,
-      invocationID: input.execution.invocationID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      items: input.items,
-    })
-    if (!created.created) throw new BudgetExceededError(created.reason, input.execution.executionID)
-    return created
-  }
-
-  export async function transitionBlocker(input: {
-    sessionID: string
-    execution: Context
-    blockerID: string
-    expectedVersion: number
-    state: ExecutionLedger.BlockerState
-    evidence?: string
-    resolutionCode?: string
-    authority?: "user" | "policy"
-    planRevision?: number
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const transitioned = resolved.store.transitionBlocker({
-      id: input.blockerID,
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      expectedVersion: input.expectedVersion,
-      state: input.state,
-      evidence: input.evidence,
-      resolutionCode: input.resolutionCode,
-      authority: input.authority,
-      planRevision: input.planRevision,
-    })
-    if (!transitioned.transitioned) throw new BudgetExceededError(transitioned.reason, input.execution.executionID)
-    return transitioned.blocker
-  }
-
-  export async function recordMutation(input: { sessionID: string; execution: Context }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const recorded = resolved.store.recordMutation({
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-    })
-    if (!recorded.recorded) throw new BudgetExceededError(recorded.reason, input.execution.executionID)
-    return recorded.revision
-  }
-
-  export function cancelSession(sessionID: string) {
-    const store = ledger()
-    const active = store.active(sessionID)
-    if (!active || active.ownerID !== runID) return false
-    return cancelExecution(active)
-  }
-
-  export function cancelExecution(execution: Pick<Context, "executionID" | "ownerID" | "fence">) {
-    if (execution.ownerID !== runID) return false
-    const cancelled = ledger().cancel({
-      executionID: execution.executionID,
-      ownerID: execution.ownerID,
-      fence: execution.fence,
-    }).cancelled
-    if (cancelled) stopLease(execution.executionID, "not_active")
-    return cancelled
-  }
-
-  export function cancelInvocation(execution: Pick<Context, "executionID" | "invocationID" | "ownerID" | "fence">) {
-    if (execution.ownerID !== runID) return false
-    return ledger().cancelInvocation({
-      invocationID: execution.invocationID,
-      executionID: execution.executionID,
-      ownerID: execution.ownerID,
-      fence: execution.fence,
-    }).cancelled
-  }
-
-  export function finishInvocation(
-    execution: Pick<Context, "executionID" | "invocationID" | "ownerID" | "fence">,
-    state: "completed" | "failed" | "cancelled" | "unknown",
-  ) {
-    if (execution.ownerID !== runID) return false
-    return ledger().finishInvocation({
-      invocationID: execution.invocationID,
-      executionID: execution.executionID,
-      ownerID: execution.ownerID,
-      fence: execution.fence,
-      state,
-    }).finished
-  }
-
-  export function blocker(blockerID: string) {
-    return ledger().blocker(blockerID)
-  }
-
-  export function taskflowPlan(executionID: string, sessionID: string) {
-    return ledger().taskflowPlan(executionID, sessionID)
-  }
-
-  export async function closeTaskflow(input: { sessionID: string; execution: Context }) {
-    await assertActive(input)
-    ledger().closeTaskflow({ ...input.execution, sessionID: input.sessionID })
-  }
-
-  export function completion(executionID: string): Completion | undefined {
-    const candidate = ledger().completion(executionID)
-    return candidate ? parseCompletion(candidate) : undefined
-  }
-
-  export function execution(executionID: string) {
-    return ledger().execution(executionID)
-  }
-
-  export function view(executionID: string) {
-    return ledger().view(executionID)
-  }
-
-  export function list(input: { sessionID: string; cursor?: string; limit?: number }) {
-    return ledger().list(input)
-  }
-
-  export function snapshot(sessionID: string) {
-    return ledger().snapshot(sessionID)
-  }
-
   // Subscribe before reading the ledger so a fast approval cannot be missed.
   export async function waitForRouteDecision(sessionID: string, execution: Context, signal: AbortSignal) {
     signal.throwIfAborted()
@@ -1171,482 +641,6 @@ export namespace ExecutionRuntime {
     return ledger().revision(executionID)
   }
 
-  export function requestCancel(input: {
-    requestID: string
-    executionID: string
-    sessionID: string
-    projectID: string
-    expectedVersion: number
-    invocationID?: string
-  }) {
-    const result = ledger().requestCancel(input)
-    if (result.accepted && !input.invocationID) stopLease(input.executionID, "not_active")
-    return result
-  }
-
-  export function requestReconcile(input: {
-    requestID: string
-    executionID: string
-    sessionID: string
-    projectID: string
-    operationID: string
-    state: "completed" | "failed" | "cancelled"
-    expectedVersion: number
-    expectedWorkVersion: number
-    evidence: string
-    resolutionCode: string
-  }) {
-    const result = ledger().requestReconcile(input)
-    if (result.reconciled) {
-      Bus.publish(Event.Updated, { sessionID: input.sessionID, executionID: input.executionID })
-    }
-    return result
-  }
-
-  export function decideRouteProposal(input: {
-    requestID: string
-    proposalID: string
-    executionID: string
-    sessionID: string
-    projectID: string
-    expectedProposalVersion: number
-    expectedRouteRevision: number
-    decision: "accept" | "reject"
-    actorID: string
-    acceptScope?: "episode" | "execution"
-  }) {
-    const result = ledger().decideRouteProposal(input)
-    if (result.decided) Bus.publish(Event.RouteProposal, { sessionID: input.sessionID, proposal: result.proposal })
-    return result
-  }
-
-  export function routeProposalHistory(executionID: string) {
-    return ledger().routeProposalHistory(executionID)
-  }
-
-  export async function proposeRoute(
-    input: Omit<Parameters<ReturnType<typeof ledger>["proposeRoute"]>[0], "ownerID" | "fence" | "sessionGeneration"> & {
-      sessionID: string
-      execution: Context
-    },
-  ) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const view = resolved.store.view(input.executionID)
-    if (!view) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const { sessionID: _, execution: __, ...proposal } = input
-    const result = resolved.store.proposeRoute({
-      ...proposal,
-      ownerID: resolved.executionContext.ownerID,
-      fence: resolved.executionContext.fence,
-      sessionGeneration: view.sessionGeneration,
-    })
-    if (result.proposed) Bus.publish(Event.RouteProposal, { sessionID: view.rootSessionID, proposal: result.proposal })
-    return result
-  }
-
-  export async function applyRouteProposal(
-    input: Omit<Parameters<ReturnType<typeof ledger>["applyRouteProposal"]>[0], "ownerID" | "fence"> & {
-      sessionID: string
-      execution: Context
-    },
-  ) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const { sessionID: _, execution: __, ...proposal } = input
-    const result = resolved.store.applyRouteProposal({
-      ...proposal,
-      ownerID: resolved.executionContext.ownerID,
-      fence: resolved.executionContext.fence,
-    })
-    if (result.applied) {
-      Bus.publish(Event.RouteProposal, {
-        sessionID: resolved.executionContext.rootSessionID,
-        proposal: result.proposal,
-      })
-      Bus.publish(Event.RouteChanged, {
-        sessionID: resolved.executionContext.rootSessionID,
-        executionID: input.executionID,
-        routeRevision: result.routeRevision,
-        route: result.proposal.toRoute,
-        stage: result.proposal.scope === "expert" ? "expert" : "base",
-      })
-    }
-    return result
-  }
-
-  export async function returnFromExpert(input: {
-    sessionID: string
-    execution: Context
-    episodeID: string
-    expectedRouteRevision: number
-    message: MessageV2.User
-    part: MessageV2.TextPart
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const payload = JSON.stringify({ message: input.message, part: input.part })
-    if (new TextEncoder().encode(payload).byteLength > MAX_CONTINUATION_PAYLOAD_BYTES) {
-      throw new Error(`Continuation payload exceeds ${MAX_CONTINUATION_PAYLOAD_BYTES} bytes`)
-    }
-    const id = `expert-handoff:${input.execution.executionID}:${input.episodeID}`
-    const result = resolved.store.returnFromExpert({
-      id,
-      executionID: input.execution.executionID,
-      sessionID: input.sessionID,
-      invocationID: input.message.id,
-      rootSessionID: input.execution.rootSessionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      episodeID: input.episodeID,
-      expectedRouteRevision: input.expectedRouteRevision,
-      payload,
-    })
-    if (!result.returned) throw new BudgetExceededError(result.reason, input.execution.executionID)
-    Bus.publish(Event.RouteChanged, {
-      sessionID: input.execution.rootSessionID,
-      executionID: input.execution.executionID,
-      routeRevision: result.routeRevision,
-      route: result.route,
-      stage: "base",
-    })
-    return { id, message: input.message, part: input.part, ...result }
-  }
-
-  export function pendingCompletions(sessionID: string) {
-    return ledger().pendingCompletions(sessionID).map(parseCompletion)
-  }
-
-  export function claimCompletions(sessionID: string) {
-    return ledger()
-      .claimCompletions({ sessionID, projectorID: runID, leaseMs: PROJECTION_LEASE_MS })
-      .flatMap((candidate) => {
-        const parsed = parseClaimOrRecordRecovery(candidate)
-        return parsed ? [parsed] : []
-      })
-  }
-
-  export function claimCompletion(sessionID: string, executionID: string) {
-    const candidate = ledger()
-      .claimCompletions({ sessionID, executionID, projectorID: runID, leaseMs: PROJECTION_LEASE_MS })
-      .at(0)
-    return candidate ? parseClaimOrRecordRecovery(candidate) : undefined
-  }
-
-  export function ackCompletion(claim: CompletionClaim) {
-    return ledger().ackCompletion({
-      executionID: claim.executionID,
-      digest: claim.digest,
-      projectorID: claim.projectorID,
-      projectionToken: claim.projectionToken,
-      sessionGeneration: claim.sessionGeneration,
-    })
-  }
-
-  export function markProjectionRecovery(claim: CompletionClaim, reasonCode: "invalid_payload" | "missing_message") {
-    return ledger().markProjectionRecovery({
-      executionID: claim.executionID,
-      digest: claim.digest,
-      projectorID: claim.projectorID,
-      projectionToken: claim.projectionToken,
-      sessionGeneration: claim.sessionGeneration,
-      reasonCode,
-    })
-  }
-
-  export function deleteSessions(sessionIDs: string[], sessionGenerations?: Record<string, number>) {
-    return ledger().deleteSessions({ sessionIDs, sessionGenerations })
-  }
-
-  export function pendingContinuations(sessionID: string) {
-    return ledger()
-      .pendingContinuations(sessionID)
-      .map((item) => ({
-        ...item,
-        payload: z.object({ message: MessageV2.User, part: MessageV2.TextPart }).parse(JSON.parse(item.payload)),
-      }))
-  }
-
-  export function projectContinuation(id: string) {
-    return ledger().projectContinuation({ id })
-  }
-
-  export async function retryCompletion(input: {
-    sessionID: string
-    execution: Context
-    digest: string
-    message: MessageV2.User
-    part: MessageV2.TextPart
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const payload = JSON.stringify({ message: input.message, part: input.part })
-    if (new TextEncoder().encode(payload).byteLength > MAX_CONTINUATION_PAYLOAD_BYTES) {
-      throw new Error(`Continuation payload exceeds ${MAX_CONTINUATION_PAYLOAD_BYTES} bytes`)
-    }
-    const id = `review-retry:${input.execution.executionID}:${input.digest}`
-    const accepted = resolved.store.retryCompletion({
-      id,
-      executionID: input.execution.executionID,
-      sessionID: input.sessionID,
-      invocationID: input.message.id,
-      rootSessionID: input.execution.rootSessionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      digest: input.digest,
-      payload,
-    })
-    if (!accepted.accepted) throw new BudgetExceededError(accepted.reason, input.execution.executionID)
-    return { id, message: input.message, part: input.part }
-  }
-
-  export async function stageCompletion(input: {
-    sessionID: string
-    messageID: string
-    finish: string
-    parts: MessageV2.TextPart[]
-    editedFiles: string[]
-    requiresReview: boolean
-    reviewDecision?: ReviewDecision
-    execution: Context
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const parts = MessageV2.TextPart.array().parse(input.parts)
-    const editedFiles = z.string().array().max(1_000).parse(input.editedFiles)
-    const payload = JSON.stringify(parts)
-    if (new TextEncoder().encode(payload).byteLength > MAX_COMPLETION_PAYLOAD_BYTES) {
-      throw new Error(`Completion payload exceeds ${MAX_COMPLETION_PAYLOAD_BYTES} bytes`)
-    }
-    const reviewFiles = JSON.stringify(editedFiles)
-    if (new TextEncoder().encode(reviewFiles).byteLength > MAX_COMPLETION_REVIEW_BYTES) {
-      throw new Error(`Completion review evidence exceeds ${MAX_COMPLETION_REVIEW_BYTES} bytes`)
-    }
-    const revision = resolved.store.revision(input.execution.executionID)
-    if (revision === undefined) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const planRevision = resolved.store.planRevision(input.execution.executionID)
-    if (planRevision === undefined) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const config = await Config.get()
-    const configuredPolicy = configuredReviewPolicy(config, input.sessionID)
-    const reviewDecision: ReviewDecision = input.reviewDecision ?? {
-      policyVersion: configuredPolicy.policyVersion,
-      policyDigest: configuredPolicy.policyDigest,
-      requirement: input.requiresReview ? "required" : "not_required",
-      reasonCode: "legacy_callsite",
-      requiredReviewers: input.requiresReview ? configuredPolicy.reviewerCount : 0,
-      attemptLimit: configuredPolicy.attemptLimit,
-    }
-    if (reviewDecision.policyDigest !== configuredPolicy.policyDigest) {
-      throw new BudgetExceededError("stale_policy", input.execution.executionID)
-    }
-    if (input.requiresReview !== (reviewDecision.requirement === "required")) {
-      throw new BudgetExceededError("invalid_review_policy", input.execution.executionID)
-    }
-    const snapshotDigest = await contentSnapshotDigest(editedFiles)
-    const digestInput = JSON.stringify({
-      sessionID: input.sessionID,
-      messageID: input.messageID,
-      finish: input.finish,
-      parts,
-      editedFiles,
-      requiresReview: input.requiresReview,
-      revision,
-      planRevision,
-      reviewDecision,
-      contentSnapshotDigest: snapshotDigest,
-    })
-    const digest = new Bun.CryptoHasher("sha256").update(digestInput).digest("hex")
-    const staged = resolved.store.stageCompletion({
-      executionID: input.execution.executionID,
-      sessionID: input.sessionID,
-      messageID: input.messageID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      finish: input.finish,
-      payload,
-      reviewFiles,
-      digest,
-      requiresReview: input.requiresReview,
-      revision,
-      planRevision,
-      policyVersion: reviewDecision.policyVersion,
-      policyDigest: reviewDecision.policyDigest,
-      reviewRequirement: reviewDecision.requirement,
-      reviewReasonCode: reviewDecision.reasonCode,
-      requiredReviewers: reviewDecision.requiredReviewers,
-      attemptLimit: reviewDecision.attemptLimit,
-      contentSnapshotDigest: snapshotDigest,
-    })
-    if (!staged.staged) throw new BudgetExceededError(staged.reason, input.execution.executionID)
-    return parseCompletion(staged.completion)
-  }
-
-  export async function claimReview(input: {
-    sessionID: string
-    execution: Context
-    digest: string
-    revision: number
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const claimed = resolved.store.claimReview({
-      id: crypto.randomUUID(),
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      digest: input.digest,
-      revision: input.revision,
-    })
-    if (!claimed.claimed) throw new BudgetExceededError(claimed.reason, input.execution.executionID)
-    return claimed.claim
-  }
-
-  export async function authorizeReviewSession(input: {
-    sessionID: string
-    reviewerSessionID: string
-    execution: Context
-    reviewID: string
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const authorized = resolved.store.authorizeReviewSession({
-      executionID: input.execution.executionID,
-      reviewID: input.reviewID,
-      sessionID: input.reviewerSessionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-    })
-    if (!authorized.authorized) throw new BudgetExceededError(authorized.reason, input.execution.executionID)
-  }
-
-  export async function recordReview(input: {
-    sessionID: string
-    execution: Context
-    reviewID: string
-    state: "passed" | "rejected" | "inconclusive"
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const recorded = resolved.store.recordReview({
-      executionID: input.execution.executionID,
-      reviewID: input.reviewID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      state: input.state,
-    })
-    if (!recorded.recorded) throw new BudgetExceededError(recorded.reason, input.execution.executionID)
-    return recorded.claim
-  }
-
-  export async function commitCompletion(input: { sessionID: string; execution: Context; digest: string }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const candidate = resolved.store.completion(input.execution.executionID)
-    if (!candidate) throw new BudgetExceededError("not_staged", input.execution.executionID)
-    const config = await Config.get()
-    const currentPolicy = configuredReviewPolicy(config, input.sessionID)
-    if (candidate.policyDigest !== currentPolicy.policyDigest) {
-      throw new BudgetExceededError("stale_policy", input.execution.executionID)
-    }
-    const snapshotDigest = await contentSnapshotDigest(z.string().array().parse(JSON.parse(candidate.reviewFiles)))
-    const committed = resolved.store.commitCompletion({
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      digest: input.digest,
-      policyDigest: currentPolicy.policyDigest,
-      contentSnapshotDigest: snapshotDigest,
-    })
-    if (!committed.committed) throw new BudgetExceededError(committed.reason, input.execution.executionID)
-    stopLease(input.execution.executionID)
-    return parseCompletion(committed.completion)
-  }
-
-  export async function finalizeBlocked(input: {
-    sessionID: string
-    execution: Context
-    digest: string
-    parts: MessageV2.TextPart[]
-    reasonCode: "review_rejected" | "review_unavailable"
-    reasonMessage: string
-  }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const parts = MessageV2.TextPart.array().parse(input.parts)
-    const deliveryPayload = JSON.stringify(parts)
-    if (new TextEncoder().encode(deliveryPayload).byteLength > MAX_COMPLETION_PAYLOAD_BYTES) {
-      throw new Error(`Completion payload exceeds ${MAX_COMPLETION_PAYLOAD_BYTES} bytes`)
-    }
-    const finalized = resolved.store.finalizeBlocked({
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      digest: input.digest,
-      deliveryPayload,
-      deliveryFinish: "error",
-      reasonCode: input.reasonCode,
-      reasonMessage: input.reasonMessage,
-    })
-    if (!finalized.finalized) throw new BudgetExceededError(finalized.reason, input.execution.executionID)
-    stopLease(input.execution.executionID)
-    return parseCompletion(finalized.completion)
-  }
-
-  export function finalizeOutcome(input: {
-    sessionID: string
-    messageID: string
-    parts?: MessageV2.TextPart[]
-    execution: Context
-    failure: TerminalFailure
-  }) {
-    if (input.execution.ownerID !== runID) {
-      throw new BudgetExceededError("stale_fence", input.execution.executionID)
-    }
-    const parts = input.parts ?? []
-    const payload = JSON.stringify(parts)
-    if (new TextEncoder().encode(payload).byteLength > MAX_COMPLETION_PAYLOAD_BYTES) {
-      throw new Error(`Completion payload exceeds ${MAX_COMPLETION_PAYLOAD_BYTES} bytes`)
-    }
-    const hasher = new Bun.CryptoHasher("sha256")
-    hasher.update(
-      JSON.stringify({
-        executionID: input.execution.executionID,
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-        outcome: input.failure.outcome,
-        reasonCode: input.failure.reasonCode,
-        payload,
-      }),
-    )
-    const digest = hasher.digest("hex")
-    const finalized = ledger().finalizeOutcome({
-      executionID: input.execution.executionID,
-      sessionID: input.sessionID,
-      messageID: input.messageID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      finish: "error",
-      payload,
-      digest,
-      ...input.failure,
-    })
-    if (!finalized.finalized) throw new BudgetExceededError(finalized.reason, input.execution.executionID)
-    stopLease(input.execution.executionID)
-    return parseCompletion(finalized.completion)
-  }
-
-  export async function discardCompletion(input: { sessionID: string; execution: Context; digest: string }) {
-    const resolved = await context(input.sessionID, input.execution)
-    if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
-    const discarded = resolved.store.discardCompletion({
-      executionID: input.execution.executionID,
-      ownerID: input.execution.ownerID,
-      fence: input.execution.fence,
-      digest: input.digest,
-    })
-    if (!discarded.discarded) throw new BudgetExceededError(discarded.reason, input.execution.executionID)
-  }
-
   async function legacyInvocation(sessionID: string) {
     const root = await rootSession(sessionID)
     const messages = await Session.messages({ sessionID: root.id, excludePatches: true })
@@ -1659,19 +653,22 @@ export namespace ExecutionRuntime {
     return sessionID === root.id ? invocationID : `${invocationID}:${sessionID}`
   }
 
-  async function context(sessionID: string, supplied?: Context) {
+  async function context(sessionID: string, supplied?: Context, settleWork = false) {
     const config = await Config.get()
     const budget = config.execution_budget
     if (!budget && !supplied) return
     const executionContext =
       supplied ?? (await resolveInvocation({ sessionID, invocationID: await legacyInvocation(sessionID) }))
-    const root = await Session.get(executionContext.rootSessionID)
+    const root = await rootSession(sessionID)
+    if (root.id !== executionContext.rootSessionID)
+      throw new BudgetExceededError("not_active", executionContext.executionID)
     const store = ledger()
     store.start({
       id: executionContext.executionID,
       projectID: root.projectID,
       rootSessionID: executionContext.rootSessionID,
       fence: executionContext.fence,
+      resumesExecutionID: store.view(executionContext.executionID)?.resumesExecutionID,
       policy: budget ? policy(budget) : {},
     })
     if (executionContext.ownerID !== runID) {
@@ -1681,10 +678,13 @@ export namespace ExecutionRuntime {
     if (
       !activeInvocation ||
       activeInvocation.executionID !== executionContext.executionID ||
-      !["accepted", "running", "waiting"].includes(activeInvocation.state)
+      (!settleWork && !["accepted", "running", "waiting"].includes(activeInvocation.state))
     ) {
       throw new BudgetExceededError("not_active", executionContext.executionID)
     }
+    // Only existing work may settle after cancellation/deadline. The ledger
+    // still checks its owner, fence, lease and CAS version; no admission occurs.
+    if (settleWork) return { budget, executionContext, store }
     const deadline = store.deadline(executionContext.executionID)
     if (deadline !== undefined && Date.now() >= deadline) {
       stopLease(executionContext.executionID, "deadline")
@@ -1700,6 +700,217 @@ export namespace ExecutionRuntime {
     return { budget, executionContext, store }
   }
 
+  const completionLifecycle = createCompletionLifecycle({
+    ledger,
+    context,
+    runID,
+    projectionLeaseMs: PROJECTION_LEASE_MS,
+    maxContinuationPayloadBytes: MAX_CONTINUATION_PAYLOAD_BYTES,
+    maxCompletionPayloadBytes: MAX_COMPLETION_PAYLOAD_BYTES,
+    maxCompletionReviewBytes: MAX_COMPLETION_REVIEW_BYTES,
+    maxCompletionEditedFiles: MAX_COMPLETION_EDITED_FILES,
+    parseCompletion,
+    parseClaimOrRecordRecovery,
+    configuredReviewPolicy,
+    contentSnapshotDigest,
+    BudgetExceededError,
+    stopLease,
+  })
+  export const pendingCompletions = completionLifecycle.pendingCompletions
+  export const claimCompletions = completionLifecycle.claimCompletions
+  export const claimCompletion = completionLifecycle.claimCompletion
+  export const ackCompletion = completionLifecycle.ackCompletion
+  export const markProjectionRecovery = completionLifecycle.markProjectionRecovery
+  export const deleteSessions = completionLifecycle.deleteSessions
+  export const pendingContinuations = completionLifecycle.pendingContinuations
+  export const projectContinuation = completionLifecycle.projectContinuation
+  export const retryCompletion = completionLifecycle.retryCompletion
+  export const stageCompletion = completionLifecycle.stageCompletion
+  export const claimReview = completionLifecycle.claimReview
+  export const recordQAReview = completionLifecycle.recordQAReview
+  export const qaReviewPassed = completionLifecycle.qaReviewPassed
+  export const authorizeReviewSession = completionLifecycle.authorizeReviewSession
+  export const recordReview = completionLifecycle.recordReview
+  export const commitCompletion = completionLifecycle.commitCompletion
+  export const finalizeBlocked = completionLifecycle.finalizeBlocked
+  export const finalizeOutcome = completionLifecycle.finalizeOutcome
+  export const discardCompletion = completionLifecycle.discardCompletion
+
+  const routeRuntime = createRouteRuntimeModule({
+    ledger,
+    context,
+    BudgetExceededError,
+    stopLease,
+    event: Event,
+    maxContinuationPayloadBytes: MAX_CONTINUATION_PAYLOAD_BYTES,
+  })
+  export const requestCancel = routeRuntime.requestCancel
+  export const requestReconcile = routeRuntime.requestReconcile
+  export const decideRouteProposal = routeRuntime.decideRouteProposal
+  export const routeProposalHistory = routeRuntime.routeProposalHistory
+  export const proposeRoute = routeRuntime.proposeRoute
+  export const applyRouteProposal = routeRuntime.applyRouteProposal
+  export const returnFromExpert = routeRuntime.returnFromExpert
+
+  const workRuntime = createWorkRuntimeModule({
+    context,
+    BudgetExceededError,
+    publishUpdated: (sessionID, executionID) => Bus.publish(Event.Updated, { sessionID, executionID }),
+  })
+  const taskRuntime = createTaskRuntimeModule({
+    context,
+    BudgetExceededError,
+    publishTaskUpdated: (event) => Bus.publish(Event.TaskUpdated, event),
+  })
+  export const assertActive = workRuntime.assertActive
+  export const registerWork = workRuntime.registerWork
+  export const beginWork = workRuntime.beginWork
+  export const finishWork = workRuntime.finishWork
+  export const reconcileWork = workRuntime.reconcileWork
+  export const registerBlocker = workRuntime.registerBlocker
+  export const createPlan = workRuntime.createPlan
+  export const transitionBlocker = workRuntime.transitionBlocker
+  export const registerTask = taskRuntime.registerTask
+  export const getTask = taskRuntime.getTask
+  export const startAtomicWork = taskRuntime.startAtomicWork
+  export const queueAtomicMessage = taskRuntime.queueAtomicMessage
+  export const updateAtomicPlan = taskRuntime.updateAtomicPlan
+  export const assertAtomicReady = taskRuntime.assertAtomicReady
+  export const beginAtomicAttempt = taskRuntime.beginAtomicAttempt
+  export const pauseAtomicTask = taskRuntime.pauseAtomicTask
+  export const setAtomicTaskSession = taskRuntime.setAtomicTaskSession
+
+  export function atomicRoot(executionID: string) {
+    return ledger().atomicRoot(executionID)
+  }
+
+  export function atomicPending(executionID: string) {
+    return ledger().atomicPending(executionID)
+  }
+
+  export function activeContext(sessionID: string) {
+    const store = ledger()
+    const waiting = store.waitingInput(sessionID)
+    if (waiting) return waiting
+    const active = store.active(sessionID)
+    if (!active) return
+    const invocation = store
+      .snapshot(active.rootSessionID)
+      .activeInvocations.findLast((item) => item.sessionID === sessionID)
+    return invocation ? store.binding(invocation.id) : undefined
+  }
+  export const transitionTask = taskRuntime.transitionTask
+  export const recordTaskChecks = taskRuntime.recordTaskChecks
+  export const recordAutomaticTaskChecks = taskRuntime.recordAutomaticTaskChecks
+  export const recordTaskVerification = taskRuntime.recordTaskVerification
+  export const invalidateOpenTasks = taskRuntime.invalidateOpenTasks
+  export const invalidateTaskDependents = taskRuntime.invalidateTaskDependents
+
+  export function tasks(executionID: string) {
+    return ledger().tasks(executionID)
+  }
+  export const recordMutation = workRuntime.recordMutation
+
+  export function cancelSession(sessionID: string) {
+    const store = ledger()
+    const active = store.active(sessionID)
+    if (!active || active.ownerID !== runID) return false
+    return cancelExecution(active)
+  }
+
+  export function cancelOwnedExecutions() {
+    for (const execution of ledger().activeOwned(runID)) cancelExecution(execution, { allowExpiredOwner: true })
+  }
+
+  export function cancelExecution(execution: Omit<Context, "invocationID">, options?: { allowExpiredOwner?: boolean }) {
+    if (execution.ownerID !== runID) return false
+    const cancelled = ledger().cancel({
+      executionID: execution.executionID,
+      ownerID: execution.ownerID,
+      fence: execution.fence,
+      allowExpiredOwner: options?.allowExpiredOwner,
+    }).cancelled
+    if (cancelled) stopLease(execution.executionID, "not_active")
+    return cancelled
+  }
+
+  export function cancelInvocation(execution: Context) {
+    if (execution.ownerID !== runID) return false
+    return ledger().cancelInvocation({
+      executionID: execution.executionID,
+      invocationID: execution.invocationID,
+      ownerID: execution.ownerID,
+      fence: execution.fence,
+    }).cancelled
+  }
+
+  export function finishInvocation(
+    execution: Context,
+    state: "completed" | "failed" | "cancelled" | "unknown",
+    reasonCode?: string,
+  ) {
+    if (execution.ownerID !== runID) return false
+    return ledger().finishInvocation({
+      executionID: execution.executionID,
+      invocationID: execution.invocationID,
+      ownerID: execution.ownerID,
+      fence: execution.fence,
+      state,
+      reasonCode,
+    }).finished
+  }
+
+  export function invocation(invocationID: string) {
+    return ledger().invocation(invocationID)
+  }
+
+  export function blocker(blockerID: string) {
+    return ledger().blocker(blockerID)
+  }
+
+  export function taskflowPlan(executionID: string, sessionID: string) {
+    return ledger().taskflowPlan(executionID, sessionID)
+  }
+
+  export async function closeTaskflow(value: { sessionID: string; execution: Context }) {
+    await assertActive(value)
+    return ledger().closeTaskflow({ ...value.execution, sessionID: value.sessionID })
+  }
+
+  export function completion(executionID: string) {
+    const candidate = ledger().completion(executionID)
+    return candidate ? parseCompletion(candidate) : undefined
+  }
+
+  export function execution(executionID: string) {
+    return ledger().execution(executionID)
+  }
+
+  export function executionLeaseActive(executionID: string) {
+    return ledger().executionLeaseActive(executionID)
+  }
+
+  export function view(executionID: string) {
+    return ledger().view(executionID)
+  }
+
+  export function isReviewer(execution: Context) {
+    const invocation = ledger().invocation(execution.invocationID)
+    return invocation?.executionID === execution.executionID && invocation.kind === "reviewer"
+  }
+
+  export function reviewerToolCalls(execution: Context) {
+    return ledger().reviewerToolCalls(execution.executionID, execution.invocationID)
+  }
+
+  export function list(value: Parameters<ReturnType<typeof ExecutionLedger.open>["list"]>[0]) {
+    return ledger().list(value)
+  }
+
+  export function snapshot(sessionID: string) {
+    return ledger().snapshot(sessionID)
+  }
+
   export async function admitStep(input: { sessionID: string; stepID: string; execution?: Context }) {
     const resolved = await context(input.sessionID, input.execution)
     if (!resolved) return
@@ -1710,7 +921,7 @@ export namespace ExecutionRuntime {
       invocationID: resolved.executionContext.invocationID,
       ownerID: resolved.executionContext.ownerID,
       fence: resolved.executionContext.fence,
-      maxSteps: policy?.budget.maxSteps,
+      maxSteps: isReviewer(resolved.executionContext) ? undefined : policy?.budget.maxSteps,
     })
     if ("reason" in admission) throw new BudgetExceededError(admission.reason, resolved.executionContext.executionID)
   }
@@ -1723,7 +934,7 @@ export namespace ExecutionRuntime {
   }): Promise<Attempt | undefined> {
     const resolved = await context(input.sessionID, input.execution)
     if (!resolved) return
-    const { budget, executionContext, store } = resolved
+    const { executionContext, store } = resolved
     const executionID = executionContext.executionID
     if (input.estimateMicrousd === undefined && store.requiresKnownPrice(executionID)) {
       throw new BudgetExceededError("unknown_price", executionID)
@@ -1779,184 +990,33 @@ export namespace ExecutionRuntime {
     return ledger().hasUnresolvedExecutionTaskflow(executionID)
   }
 
-  function checkpointRuntimeState(executionID: string) {
-    const existing = getExecutionState(executionID)
-    if (!existing) throw new Error("execution policy state not found")
-    const previous = ledger().checkpoints(executionID).at(-1)?.payload as
-      | { evidence?: ExecutionPolicy.RuntimeEvidence; routeRevision?: number; planRevision?: number }
-      | undefined
-    const view = ledger().view(executionID)
-    const routeChanged = Boolean(
-      previous && view && view.routeRevision > (previous.routeRevision ?? view.routeRevision),
-    )
-    const planRevision = ledger().planRevision(executionID) ?? 0
-    const planChanged = Boolean(previous && planRevision > (previous.planRevision ?? planRevision))
-    const priorEvidence = previous?.evidence ?? {}
-    const hasNewFiles =
-      (existing.evidence.filesRead?.length ?? 0) > (priorEvidence.filesRead?.length ?? 0) ||
-      (existing.evidence.filesChanged?.length ?? 0) > (priorEvidence.filesChanged?.length ?? 0)
-    const successfulDelta =
-      (existing.evidence.successfulToolCalls ?? 0) > (priorEvidence.successfulToolCalls ?? 0) &&
-      !hasRepeatedTail(existing.evidence.recentToolCallSignatures, 3)
-    const progressed = !previous || hasNewFiles || successfulDelta || routeChanged || planChanged
-    return {
-      routeChanged,
-      planChanged,
-      noProgressSlices: progressed ? 0 : (priorEvidence.noProgressSlices ?? 0) + 1,
-    }
-  }
-
-  export function reconcileCheckpoint(
-    executionID: string,
-    checkpoint: import("./checkpoint").ExecutionCheckpoint.Result,
-  ): import("./checkpoint").ExecutionCheckpoint.Result {
-    const existing = getExecutionState(executionID)
-    if (!existing) throw new Error("execution policy state not found")
-    const runtime = checkpointRuntimeState(executionID)
-    let result = { ...checkpoint, planChanged: runtime.planChanged, routeChanged: runtime.routeChanged }
-
-    if (result.decision === "finish" && ledger().hasUnresolvedExecutionTaskflow(executionID)) {
-      const reason =
-        "The objective is complete, but the durable taskflow contains stale unresolved state and requires reconciliation."
-      result = {
-        ...result,
-        decision: "blocked",
-        requestedCalls: undefined,
-        finalResponse: undefined,
-        remainingWork: [...new Set([...result.remainingWork, reason])],
-        blockers: [...new Set([...result.blockers, reason])],
-        estimatedRemainingCalls: 0,
-        nextActions: [
-          ...new Set([...result.nextActions, "Report the stale taskflow state without granting more work."]),
-        ],
-      }
-    }
-
-    const hasDeliverables = (result.completedWork?.length ?? 0) >= 1 || (existing.evidence.mutatingCalls ?? 0) > 0
-    const noFailures = (result.failures?.length ?? 0) === 0 && (existing.evidence.failureCount ?? 0) === 0
-    const objectiveClaimsComplete =
-      /complete|completed|finished|all tests pass|success|done/i.test(result.objectiveAssessment) ||
-      /complete|completed|finished|all tests pass|success|done/i.test(result.progressSummary)
-    const noMeaningfulRemainingWork =
-      (result.remainingWork?.length ?? 0) === 0 ||
-      result.remainingWork.every((item) => /taskflow|reconcil|stale|none|nothing|cleanup|complete|all done/i.test(item))
-
-    if (
-      result.decision === "continue" &&
-      hasDeliverables &&
-      noFailures &&
-      objectiveClaimsComplete &&
-      noMeaningfulRemainingWork
-    ) {
-      if (ledger().hasUnresolvedExecutionTaskflow(executionID)) {
-        const reason =
-          "The objective is complete, but the durable taskflow contains stale unresolved state and requires reconciliation."
-        result = {
-          ...result,
-          decision: "blocked",
-          requestedCalls: undefined,
-          finalResponse: undefined,
-          remainingWork: [...new Set([...result.remainingWork, reason])],
-          blockers: [...new Set([...result.blockers, reason])],
-          estimatedRemainingCalls: 0,
-          nextActions: [
-            ...new Set([...result.nextActions, "Report the stale taskflow state without granting more work."]),
-          ],
-        }
-      } else {
-        result = {
-          ...result,
-          decision: "finish",
-          requestedCalls: undefined,
-          finalResponse: result.progressSummary || result.objectiveAssessment || "Project complete.",
-          estimatedRemainingCalls: 0,
-        }
-      }
-    }
-
-    const stallReasons = finalizationConstraints(executionID, runtime)
-    if (result.decision === "continue" && stallReasons.length) {
-      result = {
-        ...result,
-        decision: "blocked",
-        requestedCalls: undefined,
-        finalResponse: undefined,
-        blockers: [...new Set([...result.blockers, ...stallReasons])],
-        nextActions: [...new Set([...result.nextActions, "Provide new evidence or revise the execution route."])],
-      }
-    }
-    return result
-  }
-
-  export function finalizationConstraints(
-    executionID: string,
-    runtime = checkpointRuntimeState(executionID),
-  ): string[] {
-    const existing = getExecutionState(executionID)
-    if (!existing) return []
-    return [
-      existing.extensionCount >= ExecutionCheckpoint.MAX_EXTENSIONS ? "Execution extension limit reached." : undefined,
-      runtime.noProgressSlices >= ExecutionCheckpoint.MAX_NO_PROGRESS_SLICES
-        ? "No verifiable progress was recorded across consecutive execution slices."
-        : undefined,
-      hasRepeatedTail(existing.evidence.recentToolCallSignatures, 3)
-        ? "The same tool call was repeated without new evidence."
-        : undefined,
-      hasRepeatedValue(existing.evidence.recentSemanticActionResults, 3)
-        ? "The same semantic action was repeated without new evidence."
-        : undefined,
-      hasRepeatedTail(existing.evidence.recentToolTargets, 3)
-        ? "The same tool target was revisited without new evidence."
-        : undefined,
-      hasRepeatedTail(existing.evidence.recentErrorFingerprints, 3)
-        ? "The same tool error repeated without recovery."
-        : undefined,
-    ].filter((reason): reason is string => Boolean(reason))
-  }
-
-  export function applyCheckpoint(
-    executionID: string,
-    checkpointID: string,
-    checkpoint: import("./checkpoint").ExecutionCheckpoint.Result,
-    evidence?: ExecutionPolicy.RuntimeEvidence,
-    context?: { triggerMessageID?: string; telemetry?: Record<string, unknown> },
-  ) {
-    const existing = getExecutionState(executionID)
-    if (!existing) throw new Error("execution policy state not found")
-    const runtime = checkpointRuntimeState(executionID)
-    const runtimeEvidence = { ...(evidence ?? existing.evidence), noProgressSlices: runtime.noProgressSlices }
-    setExecutionState(executionID, { ...existing, evidence: runtimeEvidence })
-    const view = ledger().view(executionID)
-    const result = ledger().applyCheckpoint({
-      executionID,
-      checkpointID,
-      decision: checkpoint.decision,
-      requestedCalls: checkpoint.requestedCalls,
-      payload: {
-        checkpoint,
-        evidence: runtimeEvidence,
-        triggerMessageID: context?.triggerMessageID,
-        telemetry: context?.telemetry,
-        routeRevision: view?.routeRevision,
-        planRevision: ledger().planRevision(executionID),
-      },
-    })
-    // The ledger commits the grant and budget together; never write a stale
-    // cached policy back over that transaction (including idempotent retries).
-    executionStates.delete(executionID)
-    if (view) {
-      Bus.publish(Event.Checkpoint, {
-        sessionID: view.rootSessionID,
-        executionID,
-        sequence: result.sequence,
-        checkpoint,
-      })
-    }
-    return result
-  }
+  const checkpointRuntime = createCheckpointRuntimeModule({
+    getExecutionState,
+    setExecutionState,
+    deleteExecutionState: executionState.delete,
+    ledger,
+    hasNewEvidencePath,
+    hasRepeatedTail,
+    event: Event,
+  })
+  export const reconcileCheckpoint = checkpointRuntime.reconcileCheckpoint
+  export const finalizationConstraints = checkpointRuntime.finalizationConstraints
+  export const applyCheckpoint = checkpointRuntime.applyCheckpoint
 
   export function checkpoints(executionID: string) {
     return ledger().checkpoints(executionID)
+  }
+
+  export type RouteGuidance = Omit<RouteGuidanceStore.RouteGuidance, "updatedAt">
+
+  export function getRouteGuidance(executionID: string): RouteGuidance | undefined {
+    const records = ledger().checkpoints(executionID)
+    const entry = records.length
+      ? RouteGuidanceStore.restore(executionID, records)
+      : RouteGuidanceStore.get(executionID)
+    if (!entry) return undefined
+    const { updatedAt: _updatedAt, ...guidance } = entry
+    return guidance
   }
 
   export function checkpointHandled(executionID: string, messageID: string) {

@@ -4,6 +4,7 @@ export namespace RepairPlanner {
     | "rate_limit"
     | "timeout"
     | "schema"
+    | "stale"
     | "not_found"
     | "test_failure"
     | "dependency"
@@ -17,8 +18,59 @@ export namespace RepairPlanner {
   }
 
   export function classify(error: unknown, tool = ""): Advice {
-    const message = String(error instanceof Error ? error.message : (error ?? "")).toLowerCase()
-    if (/permission|denied|not allowed|rejected/.test(message))
+    const messages: string[] = []
+    let current: unknown = error
+    for (let depth = 0; depth < 4 && current; depth++) {
+      if (current instanceof Error) {
+        messages.push(current.message)
+        current = current.cause
+        continue
+      }
+      messages.push(String(current))
+      break
+    }
+    const message = messages.join(" ").toLowerCase()
+    if (/stale edit:/.test(message))
+      return {
+        kind: "stale",
+        retryable: true,
+        strategy:
+          "Read current content and retry with an exact unique replacement, adding surrounding text if the match repeats.",
+      }
+    if (/oldstring not found/.test(message))
+      return {
+        kind: "not_found",
+        retryable: true,
+        strategy:
+          "Check current file content first; a prior edit may already have applied. Then use an exact existing string or a smaller verified replacement.",
+      }
+    if (tool === "edit") {
+      if (/completed its operation|post-processing failed/.test(message))
+        return {
+          kind: "unknown",
+          retryable: false,
+          strategy: "The file may already be changed. Read it and check the intended diff before any further edit.",
+        }
+      if (/stale edit:/.test(message))
+        return {
+          kind: "stale",
+          retryable: true,
+          strategy:
+            "Read current content and retry with an exact unique replacement, adding surrounding text if the match repeats.",
+        }
+      if (/oldstring not found/.test(message))
+        return {
+          kind: "not_found",
+          retryable: true,
+          strategy:
+            "Check current file content first; a prior edit may already have applied. Then use an exact existing string or a smaller verified replacement.",
+        }
+    }
+    if (
+      /permission|denied|not allowed|rejected|task ownership|owned shared-workspace|outside its owns boundary|no permitted file-edit route/.test(
+        message,
+      )
+    )
       return {
         kind: "permission",
         retryable: false,

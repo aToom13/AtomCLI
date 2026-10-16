@@ -4,6 +4,9 @@ export namespace ExecutionCheckpoint {
   export const Decision = z.enum(["continue", "finish", "blocked"])
   export type Decision = z.infer<typeof Decision>
 
+  export const RouteDecision = z.enum(["keep", "revise"])
+  export type RouteDecision = z.infer<typeof RouteDecision>
+
   export const Result = z
     .object({
       decision: Decision,
@@ -14,10 +17,19 @@ export namespace ExecutionCheckpoint {
       progressSummary: z.string().max(2000),
       discoveries: z.string().array().max(100),
       completedWork: z.string().array().max(100),
+      invalidatedWork: z
+        .array(z.object({ claim: z.string().min(1).max(2000), reason: z.string().min(1).max(2000) }))
+        .max(100)
+        .optional(),
       remainingWork: z.string().array().max(100),
       failures: z.string().array().max(100),
       blockers: z.string().array().max(100),
       routeAssessment: z.string().max(2000),
+      // Structured self-critique: the model must evaluate its own approach.
+      routeDecision: RouteDecision,
+      selfCritique: z.string().max(3000),
+      failedApproaches: z.string().array().max(50),
+      whatToChanges: z.string().array().max(20),
       planChanged: z.boolean(),
       routeChanged: z.boolean(),
       estimatedRemainingCalls: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -36,8 +48,8 @@ export namespace ExecutionCheckpoint {
   export const MAX_SLICE_CALLS = 50
   export const MIN_CHECKPOINT_CALLS = 10
   export const MAX_INVALID_RESPONSES = 3
-  export const MAX_EXTENSIONS = 6
-  export const MAX_NO_PROGRESS_SLICES = 2
+  export const MAX_EXTENSIONS = 20
+  export const MAX_NO_PROGRESS_SLICES = 3
   export const MAX_REASONING_CANDIDATE_CHARS = 50_000
   export const MAX_REASONING_CANDIDATES = 8
 
@@ -87,6 +99,17 @@ export namespace ExecutionCheckpoint {
       blockers: strings(candidate.blockers),
       routeAssessment:
         typeof candidate.routeAssessment === "string" ? candidate.routeAssessment : "Keep the current route.",
+      routeDecision: RouteDecision.safeParse(candidate.routeDecision).success
+        ? (candidate.routeDecision as RouteDecision)
+        : "keep",
+      selfCritique:
+        typeof candidate.selfCritique === "string" && candidate.selfCritique.trim()
+          ? candidate.selfCritique
+          : typeof candidate.self_critique === "string" && (candidate.self_critique as string).trim()
+            ? (candidate.self_critique as string)
+            : "No self-critique provided.",
+      failedApproaches: strings(candidate.failedApproaches ?? candidate.failed_approaches),
+      whatToChanges: strings(candidate.whatToChanges ?? candidate.what_to_change ?? candidate.what_to_changes),
       planChanged: candidate.planChanged === true,
       routeChanged: candidate.routeChanged === true,
       estimatedRemainingCalls,
@@ -109,6 +132,10 @@ export namespace ExecutionCheckpoint {
       failures: ["Three checkpoint responses failed structured validation."],
       blockers: [],
       routeAssessment: "Keep the current route until durable evidence justifies a change.",
+      routeDecision: "keep" as const,
+      selfCritique: "Checkpoint responses failed validation; cannot self-assess.",
+      failedApproaches: [],
+      whatToChanges: [],
       planChanged: false,
       routeChanged: false,
       estimatedRemainingCalls: MIN_CHECKPOINT_CALLS,

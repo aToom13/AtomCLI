@@ -33,7 +33,7 @@ export namespace WorkflowBlackboard {
       evidence: z.array(z.string()).optional(),
     }),
   ])
-  const StructuredResult = z.object({
+  export const StructuredResult = z.object({
     summary: z.string().optional(),
     facts: z.array(StructuredEntry).optional(),
     decisions: z.array(StructuredEntry).optional(),

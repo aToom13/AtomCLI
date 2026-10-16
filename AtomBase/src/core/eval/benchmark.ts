@@ -103,10 +103,58 @@ export namespace AgentBenchmark {
   }
 
   const VERIFIER_STASH_MANIFEST = "manifest.json"
+  const VerifierManifest = z.object({
+    casesRoot: z.string(),
+    movedAt: z.number(),
+    entries: z.array(z.object({ original: z.string(), stash: z.string() })).min(1),
+  })
+
+  async function saveVerifierManifest(root: string, value: unknown) {
+    const temporary = path.join(root, `manifest-${crypto.randomUUID()}.tmp`)
+    try {
+      await Bun.write(temporary, JSON.stringify(value, null, 2))
+      await fs.rename(temporary, path.join(root, VERIFIER_STASH_MANIFEST))
+    } finally {
+      await fs.rm(temporary, { force: true })
+    }
+  }
 
   function verifierStashRoot(casesRoot: string) {
     const digest = new Bun.CryptoHasher("sha1").update(casesRoot).digest("hex").slice(0, 12)
     return path.join(Global.Path.data, "eval-verifier-stash", digest)
+  }
+
+  async function restoreVerifier(stash: string, original: string) {
+    const parent = path.dirname(original)
+    const parentStat = await fs.lstat(parent).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+      throw error
+    })
+    if (parentStat?.isSymbolicLink() || (parentStat && !parentStat.isDirectory())) {
+      throw new Error(`Verifier case path must be a directory: ${parent}`)
+    }
+    await fs.mkdir(parent, { recursive: true })
+    const temporary = `${original}.restore-${crypto.randomUUID()}`
+    try {
+      await fs.cp(stash, temporary, { recursive: true })
+      await fs.rm(original, { recursive: true, force: true })
+      await fs.rename(temporary, original)
+    } finally {
+      await fs.rm(temporary, { recursive: true, force: true })
+    }
+  }
+
+  async function verifierDirectoryExists(location: string) {
+    try {
+      const stat = await fs.lstat(location)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error(`Verifier path must be a directory: ${location}`)
+      }
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+      throw error
+    }
   }
 
   /**
@@ -115,16 +163,31 @@ export namespace AgentBenchmark {
    */
   export async function restoreStashedVerifiers(casesRoot: string, stashRoot?: string): Promise<boolean> {
     const root = stashRoot ?? verifierStashRoot(casesRoot)
-    const manifest = await Bun.file(path.join(root, VERIFIER_STASH_MANIFEST))
-      .json()
-      .catch(() => null)
-    if (!manifest?.entries?.length) return false
-    for (const entry of manifest.entries) {
-      if (!(await fs.stat(entry.stash).catch(() => null))?.isDirectory()) continue
-      await fs.mkdir(path.dirname(entry.original), { recursive: true })
-      await fs.cp(entry.stash, entry.original, { recursive: true }).catch(() => {})
+    const file = Bun.file(path.join(root, VERIFIER_STASH_MANIFEST))
+    if (!(await file.exists())) return false
+    const manifest = VerifierManifest.parse(await file.json())
+    if (path.resolve(manifest.casesRoot) !== path.resolve(casesRoot)) {
+      throw new Error(`Verifier stash belongs to another cases root: ${manifest.casesRoot}`)
     }
-    await fs.rm(root, { recursive: true, force: true }).catch(() => {})
+    for (const entry of manifest.entries) {
+      const caseID = path.basename(path.dirname(entry.original))
+      if (
+        entry.original !== path.join(casesRoot, caseID, "verify") ||
+        entry.stash !== path.join(root, caseID, "verify")
+      ) {
+        throw new Error(`Invalid verifier stash entry: ${entry.original}`)
+      }
+    }
+    for (const entry of manifest.entries) {
+      if (!(await verifierDirectoryExists(entry.stash))) {
+        if (!(await verifierDirectoryExists(entry.original))) {
+          throw new Error(`Verifier is missing from both source and stash: ${entry.original}`)
+        }
+        continue
+      }
+      await restoreVerifier(entry.stash, entry.original)
+    }
+    await fs.rm(root, { recursive: true, force: true })
     return true
   }
 
@@ -144,39 +207,56 @@ export namespace AgentBenchmark {
     // A crashed predecessor may have left its stash behind — heal before moving.
     await restoreStashedVerifiers(casesRoot, stashRoot)
 
-    const entries = await fs.readdir(casesRoot).catch(() => [])
+    const entries = await fs.readdir(casesRoot)
     const moved: Array<{ original: string; stash: string }> = []
     for (const entry of entries) {
+      const casePath = path.join(casesRoot, entry)
+      const caseStat = await fs.lstat(casePath)
+      if (caseStat.isSymbolicLink()) throw new Error(`Verifier case path must not be a symbolic link: ${casePath}`)
+      if (!caseStat.isDirectory()) continue
       const verify = path.join(casesRoot, entry, "verify")
-      if (!(await fs.stat(verify).catch(() => null))?.isDirectory()) continue
+      if (!(await verifierDirectoryExists(verify))) continue
       // Keep the "verify" level in the stash so staging copies stay uniform.
       const stash = path.join(stashRoot, entry, "verify")
       await fs.mkdir(path.dirname(stash), { recursive: true })
-      await fs.rename(verify, stash).catch(async () => {
-        // Cross-device fallback (e.g. tmpfs): copy then remove.
-        await fs.cp(verify, stash, { recursive: true })
-        await fs.rm(verify, { recursive: true, force: true })
-      })
       moved.push({ original: verify, stash })
+      // Persist recovery intent before moving the verifier. A hard kill
+      // between rename and the old end-of-loop manifest left hidden sources
+      // with no record of where to restore them.
+      await saveVerifierManifest(stashRoot, { casesRoot, movedAt: Date.now(), entries: moved })
+      await fs.rename(verify, stash).catch(async (error) => {
+        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error
+        // Cross-device fallback: stage the complete copy beside the stash,
+        // then rename it atomically. An interrupted copy leaves the source
+        // intact and the manifest does not point at partial verifier data.
+        const partial = `${stash}.partial-${crypto.randomUUID()}`
+        try {
+          await fs.cp(verify, partial, { recursive: true })
+          await fs.rename(partial, stash)
+          await fs.rm(verify, { recursive: true, force: true })
+        } finally {
+          await fs.rm(partial, { recursive: true, force: true })
+        }
+      })
     }
     if (moved.length === 0) return { stashRoot: undefined, restore: async () => {} }
 
-    await Bun.write(
-      path.join(stashRoot, VERIFIER_STASH_MANIFEST),
-      JSON.stringify({ casesRoot, movedAt: Date.now(), entries: moved }, null, 2),
-    )
     let restored = false
     return {
       stashRoot,
       async restore() {
         if (restored) return
-        restored = true
         for (const { stash, original } of moved) {
-          if (!(await fs.stat(stash).catch(() => null))?.isDirectory()) continue
-          await fs.mkdir(path.dirname(original), { recursive: true })
-          await fs.cp(stash, original, { recursive: true }).catch(() => {})
+          if (!(await verifierDirectoryExists(stash))) {
+            if (!(await verifierDirectoryExists(original))) {
+              throw new Error(`Verifier is missing from both source and stash: ${original}`)
+            }
+            continue
+          }
+          await restoreVerifier(stash, original)
         }
-        await fs.rm(stashRoot, { recursive: true, force: true }).catch(() => {})
+        await fs.rm(stashRoot, { recursive: true, force: true })
+        restored = true
       },
     }
   }
