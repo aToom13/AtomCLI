@@ -349,7 +349,7 @@ export namespace ModelFallback {
                     throw error
                   }
                 })()
-                const result = await Promise.race([
+                await Promise.race([
                   request,
                   new Promise<never>((_, reject) => {
                     deadline = setTimeout(() => {

@@ -1,6 +1,4 @@
 import fs from "fs"
-import os from "os"
-import path from "path"
 import type {
   Browser as PlaywrightBrowser,
   BrowserContext,
@@ -10,52 +8,13 @@ import type {
   Page,
   Request,
 } from "playwright"
-import { Global } from "@/core/global"
 import { Log } from "@/util/util/log"
+import { appendBounded, eventLimit, eventMatches } from "./events"
+import type { BrowserConsoleEvent, BrowserDialogEvent, BrowserEventFilters, BrowserNetworkEvent } from "./events"
+import { detectLinuxDistro, hyprlandClients, processAncestors } from "./platform"
+import { playwrightCandidates } from "./playwright-discovery"
 
-const MAX_BROWSER_EVENTS = 1_000
-const DEFAULT_BROWSER_EVENT_LIMIT = 50
-
-declare const ATOMCLI_PLAYWRIGHT_VERSION: string | undefined
-
-export type BrowserConsoleEvent = {
-  id: number
-  timestamp: number
-  pageId: string
-  type: string
-  text: string
-  url?: string
-  line?: number
-  column?: number
-}
-
-export type BrowserNetworkEvent = {
-  id: number
-  timestamp: number
-  pageId: string
-  method: string
-  status?: number
-  url: string
-  error?: string
-  resourceType: string
-  duration?: number
-}
-
-export type BrowserDialogEvent = {
-  id: number
-  timestamp: number
-  pageId: string
-  type: string
-  message: string
-  defaultValue: string
-  action: "accepted" | "dismissed"
-}
-
-export type BrowserEventFilters = {
-  since?: number
-  limit?: number
-  urlPattern?: string
-}
+export type { BrowserConsoleEvent, BrowserDialogEvent, BrowserEventFilters, BrowserNetworkEvent } from "./events"
 
 export type BrowserEmulation = {
   reset?: boolean
@@ -71,41 +30,8 @@ export type BrowserEmulation = {
   accuracy?: number
 }
 
-export type LinuxDistro = "debian" | "arch" | "fedora" | "other"
-
-/**
- * Detect the Linux distribution family from /etc/os-release.
- * Returns null on non-Linux platforms.
- */
-export function detectLinuxDistro(): LinuxDistro | null {
-  if (process.platform !== "linux") return null
-  try {
-    const content = fs.readFileSync("/etc/os-release", "utf8")
-    const id = content.match(/^ID=["']?([^"'\n]+)["']?$/m)?.[1] ?? ""
-    const idLike = content.match(/^ID_LIKE=["']?([^"'\n]+)["']?$/m)?.[1] ?? ""
-    const combined = `${id} ${idLike}`.toLowerCase()
-    if (combined.includes("debian") || combined.includes("ubuntu")) return "debian"
-    if (combined.includes("arch") || combined.includes("cachyos")) return "arch"
-    if (combined.includes("fedora") || combined.includes("rhel") || combined.includes("centos")) return "fedora"
-    return "other"
-  } catch {
-    return null
-  }
-}
-
-/**
- * Resolve the playwright version pinned in the bundled AtomBase dependencies.
- * Falls back to null when playwright is not resolvable from this module graph.
- */
-export async function resolveBundledPlaywrightVersion(): Promise<string | null> {
-  if (typeof ATOMCLI_PLAYWRIGHT_VERSION !== "undefined") return ATOMCLI_PLAYWRIGHT_VERSION
-  try {
-    const pkg = await import("playwright/package.json").catch(() => null)
-    return pkg?.default?.version ?? pkg?.version ?? null
-  } catch {
-    return null
-  }
-}
+export { detectLinuxDistro } from "./platform"
+export { resolveBundledPlaywrightVersion } from "./playwright-discovery"
 
 export class BrowserManager {
   // A failed playwright scan is only cached briefly so an install performed
@@ -153,46 +79,8 @@ export class BrowserManager {
     return BrowserManager.instance
   }
 
-  /**
-   * Candidate module paths for playwright, ordered most-explicit first.
-   * Compiled binaries resolve bare specifiers against Bun's virtual bunfs
-   * filesystem instead of disk, so a plain import("playwright") fails there
-   * even when a valid install sits next to the source tree — hence the
-   * ATOMCLI_PLAYWRIGHT_PATH override and the node_modules walk-up from cwd.
-   */
   private resolvePlaywrightCandidates(): string[] {
-    const candidates = [
-      // 1. Explicit runtime override
-      process.env.ATOMCLI_PLAYWRIGHT_PATH,
-      // 2. Standard dynamic import (local node_modules, NODE_PATH)
-      "playwright",
-      // 3. Explicit AtomCLI config directory used by all platform installers
-      process.env.ATOMCLI_CONFIG_DIR
-        ? path.join(process.env.ATOMCLI_CONFIG_DIR, "playwright", "node_modules", "playwright")
-        : undefined,
-      // 4. AtomCLI directory (where install.sh/install.ps1 install it)
-      path.join(Global.Path.root, "playwright", "node_modules", "playwright"),
-      // 5. Legacy XDG config directory (backward compatibility)
-      path.join(
-        process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
-        "atomcli",
-        "playwright",
-        "node_modules",
-        "playwright",
-      ),
-    ].filter((p): p is string => !!p)
-
-    // 6. Walk up from cwd so binaries running inside a source checkout find
-    // the workspace install on disk
-    let dir = process.cwd()
-    for (let depth = 0; depth < 8; depth++) {
-      candidates.push(path.join(dir, "node_modules", "playwright"))
-      const parent = path.dirname(dir)
-      if (parent === dir) break
-      dir = parent
-    }
-
-    return [...new Set(candidates)]
+    return playwrightCandidates()
   }
 
   /**
@@ -283,22 +171,10 @@ export class BrowserManager {
     this.networkLogs = []
   }
 
-  private eventMatches(event: { id: number; url?: string }, filters?: BrowserEventFilters) {
-    if (filters?.since !== undefined && event.id <= filters.since) return false
-    if (filters?.urlPattern) {
-      try {
-        if (!new RegExp(filters.urlPattern, "i").test(event.url ?? "")) return false
-      } catch {
-        if (!(event.url ?? "").toLowerCase().includes(filters.urlPattern.toLowerCase())) return false
-      }
-    }
-    return true
-  }
-
   public getConsoleEvents(filters?: BrowserEventFilters & { level?: string }) {
-    const limit = Math.max(1, Math.min(filters?.limit ?? DEFAULT_BROWSER_EVENT_LIMIT, 500))
+    const limit = eventLimit(filters?.limit)
     return this.consoleEvents
-      .filter((event) => this.eventMatches(event, filters) && (!filters?.level || event.type === filters.level))
+      .filter((event) => eventMatches(event, filters) && (!filters?.level || event.type === filters.level))
       .slice(-limit)
   }
 
@@ -309,11 +185,11 @@ export class BrowserManager {
       resourceType?: string
     },
   ) {
-    const limit = Math.max(1, Math.min(filters?.limit ?? DEFAULT_BROWSER_EVENT_LIMIT, 500))
+    const limit = eventLimit(filters?.limit)
     return this.networkEvents
       .filter(
         (event) =>
-          this.eventMatches(event, filters) &&
+          eventMatches(event, filters) &&
           (filters?.status === undefined || event.status === filters.status) &&
           (!filters?.failedOnly || event.error !== undefined || (event.status ?? 0) >= 400) &&
           (!filters?.resourceType || event.resourceType === filters.resourceType),
@@ -322,7 +198,7 @@ export class BrowserManager {
   }
 
   public getDialogEvents(filters?: Pick<BrowserEventFilters, "since" | "limit">) {
-    const limit = Math.max(1, Math.min(filters?.limit ?? DEFAULT_BROWSER_EVENT_LIMIT, 500))
+    const limit = eventLimit(filters?.limit)
     return this.dialogEvents.filter((event) => filters?.since === undefined || event.id > filters.since).slice(-limit)
   }
 
@@ -355,11 +231,6 @@ export class BrowserManager {
     return id
   }
 
-  private pushEvent<T>(events: T[], event: T) {
-    events.push(event)
-    if (events.length > MAX_BROWSER_EVENTS) events.splice(0, events.length - MAX_BROWSER_EVENTS)
-  }
-
   private consoleLocation(message: ConsoleMessage) {
     const location = message.location()
     return {
@@ -369,59 +240,10 @@ export class BrowserManager {
     }
   }
 
-  private processAncestors(): number[] {
-    const result: number[] = []
-    const seen = new Set<number>()
-    let pid = process.pid
-    while (pid > 1 && !seen.has(pid)) {
-      seen.add(pid)
-      result.push(pid)
-      try {
-        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
-        const end = stat.lastIndexOf(")")
-        if (end < 0) break
-        const fields = stat
-          .slice(end + 2)
-          .trim()
-          .split(/\s+/)
-        const parent = Number(fields[1])
-        if (!Number.isInteger(parent) || parent <= 0) break
-        pid = parent
-      } catch {
-        break
-      }
-    }
-    return result
-  }
-
-  private async hyprlandClients(): Promise<
-    Array<{
-      address: string
-      pid: number
-      class: string
-      initialClass: string
-      workspace: { id: number; name: string }
-    }>
-  > {
-    if (!process.env.HYPRLAND_INSTANCE_SIGNATURE) return []
-    try {
-      const clients = Bun.spawn(["hyprctl", "clients", "-j"], {
-        stdout: "pipe",
-        stderr: "ignore",
-      })
-      const output = await new Response(clients.stdout).text()
-      if ((await clients.exited) !== 0) return []
-      const parsed = JSON.parse(output)
-      return Array.isArray(parsed) ? parsed : []
-    } catch {
-      return []
-    }
-  }
-
   private async resolveHostWorkspace(): Promise<string | undefined> {
-    const clients = await this.hyprlandClients()
+    const clients = await hyprlandClients()
     const byPID = new Map(clients.map((client) => [client.pid, client]))
-    for (const pid of this.processAncestors()) {
+    for (const pid of processAncestors()) {
       const client = byPID.get(pid)
       if (!client) continue
       if (Number.isInteger(client.workspace?.id) && client.workspace.id > 0) return String(client.workspace.id)
@@ -458,7 +280,7 @@ export class BrowserManager {
     if (!workspace || !process.env.HYPRLAND_INSTANCE_SIGNATURE) return
 
     for (let attempt = 0; attempt < 20; attempt++) {
-      const client = (await this.hyprlandClients()).find(
+      const client = (await hyprlandClients()).find(
         (item) => item.class === this.browserWindowClass || item.initialClass === this.browserWindowClass,
       )
       if (!client || !/^0x[\da-f]+$/i.test(client.address)) {
@@ -579,7 +401,7 @@ export class BrowserManager {
       const text = `[${msg.type()}] ${msg.text()}`.slice(0, 10_000)
       this.consoleLogs.push(text)
       if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
-      this.pushEvent(this.consoleEvents, {
+      appendBounded(this.consoleEvents, {
         id: ++this.eventCounter,
         timestamp: Date.now(),
         pageId,
@@ -593,7 +415,7 @@ export class BrowserManager {
       const text = `[error] ${err.message}`.slice(0, 10_000)
       this.consoleLogs.push(text)
       if (this.consoleLogs.length > 500) this.consoleLogs.splice(0, this.consoleLogs.length - 500)
-      this.pushEvent(this.consoleEvents, {
+      appendBounded(this.consoleEvents, {
         id: ++this.eventCounter,
         timestamp: Date.now(),
         pageId,
@@ -615,7 +437,7 @@ export class BrowserManager {
       })
       if (this.networkLogs.length > 500) this.networkLogs.splice(0, this.networkLogs.length - 500)
       const startedAt = this.requestStartedAt.get(request)
-      this.pushEvent(this.networkEvents, {
+      appendBounded(this.networkEvents, {
         id: ++this.eventCounter,
         timestamp: Date.now(),
         pageId,
@@ -634,7 +456,7 @@ export class BrowserManager {
       })
       if (this.networkLogs.length > 500) this.networkLogs.splice(0, this.networkLogs.length - 500)
       const startedAt = this.requestStartedAt.get(request)
-      this.pushEvent(this.networkEvents, {
+      appendBounded(this.networkEvents, {
         id: ++this.eventCounter,
         timestamp: Date.now(),
         pageId,
@@ -653,7 +475,7 @@ export class BrowserManager {
         if (action === "accept") await dialog.accept(prepared?.promptText)
         else await dialog.dismiss()
       } finally {
-        this.pushEvent(this.dialogEvents, {
+        appendBounded(this.dialogEvents, {
           id: ++this.eventCounter,
           timestamp: Date.now(),
           pageId,

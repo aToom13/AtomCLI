@@ -197,32 +197,6 @@ async function getKilocodeProfile(token: string): Promise<KilocodeProfileData> {
   return (await response.json()) as KilocodeProfileData
 }
 
-async function getKilocodeDefaultModel(token: string, organizationId?: string): Promise<string> {
-  try {
-    const path = organizationId ? `/api/organizations/${organizationId}/defaults` : `/api/defaults`
-    const response = await fetch(getApiUrl(path), {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    })
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch default model: ${response.status}`)
-    }
-
-    const data = (await response.json()) as { defaultModel?: string }
-    if (!data.defaultModel) {
-      throw new Error("Default model was empty")
-    }
-
-    return data.defaultModel
-  } catch (err) {
-    log.warn("Failed to get default model, using fallback", { error: err })
-    return "anthropic/claude-sonnet-4" // Fallback to a popular model
-  }
-}
-
 /**
  * Interactive device authentication flow for CLI
  */

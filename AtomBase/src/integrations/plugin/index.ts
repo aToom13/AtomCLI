@@ -3,7 +3,6 @@ import { Config } from "@/core/config/config"
 import { Bus } from "@/core/bus"
 import { Log } from "@/util/util/log"
 import { createAtomcliClient } from "@atomcli/sdk/v2"
-import { Server } from "@/server/server"
 import { BunProc } from "@/util/bun"
 import { Instance } from "@/services/project/instance"
 import { Flag } from "@/interfaces/flag/flag"
@@ -24,6 +23,7 @@ export namespace Plugin {
 
   const state = Instance.state(
     async () => {
+      const { Server } = await import("@/server/server")
       const client = createAtomcliClient({
         baseUrl: "http://localhost:4096",
         directory: Instance.directory,
@@ -128,7 +128,6 @@ export namespace Plugin {
       await hook.config?.(config)
     }
     Bus.subscribeAll(async (input) => {
-      const hooks = await state().then((x) => x.hooks)
       for (const hook of hooks) {
         hook["event"]?.({
           event: input,

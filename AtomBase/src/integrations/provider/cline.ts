@@ -10,6 +10,7 @@ const METADATA_CACHE_MS = 5 * 60 * 1000
 export namespace Cline {
   export const PROVIDER_ID = "cline"
   export const API_PROVIDER_ID = "cline-pass"
+  export const FREE_FALLBACK_MODEL = "cline/cline-free/deepseek-v4.1-flash"
   export const API_BASE_URL = "https://api.cline.bot/api/v1"
   export const MODELS_URL = `${API_BASE_URL}/models`
   export const RECOMMENDED_MODELS_URL = `${API_BASE_URL}/ai/cline/recommended-models`

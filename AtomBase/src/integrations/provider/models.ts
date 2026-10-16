@@ -148,7 +148,6 @@ export namespace ModelsDev {
     if (refreshing) return refreshing
 
     refreshing = (async () => {
-      const file = Bun.file(filepath)
       log.info("refreshing", { file: filepath })
       const result: Response | undefined = await fetch("https://models.dev/api.json", {
         headers: {

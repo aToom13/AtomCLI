@@ -1,54 +1,34 @@
 import z from "zod"
 import fuzzysort from "fuzzysort"
 import { Config } from "@/core/config/config"
-import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
+import { mapValues, mergeDeep, pickBy } from "remeda"
 // Note: ai package is imported dynamically to avoid Bun ESM resolution issues
 import type { Provider as SDK } from "ai"
-import { getNoSuchModelError } from "@/util/util/ai-compat"
 import { Log } from "@/util/util/log"
 import { BunProc } from "@/util/bun"
 import { Plugin } from "../plugin"
 import { ModelsDev } from "./models"
 import { NamedError } from "@atomcli/util/error"
 import { Auth } from "@/services/auth"
-import { Env } from "@/core/env"
 import { Instance } from "@/services/project/instance"
 import { Flag } from "@/interfaces/flag/flag"
-import { iife } from "@/util/util/iife"
 
 // Direct imports for bundled providers
-import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
-import { createAnthropic } from "@ai-sdk/anthropic"
-import { createAzure } from "@ai-sdk/azure"
-import { createGoogleGenerativeAI } from "@ai-sdk/google"
-import { createVertex } from "@ai-sdk/google-vertex"
-import { createVertexAnthropic } from "@ai-sdk/google-vertex/anthropic"
-import { createOpenAI } from "@ai-sdk/openai"
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { createOpenRouter, type LanguageModelV2 } from "@openrouter/ai-sdk-provider"
-import { createXai } from "@ai-sdk/xai"
-import { createMistral } from "@ai-sdk/mistral"
-import { createGroq } from "@ai-sdk/groq"
-import { createDeepInfra } from "@ai-sdk/deepinfra"
-import { createCerebras } from "@ai-sdk/cerebras"
-import { createCohere } from "@ai-sdk/cohere"
-import { createGateway } from "@ai-sdk/gateway"
-import { createTogetherAI } from "@ai-sdk/togetherai"
-import { createPerplexity } from "@ai-sdk/perplexity"
-import { createVercel } from "@ai-sdk/vercel"
+import type { LanguageModelV2 } from "@openrouter/ai-sdk-provider"
 import { ProviderTransform } from "./transform"
-import { createOllama, detectOllama, toProviderModels } from "./ollama"
-import { createKilocode, detectKilocode, getKilocodeModels } from "./kilocode"
-import { createAntigravity } from "./antigravity"
+import { applyConfiguredProviders } from "./catalog-config"
+import { loadConfiguredAuth } from "./catalog-auth"
+import { filterCatalog } from "./catalog-filter"
 import { ModelAvailability } from "./availability"
 import { ModelVerification } from "./verification"
 import { Bus } from "@/core/bus"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
-import { RouteEligibility } from "@/core/routing/route-eligibility"
-import { fetchOpenAICompatibleModels } from "./custom"
-import { ModelBilling } from "./billing"
+import { ProviderModels } from "./models-runtime"
+import { ProviderSelection } from "./model-selection"
 import { Installation } from "@/services/installation"
 import { Identifier } from "@/core/id/id"
+import { CUSTOM_LOADERS, type CustomModelLoader } from "./custom-loaders"
+import { BUNDLED_PROVIDERS } from "./bundled"
 
 const PROVIDER_REFRESH_INTERVAL_MS = 15_000
 
@@ -56,745 +36,27 @@ export namespace Provider {
   const log = Log.create({ service: "provider" })
   export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000
 
-  export const RoutePolicy = z.object({
-    requested: z.string(),
-    mode: z.enum(["explicit", "auto", "free"]),
-    allowedProviders: z.array(z.string()),
-    excluded: z.array(z.string()).default([]),
-    requiredCapabilities: z.array(ModelVerification.Capability).default(["text"]),
-    freeOnly: z.boolean(),
-    requireVerification: z.boolean(),
-    variant: z.string().optional(),
-  })
-  export type RoutePolicy = z.infer<typeof RoutePolicy>
+  export const RoutePolicy = ProviderModels.RoutePolicy
+  export type RoutePolicy = ProviderModels.RoutePolicy
 
   export function requestTimeout(options: Record<string, any>): number | false {
     return options.timeout === false ? false : (options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS)
   }
 
-  // TODO: Ideally, each provider would have typed options, but AI SDK providers have
-  // incompatible option types (some require baseURL, some require name, etc.)
-  // Using 'any' here is intentional to avoid complex union types
-  const BUNDLED_PROVIDERS: Record<string, (options: any) => SDK> = {
-    "@ai-sdk/amazon-bedrock": createAmazonBedrock,
-    "@ai-sdk/anthropic": createAnthropic,
-    "@ai-sdk/azure": createAzure,
-    "@ai-sdk/google": createGoogleGenerativeAI,
-    "@ai-sdk/google-vertex": createVertex,
-    "@ai-sdk/google-vertex/anthropic": createVertexAnthropic,
-    "@ai-sdk/openai": createOpenAI,
-    "@ai-sdk/openai-compatible": createOpenAICompatible,
-    "@openrouter/ai-sdk-provider": createOpenRouter,
-    "@ai-sdk/xai": createXai,
-    "@ai-sdk/mistral": createMistral,
-    "@ai-sdk/groq": createGroq,
-    "@ai-sdk/deepinfra": createDeepInfra,
-    "@ai-sdk/cerebras": createCerebras,
-    "@ai-sdk/cohere": createCohere,
-    "@ai-sdk/gateway": createGateway,
-    "@ai-sdk/togetherai": createTogetherAI,
-    "@ai-sdk/perplexity": createPerplexity,
-    "@ai-sdk/vercel": createVercel,
-    // Ollama - Local LLM provider
-    "@atomcli/ollama": createOllama,
-    // Kilocode - Cloud LLM provider
-    "@atomcli/kilocode": createKilocode,
-  }
+  export const Model = ProviderModels.Model
+  export type Model = ProviderModels.Model
 
-  // Add Antigravity bundled provider if not disabled
-  if (!Flag.ATOMCLI_DISABLE_ANTIGRAVITY) {
-    BUNDLED_PROVIDERS["@atomcli/antigravity"] = createAntigravity
-  }
+  export const Info = ProviderModels.Info
+  export type Info = ProviderModels.Info
 
-  type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
-  type CustomLoader = (provider: Info) => Promise<{
-    autoload: boolean
-    getModel?: CustomModelLoader
-    options?: Record<string, any>
-    models?: Record<string, Model>
-  }>
-
-  const CUSTOM_LOADERS: Record<string, CustomLoader> = {
-    async anthropic() {
-      return {
-        autoload: false,
-        options: {
-          headers: {
-            "anthropic-beta":
-              "claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
-          },
-        },
-      }
-    },
-    async atomcli(input) {
-      if (!input) {
-        return {
-          autoload: false,
-          options: { apiKey: "public" },
-        }
-      }
-
-      const hasKey = await (async () => {
-        const env = Env.all()
-        if (input.env?.some((item) => env[item])) return true
-        if (input.id && (await Auth.get(input.id))) return true
-        const config = await Config.get()
-        if (config.provider?.["atomcli"]?.options?.apiKey) return true
-        return false
-      })()
-
-      if (!hasKey && input.models) {
-        for (const [key, value] of Object.entries(input.models)) {
-          if (key === "atomcli-auto" || key === "atomcli-free") continue
-          if (value.cost.input === 0 && value.cost.output === 0) continue
-          delete input.models[key]
-        }
-      }
-
-      return {
-        autoload: input.models ? Object.keys(input.models).length > 0 : false,
-        options: hasKey ? {} : { apiKey: "public" },
-      }
-    },
-    // Ollama - Auto-detect running instances and available models
-    ollama: async () => {
-      const baseURL = Env.get("OLLAMA_HOST") ?? "http://localhost:11434"
-      // F3: timeout Ollama probe to avoid blocking cold start
-      const OLLAMA_DETECT_TIMEOUT_MS = 2_000
-      const { running, models } = await Promise.race([
-        detectOllama(baseURL),
-        new Promise<{ running: false; models: never[] }>((resolve) =>
-          setTimeout(() => resolve({ running: false, models: [] }), OLLAMA_DETECT_TIMEOUT_MS),
-        ),
-      ])
-
-      if (!running) {
-        return {
-          autoload: false,
-          options: {},
-        }
-      }
-
-      return {
-        autoload: models.length > 0,
-        options: {
-          baseURL: `${baseURL}/v1`,
-        },
-        models: toProviderModels(models),
-      }
-    },
-    openai: async () => {
-      return {
-        autoload: false,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-          return sdk.responses(modelID)
-        },
-        options: {},
-      }
-    },
-    "github-copilot": async () => {
-      return {
-        autoload: false,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-          if (modelID.includes("codex")) {
-            return sdk.responses(modelID)
-          }
-          return sdk.chat(modelID)
-        },
-        options: {},
-      }
-    },
-    "github-copilot-enterprise": async () => {
-      return {
-        autoload: false,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-          if (modelID.includes("codex")) {
-            return sdk.responses(modelID)
-          }
-          return sdk.chat(modelID)
-        },
-        options: {},
-      }
-    },
-    azure: async () => {
-      return {
-        autoload: false,
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
-          if (options?.["useCompletionUrls"]) {
-            return sdk.chat(modelID)
-          } else {
-            return sdk.responses(modelID)
-          }
-        },
-        options: {},
-      }
-    },
-    "azure-cognitive-services": async () => {
-      const resourceName = Env.get("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME")
-      return {
-        autoload: false,
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
-          if (options?.["useCompletionUrls"]) {
-            return sdk.chat(modelID)
-          } else {
-            return sdk.responses(modelID)
-          }
-        },
-        options: {
-          baseURL: resourceName ? `https://${resourceName}.cognitiveservices.azure.com/openai` : undefined,
-        },
-      }
-    },
-    "amazon-bedrock": async () => {
-      const config = await Config.get()
-      const providerConfig = config.provider?.["amazon-bedrock"]
-
-      const auth = await Auth.get("amazon-bedrock")
-
-      // Region precedence: 1) config file, 2) env var, 3) default
-      const configRegion = providerConfig?.options?.region
-      const envRegion = Env.get("AWS_REGION")
-      const defaultRegion = configRegion ?? envRegion ?? "us-east-1"
-
-      // Profile: config file takes precedence over env var
-      const configProfile = providerConfig?.options?.profile
-      const envProfile = Env.get("AWS_PROFILE")
-      const profile = configProfile ?? envProfile
-
-      const awsAccessKeyId = Env.get("AWS_ACCESS_KEY_ID")
-
-      const awsBearerToken = iife(() => {
-        const envToken = Env.get("AWS_BEARER_TOKEN_BEDROCK")
-        if (envToken) return envToken
-        if (auth?.type === "api") return auth.key
-        return undefined
-      })
-
-      if (!profile && !awsAccessKeyId && !awsBearerToken) return { autoload: false }
-
-      let profileCredentials: Promise<any> | undefined
-      const providerOptions: AmazonBedrockProviderSettings = {
-        region: defaultRegion,
-        ...(awsBearerToken ? { apiKey: awsBearerToken } : {}),
-        // Shared AWS profiles need the optional credential package. Resolve it
-        // only when the first Bedrock request asks for credentials; provider
-        // discovery must never install packages or block cold start on network.
-        ...(profile
-          ? {
-              credentialProvider: async () => {
-                profileCredentials ??= (async () => {
-                  const modulePath = await BunProc.install("@aws-sdk/credential-providers")
-                  const { fromNodeProviderChain } = await import(modulePath)
-                  return fromNodeProviderChain({ profile })()
-                })().catch((error) => {
-                  profileCredentials = undefined
-                  throw error
-                })
-                return profileCredentials
-              },
-            }
-          : {}),
-      }
-
-      // Add custom endpoint if specified (endpoint takes precedence over baseURL)
-      const endpoint = providerConfig?.options?.endpoint ?? providerConfig?.options?.baseURL
-      if (endpoint) {
-        providerOptions.baseURL = endpoint
-      }
-
-      return {
-        autoload: true,
-        options: providerOptions,
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
-          // Skip region prefixing if model already has a cross-region inference profile prefix
-          if (modelID.startsWith("global.") || modelID.startsWith("jp.")) {
-            return sdk.languageModel(modelID)
-          }
-
-          // Region resolution precedence (highest to lowest):
-          // 1. options.region from atomcli.json provider config
-          // 2. defaultRegion from AWS_REGION environment variable
-          // 3. Default "us-east-1" (baked into defaultRegion)
-          const region = options?.region ?? defaultRegion
-
-          let regionPrefix = region.split("-")[0]
-
-          switch (regionPrefix) {
-            case "us": {
-              const modelRequiresPrefix = [
-                "nova-micro",
-                "nova-lite",
-                "nova-pro",
-                "nova-premier",
-                "claude",
-                "deepseek",
-              ].some((m) => modelID.includes(m))
-              const isGovCloud = region.startsWith("us-gov")
-              if (modelRequiresPrefix && !isGovCloud) {
-                modelID = `${regionPrefix}.${modelID}`
-              }
-              break
-            }
-            case "eu": {
-              const regionRequiresPrefix = [
-                "eu-west-1",
-                "eu-west-2",
-                "eu-west-3",
-                "eu-north-1",
-                "eu-central-1",
-                "eu-south-1",
-                "eu-south-2",
-              ].some((r) => region.includes(r))
-              const modelRequiresPrefix = ["claude", "nova-lite", "nova-micro", "llama3", "pixtral"].some((m) =>
-                modelID.includes(m),
-              )
-              if (regionRequiresPrefix && modelRequiresPrefix) {
-                modelID = `${regionPrefix}.${modelID}`
-              }
-              break
-            }
-            case "ap": {
-              const isAustraliaRegion = ["ap-southeast-2", "ap-southeast-4"].includes(region)
-              const isTokyoRegion = region === "ap-northeast-1"
-              if (
-                isAustraliaRegion &&
-                ["anthropic.claude-sonnet-4-5", "anthropic.claude-haiku"].some((m) => modelID.includes(m))
-              ) {
-                regionPrefix = "au"
-                modelID = `${regionPrefix}.${modelID}`
-              } else if (isTokyoRegion) {
-                // Tokyo region uses jp. prefix for cross-region inference
-                const modelRequiresPrefix = ["claude", "nova-lite", "nova-micro", "nova-pro"].some((m) =>
-                  modelID.includes(m),
-                )
-                if (modelRequiresPrefix) {
-                  regionPrefix = "jp"
-                  modelID = `${regionPrefix}.${modelID}`
-                }
-              } else {
-                // Other APAC regions use apac. prefix
-                const modelRequiresPrefix = ["claude", "nova-lite", "nova-micro", "nova-pro"].some((m) =>
-                  modelID.includes(m),
-                )
-                if (modelRequiresPrefix) {
-                  regionPrefix = "apac"
-                  modelID = `${regionPrefix}.${modelID}`
-                }
-              }
-              break
-            }
-          }
-
-          return sdk.languageModel(modelID)
-        },
-      }
-    },
-    openrouter: async () => {
-      return {
-        autoload: false,
-        options: {
-          headers: {
-            "HTTP-Referer": "https://atomcli.ai/",
-            "X-Title": "atomcli",
-          },
-        },
-      }
-    },
-    vercel: async () => {
-      return {
-        autoload: false,
-        options: {
-          headers: {
-            "http-referer": "https://atomcli.ai/",
-            "x-title": "atomcli",
-          },
-        },
-      }
-    },
-    "google-vertex": async () => {
-      const project = Env.get("GOOGLE_CLOUD_PROJECT") ?? Env.get("GCP_PROJECT") ?? Env.get("GCLOUD_PROJECT")
-      const location = Env.get("GOOGLE_CLOUD_LOCATION") ?? Env.get("VERTEX_LOCATION") ?? "us-east5"
-      const autoload = Boolean(project)
-      if (!autoload) return { autoload: false }
-      return {
-        autoload: true,
-        options: {
-          project,
-          location,
-        },
-        async getModel(sdk: any, modelID: string) {
-          const id = String(modelID).trim()
-          return sdk.languageModel(id)
-        },
-      }
-    },
-    "google-vertex-anthropic": async () => {
-      const project = Env.get("GOOGLE_CLOUD_PROJECT") ?? Env.get("GCP_PROJECT") ?? Env.get("GCLOUD_PROJECT")
-      const location = Env.get("GOOGLE_CLOUD_LOCATION") ?? Env.get("VERTEX_LOCATION") ?? "global"
-      const autoload = Boolean(project)
-      if (!autoload) return { autoload: false }
-      return {
-        autoload: true,
-        options: {
-          project,
-          location,
-        },
-        async getModel(sdk: any, modelID) {
-          const id = String(modelID).trim()
-          return sdk.languageModel(id)
-        },
-      }
-    },
-    "sap-ai-core": async () => {
-      const auth = await Auth.get("sap-ai-core")
-      const envServiceKey = iife(() => {
-        const envAICoreServiceKey = Env.get("AICORE_SERVICE_KEY")
-        if (envAICoreServiceKey) return envAICoreServiceKey
-        if (auth?.type === "api") {
-          Env.set("AICORE_SERVICE_KEY", auth.key)
-          return auth.key
-        }
-        return undefined
-      })
-      const deploymentId = Env.get("AICORE_DEPLOYMENT_ID")
-      const resourceGroup = Env.get("AICORE_RESOURCE_GROUP")
-
-      return {
-        autoload: !!envServiceKey,
-        options: envServiceKey ? { deploymentId, resourceGroup } : {},
-        async getModel(sdk: any, modelID: string) {
-          return sdk(modelID)
-        },
-      }
-    },
-    zenmux: async () => {
-      return {
-        autoload: false,
-        options: {
-          headers: {
-            "HTTP-Referer": "https://atomcli.ai/",
-            "X-Title": "atomcli",
-          },
-        },
-      }
-    },
-    "cloudflare-ai-gateway": async (input) => {
-      const accountId = Env.get("CLOUDFLARE_ACCOUNT_ID")
-      const gateway = Env.get("CLOUDFLARE_GATEWAY_ID")
-
-      if (!accountId || !gateway) return { autoload: false }
-
-      // Get API token from env or auth prompt
-      const apiToken = await (async () => {
-        const envToken = Env.get("CLOUDFLARE_API_TOKEN")
-        if (envToken) return envToken
-        const auth = await Auth.get(input.id)
-        if (auth?.type === "api") return auth.key
-        return undefined
-      })()
-
-      return {
-        autoload: true,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
-          return sdk.languageModel(modelID)
-        },
-        options: {
-          baseURL: `https://gateway.ai.cloudflare.com/v1/${accountId}/${gateway}/compat`,
-          headers: {
-            // Cloudflare AI Gateway uses cf-aig-authorization for authenticated gateways
-            // This enables Unified Billing where Cloudflare handles upstream provider auth
-            ...(apiToken ? { "cf-aig-authorization": `Bearer ${apiToken}` } : {}),
-            "HTTP-Referer": "https://atomcli.ai/",
-            "X-Title": "atomcli",
-          },
-          // Custom fetch to strip Authorization header - AI Gateway uses cf-aig-authorization instead
-          // Sending Authorization header with invalid value causes auth errors
-          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-            const headers = new Headers(init?.headers)
-            headers.delete("Authorization")
-            return fetch(input, { ...init, headers })
-          },
-        },
-      }
-    },
-    cerebras: async () => {
-      return {
-        autoload: false,
-        options: {
-          headers: {
-            "X-Cerebras-3rd-Party-Integration": "atomcli",
-          },
-        },
-      }
-    },
-    // Kilocode - Cloud provider with device auth
-    kilocode: async () => {
-      const { available, token, organizationId } = await detectKilocode()
-      if (!available || !token) {
-        return { autoload: false }
-      }
-
-      // Fetch models dynamically from Kilocode API
-      const kilocodeModels = await getKilocodeModels(token)
-      const models: Record<string, Model> = {}
-
-      for (const [id, info] of Object.entries(kilocodeModels)) {
-        const supportsImages = Boolean(info.supportsImages)
-        models[id] = {
-          id,
-          providerID: "kilocode",
-          api: {
-            id,
-            npm: "@atomcli/kilocode",
-            url: "https://api.kilo.ai/api/openrouter/",
-          },
-          name: info.name || id,
-          family: id.split("/")[0],
-          status: "active",
-          capabilities: {
-            temperature: true,
-            reasoning: Boolean(info.supportsReasoning),
-            attachment: supportsImages,
-            toolcall: true,
-            input: {
-              text: true,
-              audio: false,
-              image: supportsImages,
-              video: false,
-              pdf: false,
-            },
-            output: {
-              text: true,
-              audio: false,
-              image: false,
-              video: false,
-              pdf: false,
-            },
-            interleaved: false,
-          },
-          limit: {
-            context: info.contextWindow || 128000,
-            output: info.maxTokens || 8192,
-          },
-          cost: {
-            input: info.inputPrice || 0,
-            output: info.outputPrice || 0,
-            cache: { read: 0, write: 0 },
-          },
-          options: {},
-          headers: {},
-          release_date: "",
-          variants: {},
-        }
-      }
-
-      return {
-        autoload: Object.keys(models).length > 0,
-        models,
-        options: {
-          apiKey: token,
-          organizationId,
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      }
-    },
-  }
-
-  export const Model = z
-    .object({
-      id: z.string(),
-      providerID: z.string(),
-      api: z.object({
-        id: z.string(),
-        // Native AI SDK providers own their default endpoint, so models.dev
-        // legitimately omits api for those providers.
-        url: z.string().optional(),
-        npm: z.string(),
-      }),
-      name: z.string(),
-      family: z.string().optional(),
-      capabilities: z.object({
-        temperature: z.boolean(),
-        reasoning: z.boolean(),
-        attachment: z.boolean(),
-        toolcall: z.boolean(),
-        input: z.object({
-          text: z.boolean(),
-          audio: z.boolean(),
-          image: z.boolean(),
-          video: z.boolean(),
-          pdf: z.boolean(),
-        }),
-        output: z.object({
-          text: z.boolean(),
-          audio: z.boolean(),
-          image: z.boolean(),
-          video: z.boolean(),
-          pdf: z.boolean(),
-        }),
-        interleaved: z.union([
-          z.boolean(),
-          z.object({
-            field: z.enum(["reasoning_content", "reasoning_details"]),
-          }),
-        ]),
-      }),
-      cost: z.object({
-        input: z.number(),
-        output: z.number(),
-        cache: z.object({
-          read: z.number(),
-          write: z.number(),
-        }),
-        experimentalOver200K: z
-          .object({
-            input: z.number(),
-            output: z.number(),
-            cache: z.object({
-              read: z.number(),
-              write: z.number(),
-            }),
-          })
-          .optional(),
-      }),
-      limit: z.object({
-        context: z.number(),
-        output: z.number(),
-      }),
-      status: z.enum(["alpha", "beta", "deprecated", "active"]),
-      availability: ModelAvailability.Info.optional(),
-      options: z.record(z.string(), z.any()),
-      headers: z.record(z.string(), z.string()),
-      release_date: z.string(),
-      variants: z.record(z.string(), z.record(z.string(), z.any())).optional(),
-    })
-    .meta({
-      ref: "Model",
-    })
-  export type Model = z.infer<typeof Model>
-
-  export const Info = z
-    .object({
-      id: z.string(),
-      name: z.string(),
-      source: z.enum(["env", "config", "custom", "api"]),
-      env: z.string().array(),
-      key: z.string().optional(),
-      options: z.record(z.string(), z.any()),
-      models: z.record(z.string(), Model),
-    })
-    .meta({
-      ref: "Provider",
-    })
-  export type Info = z.infer<typeof Info>
-
-  function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model): Model {
-    const m: Model = {
-      id: model.id,
-      providerID: provider.id,
-      name: model.name,
-      family: model.family,
-      api: {
-        id: model.id,
-        url: provider.api!,
-        npm: model.provider?.npm ?? provider.npm ?? "@ai-sdk/openai-compatible",
-      },
-      status: model.status ?? "active",
-      headers: model.headers ?? {},
-      options: {
-        ...model.options,
-        _catalogCostKnown: model.cost !== undefined,
-      },
-      cost: {
-        input: model.cost?.input ?? 0,
-        output: model.cost?.output ?? 0,
-        cache: {
-          read: model.cost?.cache_read ?? 0,
-          write: model.cost?.cache_write ?? 0,
-        },
-        experimentalOver200K: model.cost?.context_over_200k
-          ? {
-              cache: {
-                read: model.cost.context_over_200k.cache_read ?? 0,
-                write: model.cost.context_over_200k.cache_write ?? 0,
-              },
-              input: model.cost.context_over_200k.input,
-              output: model.cost.context_over_200k.output,
-            }
-          : undefined,
-      },
-      limit: {
-        context: model.limit.context,
-        output: model.limit.output,
-      },
-      capabilities: {
-        temperature: model.temperature,
-        reasoning: model.reasoning,
-        attachment: model.attachment,
-        toolcall: model.tool_call,
-        input: {
-          text: model.modalities?.input?.includes("text") ?? false,
-          audio: model.modalities?.input?.includes("audio") ?? false,
-          image: model.modalities?.input?.includes("image") ?? false,
-          video: model.modalities?.input?.includes("video") ?? false,
-          pdf: model.modalities?.input?.includes("pdf") ?? false,
-        },
-        output: {
-          text: model.modalities?.output?.includes("text") ?? false,
-          audio: model.modalities?.output?.includes("audio") ?? false,
-          image: model.modalities?.output?.includes("image") ?? false,
-          video: model.modalities?.output?.includes("video") ?? false,
-          pdf: model.modalities?.output?.includes("pdf") ?? false,
-        },
-        interleaved: model.interleaved ?? false,
-      },
-      release_date: model.release_date,
-      variants: {},
-    }
-
-    const declaredVariants = ProviderTransform.reasoningVariants(model, m)
-    m.variants = mapValues(declaredVariants ?? ProviderTransform.variants(m), (v) => v)
-
-    return m
-  }
-
-  export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
-    return {
-      id: provider.id,
-      source: "custom",
-      name: provider.name,
-      env: provider.env ?? [],
-      options: {},
-      models: mapValues(provider.models, (model) => fromModelsDevModel(provider, model)),
-    }
-  }
-
-  export function isExplicitlyFree(model: Pick<Model, "api" | "cost" | "options">): boolean {
-    return ModelBilling.classify(model) === "free"
-  }
-
-  export function routePolicy(model: Model): RoutePolicy {
-    const parsed = RoutePolicy.safeParse((model.options as any)?._routePolicy)
-    if (parsed.success) return parsed.data
-    return {
-      requested: `${model.providerID}/${model.id}`,
-      mode: "explicit",
-      allowedProviders: [model.providerID],
-      excluded: [],
-      requiredCapabilities: ["text"],
-      freeOnly: false,
-      requireVerification: false,
-    }
-  }
-
-  export function applyRoutePolicy(model: Model, policy: RoutePolicy): Model {
-    return {
-      ...model,
-      options: { ...model.options, _routePolicy: policy },
-    }
-  }
+  export const fromModelsDevProvider = ProviderModels.fromModelsDevProvider
+  export const isExplicitlyFree = ProviderModels.isExplicitlyFree
+  export const routePolicy = ProviderModels.routePolicy
+  export const applyRoutePolicy = ProviderModels.applyRoutePolicy
+  const isPublicAtomCLIModel = ProviderModels.isPublicAtomCLIModel
+  const requiredInputModalities = ProviderModels.requiredInputModalities
+  const supportsInputModalities = ProviderModels.supportsInputModalities
+  type InputModality = ProviderModels.InputModality
 
   export async function isRouteEligible(
     model: Model,
@@ -802,69 +64,13 @@ export namespace Provider {
     capability: ModelVerification.Capability,
     context?: { effectiveParams?: unknown },
   ) {
-    const provider = await getProvider(model.providerID)
-    const effectiveParams =
-      context?.effectiveParams ??
-      ({
-        modelOptions: model.options,
-        variantOptions: policy.variant ? model.variants?.[policy.variant] : undefined,
-      } as const)
-    const paramsDigest = await ModelVerification.paramsDigest(effectiveParams)
-    if (!provider) return false
-    const key = await ModelVerification.identity(model, provider, {
-      variant: policy.variant,
-      ...(context?.effectiveParams !== undefined ? { effectiveParams: context.effectiveParams } : {}),
-    })
-    const evidence = await ModelVerification.get(key)
-    const price =
-      !model.cost || model.options?._catalogCostKnown === false ? "unknown" : isExplicitlyFree(model) ? "free" : "paid"
-    return (
-      RouteEligibility.evaluate({
-        model,
-        connected: Boolean(provider),
-        available: model.status !== "deprecated" && !ModelAvailability.active(model.availability),
-        providerAllowed: policy.allowedProviders.includes(model.providerID),
-        modelExcluded:
-          policy.excluded.includes(model.id) || policy.excluded.includes(`${model.providerID}/${model.id}`),
-        freeOnly: policy.freeOnly,
-        price,
-        requiredCapabilities: [capability],
-        variant: policy.variant,
-        paramsDigest,
-        verificationKey: key,
-        verification: evidence,
-        requireVerification: policy.requireVerification,
-      }).decision === "eligible"
-    )
-  }
-
-  function isPublicAtomCLIModel(model: Model): boolean {
-    if (model.status === "deprecated") return false
-    return isExplicitlyFree(model)
-  }
-
-  type InputModality = "image" | "pdf" | "audio" | "video"
-
-  function requiredInputModalities(parts: { type?: string; mime?: string }[]): Set<InputModality> {
-    const required = new Set<InputModality>()
-    for (const part of parts) {
-      if (part.type !== "file" || !part.mime) continue
-      if (part.mime.startsWith("image/")) required.add("image")
-      else if (part.mime === "application/pdf") required.add("pdf")
-      else if (part.mime.startsWith("audio/")) required.add("audio")
-      else if (part.mime.startsWith("video/")) required.add("video")
-    }
-    return required
-  }
-
-  function supportsInputModalities(model: Model, required: Set<InputModality>): boolean {
-    return Array.from(required).every((modality) => model.capabilities.input[modality])
+    return ProviderModels.isRouteEligible(model, policy, capability, getProvider, context)
   }
 
   export const _internals = {
-    isPublicAtomCLIModel,
-    requiredInputModalities,
-    supportsInputModalities,
+    isPublicAtomCLIModel: ProviderModels.isPublicAtomCLIModel,
+    requiredInputModalities: ProviderModels.requiredInputModalities,
+    supportsInputModalities: ProviderModels.supportsInputModalities,
     requestModel(provider: Info, fallback: Model, body: unknown) {
       if (!body || typeof body !== "object") return fallback
       const modelID = (body as { model?: unknown }).model
@@ -1083,168 +289,18 @@ export namespace Provider {
       }
     }
 
-    // extend database from config
-    for (const [providerID, provider] of configProviders) {
-      const existing = database[providerID]
-      let configuredModels = provider.models ?? {}
-      const baseURL = provider.api ?? provider.options?.baseURL
-      const npm = provider.npm ?? Object.values(existing?.models ?? {})[0]?.api.npm
-      const discoveryEnabled = provider.options?.modelDiscovery !== false
-      if (discoveryEnabled && npm === "@ai-sdk/openai-compatible" && baseURL) {
-        const storedAuth = await Auth.get(providerID)
-        const apiKey =
-          storedAuth?.type === "api"
-            ? storedAuth.key
-            : (provider.options?.apiKey ?? provider.env?.map((name) => Env.get(name)).find(Boolean))
-        const discovery = await fetchOpenAICompatibleModels({
-          baseURL,
-          apiKey,
-          headers: provider.options?.headers,
-          timeout: 10_000,
-        })
-        if (discovery.ok && discovery.models.length > 0) {
-          configuredModels = Object.fromEntries(
-            discovery.models.map((model) => {
-              const discovered = {
-                name: model.name,
-                tool_call: model.tool_call,
-                reasoning: model.reasoning,
-                attachment: model.attachment,
-                temperature: model.temperature,
-                interleaved: model.interleaved,
-                limit: model.limit,
-                modalities: model.modalities,
-                cost: model.cost,
-                release_date: model.release_date,
-                options: {
-                  _modelDiscovery: true,
-                  ...(model.cost ? {} : { _billing: apiKey ? "subscription" : "unknown" }),
-                },
-              }
-              return [model.id, mergeDeep(discovered, provider.models?.[model.id] ?? {})]
-            }),
-          )
-          log.info("refreshed custom provider models", { providerID, count: discovery.models.length })
-        } else {
-          log.warn("failed to refresh custom provider models; retaining configured catalog", {
-            providerID,
-            error: discovery.error ?? "empty model list",
-          })
-        }
-      }
-      const parsed: Info = {
-        id: providerID,
-        name: provider.name ?? existing?.name ?? providerID,
-        env: provider.env ?? existing?.env ?? [],
-        options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
-        source: "config",
-        models: existing?.models ?? {},
-      }
-
-      for (const [modelID, model] of Object.entries(configuredModels)) {
-        const existingModel = parsed.models[model.id ?? modelID]
-        const name = iife(() => {
-          if (model.name) return model.name
-          if (model.id && model.id !== modelID) return modelID
-          return existingModel?.name ?? modelID
-        })
-        const parsedModel: Model = {
-          id: modelID,
-          api: {
-            id: model.id ?? existingModel?.api.id ?? modelID,
-            npm:
-              model.provider?.npm ??
-              provider.npm ??
-              existingModel?.api.npm ??
-              modelsDev[providerID]?.npm ??
-              "@ai-sdk/openai-compatible",
-            url: provider?.api ?? existingModel?.api.url ?? modelsDev[providerID]?.api,
-          },
-          status: model.status ?? existingModel?.status ?? "active",
-          name,
-          providerID,
-          capabilities: {
-            temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
-            reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
-            attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
-            toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
-            input: {
-              text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
-              audio: model.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
-              image: model.modalities?.input?.includes("image") ?? existingModel?.capabilities.input.image ?? false,
-              video: model.modalities?.input?.includes("video") ?? existingModel?.capabilities.input.video ?? false,
-              pdf: model.modalities?.input?.includes("pdf") ?? existingModel?.capabilities.input.pdf ?? false,
-            },
-            output: {
-              text: model.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? true,
-              audio: model.modalities?.output?.includes("audio") ?? existingModel?.capabilities.output.audio ?? false,
-              image: model.modalities?.output?.includes("image") ?? existingModel?.capabilities.output.image ?? false,
-              video: model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
-              pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
-            },
-            interleaved: model.interleaved ?? false,
-          },
-          cost: {
-            input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
-            output: model?.cost?.output ?? existingModel?.cost?.output ?? 0,
-            cache: {
-              read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
-              write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
-            },
-          },
-          options: {
-            ...(mergeDeep(existingModel?.options ?? {}, model.options ?? {}) as Record<string, any>),
-            // Zero-filled defaults are not proof that a configured model is
-            // actually free. Preserve catalog evidence, or require the user
-            // configuration to declare a cost explicitly.
-            _catalogCostKnown: model.cost !== undefined || existingModel?.options?._catalogCostKnown === true,
-          },
-          limit: {
-            context: model.limit?.context ?? existingModel?.limit?.context ?? 0,
-            output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
-          },
-          headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
-          family: model.family ?? existingModel?.family ?? "",
-          release_date: model.release_date ?? existingModel?.release_date ?? "",
-          variants: {},
-        }
-        const generated = _internals.configuredVariants(existingModel, parsedModel)
-        const merged = mergeDeep(generated, model.variants ?? {})
-        parsedModel.variants = mapValues(
-          pickBy(merged, (v) => !(v as any).disabled),
-          (v) => omit(v as any, ["disabled"]),
-        ) as any
-        parsed.models[modelID] = parsedModel
-      }
-      database[providerID] = parsed
-    }
+    await applyConfiguredProviders({
+      config,
+      database,
+      modelsDev,
+      configuredVariants: _internals.configuredVariants,
+    })
 
     if (database["atomcli"] && publicAtomCLIModelIDs && process.env.ATOMCLI_TEST_ALL_MODELS !== "1") {
       database["atomcli"].models = pickBy(database["atomcli"].models, (_model, id) => publicAtomCLIModelIDs.has(id))
     }
 
-    // load env
-    const env = Env.all()
-    for (const [providerID, provider] of Object.entries(database)) {
-      if (disabled.has(providerID)) continue
-      const apiKey = provider.env.map((item) => env[item]).find(Boolean)
-      if (!apiKey) continue
-      mergeProvider(providerID, {
-        source: "env",
-        key: provider.env.length === 1 ? apiKey : undefined,
-      })
-    }
-
-    // load apikeys
-    for (const [providerID, provider] of Object.entries(await Auth.all())) {
-      if (disabled.has(providerID)) continue
-      if (provider.type === "api") {
-        mergeProvider(providerID, {
-          source: "api",
-          key: provider.key,
-        })
-      }
-    }
+    await loadConfiguredAuth({ database, disabled, mergeProvider })
 
     for (const plugin of await Plugin.list()) {
       if (!plugin.auth) continue
@@ -1335,54 +391,13 @@ export namespace Provider {
       mergeProvider(providerID, partial)
     }
 
-    for (const [providerID, provider] of Object.entries(providers)) {
-      if (!isProviderAllowed(providerID)) {
-        delete providers[providerID]
-        continue
-      }
-
-      if (providerID === "github-copilot" || providerID === "github-copilot-enterprise") {
-        provider.models = mapValues(provider.models, (model) => ({
-          ...model,
-          api: {
-            ...model.api,
-            npm: "@ai-sdk/github-copilot",
-          },
-        }))
-      }
-
-      const configProvider = config.provider?.[providerID]
-
-      for (const [modelID, model] of Object.entries(provider.models)) {
-        model.api.id = model.api.id ?? model.id ?? modelID
-        if (modelID === "gpt-5-chat-latest" || (providerID === "openrouter" && modelID === "openai/gpt-5-chat"))
-          delete provider.models[modelID]
-        if (model.status === "alpha" && !Flag.ATOMCLI_ENABLE_EXPERIMENTAL_MODELS) delete provider.models[modelID]
-        if (model.status === "deprecated") delete provider.models[modelID]
-        if (
-          (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
-          (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
-        )
-          delete provider.models[modelID]
-
-        // Filter out disabled variants from config
-        const configVariants = configProvider?.models?.[modelID]?.variants
-        if (configVariants && model.variants) {
-          const merged = mergeDeep(model.variants, configVariants)
-          model.variants = mapValues(
-            pickBy(merged, (v) => !(v as any).disabled),
-            (v) => omit(v as any, ["disabled"]),
-          ) as any
-        }
-      }
-
-      if (Object.keys(provider.models).length === 0) {
-        delete providers[providerID]
-        continue
-      }
-
-      log.info("found", { providerID })
-    }
+    filterCatalog({
+      providers,
+      config,
+      disabled,
+      allowed: isProviderAllowed,
+      log: (message, data) => log.info(message, data),
+    })
 
     return {
       models: languages,
@@ -1910,136 +925,21 @@ export namespace Provider {
   }
 
   export async function getLanguage(model: Model): Promise<LanguageModelV2> {
-    const s = await state()
-    const key = `${model.providerID}/${model.id}`
-    if (s.models.has(key)) return s.models.get(key)!
-
-    const provider = s.providers[model.providerID]
-    const sdk = await getSDK(model)
-
-    try {
-      const language = s.modelLoaders[model.providerID]
-        ? await s.modelLoaders[model.providerID](sdk, model.api.id, provider.options)
-        : sdk.languageModel(model.api.id)
-      s.models.set(key, language)
-      return language
-    } catch (e) {
-      const NoSuchModelError = await getNoSuchModelError()
-      if (e instanceof NoSuchModelError)
-        throw new ModelNotFoundError(
-          {
-            modelID: model.id,
-            providerID: model.providerID,
-          },
-          { cause: e },
-        )
-      throw e
-    }
+    return ProviderSelection.language(model, { state, getSDK, modelNotFoundError: ModelNotFoundError })
   }
 
   export async function closest(providerID: string, query: string[]) {
-    const s = await state()
-    const provider = s.providers[providerID]
-    if (!provider) return undefined
-    for (const item of query) {
-      for (const modelID of Object.keys(provider.models)) {
-        if (modelID.includes(item))
-          return {
-            providerID,
-            modelID,
-          }
-      }
-    }
+    return ProviderSelection.closest(providerID, query, state)
   }
 
   export async function getSmallModel(providerID: string) {
-    const cfg = await Config.get()
-
-    if (cfg.small_model) {
-      const parsed = parseModel(cfg.small_model)
-      return getModel(parsed.providerID, parsed.modelID)
-    }
-
-    const provider = await state().then((state) => state.providers[providerID])
-    if (provider) {
-      let priority = [
-        "claude-haiku-4-5",
-        "claude-haiku-4.5",
-        "3-5-haiku",
-        "3.5-haiku",
-        "gemini-3-flash",
-        "gemini-2.5-flash",
-        "gpt-5-nano",
-      ]
-      if (providerID.startsWith("atomcli")) {
-        priority = ["gpt-5-nano"]
-      }
-      if (providerID.startsWith("github-copilot")) {
-        // prioritize free models for github copilot
-        priority = ["gpt-5-mini", "claude-haiku-4.5", ...priority]
-      }
-      for (const item of priority) {
-        for (const model of Object.keys(provider.models)) {
-          if (model.includes(item)) return getModel(providerID, model)
-        }
-      }
-    }
-
-    // Check if atomcli provider is available before using it
-    const atomcliProvider = await state().then((state) => state.providers["atomcli"])
-    if (atomcliProvider && atomcliProvider.models["gpt-5-nano"]) {
-      return getModel("atomcli", "gpt-5-nano")
-    }
-
-    return undefined
+    return ProviderSelection.smallModel(providerID, { state, getModel, parseModel })
   }
 
-  // Update priority list to strictly favor atomcli models
-  const priority = ["atomcli-auto", "atomcli/atomcli-auto", "atomcli/gpt-5-nano", "gpt-5-nano", "atomcli/big-pickle"]
-  export function sort(models: Model[]) {
-    return sortBy(
-      models,
-      [(model) => priority.findIndex((filter) => model.id.includes(filter)), "desc"],
-      [(model) => (model.id.includes("latest") ? 0 : 1), "asc"],
-      [(model) => model.id, "desc"],
-    )
-  }
+  export const sort = ProviderSelection.sort
 
   export async function defaultModel() {
-    const cfg = await Config.get()
-    if (cfg.model) {
-      const configured = parseModel(cfg.model)
-      const provider = await getProvider(configured.providerID).catch(() => undefined)
-      if (provider?.models[configured.modelID]) return configured
-      log.warn("configured default model is no longer available; selecting a current model", { model: cfg.model })
-    }
-
-    // Explicit check for atomcli provider first
-    const atomcli = await getProvider("atomcli").catch(() => undefined)
-
-    // Check for specific preferred models within atomcli
-    if (atomcli) {
-      if (atomcli.models["atomcli-auto"]) return { providerID: "atomcli", modelID: "atomcli-auto" }
-      if (atomcli.models["gpt-5-nano"]) return { providerID: "atomcli", modelID: "gpt-5-nano" }
-      if (atomcli.models["big-pickle"]) return { providerID: "atomcli", modelID: "big-pickle" }
-    }
-
-    // Fallback to sorting only if specific defaults aren't found, but ensure we are looking at atomcli provider if available
-    if (atomcli) {
-      const [model] = sort(Object.values(atomcli.models))
-      if (model) return { providerID: "atomcli", modelID: model.id }
-    }
-
-    const provider = await list()
-      .then((val) => Object.values(val))
-      .then((x) => x.find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id)))
-    if (!provider) throw new Error("no providers found")
-    const [model] = sort(Object.values(provider.models))
-    if (!model) throw new Error("no models found")
-    return {
-      providerID: provider.id,
-      modelID: model.id,
-    }
+    return ProviderSelection.defaultModel({ state, getProvider, getModel, parseModel, list })
   }
 
   export function parseModel(model: string) {

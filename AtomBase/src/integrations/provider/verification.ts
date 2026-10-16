@@ -117,9 +117,10 @@ export namespace ModelVerification {
   }
 
   async function readStore(): Promise<Store> {
-    const raw = await Bun.file(filepath)
-      .text()
-      .catch(() => "")
+    const raw = await fs.readFile(filepath, "utf8").catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""
+      throw error
+    })
     if (!raw.trim()) return emptyStore()
     let json: unknown
     try {
@@ -179,8 +180,8 @@ export namespace ModelVerification {
   }
 
   async function update(fn: (store: Store) => void) {
-    using processLock = await Lock.write(filepath)
-    await using lease = await acquireLease()
+    using _processLock = await Lock.write(filepath)
+    await using _lease = await acquireLease()
     const store = await readStore()
     fn(store)
     await writeStore(store)
@@ -305,7 +306,7 @@ export namespace ModelVerification {
       // The filesystem lease extends single-flight across AtomCLI processes.
       // It is identity-wide (rather than capability-wide) so concurrent text
       // and tool probes cannot race their generation counters.
-      await using probeLease = await acquireLease(`${filepath}.probe.${input.key}.lock`)
+      await using _probeLease = await acquireLease(`${filepath}.probe.${input.key}.lock`)
       existing = await get(input.key)
       if (!input.force && isVerified(existing, capability)) return existing!
       if (

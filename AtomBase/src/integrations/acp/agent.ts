@@ -17,7 +17,6 @@ import {
   type SetSessionModeRequest,
   type SetSessionModeResponse,
   type ToolCallContent,
-  type ToolKind,
 } from "@agentclientprotocol/sdk"
 import { Log } from "@/util/util/log"
 import { ACPSessionManager } from "./session"
@@ -33,7 +32,7 @@ import { z } from "zod"
 // Note: ai package is imported dynamically to avoid Bun ESM resolution issues
 import type { AtomcliClient, SessionMessageResponse } from "@atomcli/sdk/v2"
 import { getLoadAPIKeyError } from "@/util/util/ai-compat"
-import { applyPatch } from "diff"
+import { ACPHelpers } from "./helpers"
 
 export namespace ACP {
   const log = Log.create({ service: "acp-agent" })
@@ -82,8 +81,8 @@ export namespace ACP {
                       status: "pending",
                       title: permission.permission,
                       rawInput: permission.metadata,
-                      kind: toToolKind(permission.permission),
-                      locations: toLocations(permission.permission, permission.metadata),
+                      kind: ACPHelpers.toToolKind(permission.permission),
+                      locations: ACPHelpers.toLocations(permission.permission, permission.metadata),
                     },
                     options,
                   })
@@ -115,7 +114,7 @@ export namespace ACP {
                   const diff = typeof metadata["diff"] === "string" ? metadata["diff"] : ""
 
                   const content = await Bun.file(filepath).text()
-                  const newContent = getNewContent(content, diff)
+                  const newContent = ACPHelpers.getNewContent(content, diff)
 
                   if (newContent) {
                     this.connection.writeTextFile({
@@ -169,7 +168,7 @@ export namespace ACP {
                             sessionUpdate: "tool_call",
                             toolCallId: part.callID,
                             title: part.tool,
-                            kind: toToolKind(part.tool),
+                            kind: ACPHelpers.toToolKind(part.tool),
                             status: "pending",
                             locations: [],
                             rawInput: {},
@@ -187,9 +186,9 @@ export namespace ACP {
                             sessionUpdate: "tool_call_update",
                             toolCallId: part.callID,
                             status: "in_progress",
-                            kind: toToolKind(part.tool),
+                            kind: ACPHelpers.toToolKind(part.tool),
                             title: part.tool,
-                            locations: toLocations(part.tool, part.state.input),
+                            locations: ACPHelpers.toLocations(part.tool, part.state.input),
                             rawInput: part.state.input,
                           },
                         })
@@ -198,7 +197,7 @@ export namespace ACP {
                         })
                       break
                     case "completed":
-                      const kind = toToolKind(part.tool)
+                      const kind = ACPHelpers.toToolKind(part.tool)
                       const content: ToolCallContent[] = [
                         {
                           type: "content",
@@ -283,7 +282,7 @@ export namespace ACP {
                             sessionUpdate: "tool_call_update",
                             toolCallId: part.callID,
                             status: "failed",
-                            kind: toToolKind(part.tool),
+                            kind: ACPHelpers.toToolKind(part.tool),
                             title: part.tool,
                             rawInput: part.state.input,
                             content: [
@@ -408,7 +407,7 @@ export namespace ACP {
     async newSession(params: NewSessionRequest) {
       const directory = params.cwd
       try {
-        const model = await defaultModel(this.config, directory)
+        const model = await ACPHelpers.defaultModel(this.config, directory)
 
         // Store ACP session state
         const state = await this.sessionManager.create(params.cwd, params.mcpServers, model)
@@ -447,7 +446,7 @@ export namespace ACP {
       const sessionId = params.sessionId
 
       try {
-        const model = await defaultModel(this.config, directory)
+        const model = await ACPHelpers.defaultModel(this.config, directory)
 
         // Store ACP session state
         const state = await this.sessionManager.load(sessionId, params.cwd, params.mcpServers, model)
@@ -511,7 +510,7 @@ export namespace ACP {
                     sessionUpdate: "tool_call",
                     toolCallId: part.callID,
                     title: part.tool,
-                    kind: toToolKind(part.tool),
+                    kind: ACPHelpers.toToolKind(part.tool),
                     status: "pending",
                     locations: [],
                     rawInput: {},
@@ -529,9 +528,9 @@ export namespace ACP {
                     sessionUpdate: "tool_call_update",
                     toolCallId: part.callID,
                     status: "in_progress",
-                    kind: toToolKind(part.tool),
+                    kind: ACPHelpers.toToolKind(part.tool),
                     title: part.tool,
-                    locations: toLocations(part.tool, part.state.input),
+                    locations: ACPHelpers.toLocations(part.tool, part.state.input),
                     rawInput: part.state.input,
                   },
                 })
@@ -540,7 +539,7 @@ export namespace ACP {
                 })
               break
             case "completed":
-              const kind = toToolKind(part.tool)
+              const kind = ACPHelpers.toToolKind(part.tool)
               const content: ToolCallContent[] = [
                 {
                   type: "content",
@@ -625,7 +624,7 @@ export namespace ACP {
                     sessionUpdate: "tool_call_update",
                     toolCallId: part.callID,
                     status: "failed",
-                    kind: toToolKind(part.tool),
+                    kind: ACPHelpers.toToolKind(part.tool),
                     title: part.tool,
                     rawInput: part.state.input,
                     content: [
@@ -687,7 +686,7 @@ export namespace ACP {
 
     private async loadSessionMode(params: LoadSessionRequest) {
       const directory = params.cwd
-      const model = await defaultModel(this.config, directory)
+      const model = await ACPHelpers.defaultModel(this.config, directory)
       const sessionId = params.sessionId
 
       const providers = await this.sdk.config.providers({ directory }).then((x) => x.data!.providers)
@@ -842,7 +841,7 @@ export namespace ACP {
       const directory = session.cwd
 
       const current = session.model
-      const model = current ?? (await defaultModel(this.config, directory))
+      const model = current ?? (await ACPHelpers.defaultModel(this.config, directory))
       if (!current) {
         this.sessionManager.setModel(session.id, model)
       }
@@ -878,7 +877,7 @@ export namespace ACP {
             break
 
           case "resource_link":
-            const parsed = parseUri(part.uri)
+            const parsed = ACPHelpers.parseUri(part.uri)
             parts.push(parsed)
 
             break
@@ -900,18 +899,7 @@ export namespace ACP {
 
       log.info("parts", { parts })
 
-      const cmd = (() => {
-        const text = parts
-          .filter((p): p is { type: "text"; text: string } => p.type === "text")
-          .map((p) => p.text)
-          .join("")
-          .trim()
-
-        if (!text.startsWith("/")) return
-
-        const [name, ...rest] = text.slice(1).split(/\s+/)
-        return { name, args: rest.join(" ").trim() }
-      })()
+      const cmd = ACPHelpers.parseCommand(parts)
 
       if (!cmd) {
         const response = await this.sdk.session
@@ -979,7 +967,7 @@ export namespace ACP {
           return undefined
         })
       const execution = snapshot?.executions.find((item) => item.userMessageID === userMessageID)
-      return executionPromptResponse(execution)
+      return ACPHelpers.executionPromptResponse(execution)
     }
 
     async cancel(params: CancelNotification) {
@@ -996,200 +984,7 @@ export namespace ACP {
 
   const AUTH_METHOD_ID = "atomcli-login"
 
-  type TerminalExecution = {
-    id: string
-    lifecycle: "active" | "draining" | "terminal"
-    outcome: "completed" | "failed" | "cancelled" | "budget_exhausted" | "blocked" | null
-    reason?: { code: string; message: string; retryable: boolean }
-  }
-
-  function executionPromptResponse(execution?: TerminalExecution): PromptResponse {
-    if (!execution || execution.lifecycle !== "terminal" || execution.outcome === null) {
-      return { stopReason: "end_turn", _meta: {} }
-    }
-    const stopReason = (() => {
-      if (execution.outcome === "completed") return "end_turn" as const
-      if (execution.outcome === "cancelled") return "cancelled" as const
-      if (execution.outcome === "budget_exhausted") {
-        return execution.reason?.code === "call_limit" || execution.reason?.code === "step_limit"
-          ? ("max_turn_requests" as const)
-          : ("max_tokens" as const)
-      }
-      return "refusal" as const
-    })()
-    return {
-      stopReason,
-      _meta: {
-        executionID: execution.id,
-        executionOutcome: execution.outcome,
-        reasonCode: execution.reason?.code,
-        retryable: execution.reason?.retryable ?? false,
-      },
-    }
-  }
-
   export const _internals = {
-    executionPromptResponse,
-  }
-
-  function toToolKind(toolName: string): ToolKind {
-    const tool = toolName.toLocaleLowerCase()
-    switch (tool) {
-      case "bash":
-        return "execute"
-      case "webfetch":
-        return "fetch"
-
-      case "edit":
-      case "patch":
-      case "write":
-        return "edit"
-
-      case "grep":
-      case "glob":
-      case "context7_resolve_library_id":
-      case "context7_get_library_docs":
-        return "search"
-
-      case "list":
-      case "read":
-        return "read"
-
-      default:
-        return "other"
-    }
-  }
-
-  function toLocations(toolName: string, input: Record<string, any>): { path: string }[] {
-    const tool = toolName.toLocaleLowerCase()
-    switch (tool) {
-      case "read":
-      case "edit":
-      case "write":
-        return input["filePath"] ? [{ path: input["filePath"] }] : []
-      case "glob":
-      case "grep":
-        return input["path"] ? [{ path: input["path"] }] : []
-      case "bash":
-        return []
-      case "list":
-        return input["path"] ? [{ path: input["path"] }] : []
-      default:
-        return []
-    }
-  }
-
-  async function defaultModel(config: ACPConfig, cwd?: string) {
-    const sdk = config.sdk
-    const configured = config.defaultModel
-    if (configured) return configured
-
-    const directory = cwd ?? process.cwd()
-
-    const specified = await sdk.config
-      .get({ directory }, { throwOnError: true })
-      .then((resp) => {
-        const cfg = resp.data
-        if (!cfg || !cfg.model) return undefined
-        const parsed = Provider.parseModel(cfg.model)
-        return {
-          providerID: parsed.providerID,
-          modelID: parsed.modelID,
-        }
-      })
-      .catch((error) => {
-        log.error("failed to load user config for default model", { error })
-        return undefined
-      })
-
-    const providers = await sdk.config
-      .providers({ directory }, { throwOnError: true })
-      .then((x) => x.data?.providers ?? [])
-      .catch((error) => {
-        log.error("failed to list providers for default model", { error })
-        return []
-      })
-
-    if (specified && providers.length) {
-      const provider = providers.find((p) => p.id === specified.providerID)
-      if (provider && provider.models[specified.modelID]) return specified
-    }
-
-    if (specified && !providers.length) return specified
-
-    const atomcliProvider = providers.find((p) => p.id === "atomcli")
-    if (atomcliProvider) {
-      if (atomcliProvider.models["big-pickle"]) {
-        return { providerID: "atomcli", modelID: "big-pickle" }
-      }
-      const [best] = Provider.sort(Object.values(atomcliProvider.models))
-      if (best) {
-        return {
-          providerID: best.providerID,
-          modelID: best.id,
-        }
-      }
-    }
-
-    const models = providers.flatMap((p) => Object.values(p.models))
-    const [best] = Provider.sort(models as Provider.Model[])
-    if (best) {
-      return {
-        providerID: best.providerID,
-        modelID: best.id,
-      }
-    }
-
-    if (specified) return specified
-
-    return { providerID: "atomcli", modelID: "big-pickle" }
-  }
-
-  function parseUri(
-    uri: string,
-  ): { type: "file"; url: string; filename: string; mime: string } | { type: "text"; text: string } {
-    try {
-      if (uri.startsWith("file://")) {
-        const path = uri.slice(7)
-        const name = path.split("/").pop() || path
-        return {
-          type: "file",
-          url: uri,
-          filename: name,
-          mime: "text/plain",
-        }
-      }
-      if (uri.startsWith("zed://")) {
-        const url = new URL(uri)
-        const path = url.searchParams.get("path")
-        if (path) {
-          const name = path.split("/").pop() || path
-          return {
-            type: "file",
-            url: `file://${path}`,
-            filename: name,
-            mime: "text/plain",
-          }
-        }
-      }
-      return {
-        type: "text",
-        text: uri,
-      }
-    } catch {
-      return {
-        type: "text",
-        text: uri,
-      }
-    }
-  }
-
-  function getNewContent(fileOriginal: string, unifiedDiff: string): string | undefined {
-    const result = applyPatch(fileOriginal, unifiedDiff)
-    if (result === false) {
-      log.error("Failed to apply unified diff (context mismatch)")
-      return undefined
-    }
-    return result
+    executionPromptResponse: ACPHelpers.executionPromptResponse,
   }
 }

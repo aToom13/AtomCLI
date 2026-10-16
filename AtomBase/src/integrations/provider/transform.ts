@@ -747,7 +747,8 @@ export namespace ProviderTransform {
     npm: string,
     options: Record<string, any>,
     modelLimit: number,
-    globalLimit: number,
+    // ponytail: missing catalog limits use 32k; set model.limit.output for the provider ceiling.
+    globalLimit = modelLimit || 32_000,
   ): number {
     const modelCap = modelLimit || globalLimit
     const standardLimit = Math.min(modelCap, globalLimit)
@@ -762,7 +763,7 @@ export namespace ProviderTransform {
       const budgetTokens = typeof thinking?.["budgetTokens"] === "number" ? thinking["budgetTokens"] : 0
       const enabled = thinking?.["type"] === "enabled"
       if (enabled && budgetTokens > 0) {
-        // Return text tokens so that text + thinking <= model cap, preferring 32k text when possible.
+        // Return text tokens so that text + thinking <= model cap.
         if (budgetTokens + standardLimit <= modelCap) {
           return standardLimit
         }

@@ -39,6 +39,9 @@ export type StepStatus =
   | "complete" // ✅ Tamamlandı
   | "failed" // ❌ Başarısız
   | "retrying" // 🔁 Tekrar deniyor
+  | "stopped"
+  | "blocked"
+  | "waiting_user"
 
 /**
  * Chain status types
@@ -50,6 +53,8 @@ export type ChainStatus =
   | "waiting_user" // 👤 Kullanıcı bekleniyor
   | "complete" // ✅ Tamamlandı
   | "failed" // ❌ Başarısız
+  | "stopped"
+  | "blocked"
 
 /**
  * A sub-step within a parent step's sub-plan
@@ -118,6 +123,9 @@ export const StatusIcons: Record<StepStatus, string> = {
   complete: "✅",
   failed: "❌",
   retrying: "🔁",
+  stopped: "⏸",
+  blocked: "!",
+  waiting_user: "⏸",
 }
 
 export const ChainStatusIcons: Record<ChainStatus, string> = {
@@ -127,6 +135,8 @@ export const ChainStatusIcons: Record<ChainStatus, string> = {
   waiting_user: "👤",
   complete: "✅",
   failed: "❌",
+  stopped: "⏸",
+  blocked: "!",
 }
 
 const ACTIVE_STEP_STATUSES = new Set<StepStatus>([

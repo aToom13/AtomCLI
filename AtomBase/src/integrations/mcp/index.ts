@@ -335,7 +335,7 @@ export namespace MCP {
           },
           {
             onRedirect: async (url) => {
-              log.info("oauth redirect requested", { key, url: url.toString() })
+              log.info("oauth redirect requested", { key })
               // Store the URL - actual browser opening is handled by startAuth
             },
           },
@@ -840,11 +840,18 @@ export namespace MCP {
 
     // The SDK has already added the state parameter to the authorization URL
     // We just need to open the browser
-    log.info("opening browser for oauth", { mcpName, url: authorizationUrl, state: oauthState })
-    await open(authorizationUrl)
-
-    // Wait for callback using the OAuth state parameter
-    const code = await McpOAuthCallback.waitForCallback(oauthState)
+    log.info("opening browser for oauth", { mcpName })
+    // Register before opening the browser; a fast redirect can arrive immediately.
+    const callback = McpOAuthCallback.waitForCallback(oauthState)
+    let code: string
+    try {
+      await open(authorizationUrl)
+      code = await callback
+    } catch (error) {
+      McpOAuthCallback.cancelPending(oauthState)
+      await callback.catch(() => {})
+      throw error
+    }
 
     // Validate and clear the state
     const storedState = await McpAuth.getOAuthState(mcpName)
@@ -907,10 +914,10 @@ export namespace MCP {
    * Remove OAuth credentials for an MCP server.
    */
   export async function removeAuth(mcpName: string): Promise<void> {
+    const oauthState = await McpAuth.getOAuthState(mcpName)
+    if (oauthState) McpOAuthCallback.cancelPending(oauthState)
     await McpAuth.remove(mcpName)
-    McpOAuthCallback.cancelPending(mcpName)
     pendingOAuthTransports.delete(mcpName)
-    await McpAuth.clearOAuthState(mcpName)
     log.info("removed oauth credentials", { mcpName })
   }
 

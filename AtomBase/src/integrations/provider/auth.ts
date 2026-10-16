@@ -3,7 +3,7 @@ import { Plugin } from "../plugin"
 import { map, filter, pipe, fromEntries, mapValues } from "remeda"
 import z from "zod"
 import { fn } from "@/util/util/fn"
-import type { AuthOuathResult, Hooks } from "@atomcli/plugin"
+import type { AuthOuathResult } from "@atomcli/plugin"
 import { NamedError } from "@atomcli/util/error"
 import { Auth } from "@/services/auth"
 

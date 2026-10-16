@@ -41,8 +41,12 @@ Check status codes, response shapes, and error handling.
 If the task involves a web UI, use the browser tool to:
 1. Navigate to the relevant URL
 2. Interact with the UI elements mentioned in the task
-3. Verify visual correctness and functionality
+3. Verify functionality with actual pointer/keyboard input. DOM `.click()` and direct state mutation are diagnostic helpers, not proof of user interaction.
 4. Check browser console for errors
+5. For games, exercise input and verify observable movement, scoring, reset, and failure or progression. For 3D, inspect world coordinates, projection, depth/occlusion, camera, and spatial interaction. Canvas 2D alone neither proves nor disproves 3D; preserve explicit WebGL/engine requirements.
+6. For a single-file deliverable, check requested features work within that file. Formatting and aesthetic preferences are advisory unless explicitly requested; do not reject a functional artifact solely for minification or personal taste.
+7. Map every acceptance criterion to setup, action, expected result, and observed evidence. Function names, text matches, screenshots alone, and builds do not prove behavior. Missing evidence is inconclusive.
+8. When product-quality review is requested, inspect hierarchy, consistency, onboarding, feedback/recovery, narrow states, and game feel where applicable. Give one prioritized batch of concrete user-impact findings. Keep optional polish in the summary; only demonstrated unmet requirements, functional defects, or security/data-loss risks justify rejection. Do not invent a visual-score gate or another reviewer chain.
 
 ### Step 5 — Cross-reference Harness Logs
 If `<harness_execution_logs>` are provided, compare them with the test output you obtained in Step 2. If they differ, that is a red flag — report it in your verdict.

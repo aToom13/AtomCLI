@@ -39,7 +39,7 @@ const HTML_ERROR = (error: string) => `<!DOCTYPE html>
   <div class="container">
     <h1>Authorization Failed</h1>
     <p>An error occurred during authorization.</p>
-    <div class="error">${error}</div>
+    <div class="error">${error.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!)}</div>
   </div>
 </body>
 </html>`
@@ -61,11 +61,11 @@ export namespace McpOAuthCallback {
 
     const running = await isPortInUse()
     if (running) {
-      log.info("oauth callback server already running on another instance", { port: OAUTH_CALLBACK_PORT })
-      return
+      throw new Error(`OAuth callback port ${OAUTH_CALLBACK_PORT} is already in use`)
     }
 
     server = Bun.serve({
+      hostname: "127.0.0.1",
       port: OAUTH_CALLBACK_PORT,
       fetch(req) {
         const url = new URL(req.url)
@@ -79,12 +79,12 @@ export namespace McpOAuthCallback {
         const error = url.searchParams.get("error")
         const errorDescription = url.searchParams.get("error_description")
 
-        log.info("received oauth callback", { hasCode: !!code, state, error })
+        log.info("received oauth callback", { hasCode: !!code, hasState: !!state, error })
 
         // Enforce state parameter presence
         if (!state) {
           const errorMsg = "Missing required state parameter - potential CSRF attack"
-          log.error("oauth callback missing state parameter", { url: url.toString() })
+          log.error("oauth callback missing state parameter")
           return new Response(HTML_ERROR(errorMsg), {
             status: 400,
             headers: { "Content-Type": "text/html" },
@@ -114,7 +114,7 @@ export namespace McpOAuthCallback {
         // Validate state parameter
         if (!pendingAuths.has(state)) {
           const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
-          log.error("oauth callback with invalid state", { state, pendingStates: Array.from(pendingAuths.keys()) })
+          log.error("oauth callback with invalid state", { pendingCount: pendingAuths.size })
           return new Response(HTML_ERROR(errorMsg), {
             status: 400,
             headers: { "Content-Type": "text/html" },
@@ -149,11 +149,11 @@ export namespace McpOAuthCallback {
     })
   }
 
-  export function cancelPending(mcpName: string): void {
-    const pending = pendingAuths.get(mcpName)
+  export function cancelPending(oauthState: string): void {
+    const pending = pendingAuths.get(oauthState)
     if (pending) {
       clearTimeout(pending.timeout)
-      pendingAuths.delete(mcpName)
+      pendingAuths.delete(oauthState)
       pending.reject(new Error("Authorization cancelled"))
     }
   }
