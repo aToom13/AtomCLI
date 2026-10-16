@@ -32,9 +32,10 @@ export namespace SemanticProjectMap {
   }
 
   export function parse(filePath: string, content: string): Entry {
+    // ponytail: lexical symbol hints, not an AST; use LSP for precise definitions and references.
     const symbols = [
       ...content.matchAll(
-        /(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|enum|namespace|const)\s+([A-Za-z_$][\w$]*)/g,
+        /(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|enum|namespace|const|def|fn|fun|func(?:\s*\([^)\n]*\))?)\s+([A-Za-z_$][\w$]*)/g,
       ),
     ]
       .map((match) => match[1])

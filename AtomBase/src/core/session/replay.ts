@@ -99,6 +99,28 @@ export namespace SessionReplay {
     return { system: envelope.system, messages: envelope.messages, tools: envelope.tools, route: envelope.route }
   }
 
+  /**
+   * REPLAY-01: the replay invariant must cover the full request context, not
+   * only the message list. A recorded request whose system prompt, tool
+   * definitions, or route drifted from the sent request fails with the exact
+   * mismatched field names.
+   */
+  export async function assertModelInput(
+    sessionID: string,
+    requestID: string,
+    expected: Pick<Envelope, "system" | "messages" | "tools" | "route">,
+  ) {
+    const envelope = await get(sessionID, requestID)
+    const mismatches: string[] = []
+    if (JSON.stringify(envelope.system) !== JSON.stringify(expected.system)) mismatches.push("system")
+    if (JSON.stringify(envelope.messages) !== JSON.stringify(expected.messages)) mismatches.push("messages")
+    if (JSON.stringify(envelope.tools) !== JSON.stringify(expected.tools)) mismatches.push("tools")
+    if (JSON.stringify(envelope.route) !== JSON.stringify(expected.route)) mismatches.push("route")
+    if (mismatches.length > 0) {
+      throw new Error(`Request replay invariant failed for ${requestID}: ${mismatches.join(", ")}`)
+    }
+  }
+
   export async function append(event: Record<string, any> & { type: Event["type"]; sessionID: string }) {
     const value = Event.parse({ ...json(event), id: `event-${crypto.randomUUID()}`, timestamp: Date.now() })
     await Storage.write(["session_event", event.sessionID, value.id], value)

@@ -12,11 +12,12 @@ import { Plugin } from "@/integrations/plugin"
 import { Provider } from "@/integrations/provider/provider"
 import { LLM } from "./llm"
 import { Config } from "@/core/config/config"
-import { SessionCompaction } from "./compaction"
+import { CompactionPolicy } from "./compaction-policy"
 import { PermissionNext } from "@/util/permission/next"
 import { Question } from "@/interfaces/question"
 import { AmendmentQueue } from "./amendment"
 import { ModelFallback } from "@/integrations/provider/fallback"
+import { Cline } from "@/integrations/provider/cline"
 import { ModelAvailability } from "@/integrations/provider/availability"
 import { ModelVerification } from "@/integrations/provider/verification"
 import { Token } from "@/util/util/token"
@@ -36,6 +37,17 @@ export namespace SessionProcessor {
   const MAX_DEFERRED_TEXT_PARTS = 1_024
   const MAX_DEFERRED_PAYLOAD_BYTES = 2 * 1024 * 1024
   const log = Log.create({ service: "session.processor" })
+
+  export function fallbackCandidates(providerID: string, configured: string[], discovered: string[]): string[] {
+    return Array.from(
+      new Set([
+        ...(providerID === Cline.API_PROVIDER_ID ? [Cline.FREE_FALLBACK_MODEL] : []),
+        ...configured,
+        ...discovered,
+        ...ModelFallback.DEFAULT_FALLBACK_MODELS,
+      ]),
+    )
+  }
 
   async function recordModelEvidence(
     model: Provider.Model,
@@ -83,6 +95,7 @@ export namespace SessionProcessor {
     terminalError?: unknown
     /** Bounded private candidates captured only for structured checkpoint parsing. */
     checkpointReasoningCandidates?: string[]
+    checkpointReasoningParts?: MessageV2.ReasoningPart[]
   }
   export type Result = ProcessResult
 
@@ -151,6 +164,7 @@ export namespace SessionProcessor {
           let deferredPayloadBytes = 0
           let capturedReasoningChars = 0
           const checkpointReasoningCandidates: string[] = []
+          const checkpointReasoningParts: MessageV2.ReasoningPart[] = []
           let verificationParams: unknown
           // A stream that ends without text, tool calls, or errors produced
           // nothing showable. Surface it as an error instead of silently
@@ -158,6 +172,7 @@ export namespace SessionProcessor {
           let sawStreamContent = false
           try {
             let currentText: MessageV2.TextPart | undefined
+            let currentTextPublished = false
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
             const observedCapabilities = new Set<ModelVerification.Capability>()
 
@@ -181,16 +196,29 @@ export namespace SessionProcessor {
                       log.info("interrupt received", { sessionID: input.sessionID })
                       throw new Error("Stream interrupted by user")
                     } else {
-                      // Handle amendment - inject into context
+                      // Persist amendment as a user turn. The prompt loop picks it
+                      // up on its next step and binds it to the same execution. The
+                      // parent agent decides which task changed, then uses
+                      // task(action="revise") so unrelated work stays accepted.
                       log.info("amendment received", { sessionID: input.sessionID, amendmentID: amendment.id })
+                      const amendmentMessage = await Session.updateMessage({
+                        id: Identifier.ascending("message"),
+                        sessionID: input.sessionID,
+                        role: "user",
+                        agent: streamInput.user.agent,
+                        model: streamInput.user.model,
+                        system: streamInput.user.system,
+                        tools: streamInput.user.tools,
+                        variant: streamInput.user.variant,
+                        time: { created: Date.now() },
+                      })
                       await Session.updatePart({
                         id: Identifier.ascending("part"),
-                        messageID: input.assistantMessage.id,
+                        messageID: amendmentMessage.id,
                         sessionID: input.sessionID,
                         type: "text",
-                        text: `\n[Amendment: ${amendment.content}]\n`,
+                        text: amendment.content,
                         time: { start: Date.now(), end: Date.now() },
-                        metadata: { amendment: true },
                       })
                     }
                   }
@@ -250,8 +278,10 @@ export namespace SessionProcessor {
                         if (
                           part.text &&
                           checkpointReasoningCandidates.length < ExecutionCheckpoint.MAX_REASONING_CANDIDATES
-                        )
+                        ) {
                           checkpointReasoningCandidates.push(part.text)
+                          checkpointReasoningParts.push(part)
+                        }
                       } else await Session.updatePart(part)
                       delete reasoningMap[value.id]
                     }
@@ -532,7 +562,7 @@ export namespace SessionProcessor {
                     }
 
                     if (
-                      (await SessionCompaction.isOverflow({ tokens: usage.tokens, model: streamInput.model })) &&
+                      (await CompactionPolicy.isOverflow({ tokens: usage.tokens, model: streamInput.model })) &&
                       !(options?.deferText && terminalFinish)
                     ) {
                       needsCompaction = true
@@ -540,6 +570,7 @@ export namespace SessionProcessor {
                     break
 
                   case "text-start":
+                    currentTextPublished = false
                     currentText = {
                       id: Identifier.ascending("part"),
                       messageID: input.assistantMessage.id,
@@ -555,18 +586,19 @@ export namespace SessionProcessor {
 
                   case "text-delta":
                     if (currentText) {
-                      if (value.text) sawStreamContent = true
                       currentText.text += value.text
+                      if (currentText.text.trim()) sawStreamContent = true
                       deferredTextChars += value.text.length
                       if (options?.deferText && deferredTextChars > MAX_DEFERRED_TEXT_CHARS) {
                         throw new Error(`Deferred final response exceeds ${MAX_DEFERRED_TEXT_CHARS} characters`)
                       }
                       if (value.providerMetadata) currentText.metadata = value.providerMetadata
-                      if (currentText.text && !options?.deferText)
-                        await Session.updatePart({
-                          part: currentText,
-                          delta: value.text,
-                        })
+                      if (currentText.text.trim() && !options?.deferText) {
+                        await Session.updatePart(
+                          currentTextPublished ? { part: currentText, delta: value.text } : currentText,
+                        )
+                        currentTextPublished = true
+                      }
                     }
                     break
 
@@ -594,7 +626,15 @@ export namespace SessionProcessor {
                         end: Date.now(),
                       }
                       if (value.providerMetadata) currentText.metadata = value.providerMetadata
-                      if (options?.deferText) {
+                      if (!currentText.text.trim()) {
+                        if (currentTextPublished) {
+                          await Session.removePart({
+                            sessionID: input.sessionID,
+                            messageID: input.assistantMessage.id,
+                            partID: currentText.id,
+                          })
+                        }
+                      } else if (options?.deferText) {
                         if (deferredTextParts.length + 1 > MAX_DEFERRED_TEXT_PARTS) {
                           throw new Error(`Deferred final response exceeds ${MAX_DEFERRED_TEXT_PARTS} text parts`)
                         }
@@ -631,6 +671,7 @@ export namespace SessionProcessor {
                     checkpointReasoningCandidates.length < ExecutionCheckpoint.MAX_REASONING_CANDIDATES
                   ) {
                     checkpointReasoningCandidates.push(candidate)
+                    checkpointReasoningParts.push({ ...part, text: candidate })
                   }
                 }
                 reasoningMap = {}
@@ -706,8 +747,10 @@ export namespace SessionProcessor {
                       Boolean,
                     ) as string[]
 
-                    const fallbackModels = Array.from(
-                      new Set([...configuredModels, ...dynamicDefaults, ...ModelFallback.DEFAULT_FALLBACK_MODELS]),
+                    const fallbackModels = SessionProcessor.fallbackCandidates(
+                      streamInput.model.providerID,
+                      configuredModels,
+                      dynamicDefaults,
                     )
 
                     // Check if fallback is enabled
@@ -880,6 +923,7 @@ export namespace SessionProcessor {
               fallbackModel: currentFallbackModel,
               deferredTextParts,
               checkpointReasoningCandidates,
+              checkpointReasoningParts,
               terminalError,
               terminalFinish: terminalFinishReason,
             }
@@ -889,6 +933,7 @@ export namespace SessionProcessor {
               fallbackModel: currentFallbackModel,
               deferredTextParts,
               checkpointReasoningCandidates,
+              checkpointReasoningParts,
               terminalError,
               terminalFinish: terminalFinishReason,
             }
@@ -898,6 +943,7 @@ export namespace SessionProcessor {
               fallbackModel: currentFallbackModel,
               deferredTextParts,
               checkpointReasoningCandidates,
+              checkpointReasoningParts,
               terminalError,
               terminalFinish: terminalFinishReason,
             }
@@ -906,6 +952,7 @@ export namespace SessionProcessor {
             fallbackModel: currentFallbackModel,
             deferredTextParts,
             checkpointReasoningCandidates,
+            checkpointReasoningParts,
             terminalError,
             terminalFinish: terminalFinishReason,
           }

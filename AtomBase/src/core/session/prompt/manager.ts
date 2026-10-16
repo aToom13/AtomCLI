@@ -42,7 +42,6 @@ import { buildMemorySummary } from "@/integrations/tool/memory"
 
 // ─── Types ───────────────────────────────────────────────────
 
-type ProviderType = "anthropic" | "gemini" | "openai" | "generic"
 export type AgentType = "agent" | "explore" | "plan" | "build" | "checker" | "reviewer"
 
 export interface BuildOptions {
@@ -95,12 +94,6 @@ const CORE_PROMPTS = [
   PROMPT_GIT_SAFETY,
   PROMPT_EXTENSIONS,
 ]
-
-// ─── Read-Before-Edit Emphasis ───────────────────────────────
-
-const READ_BEFORE_EDIT_EMPHASIS = `<critical_rule>
-You MUST read() a file BEFORE you can edit() it. The edit tool WILL FAIL otherwise. Always verify your oldString EXACTLY matches current content.
-</critical_rule>`.trim()
 
 // ─── Dynamic Context Generator ──────────────────────────────
 
@@ -222,14 +215,12 @@ function getCorePromptsForAgent(
  * Uses .txt file imports + inline emphasis sections.
  */
 function build(options: BuildOptions): string {
-  const { modelId, agent = "agent", scope, risk, customSections = [] } = options
+  const { modelId: _modelId, agent = "agent", scope, risk, customSections = [] } = options
   const coreSections = getCorePromptsForAgent(agent, scope, risk)
 
   const sections: string[] = [
     // Core prompts conditionally selected for agent
     ...coreSections,
-    // Critical emphasis: read-before-edit (only if editing prompt included)
-    ...(coreSections.includes(PROMPT_CODE_EDITING) ? [READ_BEFORE_EDIT_EMPHASIS] : []),
     // Agent-specific behavior
     AGENT_PROMPTS[agent as AgentType],
     // Custom sections
@@ -245,7 +236,7 @@ function build(options: BuildOptions): string {
  */
 async function buildAsync(options: BuildOptions): Promise<string> {
   const {
-    modelId,
+    modelId: _modelId,
     agent = "agent",
     scope,
     risk,
@@ -267,8 +258,6 @@ async function buildAsync(options: BuildOptions): Promise<string> {
     ...coreSections,
     // Dynamic context (user profile + learning memory)
     ...(dynamicCtx ? [dynamicCtx] : []),
-    // Critical emphasis: read-before-edit (only if editing prompt included)
-    ...(coreSections.includes(PROMPT_CODE_EDITING) ? [READ_BEFORE_EDIT_EMPHASIS] : []),
     // Agent-specific behavior
     AGENT_PROMPTS[agent as AgentType],
     // Custom sections
@@ -319,13 +308,6 @@ function getStats(options: BuildOptions): {
     tokens: estimateTokens(text),
     chars: text.length,
   }))
-  if (selected.includes(PROMPT_CODE_EDITING)) {
-    sections.push({
-      name: "read-before-edit",
-      tokens: estimateTokens(READ_BEFORE_EDIT_EMPHASIS),
-      chars: READ_BEFORE_EDIT_EMPHASIS.length,
-    })
-  }
   sections.push({
     name: `agent:${agent}`,
     tokens: estimateTokens(AGENT_PROMPTS[agent]),

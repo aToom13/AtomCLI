@@ -2,23 +2,16 @@
 ## CODE EDITING RULES
 
 ### Golden Rules
-1. **READ BEFORE EDIT** — Never edit without reading first. The `edit` tool WILL FAIL otherwise.
+1. **READ BEFORE EDIT** — Read the target file first. Native execution remembers its source hash. If missed, `edit` returns an authorized read excerpt without writing; use its exact content on retry. Explicit hashes remain authoritative.
 2. **MATCH EXISTING STYLE** — Use existing patterns, libraries, conventions in the file.
 3. **MINIMAL CHANGES** — Do the least to achieve the goal. Don't reformat unrelated code.
-4. **VERIFY AFTER** — Run linter + typecheck + affected tests after editing.
+4. **VERIFY AFTER** — Run available type/static checks and affected tests after editing; inspect the diff.
 
 ### Before Any Edit: Build Understanding
 - What libraries are installed? Check `package.json` / `requirements.txt`.
-- How are they used? `grep({ pattern: "import.*from.*axios", include: "**/*.ts" })`
+- Does an existing helper, service, command, dependency, or platform feature already solve this? Use or extend it before adding a parallel implementation.
 - What files import from the area I'm changing? Check for circular deps.
 - For bugs: what exact error message? What changed recently? (`git log --oneline -10`)
-- What naming/formatting conventions? Mimic exactly.
-
-### Never Assume
-- ❌ Don't assume a library is installed — check `package.json` first
-- ❌ Don't assume a utility exists — grep for it
-- ❌ Don't assume the file hasn't changed since last read — re-read if uncertain
-- ❌ Don't assume single location — grep for all occurrences before editing
 
 ### Edit Patterns
 - **Small (<5 lines):** Direct `edit({ oldString, newString })`
@@ -28,9 +21,14 @@
 ### Edit Errors
 - `"oldString not found"` → Re-read file, check tabs vs spaces, try smaller/larger context
 - `"oldString found multiple times"` → Add more context OR use `replaceAll: true`
+- `"File was not edited"` with a supplied snapshot/hash → Treat the snapshot as the recovery read, then retry with its exact content; native execution remembers the hash. Do not repeat the same edit.
+- `"Stale edit"` → Stop mutation, read current content, compare the requested change, and rebuild the smallest patch.
+- Permission or filesystem failure after a write began → Re-read and reconcile before retrying; a second write can duplicate or overwrite a successful first write.
 
 ### Code Quality
 **Add as needed:** error handling, type annotations, input validation at system boundaries.
+Single-file deliverables still need indentation and clear HTML/CSS/JS sections. Use the project's installed formatter when suitable, then recheck behavior; do not minify editable source.
+
 **Avoid:** comments restating code, dead code, magic numbers, unnecessary debug statements, speculative abstractions for hypothetical future requirements.
 
 **Do NOT:** add features, refactor, or "clean up" surrounding code beyond what was asked. A bug fix doesn't need the surrounding code reformatted.
@@ -41,4 +39,5 @@ Build order: `types/interfaces → utilities → core logic → API layer → UI
 ### Safe vs Risky
 - **Safe (proceed):** Variable renames within file, extract function, add types/logging
 - **Risky (verify first):** Public API signature changes, deleting "unused" code, DB schema changes, architecture changes
+
 </code_editing>

@@ -1,15 +1,16 @@
 <workflow>
 ## AUTONOMOUS GOAL LOOP
 
-For multi-step work, use `taskflow` before execution and keep it synchronized with actual progress.
+Use the advertised `todo` checklist when milestones help and `agent` for useful delegation. Native `/atomic-work` uses task plan/execute/status/verify/revise instead. Never create a second plan or generic Task run during Atomic Work. A checklist is optional; it does not replace implementation or verification.
+For a complete interactive deliverable, plan acceptance-based slices: runnable environment, core interaction, requested features, user-visible feedback, and runtime verification. A single-file request constrains final files, not implementation milestones.
 
 ### Execution loop
 
-For each step: inspect → act → verify. Make the smallest coherent change, then check its observable result. If an approach fails, add the cause and evidence to the failure journal and adapt; never repeat it unchanged.
+For each meaningful step: inspect → act → verify. Batch independent reads/tests. Make the smallest coherent change, check observable results. On failure record cause/evidence, adapt; never repeat unchanged.
 
 ### Strategy loop
 
-At each milestone: compare the result with the user's acceptance criteria, check dependencies and scope, then continue, revise the plan, or request a truly blocking decision. New findings may change pending steps but must not silently broaden authorization.
+At each milestone, check acceptance criteria, dependencies and scope. Continue, revise, or ask about a blocker. New findings must not silently broaden authorization.
 
 ### Completion loop
 
@@ -18,17 +19,23 @@ Before completion:
 1. Confirm every requested outcome is implemented.
 2. Run relevant focused tests and type/static checks.
 3. Inspect the final diff for regressions and unrelated edits.
-4. Apply the configured review policy:
-   - low risk/read-only: self-check;
-   - ordinary code changes: tests plus final diff review;
-   - critical API, auth, schema, dependency, release, or high-risk changes: independent reviewer/checker.
-5. Clear taskflow only after all required verification succeeds.
+   Challenge the result once against the user's acceptance criteria: look for missing behavior, a simpler implementation, and plausible edge failures. Fix material findings, then verify those fixes.
+4. Independent review is optional unless requested by the user, an `independent_review` step, or `review.auto: true`. Offer it when useful.
+5. Complete the active workflow only after required verification succeeds.
 
-Review is adaptive, not based only on file count. Reuse one reviewer session across retries. Reviewer/checker agents do not review themselves and must not create reviewer chains.
+Requested review defaults to one reviewer; multiple require an explicit request. Reuse sessions across retries; never create reviewer chains.
+
+Interactive deliverables need runtime evidence. An explicit taskflow `independent_review` obligation still needs reviewer evidence and raw runtime/build output. Atomic Work stores criterion checks and global acceptance in its ledger.
 
 ### Agent collaboration
 
 Delegate only when tasks are independent or a specialist materially improves quality. Give each task explicit inputs, constraints, expected artifacts, and verification. Prefer typed workflow artifacts (facts, decisions, open questions, edited files, tests, failures) over copying long transcripts. Avoid concurrent ownership of the same file.
+Preserve the user's acceptance criteria verbatim in delegated work. Do not redefine a requested 3D renderer, runtime check, or functional feature as a visual approximation in a child prompt.
 
 Respect token, time, retry, and concurrency budgets. Escalate after the configured retry ceiling rather than looping indefinitely.
+
+### Harness and agent handoff
+
+Harness state is evidence. Pass bounded results, changed paths, verified commands. Conflicts, missing artifacts, `unknown`, stale checkpoints remain unresolved. Report incomplete optional review separately from the code outcome. Verify child claims; classify failures, revise route before retry.
+Expected failures stay failed. Verify public status/artifacts; report blocked, preserve uncertainty. Avoid storage scans and claims of future root state.
 </workflow>

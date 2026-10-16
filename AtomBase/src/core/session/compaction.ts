@@ -6,25 +6,99 @@ import { Instance } from "@/services/project/instance"
 import { Provider } from "@/integrations/provider/provider"
 import { MessageV2 } from "./message-v2"
 import z from "zod"
-import { LLM } from "./llm"
 import { Token } from "@/util/util/token"
 import { Log } from "@/util/util/log"
 import { SessionProcessor } from "./processor"
 import { fn } from "@/util/util/fn"
 import { Agent } from "@/integrations/agent/agent"
+import { Skill } from "@/integrations/skill"
 import { Plugin } from "@/integrations/plugin"
 import { Config } from "@/core/config/config"
 import { Storage } from "@/core/storage/storage"
 import { CompactionTransaction } from "./compaction-transaction"
+import { CompactionPolicy } from "./compaction-policy"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
 
-  function isAcceptableSummary(input: { sourceTokens: number; summaryTokens: number; summaryText: string }) {
-    return input.summaryText.trim().length > 0 && (input.sourceTokens === 0 || input.summaryTokens < input.sourceTokens)
+  // Required structural sections for a compaction summary. A summary is
+  // considered structured when at least SUMMARY_MIN_SECTIONS of these appear
+  // as headings (case-insensitive, optional markdown heading/bold decoration).
+  export const SUMMARY_SECTIONS = ["completed work", "remaining work", "files", "verification", "blockers"] as const
+  export const SUMMARY_MIN_SECTIONS = 3
+  // Prose fallback: models that answer in narrative form instead of the
+  // requested sections are still accepted when the summary carries a
+  // non-trivial amount of content. Short one-liner junk is rejected.
+  export const SUMMARY_MIN_PROSE_LENGTH = 200
+
+  function countSummarySections(summaryText: string) {
+    let count = 0
+    for (const section of SUMMARY_SECTIONS) {
+      const heading = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?${section}\\b`, "im")
+      if (heading.test(summaryText)) count++
+    }
+    return count
   }
 
-  export const _internals = { isAcceptableSummary }
+  function isAcceptableSummary(input: { sourceTokens: number; summaryTokens: number; summaryText: string }) {
+    const text = input.summaryText.trim()
+    if (text.length === 0) return false
+    if (input.sourceTokens !== 0 && input.summaryTokens >= input.sourceTokens) return false
+    if (countSummarySections(text) >= SUMMARY_MIN_SECTIONS) return true
+    return text.length >= SUMMARY_MIN_PROSE_LENGTH
+  }
+
+  function skillManifest(messages: MessageV2.WithParts[]) {
+    const entries = new Set<string>()
+    for (const message of messages)
+      for (const part of message.parts) {
+        if (part.type === "text" && typeof part.metadata?.skillManifest === "string") {
+          for (const line of part.metadata.skillManifest.split("\n")) if (line) entries.add(line)
+        }
+        if (
+          part.type !== "tool" ||
+          part.tool !== "skill" ||
+          part.state.status !== "completed" ||
+          part.state.metadata.truncated
+        )
+          continue
+        const info = part.state.metadata
+        if (!info.location || typeof info.offset !== "number") continue
+        entries.add(`Skill: ${info.name}; source: ${info.location}`)
+        entries.add(
+          `Loaded ${info.reference}: characters ${info.offset}–${info.offset + info.length} of ${info.totalChars}`,
+        )
+        if (info.offset + info.length < info.totalChars)
+          entries.add(`- ${info.reference}, offset=${info.offset + info.length}: partial in this result`)
+        for (const item of info.loadedReferences ?? [])
+          entries.add(
+            `Loaded ${item.name}: characters ${item.offset}–${item.offset + item.length} of ${item.totalChars}`,
+          )
+        for (const item of info.remainingReferences ?? [])
+          entries.add(`- ${item.name}, offset=${item.offset}: ${item.reason}`)
+      }
+    const manifest = [...entries].join("\n")
+    if (manifest.length <= 12_000) return manifest
+    // ponytail: retain newest 12 KB of loading history; recover omitted ranges from durable skill tool results.
+    return (
+      manifest.slice(-12_000).replace(/^[^\n]*\n/, "") +
+      "\nLoading history shortened; consult durable skill results for omitted ranges."
+    )
+  }
+
+  function skillReads(messages: MessageV2.WithParts[]) {
+    const retained: Skill.LoadedChunk[] = []
+    let budget = 12_000
+    for (const record of Skill.loadedChunks(messages).reverse()) {
+      const length = JSON.stringify(record).length
+      if (length > budget) break
+      retained.push(record)
+      budget -= length
+    }
+    return retained.reverse()
+  }
+
+  export const _internals = { isAcceptableSummary, countSummarySections, skillManifest, skillReads }
 
   export const Event = {
     Compacted: BusEvent.define(
@@ -35,16 +109,7 @@ export namespace SessionCompaction {
     ),
   }
 
-  export async function isOverflow(input: { tokens: MessageV2.Assistant["tokens"]; model: Provider.Model }) {
-    const config = await Config.get()
-    if (config.compaction?.auto === false) return false
-    const context = input.model.limit.context
-    if (context === 0) return false
-    const count = input.tokens.input + input.tokens.cache.read + input.tokens.output
-    const output = Math.min(input.model.limit.output, LLM.OUTPUT_TOKEN_MAX) || LLM.OUTPUT_TOKEN_MAX
-    const usable = context - output
-    return count > usable
-  }
+  export const isOverflow = CompactionPolicy.isOverflow
 
   export const PRUNE_MINIMUM = 8_000
   export const PRUNE_PROTECT = 16_000
@@ -178,8 +243,26 @@ export namespace SessionCompaction {
       { sessionID: input.sessionID },
       { context: [], prompt: undefined },
     )
-    const defaultPrompt =
-      "Provide a detailed prompt for continuing our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next considering new session will not have access to our conversation."
+    const defaultPrompt = [
+      "Provide a detailed prompt for continuing our conversation above. The new session will not have access to our conversation, so the summary must be structured with exactly these sections:",
+      "",
+      "## Completed work",
+      "What we did and what is already finished.",
+      "",
+      "## Remaining work",
+      "What we're doing and what we're going to do next.",
+      "Preserve the root objective, exact acceptance criteria, user constraints, and unresolved work; never narrow them to finished work.",
+      "",
+      "## Files",
+      "Which files we're working on and how they relate to the work.",
+      "",
+      "## Verification",
+      "How completed work was verified (tests run, commands, results).",
+      "Distinguish structural checks from observed behavior. Preserve latest checkpoint decision and trigger reason.",
+      "",
+      "## Blockers",
+      'Open issues, risks, or anything blocking progress (write "none" if there are none).',
+    ].join("\n")
     const promptText = compacting.prompt ?? [defaultPrompt, ...compacting.context].join("\n\n")
     const result = await processor.process({
       user: userMessage,
@@ -209,14 +292,34 @@ export namespace SessionCompaction {
     }
 
     const summaryParts = await MessageV2.parts(msg.id)
-    const summaryText = summaryParts
+    const retainedSkills = skillManifest(input.messages)
+    const retainedReads = skillReads(input.messages)
+    const shortenedReads = Skill.loadedChunks(input.messages).length > retainedReads.length
+    const retainedText =
+      retainedSkills || retainedReads.length
+        ? `\n## Skill loading history\nRanges describe individual loads, not proof that a full tree was read. Earlier pending offsets may be satisfied by later loads. Re-read required instructions if their bodies are absent.\n${retainedSkills}${shortenedReads ? "\nRead records shortened; consult durable skill results for omitted ranges." : ""}`
+        : ""
+    const modelSummary = summaryParts
       .map((part) => {
         if (part.type === "text") return part.text
         return ""
       })
       .join("\n")
+    const summaryText = modelSummary + retainedText
     const summaryTokens = Token.estimate(summaryText)
-    const accepted = isAcceptableSummary({ sourceTokens, summaryTokens, summaryText })
+    const accepted =
+      isAcceptableSummary({ sourceTokens, summaryTokens: Token.estimate(modelSummary), summaryText: modelSummary }) &&
+      (sourceTokens === 0 || summaryTokens < sourceTokens)
+    if (accepted && retainedText)
+      await Session.updatePart({
+        id: Identifier.ascending("part"),
+        messageID: msg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        synthetic: true,
+        text: retainedText,
+        metadata: { skillManifest: retainedSkills, skillReads: retainedReads },
+      })
     await CompactionTransaction.finish(transaction, summaryTokens, accepted)
     log.info("compaction metrics", {
       sessionID: input.sessionID,
@@ -230,7 +333,7 @@ export namespace SessionCompaction {
       for (const key of await Storage.list(["part", msg.id])) await Storage.remove(key)
       await Storage.remove(["message", input.sessionID, msg.id])
       if ((input.retry ?? 0) < 1) return process({ ...input, retry: (input.retry ?? 0) + 1 })
-      throw new Error("Compaction summary was not smaller than the context after retry")
+      throw new Error("Compaction summary failed the quality gate after retry")
     }
 
     if (result.status === "continue" && input.auto) {

@@ -238,6 +238,14 @@ export class SessionMemoryIntegration {
         return
       }
 
+      // Response analysis only has value when the user turn explicitly carries
+      // durable-memory intent. Ordinary coding turns must not spend another
+      // provider request or learn facts from assistant wording.
+      if (!this.hasExplicitMemorySignal(userMessage)) {
+        log.debug("Skipping response analysis without an explicit memory signal")
+        return
+      }
+
       // Analyze what the assistant confirmed
       const analysis = await SemanticLearningService.analyzeAssistantResponse(response, userMessage, model, sessionID)
 
@@ -266,15 +274,16 @@ export class SessionMemoryIntegration {
     userMessage: string,
     assistantResponse: string,
     model?: { providerID: string; modelID: string },
+    sessionID?: string,
   ): Promise<void> {
     try {
       await this.initialize()
 
       // Learn from user message
-      await this.learnFromMessage(userMessage, model)
+      await this.learnFromMessage(userMessage, model, sessionID)
 
       // Learn from assistant response
-      await this.learnFromResponse(assistantResponse, userMessage, model)
+      await this.learnFromResponse(assistantResponse, userMessage, model, sessionID)
 
       // Increment interaction count
       await this.userProfile.incrementInteractions()

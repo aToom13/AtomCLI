@@ -4,7 +4,6 @@ import { Filesystem } from "@/util/util/filesystem"
 import { Config } from "../config/config"
 import { Skill } from "@/integrations/skill/skill"
 import { MCP } from "@/integrations/mcp"
-import { ConfigMarkdown } from "../config/markdown"
 
 import { Instance } from "@/services/project/instance"
 import path from "path"
@@ -17,6 +16,9 @@ import { PromptManager } from "./prompt/manager"
 
 import type { Provider } from "@/integrations/provider/provider"
 import { Flag } from "@/interfaces/flag/flag"
+import { ConfigMarkdown } from "@/core/config/markdown"
+import { PermissionNext } from "@/util/permission/next"
+import type { ExecutionContract } from "@/core/routing/execution-contract"
 
 // Memory integration
 import memorySystem from "../memory"
@@ -57,7 +59,11 @@ export namespace SystemPrompt {
     return [prompt]
   }
 
-  export async function environment(query = "", availableMcpNames?: Iterable<string>): Promise<string[]> {
+  export async function environment(
+    query = "",
+    availableMcpNames?: Iterable<string>,
+    includeUserMemory = true,
+  ): Promise<string[]> {
     const project = Instance.project
     const now = new Date()
     const year = now.getFullYear()
@@ -117,7 +123,7 @@ export namespace SystemPrompt {
     ].join("\n")
 
     // Get user context from memory
-    const userContext = await SessionMemoryIntegration.getUserContext()
+    const userContext = includeUserMemory ? await SessionMemoryIntegration.getUserContext() : ""
     const userContextBlock = userContext ? `\n\n## 🧠 User Memory\n\n${userContext}` : ""
 
     // MCP servers initialize in the background and may legitimately take tens of
@@ -126,7 +132,10 @@ export namespace SystemPrompt {
     // own bounded wait and later turns will see the connected servers.
     const skills = await Skill.state()
     const skillList = Object.values(skills)
-      .map((s) => `  - ${s.name}: ${s.description}`)
+      .map(
+        (s) =>
+          `  - ${s.name}: ${s.description} (source: ${s.location}${s.alternatives?.length ? `; shadowed: ${s.alternatives.join(", ")}` : ""})`,
+      )
       .join("\n")
     let connectedMcps: string[]
     if (availableMcpNames) {
@@ -284,27 +293,90 @@ This helps you think through problems systematically before acting.
    * trigger_words = surfacing mechanism (bring to attention)
    * skill(action="load") = the model's own decision after understanding the task
    */
-  export async function autoInjectSkills(userText: string): Promise<string> {
+  export async function autoInjectSkills(
+    userText: string,
+    permission?: PermissionNext.Ruleset,
+    onRead?: (record: Skill.LoadedChunk) => void,
+    contract?: ExecutionContract.Info,
+  ): Promise<string> {
     if (!userText.trim()) return ""
-
     let candidates: Skill.Info[]
+    let explicit: Awaited<ReturnType<typeof Skill.explicitRequests>>
     try {
-      candidates = await Skill.findAutoInjectCandidates(userText)
-    } catch {
-      return ""
+      ;[candidates, explicit] = await Promise.all([
+        Skill.findAutoInjectCandidates(userText),
+        Skill.explicitRequests(userText),
+      ])
+    } catch (error) {
+      return `<skill_resolution_error>${error instanceof Error ? error.message : String(error)}</skill_resolution_error>`
     }
-
-    if (candidates.length === 0) return ""
-
-    const top = candidates.slice(0, 3)
-
-    const hints = top.map((skill) => `  - **${skill.name}**: ${skill.description}`).join("\n")
-
+    const explicitReferences = Skill.requestsReferences(userText)
+    let selected = explicit.skills.length
+      ? explicit.skills
+      : explicitReferences && candidates.length === 1
+        ? candidates
+        : []
+    selected = await Skill.resolveDependencies([...selected, ...(await Skill.taskSkills(contract))], userText)
+    const top = candidates.filter((skill) => !selected.includes(skill)).slice(0, 3)
+    if (!selected.length && !top.length && !explicit.unresolved.length) return ""
+    const blocks: string[] = []
+    const remaining: string[] = []
+    let budget = 48_000
+    for (const skill of selected) {
+      if (permission && PermissionNext.evaluate("skill", skill.name, permission).action !== "allow") {
+        remaining.push(`${skill.name}: permission required; use the skill tool`)
+        continue
+      }
+      blocks.push(
+        `Skill: ${skill.name}; source: ${skill.location}${skill.alternatives?.length ? `; shadowed definitions: ${skill.alternatives.join(", ")}` : ""}`,
+      )
+      try {
+        const content = (await ConfigMarkdown.parse(skill.location)).content.trim()
+        const root = Skill.chunk(content, 0, Math.min(12_000, budget))
+        onRead?.(Skill.loadedChunk(skill.name, skill.location, content, 0, root.length))
+        blocks.push(`Loaded parent ${skill.name}: characters 0–${root.length} of ${content.length}\n${root}`)
+        if (!explicit.references.has(skill.name) && !explicitReferences && (await Skill.referenceCatalog(skill)).length)
+          remaining.push(
+            `${skill.name}: select references from the parent instructions using the skill tool's references and reason; keyword suggestions do not complete routing`,
+          )
+        budget -= root.length
+        if (root.length < content.length)
+          remaining.push(`${skill.name}, offset=${root.length}: parent partially loaded`)
+        const references = await Skill.loadReferences({
+          skill,
+          prompt: userText,
+          names: explicit.references.get(skill.name) ?? (explicitReferences ? undefined : []),
+          maxChars: Math.min(12_000, budget),
+          relevantOnly: !explicitReferences,
+          permission,
+        })
+        blocks.push(...references.entries)
+        for (const record of references.loaded) onRead?.(record)
+        budget -= references.loaded.reduce((total, file) => total + file.length, 0)
+        remaining.push(...references.remaining.map((file) => `${file.name}, offset=${file.offset}: ${file.reason}`))
+      } catch (error) {
+        remaining.push(`${skill.name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const hints = top
+      .map((skill) => `  - **${skill.name}**: ${skill.description} (source: ${skill.location})`)
+      .join("\n")
     return [
       `<skill_suggestion>`,
-      `<!-- A skill may be relevant to this task. Read the description and decide if you should load it with skill(action="load", name="...") before starting. -->`,
-      `Potentially relevant skill(s) detected for this task:`,
-      hints,
+      ...(top.length ? [`Suggested skills; decide from their descriptions before loading:`, hints] : []),
+      ...(blocks.length ? ["Explicit skills and task-routed references (loaded content follows):", ...blocks] : []),
+      ...(explicitReferences && !selected.length
+        ? [
+            `Reference request has no unique skill identity. Use exact skill names; candidates: ${candidates.map((skill) => skill.name).join(", ") || "none"}`,
+          ]
+        : []),
+      ...explicit.unresolved.map((item) => `Unresolved explicit reference: ${item}`),
+      ...(remaining.length
+        ? [
+            "Content omitted from this block. Use confirmed earlier chunks or load these offsets with the skill tool before relying on them:",
+            ...remaining.map((item) => `- ${item}`),
+          ]
+        : []),
       `</skill_suggestion>`,
     ].join("\n")
   }

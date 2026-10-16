@@ -1,7 +1,5 @@
-import path from "path"
-import os from "os"
-import fs from "fs/promises"
 import z from "zod"
+import { NamedError } from "@atomcli/util/error"
 import { Identifier } from "../id/id"
 import { MessageV2 } from "./message-v2"
 import { Log } from "@/util/util/log"
@@ -9,898 +7,87 @@ import { SessionRevert } from "./revert"
 import { Session } from "."
 import { Agent } from "@/integrations/agent/agent"
 import { Provider } from "@/integrations/provider/provider"
-// Note: ai package functions are imported dynamically to avoid Bun ESM resolution issues
-import type { Tool as AITool, ToolCallOptions } from "ai"
-import { getTool, getJsonSchema } from "@/util/util/ai-compat"
 import { SessionCompaction } from "./compaction"
 import { Instance } from "@/services/project/instance"
-import { Bus } from "../bus"
-import { ProviderTransform } from "@/integrations/provider/transform"
-import { SystemPrompt } from "./system"
-import { Plugin } from "@/integrations/plugin"
-import PROMPT_PLAN from "../session/prompt/runtime/plan-mode.txt"
-import BUILD_SWITCH from "../session/prompt/runtime/build-switch.txt"
-import MAX_STEPS from "../session/prompt/runtime/max-steps.txt"
 import { defer } from "@/util/util/defer"
-import { recall } from "@/integrations/tool/memory"
-import { recallCoreMemories } from "@/core/memory"
-import { SessionMemoryIntegration } from "../memory/integration/session"
 import { MemoryLifecycle } from "../memory/services/lifecycle"
-import { ToolRegistry } from "@/integrations/tool/registry"
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
-import { MCP } from "@/integrations/mcp"
-import { LSP } from "@/integrations/lsp"
-import { ReadTool } from "@/integrations/tool/read"
-import { FindTool } from "@/integrations/tool/find"
-import { FileTime } from "@/services/file/time"
+import { ReviewPolicy } from "@/core/verification/review-policy"
 import { Flag } from "@/interfaces/flag/flag"
-import { Filesystem } from "@/util/util/filesystem"
-import { ulid } from "ulid"
-import { spawn } from "child_process"
-import { Command } from "@/interfaces/command"
-import { $, fileURLToPath } from "bun"
-import { ConfigMarkdown } from "../config/markdown"
-import { SessionSummary } from "./summary"
-import { NamedError } from "@atomcli/util/error"
 import { fn } from "@/util/util/fn"
-import { SessionProcessor } from "./processor"
-import { TaskTool } from "@/integrations/tool/task"
-import { Tool } from "@/integrations/tool/tool"
-import { ToolRuntime } from "@/integrations/tool/runtime"
-import { EnvPolicy } from "@/core/env/policy"
 import { PermissionNext } from "@/util/permission/next"
 import { SessionStatus } from "./status"
-import { LLM } from "./llm"
-import { iife } from "@/util/util/iife"
-import { Shell } from "@/interfaces/shell/shell"
-import { Skill } from "@/integrations/skill"
-import { escapeXmlText, HarnessState } from "./harness-state"
-import { SessionExecutionProfile } from "./execution-profile"
-import { AgentEval } from "@/core/eval/harness"
-import { DataUrl } from "./data-url"
-import { Storage } from "@/core/storage/storage"
 import { Config } from "@/core/config/config"
+import { PromptContext } from "./prompt/context"
+import { SessionScopeFloor } from "./scope-floor"
+import { PromptCompletion } from "./prompt/completion"
+import { PromptFinalization } from "./prompt/finalization"
+import { appendOutput as appendOutputChunk } from "./prompt/shell"
+import { ShellCommand } from "./prompt/shell-command"
+import { insertReminders as insertRemindersImpl } from "./prompt/reminders"
+import {
+  command as commandImpl,
+  CommandInput as CommandInputSchema,
+  type CommandInput as CommandInputType,
+} from "./prompt/command"
+import { ensureTitle } from "./prompt/title"
+import { resolvePromptParts as resolvePromptPartsImpl } from "./prompt/parts"
+import { createUserMessage as createUserMessageImpl } from "./prompt/user-message"
+import { runPendingTask } from "./prompt/task"
+import { handleCheckpoint } from "./prompt/checkpoint"
+import { resolveRouteAndExpert } from "./prompt/route"
+import { prepareTurnExecution } from "./prompt/turn-execution"
+import { PromptActiveSessions } from "./prompt/active-sessions"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
-  // Keep this compatibility export independent from LLM module initialization:
-  // prompt/reviewer lazy imports can form a valid runtime cycle, and eagerly
-  // dereferencing LLM here makes that cycle fail during ESM linking.
-  export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
-  const MAX_COMPLETION_DESCENDANT_DEPTH = 32
-  const MAX_COMPLETION_DESCENDANT_SESSIONS = 500
-  const SHELL_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024
-  const SHELL_UPDATE_INTERVAL_MS = 50
-  const SHELL_TRUNCATION_MARKER = "[earlier shell output truncated]\n"
+  export const insertReminders = insertRemindersImpl
 
-  function appendShellOutput(current: string, chunk: string, limitBytes = SHELL_OUTPUT_LIMIT_BYTES) {
-    const alreadyTruncated = current.startsWith(SHELL_TRUNCATION_MARKER)
-    const previous = alreadyTruncated ? current.slice(SHELL_TRUNCATION_MARKER.length) : current
-    const combined = previous + chunk
-    if (!alreadyTruncated && new TextEncoder().encode(combined).byteLength <= limitBytes) return combined
-    const markerBytes = new TextEncoder().encode(SHELL_TRUNCATION_MARKER).byteLength
-    const tailBudget = Math.max(0, limitBytes - markerBytes)
-    let low = 0
-    let high = combined.length
-    while (low < high) {
-      const middle = Math.floor((low + high) / 2)
-      if (new TextEncoder().encode(combined.slice(middle)).byteLength <= tailBudget) high = middle
-      else low = middle + 1
-    }
-    return SHELL_TRUNCATION_MARKER + combined.slice(low)
-  }
-
-  function prepareTurnContext<T>(system: string[], messages: T[], isLastStep: boolean) {
-    return {
-      system: isLastStep ? [...system, MAX_STEPS] : system,
-      messages,
-    }
-  }
-
-  function shouldLoadTools(input: {
-    providerID?: string
-    prompt: string
-    explicitTools: boolean
-    bypassAgentCheck: boolean
-    hasPriorToolActivity: boolean
-  }) {
-    // Zen rejects anonymous greeting requests with only model_control advertised.
-    if (input.providerID === "atomcli" || input.providerID === "opencode") return true
-    if (input.explicitTools || input.bypassAgentCheck || input.hasPriorToolActivity) return true
-    const normalized = input.prompt
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-    if (!normalized) return true
-    const casual = new Set([
-      "selam",
-      "merhaba",
-      "naber",
-      "nasılsın",
-      "nasılsınız",
-      "hello",
-      "hi",
-      "hey",
-      "thanks",
-      "thank you",
-      "teşekkürler",
-      "teşekkür ederim",
-    ])
-    // Exact greeting -> text-only turn is fine. But "Selam, <real task>" must load tools;
-    // otherwise the model gets zero tool schemas and hallucinates calls the provider
-    // rejects as unavailable (seen as `tried to call unavailable tool 'invalid'`).
-    if (casual.has(normalized)) return false
-    const firstWord = normalized.split(" ")[0]
-    if (firstWord && (casual.has(firstWord) || casual.has(firstWord.replace(/\?+$/, "")))) {
-      // Single greeting word (optionally with punctuation already stripped) -> casual.
-      // Greeting + substantive content -> needs tools.
-      const rest = normalized.slice(firstWord.length).trim().replace(/^\?+/, "").trim()
-      if (!rest) return false
-      if (rest.split(" ").length < 3 && rest.length < 12) return false
-      return true
-    }
-    return true
-  }
-
-  function shouldResolveTools(isLastStep: boolean) {
-    return !isLastStep
-  }
-
-  function isSyntheticContinuation(message: MessageV2.WithParts) {
-    return (
-      message.info.role === "user" &&
-      message.parts.length > 0 &&
-      message.parts.every((part) => part.type === "compaction" || ("synthetic" in part && part.synthetic === true))
-    )
-  }
-
-  function isFinishedResponse(user: MessageV2.User, assistant?: MessageV2.Assistant) {
-    return (
-      assistant?.parentID === user.id &&
-      Boolean(assistant.finish) &&
-      !["tool-calls", "unknown"].includes(assistant.finish!)
-    )
-  }
-
-  function reviewRetryText(reason?: string) {
-    return [
-      "The final response was withheld because the independent review did not pass.",
-      "Address the review findings, verify the current workspace revision, and then produce a new final response.",
-      reason ? `Review result:\n${reason}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n")
-  }
-
-  function checkpointTools<T>(_tools: Record<string, T>): Record<string, T> {
-    return {}
-  }
-
-  function isCheckpointContinuation(message?: MessageV2.WithParts): boolean {
-    if (!message || !isSyntheticContinuation(message)) return false
-    const text = message.parts
-      .filter((part): part is MessageV2.TextPart => part.type === "text")
-      .map((part) => part.text)
-      .join("\n")
-    return text.includes("The final response was withheld") || text.includes("Completion preconditions failed")
-  }
-
-  function checkpointDelta(messages: MessageV2.WithParts[], since = 0): string {
-    return messages
-      .filter((message) => message.info.time.created >= since)
-      .flatMap((message) =>
-        message.parts.flatMap((part) => {
-          if (part.type === "tool") {
-            const detail =
-              part.state.status === "completed"
-                ? part.state.output
-                : part.state.status === "error"
-                  ? part.state.error
-                  : part.state.status
-            return [`tool ${part.tool} [${part.state.status}]: ${String(detail).slice(0, 1000)}`]
-          }
-          if (part.type === "patch") return [`files changed: ${part.files.join(", ")}`]
-          if (part.type === "subtask") return [`child task: ${part.prompt}`]
-          if (part.type === "compaction") return ["conversation compaction recorded"]
-          if (part.type === "text" && !part.synthetic) return [`message: ${part.text.slice(0, 2000)}`]
-          return []
-        }),
-      )
-      .slice(-100)
-      .join("\n")
-      .slice(-24_000)
-  }
-
-  function parseCheckpointJsonCandidates(text: string): unknown[] {
-    const trimmed = text.trim()
-    const candidates: unknown[] = []
-    const seen = new Set<string>()
-    const add = (value: string) => {
-      const candidate = value.trim()
-      if (!candidate || seen.has(candidate)) return
-      seen.add(candidate)
-      try {
-        candidates.push(JSON.parse(candidate))
-      } catch {}
-    }
-    add(trimmed)
-    for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) add(match[1])
-
-    let start = -1
-    let depth = 0
-    let quoted = false
-    let escaped = false
-    for (let index = 0; index < trimmed.length; index++) {
-      const char = trimmed[index]
-      if (quoted) {
-        if (escaped) escaped = false
-        else if (char === "\\") escaped = true
-        else if (char === '"') quoted = false
-        continue
-      }
-      if (char === '"') {
-        quoted = true
-        continue
-      }
-      if (char === "{") {
-        if (depth === 0) start = index
-        depth++
-      } else if (char === "}" && depth > 0) {
-        depth--
-        if (depth === 0 && start >= 0) {
-          add(trimmed.slice(start, index + 1))
-          start = -1
-        }
-      }
-    }
-    return candidates
-  }
-
-  function parseCheckpointJson(text: string): unknown {
-    return parseCheckpointJsonCandidates(text)[0]
-  }
-
-  function normalizeCheckpointForOpenTaskflow(
-    checkpoint: ExecutionCheckpoint.Result,
-    openTaskflow: boolean,
-  ): ExecutionCheckpoint.Result {
-    if (!openTaskflow || checkpoint.decision !== "finish") return checkpoint
-    const reason = "The durable taskflow is still open; continue by updating or completing its remaining steps."
-    return {
-      ...checkpoint,
-      decision: "continue",
-      requestedCalls: Math.max(checkpoint.requestedCalls ?? 0, ExecutionCheckpoint.MIN_CHECKPOINT_CALLS),
-      finalResponse: undefined,
-      remainingWork: [...new Set([...checkpoint.remainingWork, reason])],
-      blockers: [...new Set([...checkpoint.blockers, reason])],
-      estimatedRemainingCalls: Math.max(checkpoint.estimatedRemainingCalls, 1),
-      nextActions: [...new Set([...checkpoint.nextActions, "Reconcile the open taskflow before finishing."])],
-    }
-  }
-
-  function checkpointFinalParts(
-    parts: MessageV2.TextPart[] | undefined,
-    input: { sessionID: string; messageID: string; finalResponse: string },
-  ): MessageV2.TextPart[] {
-    const original = parts?.[0]
-    return [
-      {
-        ...(original ?? {
-          id: Identifier.ascending("part"),
-          messageID: input.messageID,
-          sessionID: input.sessionID,
-          type: "text",
-          time: { start: Date.now(), end: Date.now() },
-        }),
-        text: input.finalResponse,
-      },
-    ]
-  }
-
-  async function buildDeterministicFinalResponse(input: {
-    sessionID: string
-    executionID: string
-    reasons: string[]
-  }): Promise<string> {
-    const { ExecutionRuntime } = await import("@/core/execution/runtime")
-    const checkpoints = ExecutionRuntime.checkpoints(input.executionID)
-    const lastPayload = checkpoints.at(-1)?.payload as { checkpoint?: ExecutionCheckpoint.Result } | undefined
-    const cp = lastPayload?.checkpoint
-
-    const lines: string[] = []
-    const rootObjective = ExecutionRuntime.objective(input.executionID)?.objective
-
-    if (rootObjective) {
-      lines.push(`Objective: ${rootObjective}`)
-    }
-
-    if (cp?.objectiveAssessment && cp.objectiveAssessment !== "Objective remains unchanged.") {
-      lines.push(`\nObjective status: ${cp.objectiveAssessment}`)
-    } else if (cp?.progressSummary && cp.progressSummary !== "No summary provided.") {
-      lines.push(`\nProgress: ${cp.progressSummary}`)
-    }
-
-    const completed = [
-      ...(cp?.completedWork ?? []),
-      ...HarnessState.getSteps(input.sessionID)
-        .filter((s) => s.status === "completed")
-        .map((s) => s.name),
-    ]
-    const uniqueCompleted = [...new Set(completed)]
-    if (uniqueCompleted.length > 0) {
-      lines.push("\nCompleted work:")
-      for (const item of uniqueCompleted) lines.push(`- ${item}`)
-    }
-
-    const logs = HarnessState.getLastLogs(input.sessionID)
-    const verificationLogs = logs.filter((l) => /test|check|verify|lint|build/i.test(l.command))
-    if (verificationLogs.length > 0) {
-      lines.push("\nVerification:")
-      for (const l of verificationLogs) {
-        const status = l.exitCode === 0 ? "PASSED" : `FAILED (exit ${l.exitCode})`
-        lines.push(`- \`${l.command}\`: ${status}`)
-      }
-    }
-
-    const remaining = [
-      ...(cp?.remainingWork ?? []),
-      ...(cp?.blockers ?? []),
-      ...HarnessState.getSteps(input.sessionID)
-        .filter((s) => s.status === "pending" || s.status === "running")
-        .map((s) => `durable taskflow step "${s.name}" is ${s.status}`),
-    ]
-    const uniqueRemaining = [...new Set(remaining)]
-    if (uniqueRemaining.length > 0) {
-      lines.push("\nRemaining / Blockers:")
-      for (const item of uniqueRemaining) lines.push(`- ${item}`)
-    }
-
-    lines.push(`\nFinalization reason: ${input.reasons.join("; ")}`)
-    return lines.join("\n")
-  }
-
-  async function returnExpertHandoff(input: {
-    sessionID: string
-    execution: import("@/core/execution/runtime").ExecutionRuntime.Context
-    lastUser: MessageV2.User
-    routeRevision: number
-    route: {
-      base: { providerID: string; modelID: string; variant?: string }
-      activeEpisodeID?: string
-    }
-    text: string
-    status: "completed" | "inconclusive"
-    messageID: string
-  }) {
-    const { ExecutionRuntime } = await import("@/core/execution/runtime")
-    const episodeID = input.route.activeEpisodeID!
-    const baseModel = await Provider.getModel(input.route.base.providerID, input.route.base.modelID).catch(
-      () => undefined,
-    )
-    const basePolicy = baseModel ? Provider.routePolicy(baseModel) : undefined
-    const eligible =
-      baseModel &&
-      basePolicy &&
-      (await Provider.isRouteEligible(baseModel, { ...basePolicy, requireVerification: true }, "text"))
-    if (!eligible) {
-      const part: MessageV2.TextPart = {
-        id: Identifier.ascending("part"),
-        messageID: input.messageID,
-        sessionID: input.sessionID,
-        type: "text",
-        text: "The expert analysis stopped, but no verified eligible base model remains to continue the execution.",
-      }
-      const completion = ExecutionRuntime.finalizeOutcome({
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-        parts: [part],
-        execution: input.execution,
-        failure: {
-          outcome: "blocked",
-          reasonCode: "no_verified_model",
-          reasonMessage: part.text,
-          retryable: true,
-        },
-      })
-      await projectAndAckCompletion(completion)
-      return "blocked" as const
-    }
-    const message: MessageV2.User = {
-      id: Identifier.ascending("message"),
-      sessionID: input.sessionID,
-      role: "user",
-      time: { created: Date.now() },
-      agent: input.lastUser.agent,
-      model: { providerID: input.route.base.providerID, modelID: input.route.base.modelID },
-      variant: input.route.base.variant,
-    }
-    const part: MessageV2.TextPart = {
-      id: Identifier.ascending("part"),
-      messageID: message.id,
-      sessionID: input.sessionID,
-      type: "text",
-      text: JSON.stringify({
-        kind: "expert_handoff",
-        status: input.status,
-        episodeID,
-        evidenceBasedAnalysis: input.text.slice(0, 20_000),
-        instruction: "Use this advisory evidence, verify it, and complete the root task with the base model.",
-      }),
-      synthetic: true,
-    }
-    const continuation = await ExecutionRuntime.returnFromExpert({
-      sessionID: input.sessionID,
-      execution: input.execution,
-      episodeID,
-      expectedRouteRevision: input.routeRevision,
-      message,
-      part,
-    })
-    await Session.updateMessage(continuation.message)
-    await Session.updatePart(continuation.part)
-    ExecutionRuntime.projectContinuation(continuation.id)
-    return "returned" as const
-  }
-
-  function reviewBlockedText(reason?: string) {
-    return [
-      "Completion is blocked: the required independent review could not approve the current workspace revision.",
-      reason || "Retry the review or ask the user how to proceed.",
-    ].join("\n\n")
-  }
-
-  async function recordModelResolutionError(input: {
-    sessionID: string
-    user: MessageV2.User
-    messages: MessageV2.WithParts[]
-    error: unknown
-  }) {
-    const existing = input.messages.find(
-      (message) =>
-        message.info.role === "assistant" && message.info.parentID === input.user.id && Boolean(message.info.error),
-    )
-    if (existing) return existing.info as MessageV2.Assistant
-    const error = await MessageV2.fromError(input.error, { providerID: input.user.model.providerID })
-    const now = Date.now()
-    const assistant = (await Session.updateMessage({
-      id: Identifier.ascending("message"),
-      sessionID: input.sessionID,
-      parentID: input.user.id,
-      role: "assistant",
-      agent: input.user.agent,
-      path: {
-        cwd: Instance.directory,
-        root: Instance.worktree,
-      },
-      cost: 0,
-      tokens: {
-        input: 0,
-        output: 0,
-        reasoning: 0,
-        cache: { read: 0, write: 0 },
-      },
-      modelID: input.user.model.modelID,
-      providerID: input.user.model.providerID,
-      time: { created: now },
-      error,
-    })) as MessageV2.Assistant
-    Bus.publish(Session.Event.Error, { sessionID: input.sessionID, error })
-    return assistant
-  }
-
-  class CompletionProjectionError extends Error {
-    constructor(readonly reasonCode: "missing_message") {
-      super("Completion message is missing")
-      this.name = "CompletionProjectionError"
-    }
-  }
-
-  async function projectCompletion(candidate: import("@/core/execution/runtime").ExecutionRuntime.CompletionClaim) {
-    const messages = await Session.messages({ sessionID: candidate.sessionID, excludePatches: false })
-    let existing = messages.find((item) => item.info.id === candidate.messageID)
-    let message = existing?.info
-    if (!message && candidate.parentUserID) {
-      const parent = messages.find((item) => item.info.id === candidate.parentUserID)?.info
-      if (parent?.role === "user") {
-        message = await Session.updateMessageGuarded(
-          {
-            id: candidate.messageID,
-            parentID: parent.id,
-            sessionID: candidate.sessionID,
-            role: "assistant",
-            agent: parent.agent,
-            path: { cwd: Instance.directory, root: Instance.worktree },
-            cost: 0,
-            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-            modelID: parent.model.modelID,
-            providerID: parent.model.providerID,
-            time: { created: Date.now() },
-          },
-          candidate.sessionGeneration,
-        )
-        existing = { info: message, parts: [] }
-      }
-    }
-    if (!message || message.role !== "assistant" || !existing) throw new CompletionProjectionError("missing_message")
-    const existingParts = new Map(existing.parts.map((part) => [part.id, part]))
-    for (const part of candidate.parts) {
-      if (Bun.deepEquals(existingParts.get(part.id), part)) continue
-      await Session.updatePartGuarded(part, candidate.sessionGeneration)
-    }
-    if (message.finish !== candidate.finish || message.time.completed === undefined) {
-      await Session.updateMessageGuarded(
-        {
-          ...message,
-          finish: candidate.finish,
-          time: { ...message.time, completed: message.time.completed ?? Date.now() },
-        },
-        candidate.sessionGeneration,
-      )
-    }
-  }
-
-  async function projectAndAckCompletion(candidate: import("@/core/execution/runtime").ExecutionRuntime.Completion) {
-    const { ExecutionRuntime } = await import("@/core/execution/runtime")
-    const initialGuard = await Storage.sessionGuard(candidate.sessionID)
-    if (!initialGuard || initialGuard.tombstone) {
-      ExecutionRuntime.deleteSessions(
-        [candidate.sessionID],
-        initialGuard ? { [candidate.sessionID]: initialGuard.generation } : undefined,
-      )
-      return "abandoned" as const
-    }
-    const claim =
-      "projectionToken" in candidate
-        ? (candidate as import("@/core/execution/runtime").ExecutionRuntime.CompletionClaim)
-        : ExecutionRuntime.claimCompletion(candidate.sessionID, candidate.executionID)
-    if (!claim || claim.digest !== candidate.digest) {
-      if (ExecutionRuntime.view(candidate.executionID)?.completion?.projection === "recovery_required") {
-        return "recovery_required" as const
-      }
-      throw new Error("Committed completion could not be claimed for projection")
-    }
-    const abandonDeletedSession = () => {
-      ExecutionRuntime.deleteSessions([claim.sessionID], guard ? { [claim.sessionID]: guard.generation } : undefined)
-      return "abandoned" as const
-    }
-    const guard = await Storage.sessionGuard(claim.sessionID)
-    if (!guard || guard.tombstone || guard.generation !== claim.sessionGeneration) return abandonDeletedSession()
-    try {
-      await projectCompletion(claim)
-    } catch (error) {
-      if (Storage.isSessionDeletedError(error)) return abandonDeletedSession()
-      if (error instanceof CompletionProjectionError) {
-        const recorded = ExecutionRuntime.markProjectionRecovery(claim, error.reasonCode)
-        if (recorded.recorded) return "recovery_required" as const
-      }
-      throw error
-    }
-    const projected = ExecutionRuntime.ackCompletion(claim)
-    if (!projected.projected) {
-      if (projected.reason === "abandoned") return "abandoned" as const
-      throw new Error("Committed completion projection could not be acknowledged")
-    }
-    return "projected" as const
-  }
-
-  export function reviewEvidenceFiles(messages: MessageV2.WithParts[], notBefore = 0): string[] {
-    const turnStart = messages.findLastIndex(
-      (message) =>
-        message.info.role === "user" && !message.parts.every((part) => "synthetic" in part && part.synthetic),
-    )
-    if (turnStart < 0 || messages[turnStart].info.time.created < notBefore) return []
-    return messages
-      .slice(turnStart)
-      .flatMap((message) => message.parts)
-      .filter((part): part is MessageV2.PatchPart => part.type === "patch")
-      .flatMap((part) => part.files)
-  }
-
-  async function restoreReviewEvidence(sessionID: string, notBefore = 0): Promise<void> {
-    if (HarnessState.getEditedFileCount(sessionID) === 0) {
-      const messages = await Session.messages({ sessionID, excludePatches: false })
-      for (const filepath of reviewEvidenceFiles(messages, notBefore))
-        HarnessState.restoreEditedFile(sessionID, filepath)
-    }
-  }
-
-  async function completionSessionTree(sessionID: string) {
-    const result: string[] = [sessionID]
-    const visited = new Set(result)
-    const queue = [{ sessionID, depth: 0 }]
-    for (let head = 0; head < queue.length; head++) {
-      const current = queue[head]
-      if (current.depth >= MAX_COMPLETION_DESCENDANT_DEPTH) continue
-      for (const child of await Session.children(current.sessionID)) {
-        if (visited.has(child.id)) continue
-        if (result.length >= MAX_COMPLETION_DESCENDANT_SESSIONS) {
-          throw new Error(`Completion session tree exceeds ${MAX_COMPLETION_DESCENDANT_SESSIONS} sessions`)
-        }
-        visited.add(child.id)
-        result.push(child.id)
-        queue.push({ sessionID: child.id, depth: current.depth + 1 })
-      }
-    }
-    return result
-  }
-
-  async function reviewFiles(sessionID: string): Promise<string[]> {
-    const files = new Set<string>()
-    const rootMessages = await Session.messages({ sessionID, excludePatches: false })
-    const rootTurn = rootMessages.findLast(
-      (message) =>
-        message.info.role === "user" && !message.parts.every((part) => "synthetic" in part && part.synthetic),
-    )
-    const turnStartedAt = rootTurn?.info.time.created ?? 0
-    for (const current of await completionSessionTree(sessionID)) {
-      await restoreReviewEvidence(current, current === sessionID ? 0 : turnStartedAt)
-      for (const filepath of HarnessState.getEditedFiles(current)) files.add(filepath)
-    }
-    return [...files]
-  }
-
-  async function resolveCompletion(input: {
-    sessionID: string
-    lastUser: MessageV2.User
-    execution: import("@/core/execution/runtime").ExecutionRuntime.Context
-    candidate: import("@/core/execution/runtime").ExecutionRuntime.Completion
-    abort: AbortSignal
-    allowRetry?: boolean
-  }): Promise<"committed" | "blocked" | "retry"> {
-    const { ExecutionRuntime } = await import("@/core/execution/runtime")
-    input.abort.throwIfAborted()
-    if (input.candidate.state === "committed") {
-      await projectAndAckCompletion(input.candidate)
-      return input.candidate.outcome === "blocked" ? "blocked" : "committed"
-    }
-    const retry = async (reason?: string) => {
-      const retryMessage: MessageV2.User = {
-        id: Identifier.ascending("message"),
-        sessionID: input.sessionID,
-        role: "user",
-        time: { created: Date.now() },
-        agent: input.lastUser.agent,
-        model: input.lastUser.model,
-      }
-      const retryPart: MessageV2.TextPart = {
-        id: Identifier.ascending("part"),
-        messageID: retryMessage.id,
-        sessionID: input.sessionID,
-        type: "text",
-        text: reviewRetryText(reason),
-        synthetic: true,
-      }
-      const continuation = await ExecutionRuntime.retryCompletion({
-        sessionID: input.sessionID,
-        execution: input.execution,
-        digest: input.candidate.digest,
-        message: retryMessage,
-        part: retryPart,
-      })
-      await Session.updateMessage(continuation.message)
-      await Session.updatePart(continuation.part)
-      ExecutionRuntime.projectContinuation(continuation.id)
-      return "retry" as const
-    }
-    const blockers: string[] = []
-    if (HarnessState.hasActivePlan(input.sessionID, input.execution.executionID))
-      blockers.push("the taskflow plan is still open")
-    const workflowID = HarnessState.getActiveWorkflowId(input.sessionID)
-    if (workflowID) blockers.push(`workflow ${workflowID} is still running`)
-    const { SubAgentLifecycle } = await import("@/integrations/tool/subagent-lifecycle")
-    for (const childID of (await completionSessionTree(input.sessionID)).slice(1)) {
-      if (SubAgentLifecycle.status(childID).status === "running") {
-        blockers.push(`child session ${childID} is running`)
-      }
-    }
-    if (blockers.length) {
-      const reason = `Completion preconditions failed: ${blockers.join("; ")}.`
-      if (input.allowRetry !== false) return retry(reason)
-      await ExecutionRuntime.discardCompletion({
-        sessionID: input.sessionID,
-        execution: input.execution,
-        digest: input.candidate.digest,
-      })
-      const original = input.candidate.parts[0]
-      const candidateText = input.candidate.parts
-        .filter((part): part is MessageV2.TextPart => part.type === "text")
-        .map((part) => part.text)
-        .join("\n\n")
-        .trim()
-      const failure = ExecutionRuntime.classifyTerminalFailure(
-        new ExecutionRuntime.BudgetExceededError("step_limit", input.execution.executionID),
-      )
-      const completion = ExecutionRuntime.finalizeOutcome({
-        sessionID: input.sessionID,
-        messageID: input.candidate.messageID,
-        execution: input.execution,
-        failure: {
-          ...failure,
-          reasonMessage: `${reason} Execution stopped at its step limit; send another message to continue.`,
-        },
-        parts: [
-          {
-            ...(original ?? {
-              id: Identifier.ascending("part"),
-              messageID: input.candidate.messageID,
-              sessionID: input.sessionID,
-              type: "text" as const,
-              time: { start: Date.now(), end: Date.now() },
-            }),
-            text: [candidateText, `Execution status: technical blocker. ${reason}`].filter(Boolean).join("\n\n"),
-            synthetic: true,
-            metadata: { ...original?.metadata, blockerKind: "technical" },
-          },
-        ],
-      })
-      await projectAndAckCompletion(completion)
-      return "blocked"
-    }
-    for (const filepath of input.candidate.editedFiles) HarnessState.restoreEditedFile(input.sessionID, filepath)
-    await restoreReviewEvidence(input.sessionID)
-    const { runBlockingReview } = await import("@/integrations/tool/review-gate")
-    const reviewClaim = input.candidate.requiresReview
-      ? await ExecutionRuntime.claimReview({
-          sessionID: input.sessionID,
-          execution: input.execution,
-          digest: input.candidate.digest,
-          revision: input.candidate.revision,
-        })
-      : undefined
-    const review = await runBlockingReview(input.sessionID, {
-      signal: input.abort,
-      executionID: input.execution.executionID,
-      decision: {
-        policyVersion: input.candidate.policyVersion,
-        policyDigest: input.candidate.policyDigest,
-        requirement: input.candidate.reviewRequirement,
-        reasonCode: input.candidate.reviewReasonCode,
-        requiredReviewers: input.candidate.requiredReviewers,
-        attemptLimit: input.candidate.attemptLimit,
-      },
-      authorizeSession: reviewClaim
-        ? (reviewerSessionID) =>
-            ExecutionRuntime.authorizeReviewSession({
-              sessionID: input.sessionID,
-              reviewerSessionID,
-              execution: input.execution,
-              reviewID: reviewClaim.id,
-            })
-        : undefined,
-    })
-    input.abort.throwIfAborted()
-    if (reviewClaim) {
-      await ExecutionRuntime.recordReview({
-        sessionID: input.sessionID,
-        execution: input.execution,
-        reviewID: reviewClaim.id,
-        state: review.passed ? "passed" : review.error ? "inconclusive" : "rejected",
-      })
-    }
-    if (review.passed) {
-      if (input.candidate.requiresReview && HarnessState.needsReview(input.sessionID)) {
-        if (input.allowRetry === false) {
-          const original = input.candidate.parts[0]
-          const blocked = await ExecutionRuntime.finalizeBlocked({
-            sessionID: input.sessionID,
-            digest: input.candidate.digest,
-            parts: [
-              {
-                ...(original ?? {
-                  id: Identifier.ascending("part"),
-                  messageID: input.candidate.messageID,
-                  sessionID: input.sessionID,
-                  type: "text" as const,
-                  time: { start: Date.now(), end: Date.now() },
-                }),
-                text: "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
-                synthetic: true,
-                metadata: { ...original?.metadata, reviewGate: "blocked" },
-              },
-            ],
-            execution: input.execution,
-            reasonCode: "review_rejected",
-            reasonMessage:
-              "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
-          })
-          await projectAndAckCompletion(blocked)
-          return "blocked"
-        }
-        return retry("The workspace changed after review; the current revision must be reviewed again.")
-      }
-      const committed = await ExecutionRuntime.commitCompletion({
-        sessionID: input.sessionID,
-        execution: input.execution,
-        digest: input.candidate.digest,
-      }).catch(async (error) => {
-        if (error instanceof ExecutionRuntime.BudgetExceededError && error.reason === "stale_revision") {
-          if (input.allowRetry === false) {
-            const original = input.candidate.parts[0]
-            const blocked = await ExecutionRuntime.finalizeBlocked({
-              sessionID: input.sessionID,
-              digest: input.candidate.digest,
-              parts: [
-                {
-                  ...(original ?? {
-                    id: Identifier.ascending("part"),
-                    messageID: input.candidate.messageID,
-                    sessionID: input.sessionID,
-                    type: "text" as const,
-                    time: { start: Date.now(), end: Date.now() },
-                  }),
-                  text: "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
-                  synthetic: true,
-                  metadata: { ...original?.metadata, reviewGate: "blocked" },
-                },
-              ],
-              execution: input.execution,
-              reasonCode: "review_rejected",
-              reasonMessage:
-                "The workspace changed after review. Execution stopped at its step limit; send another message to continue.",
-            })
-            await projectAndAckCompletion(blocked)
-            return "blocked" as const
-          }
-          return retry("The workspace changed after review; the current revision must be reviewed again.")
-        }
-        throw error
-      })
-      if (committed === "retry" || committed === "blocked") return committed
-      await projectAndAckCompletion(committed)
-      for (const sessionID of await completionSessionTree(input.sessionID)) HarnessState.clearReviewScope(sessionID)
-      return "committed"
-    }
-    if (!review.error && !review.exhausted && input.allowRetry !== false) {
-      return retry(review.reason)
-    }
-    const original = input.candidate.parts[0]
-    const blockerKind = review.error ? "procedural_harness" : "verification"
-    const originalText = input.candidate.parts
-      .filter((part): part is MessageV2.TextPart => part.type === "text")
-      .map((part) => part.text)
-      .join("\n\n")
-      .trim()
-    const blockedText = [
-      originalText,
-      review.error
-        ? `Verification status: procedural/harness blocker. Independent review could not run: ${review.reason ?? "unknown reviewer error"}`
-        : `Verification status: verification blocker. ${reviewBlockedText(review.reason)}`,
-    ]
-      .filter(Boolean)
-      .join("\n\n")
-    const blocked = await ExecutionRuntime.finalizeBlocked({
-      sessionID: input.sessionID,
-      digest: input.candidate.digest,
-      parts: [
-        {
-          ...(original ?? {
-            id: Identifier.ascending("part"),
-            messageID: input.candidate.messageID,
-            sessionID: input.sessionID,
-            type: "text" as const,
-            time: { start: Date.now(), end: Date.now() },
-          }),
-          text: blockedText,
-          synthetic: true,
-          metadata: { ...original?.metadata, reviewGate: "blocked", blockerKind },
-        },
-      ],
-      execution: input.execution,
-      reasonCode: review.error ? "review_unavailable" : "review_rejected",
-      reasonMessage: "Independent review could not approve this completion.",
-    })
-    await projectAndAckCompletion(blocked)
-    return "blocked"
-  }
-
-  export const _internals = {
+  const {
+    isDirectAnswer,
     prepareTurnContext,
     shouldLoadTools,
     shouldResolveTools,
+    earlyProgressReminder,
+    isSyntheticContinuation,
+    isFinishedResponse,
+    checkpointTools,
+    isCheckpointContinuation,
+    checkpointHandoff,
+    checkpointDelta,
+    accumulateCheckpointFields,
+    checkpointFinalParts,
+    normalizeCheckpointForOpenTaskflow,
+    parseCheckpointJson,
+    parseCheckpointJsonCandidates,
+  } = PromptContext
+  const { reviewRetryText, reviewBlockedText, buildDeterministicFinalResponse } = PromptFinalization
+
+  // Keep this compatibility export independent from LLM module initialization:
+  // prompt/reviewer lazy imports can form a valid runtime cycle, and eagerly
+  // dereferencing LLM here makes that cycle fail during ESM linking.
+  export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 16_000
+  const {
+    returnExpertHandoff,
+    recordModelResolutionError,
+    reviewFiles,
+    resolveCompletion,
+    reviewFromDurableClaim,
+    projectCompletion,
+    projectAndAckCompletion,
+  } = PromptCompletion
+  export const reviewEvidenceFiles = PromptCompletion.reviewEvidenceFiles
+
+  export const _internals = {
+    isDirectAnswer,
+    explicitOrchestration: PromptContext.explicitOrchestration,
+    prepareTurnContext,
+    shouldLoadTools,
+    shouldResolveTools,
+    earlyProgressReminder,
     insertReminders,
     isSyntheticContinuation,
     isFinishedResponse,
@@ -908,6 +95,7 @@ export namespace SessionPrompt {
     reviewBlockedText,
     checkpointTools,
     checkpointDelta,
+    checkpointHandoff,
     checkpointFinalParts,
     buildDeterministicFinalResponse,
     normalizeCheckpointForOpenTaskflow,
@@ -915,43 +103,20 @@ export namespace SessionPrompt {
     parseCheckpointJsonCandidates,
     isCheckpointContinuation,
     resolveCompletion,
+    reviewFromDurableClaim,
     projectCompletion,
     projectAndAckCompletion,
     recordModelResolutionError,
-    appendShellOutput,
+    appendShellOutput: appendOutputChunk,
     lastModel,
     start,
     finish,
   }
 
-  const state = Instance.state(
-    () => {
-      const data: Record<
-        string,
-        {
-          abort: AbortController
-          execution?: import("@/core/execution/runtime").ExecutionRuntime.Context
-          callbacks: {
-            resolve(input: MessageV2.WithParts): void
-            reject(): void
-          }[]
-        }
-      > = {}
-      return data
-    },
-    async (current) => {
-      for (const item of Object.values(current)) {
-        item.abort.abort()
-        for (const callback of item.callbacks) {
-          callback.reject()
-        }
-      }
-    },
-  )
+  const state = PromptActiveSessions.state
 
   export function assertNotBusy(sessionID: string) {
-    const match = state()[sessionID]
-    if (match) throw new Session.BusyError(sessionID)
+    PromptActiveSessions.assertNotBusy(sessionID)
   }
 
   export const PromptInput = z.object({
@@ -1023,12 +188,73 @@ export namespace SessionPrompt {
   })
   export type PromptInput = z.infer<typeof PromptInput>
 
-  export const prompt = fn(PromptInput, async (input) => {
+  export const CommandInput = CommandInputSchema
+  export type CommandInput = CommandInputType
+  export async function command(input: CommandInput) {
+    return commandImpl(input, {
+      lastModel,
+      resolvePromptParts: (template) => resolvePromptPartsImpl(template, Instance.worktree),
+      prompt: (value, atomicGoal) => promptMessage(PromptInput.parse(value), atomicGoal),
+    })
+  }
+
+  async function promptMessage(input: PromptInput, atomicGoal?: string) {
     const session = await Session.get(input.sessionID)
     await SessionRevert.cleanup(session)
 
-    const message = await createUserMessage(input)
+    let messageInput = input
+    const requestedText = input.parts
+      .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
+      .map((part) => part.text)
+      .join("\n")
+      .trim()
+      .toLocaleLowerCase()
+    if (!input.resumesExecutionID && PromptContext.isContinuationPrompt(requestedText)) {
+      const previous = (await Session.messages({ sessionID: input.sessionID, excludePatches: true })).findLast(
+        (item) => item.info.role === "assistant" && item.info.error,
+      )
+      if (previous) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const priorExecution = ExecutionRuntime.list({ sessionID: input.sessionID, limit: 1 }).items[0]
+        if (
+          priorExecution?.outcome === "failed" &&
+          priorExecution.reason?.retryable &&
+          ExecutionRuntime.view(priorExecution.id)?.lifecycle === "terminal"
+        ) {
+          messageInput = { ...input, resumesExecutionID: priorExecution.id }
+        }
+      }
+    }
+
+    const message = await createUserMessage(messageInput)
+    if (atomicGoal) {
+      const part = message.parts.find((part) => part.type === "text" && part.synthetic)
+      if (part) {
+        Object.assign(part, { metadata: { ...part.metadata, nativeAtomicWork: { goal: atomicGoal } } })
+        await Session.updatePart(part)
+      }
+    }
+    const { ExecutionRuntime: AtomicRuntime } = await import("@/core/execution/runtime")
+    const binding = AtomicRuntime.activeContext(input.sessionID)
+    if (binding && AtomicRuntime.atomicRoot(binding.executionID)) {
+      const text =
+        atomicGoal ??
+        input.parts.flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : [])).join("\n")
+      if (text.trim())
+        await AtomicRuntime.queueAtomicMessage({
+          sessionID: input.sessionID,
+          execution: binding,
+          messageID: message.info.id,
+          text,
+        })
+    }
     await Session.touch(input.sessionID)
+
+    // The active loop reads this persisted user message on its next model step.
+    // Waiting on that loop would reject this request when streaming ends.
+    if (PromptActiveSessions.isActive(input.sessionID)) {
+      return message
+    }
 
     // this is backwards compatibility for allowing `tools` to be specified when
     // prompting
@@ -1052,69 +278,12 @@ export namespace SessionPrompt {
     }
 
     return loop(input.sessionID)
-  })
+  }
+
+  export const prompt = fn(PromptInput, promptMessage)
 
   export async function resolvePromptParts(template: string): Promise<PromptInput["parts"]> {
-    const parts: PromptInput["parts"] = [
-      {
-        type: "text",
-        text: template,
-      },
-    ]
-    const files = ConfigMarkdown.files(template)
-    const seen = new Set<string>()
-    await Promise.all(
-      files.map(async (match) => {
-        const name = match[1]
-        if (seen.has(name)) return
-        seen.add(name)
-        const filepath = name.startsWith("~/")
-          ? path.join(os.homedir(), name.slice(2))
-          : path.resolve(Instance.worktree, name)
-
-        const stats = await fs.stat(filepath).catch(() => undefined)
-        if (!stats) {
-          // First, check if it's a skill
-          const skill = await Skill.get(name)
-          if (skill) {
-            const parsed = await ConfigMarkdown.parse(skill.location)
-            parts.push({
-              type: "text",
-              text: `\n<skill name="${skill.name}">\n${parsed.content.trim()}\n</skill>\n`,
-            })
-            return
-          }
-
-          // If not a skill, check for agent
-          const agent = await Agent.get(name)
-          if (agent) {
-            parts.push({
-              type: "agent",
-              name: agent.name,
-            })
-          }
-          return
-        }
-
-        if (stats.isDirectory()) {
-          parts.push({
-            type: "file",
-            url: `file://${filepath}`,
-            filename: name,
-            mime: "application/x-directory",
-          })
-          return
-        }
-
-        parts.push({
-          type: "file",
-          url: `file://${filepath}`,
-          filename: name,
-          mime: "text/plain",
-        })
-      }),
-    )
-    return parts
+    return resolvePromptPartsImpl(template, Instance.worktree)
   }
 
   function start(sessionID: string) {
@@ -1131,6 +300,11 @@ export namespace SessionPrompt {
   function finish(sessionID: string, owner: AbortController) {
     const s = state()
     const match = s[sessionID]
+    // A cancelled loop may publish a late busy status before its cleanup runs.
+    if (!match && owner.signal.aborted) {
+      SessionStatus.set(sessionID, { type: "idle" })
+      return
+    }
     if (match?.abort !== owner) return
     for (const item of match.callbacks) item.reject()
     delete s[sessionID]
@@ -1215,9 +389,9 @@ export namespace SessionPrompt {
         await Session.updatePart(continuation.payload.part)
         RecoveryRuntime.projectContinuation(continuation.id)
       }
+      if (abort.aborted) break
       SessionStatus.set(sessionID, { type: "busy" })
       log.info("loop", { step, sessionID })
-      if (abort.aborted) break
       let msgs = await MessageV2.filterCompacted(MessageV2.stream({ sessionID, excludePatches: true }))
 
       let lastUser: MessageV2.User | undefined
@@ -1238,6 +412,7 @@ export namespace SessionPrompt {
       }
 
       if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+
       const lastUserMessage = msgs.find((message) => message.info.id === lastUser.id)
       if (!executionContext) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
@@ -1265,15 +440,10 @@ export namespace SessionPrompt {
             execution: executionContext,
           })
         } else {
-          ExecutionRuntime.cancelExecution(executionContext)
-          releaseExecutionLease?.()
-          releaseExecutionLease = undefined
-          executionContext = await ExecutionRuntime.resolveInvocation({
+          executionContext = await ExecutionRuntime.bindContinuation({
             sessionID,
             invocationID: lastUser.id,
-            kind: session.parentID ? (/^(reviewer|checker)$/.test(lastUser.agent) ? "reviewer" : "child") : "root",
-            acceptedMessageID: lastUser.id,
-            resumesExecutionID: lastUser.resumesExecutionID,
+            execution: executionContext,
           })
         }
         finishExecutionInvocation = (state) => ExecutionRuntime.finishInvocation(executionContext!, state)
@@ -1300,8 +470,44 @@ export namespace SessionPrompt {
         releaseExecutionLease ??= ExecutionRuntime.holdLease(executionContext)
         abort = AbortSignal.any([owner.signal, ExecutionRuntime.leaseSignal(executionContext)])
       }
+      if (!session.parentID && lastUserMessage) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const native = lastUserMessage.parts.find(
+          (part) => part.type === "text" && part.synthetic && part.metadata?.nativeAtomicWork,
+        )
+        const goal = native?.type === "text" ? native.metadata?.nativeAtomicWork?.goal : undefined
+        if (typeof goal === "string" && !ExecutionRuntime.atomicRoot(executionContext.executionID))
+          await ExecutionRuntime.startAtomicWork({
+            sessionID,
+            execution: executionContext,
+            messageID: lastUser.id,
+            goal,
+            agent: lastUser.agent,
+          })
+        const root = ExecutionRuntime.atomicRoot(executionContext.executionID)
+        if (root && root.id !== `atomic_${lastUser.id}` && !isSyntheticContinuation(lastUserMessage)) {
+          const text =
+            typeof goal === "string"
+              ? goal
+              : lastUserMessage.parts
+                  .flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : []))
+                  .join("\n")
+          if (text.trim())
+            await ExecutionRuntime.queueAtomicMessage({
+              sessionID,
+              execution: executionContext,
+              messageID: lastUser.id,
+              text,
+            })
+        }
+      }
       const { TaskFlow } = await import("@/integrations/tool/taskflow")
-      await TaskFlow.restore(sessionID, executionContext.executionID)
+      const { ExecutionRuntime: AtomicFlowRuntime } = await import("@/core/execution/runtime")
+      if (
+        !AtomicFlowRuntime.isReviewer(executionContext) &&
+        !AtomicFlowRuntime.atomicRoot(executionContext.executionID)
+      )
+        await TaskFlow.restore(sessionID, executionContext.executionID)
       if (!session.parentID) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         const pendingCompletion = ExecutionRuntime.completion(executionContext.executionID)
@@ -1342,7 +548,49 @@ export namespace SessionPrompt {
                 .map((part) => part.text)
                 .join("\n") ?? ""
             const cfg = await Config.get()
-            if (cfg.experimental?.execution_classification) {
+            const { ExecutionContract } = await import("@/core/routing/execution-contract")
+            const continuation = PromptContext.continuationContract(
+              userPromptText,
+              executionContext.executionID,
+              ExecutionRuntime.list({ sessionID, limit: 2 }).items,
+              ExecutionRuntime.getExecutionContract,
+            )
+            if (ExecutionRuntime.atomicRoot(executionContext.executionID)) {
+              ExecutionRuntime.setExecutionContract(
+                executionContext.executionID,
+                ExecutionContract.fallback("native_atomic_work", {
+                  intent: "change",
+                  scope: "coordinated",
+                  needsDiscovery: true,
+                  needsMutation: true,
+                }),
+              )
+            } else if (continuation) {
+              const scopeFloor = await SessionScopeFloor.merge(sessionID, continuation.scope)
+              ExecutionRuntime.setExecutionContract(executionContext.executionID, {
+                ...continuation,
+                scope: scopeFloor,
+                rationale: `Continuation of unfinished execution: ${continuation.rationale}`.slice(0, 500),
+              })
+            } else if (isDirectAnswer(userPromptText, lastUser.agent)) {
+              const directScope = await SessionScopeFloor.merge(sessionID, "direct")
+              ExecutionRuntime.setExecutionContract(
+                executionContext.executionID,
+                ExecutionContract.fallback("deterministic_direct_answer", {
+                  intent: "answer",
+                  scope: directScope,
+                  risk: "low",
+                  confidence: 1,
+                  expectedSurfaces: ["conversation"],
+                  assumptions: [],
+                  uncertainty: "low",
+                  needsDiscovery: false,
+                  needsMutation: false,
+                  needsExternalAction: false,
+                  likelyCrossBoundary: false,
+                }),
+              )
+            } else if (cfg.experimental?.execution_classification !== false) {
               const { ExecutionClassifier } = await import("@/core/routing/execution-classifier")
               let classifierModel: any = undefined
               const baseModel = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID).catch(
@@ -1351,6 +599,8 @@ export namespace SessionPrompt {
               if (baseModel) {
                 classifierModel = await Provider.getLanguage(baseModel).catch(() => undefined)
               }
+              const explicitOrchestration = PromptContext.explicitOrchestration(userPromptText)
+              const scopeFloor = await SessionScopeFloor.merge(sessionID, "direct")
               const classification = await ExecutionClassifier.classify({
                 sessionID,
                 execution: executionContext,
@@ -1360,195 +610,83 @@ export namespace SessionPrompt {
                 model: classifierModel,
                 modelInfo: baseModel,
                 signal: abort,
+                explicitOrchestration,
+                scopeFloor,
               })
-              ExecutionRuntime.setExecutionContract(executionContext.executionID, classification.contract, {
-                classifierFallback: classification.fallback,
-              })
-            } else {
-              const { ExecutionContract } = await import("@/core/routing/execution-contract")
-              const scope =
-                lastUser.agent === "plan" || lastUser.agent === "explore"
+              const explicitDelegation = PromptContext.explicitSubagentDelegation(userPromptText)
+              // An explicit subagent/parallel-delegation request needs the model-facing
+              // `agent` tool, which is only advertised at coordinated scope. A generic
+              // orchestration mention only floors the scope to focused.
+              const minimumScope = explicitDelegation
+                ? "coordinated"
+                : explicitOrchestration
                   ? "focused"
-                  : lastUser.agent === "reviewer"
-                    ? "direct"
-                    : "coordinated"
+                  : classification.contract.scope
+              const classifiedScope =
+                ExecutionContract.SCOPE_RANK[minimumScope] >= ExecutionContract.SCOPE_RANK[scopeFloor]
+                  ? minimumScope
+                  : scopeFloor
               ExecutionRuntime.setExecutionContract(
                 executionContext.executionID,
-                ExecutionContract.fallback("default_runtime_policy", { scope }),
+                {
+                  ...classification.contract,
+                  scope: classifiedScope,
+                  rationale: explicitDelegation
+                    ? `${classification.contract.rationale} Explicit subagent delegation requires coordinated scope so the agent tool is available.`
+                    : explicitOrchestration
+                      ? `${classification.contract.rationale} Explicit orchestration request requires at least focused scope.`
+                      : classification.contract.rationale,
+                },
+                {
+                  classifierFallback: classification.fallback,
+                  acceptanceChange: {
+                    reason: "user_input",
+                    detail: `Classified user message ${lastUser.id}`,
+                    invalidatedEvidence: [],
+                  },
+                },
+              )
+              await SessionScopeFloor.raise({ sessionID, scope: classifiedScope })
+            } else {
+              const explicitDelegation = PromptContext.explicitSubagentDelegation(userPromptText)
+              const fallbackScope = explicitDelegation
+                ? "coordinated"
+                : PromptContext.explicitOrchestration(userPromptText)
+                  ? "focused"
+                  : ExecutionContract.conservativeScope(lastUser.agent)
+              ExecutionRuntime.setExecutionContract(
+                executionContext.executionID,
+                ExecutionContract.fallback("default_runtime_policy", {
+                  scope: await SessionScopeFloor.merge(sessionID, fallbackScope),
+                }),
               )
             }
           }
         }
       }
 
-      const routingPrompt = msgs
-        .findLast((message) => message.info.id === lastUser.id)
-        ?.parts.filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
-        .map((part) => part.text)
-        .join("\n")
       const { ExecutionRuntime: RouteRuntime } = await import("@/core/execution/runtime")
-      const executionView = RouteRuntime.view(executionContext.executionID)
-      let activeRoute = executionView?.route?.active ?? {
-        providerID: lastUser.model.providerID,
-        modelID: lastUser.model.modelID,
-        variant: activeVariant ?? lastUser.variant,
-      }
-      const acceptedProposal = RouteRuntime.snapshot(executionContext.rootSessionID).pendingProposals.find(
-        (proposal) =>
-          proposal.executionID === executionContext.executionID &&
-          proposal.invocationID === executionContext.invocationID &&
-          proposal.state === "accepted",
-      )
-      if (acceptedProposal) {
-        try {
-          const target = await Provider.getModel(
-            acceptedProposal.toRoute.providerID,
-            acceptedProposal.toRoute.modelID,
-          ).catch(() => undefined)
-          if (target) {
-            const { LLM } = await import("@/core/session/llm")
-            const inheritedPolicy = Provider.routePolicy(activeModel ?? target)
-            const explicitRequest = acceptedProposal.scope === "model"
-            const requestedAlias = acceptedProposal.evidenceRefs
-              .find((ref) => ref.startsWith("requested-route:"))
-              ?.slice(16)
-            const autoRouter = (await Config.get()).experimental?.auto_router
-            const routePolicy: Provider.RoutePolicy = {
-              requested: requestedAlias ?? `${acceptedProposal.toRoute.providerID}/${acceptedProposal.toRoute.modelID}`,
-              mode: requestedAlias?.endsWith("/atomcli-free")
-                ? "free"
-                : requestedAlias
-                  ? "auto"
-                  : explicitRequest
-                    ? "explicit"
-                    : "auto",
-              allowedProviders: requestedAlias
-                ? (autoRouter?.allowed_providers ?? [target.providerID])
-                : [target.providerID],
-              excluded: requestedAlias
-                ? (autoRouter?.excluded_models ?? [])
-                : explicitRequest
-                  ? []
-                  : inheritedPolicy.excluded,
-              requiredCapabilities: ["text", "tool"],
-              freeOnly: requestedAlias
-                ? requestedAlias.endsWith("/atomcli-free") || !autoRouter?.allow_paid_models
-                : explicitRequest
-                  ? false
-                  : inheritedPolicy.freeOnly || lastUser.model.modelID === "atomcli-free",
-              requireVerification: true,
-              variant: acceptedProposal.toRoute.variant,
-            }
-            const { ModelVerification } = await import("@/integrations/provider/verification")
-            const targetProvider = await Provider.getProvider(target.providerID)
-            if (!targetProvider) throw new Error(`Provider not found: ${target.providerID}`)
-            const targetUser = { ...lastUser, variant: acceptedProposal.toRoute.variant }
-            const targetParams = (
-              await LLM.prepareRouteParams({
-                model: target,
-                provider: targetProvider,
-                agent: await Agent.get(lastUser.agent),
-                user: targetUser,
-                sessionID,
-              })
-            ).params
-            const paramsDigest = await ModelVerification.paramsDigest(targetParams)
-            if (paramsDigest !== acceptedProposal.paramsDigest)
-              throw new Error("Model change parameters changed after approval; request approval again")
-            const identity = await ModelVerification.identity(target, targetProvider, {
-              variant: acceptedProposal.toRoute.variant,
-              effectiveParams: targetParams,
-            })
-            if (identity !== acceptedProposal.credentialRevision)
-              throw new Error("Model credentials changed after approval; request approval again")
-            const verifiedTarget = Provider.applyRoutePolicy(target, routePolicy)
-            const dispatchCapabilities = routePolicy.requiredCapabilities.filter(
-              (capability): capability is "text" | "tool" => capability === "text" || capability === "tool",
-            )
-            await LLM.verifyDispatch(
-              { model: verifiedTarget, sessionID, abort, execution: executionContext },
-              targetParams,
-              dispatchCapabilities,
-            )
-            const eligible = await Promise.all(
-              routePolicy.requiredCapabilities.map((capability) =>
-                Provider.isRouteEligible(target, routePolicy, capability, { effectiveParams: targetParams }),
-              ),
-            )
-            if (eligible.every(Boolean) && paramsDigest === acceptedProposal.paramsDigest) {
-              const applied = await RouteRuntime.applyRouteProposal({
-                sessionID,
-                execution: executionContext,
-                proposalID: acceptedProposal.id,
-                executionID: executionContext.executionID,
-                invocationID: executionContext.invocationID,
-                expectedProposalVersion: acceptedProposal.version,
-                expectedRouteRevision: acceptedProposal.routeRevision,
-                paramsDigest,
-                expertLimits:
-                  acceptedProposal.scope === "expert"
-                    ? {
-                        maxEpisodes: (await Config.get()).adaptive_routing?.max_expert_episodes ?? 2,
-                        maxCalls: (await Config.get()).adaptive_routing?.max_expert_calls ?? 3,
-                        maxSteps: (await Config.get()).adaptive_routing?.max_expert_steps ?? 3,
-                      }
-                    : undefined,
-              })
-              if (applied.applied) {
-                activeRoute = acceptedProposal.toRoute
-                activeModel = verifiedTarget
-                fallbackActive = false
-                if (acceptedProposal.scope !== "expert") {
-                  if (acceptedProposal.scope === "model")
-                    lastUser.model = requestedAlias
-                      ? { providerID: "atomcli", modelID: requestedAlias.slice("atomcli/".length) }
-                      : { providerID: target.providerID, modelID: target.id }
-                  lastUser.variant = acceptedProposal.toRoute.variant
-                  if (acceptedProposal.scope === "model") lastUser.modelPinned = true
-                  if (acceptedProposal.scope === "thinking") lastUser.thinkingPinned = true
-                  await Session.updateMessage(lastUser)
-                }
-              } else {
-                throw new Error(`Approved model change could not be applied: ${applied.reason}`)
-              }
-            } else throw new Error("Approved model failed dispatch verification")
-          } else throw new Error("Approved model is no longer available")
-        } catch (error) {
-          const assistant = await recordModelResolutionError({ sessionID, user: lastUser, messages: msgs, error })
-          const completion = RouteRuntime.finalizeOutcome({
-            sessionID,
-            messageID: assistant.id,
-            execution: executionContext,
-            failure: RouteRuntime.classifyTerminalFailure(error, abort.aborted),
-          })
-          await projectAndAckCompletion(completion)
-          break
-        }
-      }
-      activeVariant = activeRoute.variant
-      const routeAfterApply = RouteRuntime.view(executionContext.executionID)
-      if (
-        routeAfterApply?.route?.stage === "expert" &&
-        routeAfterApply.route.activeEpisodeID &&
-        routeAfterApply.route.expert &&
-        (routeAfterApply.route.expert.calls >= routeAfterApply.route.expert.maxCalls ||
-          routeAfterApply.route.expert.steps >= routeAfterApply.route.expert.maxSteps)
-      ) {
-        const returned = await returnExpertHandoff({
-          sessionID,
-          execution: executionContext,
-          lastUser,
-          routeRevision: routeAfterApply.routeRevision,
-          route: routeAfterApply.route,
-          text: "The configured expert episode call or step limit was reached before a conclusive handoff.",
-          status: "inconclusive",
-          messageID: Identifier.ascending("message"),
-        })
-        if (returned === "blocked") break
-        activeModel = undefined
-        activeVariant = routeAfterApply.route.base.variant
-        continue
-      }
+      const routeResult = await resolveRouteAndExpert({
+        msgs,
+        lastUser,
+        executionContext,
+        activeVariant,
+        activeModel,
+        fallbackActive,
+        sessionID,
+        abort,
+        RouteRuntime,
+        recordModelResolutionError,
+        projectAndAckCompletion,
+        returnExpertHandoff,
+      })
+      activeModel = routeResult.activeModel
+      activeVariant = routeResult.activeVariant
+      fallbackActive = routeResult.fallbackActive
+      if (routeResult.action === "break") break
+      if (routeResult.action === "continue") continue
+      const activeRoute = routeResult.activeRoute
+      const routingPrompt = routeResult.routingPrompt
       let model: Provider.Model
       try {
         model =
@@ -1575,6 +713,7 @@ export namespace SessionPrompt {
           error: error instanceof Error ? error.name : "UnknownError",
         })
         const assistant = await recordModelResolutionError({ sessionID, user: lastUser, messages: msgs, error })
+        if (session.parentID) break
         const failure = ExecutionRuntime.classifyTerminalFailure(error, abort.aborted)
         const completion = ExecutionRuntime.finalizeOutcome({
           sessionID,
@@ -1589,160 +728,7 @@ export namespace SessionPrompt {
 
       const task = tasks.pop()
 
-      // pending subtask
-      // TODO: centralize "invoke tool" logic
-      if (task?.type === "subtask") {
-        const taskTool = await TaskTool.init()
-        const assistantMessage = (await Session.updateMessage({
-          id: Identifier.ascending("message"),
-          role: "assistant",
-          parentID: lastUser.id,
-          sessionID,
-          agent: task.agent,
-          path: {
-            cwd: Instance.directory,
-            root: Instance.worktree,
-          },
-          cost: 0,
-          tokens: {
-            input: 0,
-            output: 0,
-            reasoning: 0,
-            cache: { read: 0, write: 0 },
-          },
-          modelID: model.id,
-          providerID: model.providerID,
-          time: {
-            created: Date.now(),
-          },
-        })) as MessageV2.Assistant
-        let part = (await Session.updatePart({
-          id: Identifier.ascending("part"),
-          messageID: assistantMessage.id,
-          sessionID: assistantMessage.sessionID,
-          type: "tool",
-          callID: ulid(),
-          tool: TaskTool.id,
-          state: {
-            status: "running",
-            input: {
-              prompt: task.prompt,
-              description: task.description,
-              subagent_type: task.agent,
-              command: task.command,
-            },
-            time: {
-              start: Date.now(),
-            },
-          },
-        })) as MessageV2.ToolPart
-        let taskArgs = {
-          prompt: task.prompt,
-          description: task.description,
-          subagent_type: task.agent,
-          command: task.command,
-        }
-        let executionError: Error | undefined
-        const taskAgent = await Agent.get(task.agent)
-        const taskCtx: Tool.Context = {
-          agent: task.agent,
-          messageID: assistantMessage.id,
-          sessionID: sessionID,
-          abort,
-          callID: part.callID,
-          extra: { bypassAgentCheck: true, execution: executionContext },
-          async metadata(input) {
-            await Session.updatePart({
-              ...part,
-              type: "tool",
-              state: {
-                ...part.state,
-                ...input,
-              },
-            } satisfies MessageV2.ToolPart)
-          },
-          async ask(req) {
-            const latestSession = await Session.get(sessionID)
-            await PermissionNext.ask({
-              ...req,
-              sessionID: sessionID,
-              ruleset: PermissionNext.merge(taskAgent.permission, latestSession.permission ?? []),
-            })
-          },
-        }
-        const result = await ToolRuntime.execute({
-          tool: "task",
-          args: taskArgs,
-          context: taskCtx,
-          mutating: taskTool.mutating,
-          effects: taskTool.effects,
-          execute: (args, context) => taskTool.execute(args, context),
-        }).catch((error) => {
-          executionError = error
-          log.error("subtask execution failed", { error, agent: task.agent, description: task.description })
-          return undefined
-        })
-        assistantMessage.finish = "tool-calls"
-        assistantMessage.time.completed = Date.now()
-        await Session.updateMessage(assistantMessage)
-        if (result && part.state.status === "running") {
-          await Session.updatePart({
-            ...part,
-            state: {
-              status: "completed",
-              input: part.state.input,
-              title: result.title,
-              metadata: result.metadata,
-              output: result.output,
-              attachments: result.attachments,
-              time: {
-                ...part.state.time,
-                end: Date.now(),
-              },
-            },
-          } satisfies MessageV2.ToolPart)
-        }
-        if (!result) {
-          await Session.updatePart({
-            ...part,
-            state: {
-              status: "error",
-              error: executionError ? `Tool execution failed: ${executionError.message}` : "Tool execution failed",
-              time: {
-                start: part.state.status === "running" ? part.state.time.start : Date.now(),
-                end: Date.now(),
-              },
-              metadata: part.metadata,
-              input: part.state.input,
-            },
-          } satisfies MessageV2.ToolPart)
-        }
-
-        // Add synthetic user message to prevent certain reasoning models from erroring
-        // If we create assistant messages w/ out user ones following mid loop thinking signatures
-        // will be missing and it can cause errors for models like gemini for example
-        const summaryUserMsg: MessageV2.User = {
-          id: Identifier.ascending("message"),
-          sessionID,
-          role: "user",
-          time: {
-            created: Date.now(),
-          },
-          agent: lastUser.agent,
-          model: lastUser.model,
-        }
-        await Session.updateMessage(summaryUserMsg)
-        await Session.updatePart({
-          id: Identifier.ascending("part"),
-          messageID: summaryUserMsg.id,
-          sessionID,
-          type: "text",
-          text: "Summarize the task tool output above and continue with your task.",
-          synthetic: true,
-        } satisfies MessageV2.TextPart)
-
-        continue
-      }
+      if (await runPendingTask(task, { sessionID, lastUser, model, abort, executionContext, log })) continue
 
       // pending compaction
       if (task?.type === "compaction") {
@@ -1773,272 +759,56 @@ export namespace SessionPrompt {
       }
 
       // normal processing
-      const agent = await Agent.get(lastUser.agent)
-      const fastProfile = SessionExecutionProfile.get(sessionID) === "companion-fast"
-      const { ExecutionRuntime: RuntimeForPolicy } = await import("@/core/execution/runtime")
-      const currentPolicy = executionContext
-        ? RuntimeForPolicy.getExecutionPolicy(executionContext.executionID)
-        : undefined
-      const maxSteps = agent.steps ?? Infinity
-      const isLastStep = !finalResponseOnly && step >= maxSteps
-      // Taskflow reminders must not instruct a call the provider would reject:
-      // last step (tools disabled), expert episode (read-only toolset), or a
-      // policy without taskflow (answer-only turn).
-      const routeStateEarly = executionContext ? RouteRuntime.view(executionContext.executionID)?.route : undefined
-      const expertEpisodeEarly = routeStateEarly?.stage === "expert" ? routeStateEarly.activeEpisodeID : undefined
-      const taskflowAvailable =
-        !isLastStep &&
-        expertEpisodeEarly === undefined &&
-        (currentPolicy ? currentPolicy.budget.allowTaskflow === true : true) &&
-        !(currentPolicy?.allowedTools && !currentPolicy.allowedTools.includes("taskflow"))
-      const currentEvidence = executionContext
-        ? RouteRuntime.getExecutionEvidence(executionContext.executionID)
-        : undefined
-      const eventCheckpoint =
-        isCheckpointContinuation(msgs.find((message) => message.info.id === lastUser.id)) &&
-        !RouteRuntime.checkpointHandled(executionContext.executionID, lastUser.id)
-      const checkpointRequired =
-        !finalResponseOnly &&
-        (eventCheckpoint ||
-          (executionContext !== undefined
-            ? RuntimeForPolicy.isCheckpointRequired(executionContext.executionID)
-            : currentPolicy !== undefined &&
-              currentPolicy.budget.maxToolCalls > 0 &&
-              (currentEvidence?.toolCalls ?? 0) >= Math.ceil(currentPolicy.budget.maxToolCalls * 0.8)))
-      msgs = insertReminders({
-        messages: msgs,
-        agent,
-        step,
-        taskflowAvailable,
-        checkpointRequired,
-      })
-
-      const currentModel = model
-
-      const processor = SessionProcessor.create({
-        assistantMessage: (await Session.updateMessage({
-          id: Identifier.ascending("message"),
-          parentID: lastUser.id,
-          role: "assistant",
-          agent: agent.name,
-          path: {
-            cwd: Instance.directory,
-            root: Instance.worktree,
-          },
-          cost: 0,
-          tokens: {
-            input: 0,
-            output: 0,
-            reasoning: 0,
-            cache: { read: 0, write: 0 },
-          },
-          modelID: currentModel.id,
-          providerID: currentModel.providerID,
-          time: {
-            created: Date.now(),
-          },
-          sessionID,
-        })) as MessageV2.Assistant,
-        sessionID: sessionID,
-        model: currentModel,
+      const turnContextResult = await prepareTurnExecution({
+        sessionID,
+        session,
+        msgs,
+        lastUser,
+        lastFinished,
+        model,
+        activeModel,
+        activeVariant,
+        fallbackActive,
         abort,
-        initialFallbackModel: fallbackActive ? activeModel : undefined,
+        step,
+        executionContext,
+        finalResponseOnly,
+        finalizationAttempt,
+        RouteRuntime,
+        insertReminders,
+        shouldResolveTools,
+        checkpointTools,
+        prepareTurnContext,
+        earlyProgressReminder,
+        checkpointHandoff,
+        checkpointDelta,
+        accumulateCheckpointFields,
+        isCheckpointContinuation,
       })
-
-      // Check if user explicitly invoked an agent via @ in this turn
-      const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
-      const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
-      const hasPriorToolActivity = msgs.some((message) =>
-        message.parts.some((part) => part.type === "tool" || part.type === "subtask"),
-      )
-      const loadedMcpNames = new Set<string>()
-
-      const resolvedTools =
-        !finalResponseOnly && shouldResolveTools(isLastStep)
-          ? await resolveTools({
-              agent,
-              session,
-              model,
-              tools: lastUser.tools,
-              processor,
-              bypassAgentCheck,
-              hasPriorToolActivity,
-              loadedMcpNames,
-              prompt: (lastUserMsg?.parts ?? [])
-                .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
-                .map((part) => part.text)
-                .join("\n"),
-              execution: executionContext,
-              checkpointRequired,
-            })
-          : {}
-      const routeState = RouteRuntime.view(executionContext.executionID)?.route
-      const expertEpisodeID = routeState?.stage === "expert" ? routeState.activeEpisodeID : undefined
-      let tools = expertEpisodeID
-        ? Object.fromEntries(Object.entries(resolvedTools).filter(([name]) => ["read", "grep", "find"].includes(name)))
-        : resolvedTools
-      if (checkpointRequired) {
-        tools = checkpointTools(tools)
-      }
-
-      if (
-        step === 1 &&
-        currentPolicy?.budget.allowSummary !== false &&
-        AgentEval.executionPolicy(sessionID).allowAuxiliarySummaries
-      ) {
-        SessionSummary.summarize({
-          sessionID: sessionID,
-          messageID: lastUser.id,
-        })
-      }
-
-      // F8: targeted shallow copy — only clone messages/parts that will be mutated
-      const sessionMessages =
-        step > 1 && lastFinished
-          ? msgs.map((msg) => {
-              if (msg.info.role !== "user" || msg.info.id <= lastFinished.id) return msg
-              // Check if any text parts need wrapping
-              const needsWrap = msg.parts.some((p) => p.type === "text" && !p.ignored && !p.synthetic && p.text.trim())
-              if (!needsWrap) return msg
-              return {
-                ...msg,
-                parts: msg.parts.map((part) => {
-                  if (part.type !== "text" || part.ignored || part.synthetic || !part.text.trim()) return part
-                  return {
-                    ...part,
-                    text: [
-                      "<system-reminder>",
-                      "The user sent the following message:",
-                      part.text,
-                      "",
-                      "Please address this message and continue with your tasks.",
-                      "</system-reminder>",
-                    ].join("\n"),
-                  }
-                }),
-              }
-            })
-          : [...msgs]
-
-      await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
-
-      // Extract user text for context enrichment (memory recall + skill auto-injection)
-      let userText = ""
-      const lastUserWithParts = lastUser ? msgs.find((m) => m.info.id === lastUser.id) : undefined
-      if (lastUserWithParts?.parts) {
-        userText = lastUserWithParts.parts
-          .filter((p) => p.type === "text")
-          .map((p) => (p as any).text)
-          .join(" ")
-      }
-
-      // Run environment, custom rules, memory recalls and skill auto-injection in parallel
-      const allowMemoryRecall = currentPolicy?.budget.allowMemoryRecall !== false
-      const [environment, custom, memoryContext, coreMemoryContext, autoSkillContext] = await Promise.all([
-        SystemPrompt.environment(userText, loadedMcpNames),
-        SystemPrompt.custom(),
-        userText && allowMemoryRecall ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
-        userText && allowMemoryRecall
-          ? recallCoreMemories(userText, 3, { skipRerank: fastProfile, routeModel: lastUser?.model, sessionID })
-          : Promise.resolve(""),
-        userText ? SystemPrompt.autoInjectSkills(userText) : Promise.resolve(""),
-      ])
-
-      const system = [...environment, ...custom]
-      const allowance = RouteRuntime.allowance(executionContext.executionID)
-      const previousCheckpoint = RouteRuntime.checkpoints(executionContext.executionID).at(-1)
-      system.push(
-        `<execution_state>\n${JSON.stringify({
-          executionID: executionContext.executionID,
-          lastCheckpoint: previousCheckpoint?.sequence ?? 0,
-          allowance,
-          model: `${currentModel.providerID}/${currentModel.id}`,
-          plan: HarnessState.getSteps(sessionID).slice(0, 30),
-          checkpointRequired,
-        })}\nCounts above are harness observations. Task completion requires evidence; plan status alone is not verification.\n</execution_state>`,
-      )
-      if (previousCheckpoint && !checkpointRequired) {
-        system.push(`Previous checkpoint handoff:\n${JSON.stringify(previousCheckpoint.payload).slice(0, 24_000)}`)
-      }
-      if (checkpointRequired) {
-        const rootObjective = RouteRuntime.objective(executionContext.executionID)?.objective
-        const invalidResponses = RouteRuntime.checkpointFailures(executionContext.executionID)
-        if (invalidResponses)
-          system.push(
-            `Invalid checkpoint response (${invalidResponses}/${ExecutionCheckpoint.MAX_INVALID_RESPONSES}). Return JSON matching the execution_checkpoint schema.`,
-          )
-        const rawDelta = checkpointDelta(
-          await Session.messages({ sessionID, excludePatches: false }),
-          previousCheckpoint?.createdAt ?? 0,
-        )
-        system.push(
-          [
-            "<checkpoint_context>",
-            "Root user objective (immutable):",
-            rootObjective || userText || "(unavailable)",
-            previousCheckpoint ? `Previous checkpoint (#${previousCheckpoint.sequence}):` : "No previous checkpoint.",
-            previousCheckpoint ? JSON.stringify(previousCheckpoint.payload) : "",
-            "Since previous checkpoint:",
-            rawDelta || "(no recorded delta)",
-            "Evaluate durable evidence and current work segment. Do not redefine root objective.",
-            "</checkpoint_context>",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        )
-      }
-      if (tools.model_control)
-        system.push(
-          "For conversation model or thinking-level changes, use model_control (list then request), never repository searches or configuration edits. You can recommend a better model for difficult work using the same tool. Explain the reason in the user's language. A proposal is not a completed switch. Respect rejected requests; only claim a switch after the runtime confirms it. Current dispatch: " +
-            currentModel.providerID +
-            "/" +
-            currentModel.id +
-            " (thinking: " +
-            (activeVariant ?? "default") +
-            ").",
-        )
-      if (finalResponseOnly) {
-        system.push(
-          [
-            "This is a final-response-only turn. No tools are available and no additional work may be attempted.",
-            "Return a normal user-facing final response, not checkpoint JSON.",
-            "Clearly summarize what was completed, what was verified, what remains, and any technical, verification, or procedural harness blockers.",
-            `Finalization constraints: ${finalResponseOnly.reasons.join("; ")}`,
-            finalizationAttempt > 0
-              ? "⚠️ Previous finalization attempt returned no text. You MUST return a user-facing final text summary now."
-              : "",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        )
-      }
-      const routeDecision = RouteRuntime.routeProposalHistory(executionContext.executionID)
-        .filter((proposal) => proposal.invocationID === executionContext.invocationID)
-        .at(-1)
-      if (routeDecision)
-        system.push(
-          `Model change result: ${routeDecision.state}; target: ${routeDecision.toRoute.providerID}/${routeDecision.toRoute.modelID}. Rejected or expired proposals did not change the model; do not repeat them without a new user request.`,
-        )
-      if (expertEpisodeID) {
-        system.push(
-          "You are in a bounded read-only expert episode. Analyze or review only; do not claim to mutate files, run commands, or finish the user's root task. Only read, grep, and find tools are available — do NOT call taskflow, bash, edit, write, or any other tool. Return a concise evidence-based handoff for the base model. Do not include hidden chain-of-thought.",
-        )
-      }
-      if (memoryContext) system.push(memoryContext)
-      if (coreMemoryContext) system.push(`<core_memory>\n${coreMemoryContext}\n</core_memory>`)
-      if (autoSkillContext) system.push(autoSkillContext)
-      if (Object.keys(tools).length === 0 && !isLastStep) {
-        // No tool schemas were advertised (casual turn, child model_control skip,
-        // or an empty allowlist intersection). Tell the model explicitly so it does
-        // not hallucinate tool calls the provider would reject as unavailable.
-        system.push("Tools are disabled for this turn. Respond with text only. Do NOT attempt any tool calls.")
-      }
-      const turnContext = prepareTurnContext(system, await MessageV2.toModelMessage(sessionMessages), isLastStep)
-
-      const requiresFinalGate = !session.parentID
+      msgs = turnContextResult.msgs
+      const {
+        agent,
+        processor,
+        tools,
+        currentModel,
+        checkpointRequired,
+        isLastStep,
+        expertEpisodeID,
+        turnContext,
+        requiresFinalGate,
+        eventCheckpoint,
+        routeState,
+      } = turnContextResult
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
       try {
-        if (!finalResponseOnly)
+        if (
+          ExecutionRuntime.isReviewer(executionContext) &&
+          step > Math.min(agent.steps ?? Infinity, ReviewPolicy.MAX_REVIEW_STEPS)
+        ) {
+          throw new ExecutionRuntime.BudgetExceededError("step_limit", executionContext.executionID)
+        }
+        // Checkpoint turns report progress and must run even after task-step budget is exhausted.
+        if (!finalResponseOnly && !checkpointRequired)
           await ExecutionRuntime.admitStep({
             sessionID,
             stepID: processor.message.id,
@@ -2048,9 +818,13 @@ export namespace SessionPrompt {
         if (!(error instanceof ExecutionRuntime.BudgetExceededError)) throw error
         if (error.reason === "checkpoint_required") {
           // Reserved slice is exhausted; next turn enters checkpoint mode.
+          await Session.removeMessage({ sessionID, messageID: processor.message.id })
+          step--
           continue
         }
-        if (error.reason === "step_limit" && executionContext) {
+        if (error.reason === "step_limit" && executionContext && !ExecutionRuntime.isReviewer(executionContext)) {
+          await Session.removeMessage({ sessionID, messageID: processor.message.id })
+          step--
           const extensions = ExecutionRuntime.allowance(executionContext.executionID).extensions
           if (extensions < ExecutionCheckpoint.MAX_EXTENSIONS) {
             ExecutionRuntime.requestCheckpoint(executionContext.executionID)
@@ -2060,6 +834,22 @@ export namespace SessionPrompt {
           continue
         }
         const failure = ExecutionRuntime.classifyTerminalFailure(error, abort.aborted)
+        if (session.parentID) {
+          await Session.updatePart({
+            id: Identifier.ascending("part"),
+            messageID: processor.message.id,
+            sessionID,
+            type: "text",
+            text: failure.reasonMessage,
+            synthetic: true,
+            time: { start: Date.now(), end: Date.now() },
+          })
+          processor.message.finish = "stop"
+          processor.message.error = new NamedError.Unknown({ message: failure.reasonMessage }).toObject()
+          processor.message.time.completed = Date.now()
+          await Session.updateMessage(processor.message)
+          break
+        }
         const completion = ExecutionRuntime.finalizeOutcome({
           sessionID,
           messageID: processor.message.id,
@@ -2096,7 +886,7 @@ export namespace SessionPrompt {
         // Checkpoint JSON must stay buffered in every session type. Child sessions
         // otherwise persist text directly while parser only reads deferred parts.
         {
-          deferText: requiresFinalGate || checkpointRequired,
+          deferText: requiresFinalGate || checkpointRequired || Boolean(finalResponseOnly),
           captureCheckpointReasoning: checkpointRequired,
         },
       )
@@ -2105,6 +895,14 @@ export namespace SessionPrompt {
       if (result.fallbackModel) {
         activeModel = result.fallbackModel
         fallbackActive = true
+      }
+      const latestUserID = (await Session.messages({ sessionID, excludePatches: true })).findLast(
+        (message) => message.info.role === "user",
+      )?.info.id
+      if (latestUserID && latestUserID !== lastUser.id && !processor.message.error) {
+        processor.message.finish = "tool-calls"
+        await Session.updateMessage(processor.message)
+        continue
       }
       if (result.status === "stop" && !finalResponseOnly) {
         if (requiresFinalGate && processor.message.error) {
@@ -2117,6 +915,21 @@ export namespace SessionPrompt {
             messageID: processor.message.id,
             execution: executionContext,
             failure,
+            parts: [
+              {
+                id: Identifier.ascending("part"),
+                messageID: processor.message.id,
+                sessionID,
+                type: "text",
+                text: await buildDeterministicFinalResponse({
+                  sessionID,
+                  executionID: executionContext.executionID,
+                  reasons: [failure.reasonMessage],
+                }),
+                synthetic: true,
+                time: { start: Date.now(), end: Date.now() },
+              },
+            ],
           })
           await projectAndAckCompletion(completion)
         }
@@ -2128,110 +941,22 @@ export namespace SessionPrompt {
         continue
       }
       if (checkpointRequired) {
-        const candidateTexts = [
-          (result.deferredTextParts ?? [])
-            .map((part) => part.text)
-            .join("\n")
-            .trim(),
-          ...(result.checkpointReasoningCandidates ?? []),
-        ].filter(Boolean)
-
-        let parsedCheckpoint: ExecutionCheckpoint.Result | undefined
-        for (const candidateText of candidateTexts) {
-          for (const checkpointInput of parseCheckpointJsonCandidates(candidateText)) {
-            const normalized = ExecutionCheckpoint.normalizeCandidate(checkpointInput)
-            const candidate = ExecutionCheckpoint.Result.safeParse(normalized)
-            if (candidate.success) {
-              parsedCheckpoint = candidate.data
-              break
-            }
-          }
-          if (parsedCheckpoint) break
-        }
-
-        if (!parsedCheckpoint) {
-          const terminalFinish = result.terminalFinish ?? processor.message.finish
-          if (terminalFinish !== "tool-calls") {
-            const failures = RouteRuntime.recordCheckpointFailure(executionContext.executionID)
-            if (failures >= ExecutionCheckpoint.MAX_INVALID_RESPONSES) {
-              const rootObjective = RouteRuntime.objective(executionContext.executionID)?.objective
-              parsedCheckpoint = ExecutionCheckpoint.conservativeContinue(rootObjective)
-            }
-          }
-          if (!parsedCheckpoint) {
-            // Invalid JSON is not a finished assistant answer and does not replace
-            // the root/event message. Persist the retry count, not synthetic turns.
-            await Session.updateMessage({ ...processor.message, finish: undefined })
-            continue
-          }
-        }
-        const checkpointRuntime = {
-          executionID: executionContext.executionID,
-          allowance: RouteRuntime.allowance(executionContext.executionID),
-          model: `${processor.message.providerID}/${processor.message.modelID}`,
-          reason: eventCheckpoint
-            ? "final_gate"
-            : (RouteRuntime.checkpointReason(executionContext.executionID) ?? "requested"),
-        }
-        const effectiveCheckpoint = RouteRuntime.reconcileCheckpoint(executionContext.executionID, parsedCheckpoint)
-        const applied = RouteRuntime.applyCheckpoint(
-          executionContext.executionID,
-          processor.message.id,
-          effectiveCheckpoint,
-          RouteRuntime.getExecutionEvidence(executionContext.executionID),
-          {
-            triggerMessageID: lastUser.id,
-            telemetry: checkpointRuntime,
-          },
-        )
-        await Session.updatePart({
-          id: Identifier.ascending("part"),
-          messageID: processor.message.id,
+        const checkpointResult = await handleCheckpoint({
+          result,
           sessionID,
-          type: "checkpoint",
-          runtime: checkpointRuntime,
-          sequence: applied.sequence,
-          decision: effectiveCheckpoint.decision,
-          requestedCalls: effectiveCheckpoint.requestedCalls,
-          grantedCalls: applied.grantedCalls,
-          objectiveAssessment: effectiveCheckpoint.objectiveAssessment,
-          progressSummary: effectiveCheckpoint.progressSummary,
-          discoveries: effectiveCheckpoint.discoveries,
-          completedWork: effectiveCheckpoint.completedWork,
-          remainingWork: effectiveCheckpoint.remainingWork,
-          failures: effectiveCheckpoint.failures,
-          blockers: effectiveCheckpoint.blockers,
-          routeAssessment: effectiveCheckpoint.routeAssessment,
-          nextActions: effectiveCheckpoint.nextActions,
+          lastUser,
+          executionContext,
+          processor,
+          eventCheckpoint,
+          RouteRuntime,
+          parseCheckpointJsonCandidates,
+          checkpointFinalParts,
         })
-        if (effectiveCheckpoint.decision === "continue" && applied.grantedCalls) continue
-        if (effectiveCheckpoint.decision === "continue" && applied.extensionLimitReached) {
-          finalResponseOnly = { reasons: ["Execution extension limit reached."] }
-          continue
-        }
-        if (effectiveCheckpoint.decision === "blocked") {
-          const constraints = RouteRuntime.finalizationConstraints(executionContext.executionID)
-          const reconciliation = effectiveCheckpoint.blockers.filter((blocker) =>
-            blocker.includes("durable taskflow contains stale unresolved state"),
-          )
-          if (constraints.length || reconciliation.length) {
-            finalResponseOnly = { reasons: [...constraints, ...reconciliation] }
-            continue
-          }
-          await RouteRuntime.waitForInput({
-            sessionID,
-            execution: executionContext,
-            reason: effectiveCheckpoint.blockers.join("; ") || effectiveCheckpoint.progressSummary,
-          })
-          waitingForInput = true
+        if (checkpointResult.finalResponseOnly) finalResponseOnly = checkpointResult.finalResponseOnly
+        if (checkpointResult.action === "continue") continue
+        if (checkpointResult.action === "break") {
+          waitingForInput = checkpointResult.waitingForInput === true
           break
-        }
-        if (effectiveCheckpoint.decision === "finish") {
-          result.deferredTextParts = checkpointFinalParts(result.deferredTextParts, {
-            sessionID,
-            messageID: processor.message.id,
-            finalResponse: effectiveCheckpoint.finalResponse!,
-          })
         }
       }
       const routeDecisionMadeThisStep = RouteRuntime.routeProposalHistory(executionContext.executionID).some(
@@ -2252,12 +977,12 @@ export namespace SessionPrompt {
       }
       const hasFinalizationText =
         Boolean(finalResponseOnly) &&
-        (result.deferredTextParts ?? []).some((part) => part.type === "text" && part.text.trim().length > 0)
+        PromptFinalization.isUserFacingReport((result.deferredTextParts ?? []).map((part) => part.text).join("\n"))
       const terminalCandidate =
+        !finalResponseOnly &&
         result.status === "continue" &&
-        (hasFinalizationText ||
-          ((result.terminalFinish ?? processor.message.finish) &&
-            !["tool-calls", "unknown"].includes(result.terminalFinish ?? processor.message.finish!)))
+        (result.terminalFinish ?? processor.message.finish) &&
+        !["tool-calls", "unknown"].includes(result.terminalFinish ?? processor.message.finish!)
       if (terminalCandidate && expertEpisodeID && routeState) {
         const expertText = (result.deferredTextParts ?? []).map((part) => part.text).join("\n")
         const returned = await returnExpertHandoff({
@@ -2284,7 +1009,7 @@ export namespace SessionPrompt {
           candidate = await ExecutionRuntime.stageCompletion({
             sessionID,
             messageID: processor.message.id,
-            finish: finalResponseOnly ? "stop" : (result.terminalFinish ?? processor.message.finish!),
+            finish: result.terminalFinish ?? processor.message.finish!,
             parts: result.deferredTextParts ?? [],
             editedFiles,
             requiresReview: reviewDecision.requirement === "required",
@@ -2292,64 +1017,47 @@ export namespace SessionPrompt {
             execution: executionContext,
           })
         } catch (error) {
-          if (error instanceof ExecutionRuntime.BudgetExceededError && error.reason === "active_blocker") {
-            if (finalResponseOnly) {
-              const reason = `Execution stopped by runtime constraints: ${finalResponseOnly.reasons.join("; ")}`
-              const modelParts = (result.deferredTextParts ?? []).filter(
-                (part) => part.type === "text" && part.text.trim().length > 0,
-              )
-              const parts = modelParts.length
-                ? modelParts
-                : [
-                    {
-                      id: Identifier.ascending("part"),
-                      messageID: processor.message.id,
-                      sessionID,
-                      type: "text" as const,
-                      text: [
-                        "The execution reached its work boundary before a model-generated final report was available.",
-                        `Completed work and verification remain recorded in the transcript. ${reason}`,
-                      ].join("\n\n"),
-                      synthetic: true,
-                      time: { start: Date.now(), end: Date.now() },
-                      metadata: { blockerKind: "procedural_harness" },
-                    },
-                  ]
-              const failure = ExecutionRuntime.classifyTerminalFailure(
-                new ExecutionRuntime.BudgetExceededError("step_limit", executionContext.executionID, reason),
-              )
-              const completion = ExecutionRuntime.finalizeOutcome({
-                sessionID,
-                messageID: processor.message.id,
-                execution: executionContext,
-                failure: { ...failure, reasonMessage: reason },
-                parts,
-              })
-              await projectAndAckCompletion(completion)
-              break
+          if (
+            error instanceof ExecutionRuntime.BudgetExceededError &&
+            ["active_work", "active_blocker", "active_task"].includes(error.reason)
+          ) {
+            const reasons = await PromptFinalization.durableFailureReasons(executionContext.executionID)
+            if (reasons.length) {
+              // Failed obligations and uncertain effects forbid success, not
+              // an honest terminal report. Keep every child/task/work record.
+              finalResponseOnly = { reasons }
+            } else {
+              processor.message.finish = undefined
+              await Session.updateMessage(processor.message)
+              RouteRuntime.requestCheckpoint(executionContext.executionID)
+              continue
             }
-            processor.message.finish = undefined
-            await Session.updateMessage(processor.message)
-            RouteRuntime.requestCheckpoint(executionContext.executionID)
+          } else {
+            throw error
+          }
+        }
+        if (candidate) {
+          const outcome = await resolveCompletion({
+            sessionID,
+            lastUser,
+            execution: executionContext,
+            candidate,
+            abort,
+            allowRetry: !isLastStep && !finalResponseOnly,
+          })
+          if (outcome === "retry") {
             continue
           }
-          throw error
+          break
         }
-        const outcome = await resolveCompletion({
-          sessionID,
-          lastUser,
-          execution: executionContext,
-          candidate,
-          abort,
-          allowRetry: !isLastStep && !finalResponseOnly,
-        })
-        if (outcome === "retry") {
-          continue
-        }
-        break
       }
       if (finalResponseOnly) {
-        if (!hasFinalizationText && finalizationAttempt === 0) {
+        const reportText = (result.deferredTextParts ?? [])
+          .map((part) => part.text)
+          .join("\n")
+          .trim()
+        const usableReport = hasFinalizationText || PromptFinalization.isUserFacingReport(reportText)
+        if (!usableReport && finalizationAttempt === 0) {
           finalizationAttempt++
           await Session.removeMessage({ sessionID, messageID: processor.message.id }).catch(() => {})
           continue
@@ -2360,20 +1068,37 @@ export namespace SessionPrompt {
           executionID: executionContext.executionID,
           reasons: finalResponseOnly.reasons,
         })
-        const failure = ExecutionRuntime.classifyTerminalFailure(
-          new ExecutionRuntime.BudgetExceededError("step_limit", executionContext.executionID, reason),
-        )
+        const failure = finalResponseOnly.reasons.every((item) => item === "Execution step limit reached.")
+          ? ExecutionRuntime.classifyTerminalFailure(
+              new ExecutionRuntime.BudgetExceededError("step_limit", executionContext.executionID, reason),
+            )
+          : {
+              outcome: "blocked" as const,
+              reasonCode: "resource_limit" as const,
+              reasonMessage: reason,
+              retryable: false,
+            }
         const part: MessageV2.TextPart = {
           id: Identifier.ascending("part"),
           messageID: processor.message.id,
           sessionID,
           type: "text",
-          text: fallbackText,
+          text: usableReport
+            ? `${reportText}\n\nRoot execution ${failure.outcome}: ${finalResponseOnly.reasons.join("; ")}`
+            : fallbackText,
           synthetic: true,
           time: { start: Date.now(), end: Date.now() },
           metadata: { blockerKind: "procedural_harness" },
         }
         await Session.updatePart(part)
+        if (session.parentID) {
+          // A child shares its parent's execution budget, but its final report must not terminate that execution.
+          processor.message.finish = "stop"
+          processor.message.error = new NamedError.Unknown({ message: reason }).toObject()
+          processor.message.time.completed = Date.now()
+          await Session.updateMessage(processor.message)
+          break
+        }
         const completion = ExecutionRuntime.finalizeOutcome({
           sessionID,
           messageID: processor.message.id,
@@ -2418,1279 +1143,13 @@ export namespace SessionPrompt {
     return Provider.defaultModel()
   }
 
-  async function resolveTools(input: {
-    agent: Agent.Info
-    model: Provider.Model
-    session: Session.Info
-    tools?: Record<string, boolean>
-    processor: SessionProcessor.Info
-    bypassAgentCheck: boolean
-    hasPriorToolActivity: boolean
-    loadedMcpNames: Set<string>
-    prompt: string
-    execution?: import("@/core/execution/runtime").ExecutionRuntime.Context
-    checkpointRequired?: boolean
-  }) {
-    using _ = log.time("resolveTools")
-    const explicitTools = Object.values(input.tools ?? {}).some((enabled) => enabled === true)
-    const loadAll = shouldLoadTools({
-      providerID: input.model.providerID,
-      prompt: input.prompt,
-      explicitTools,
-      bypassAgentCheck: input.bypassAgentCheck,
-      hasPriorToolActivity: input.hasPriorToolActivity,
-    })
-    const tools: Record<string, AITool> = {}
-    const { ExecutionRuntime } = await import("@/core/execution/runtime")
-    const allowedTools = input.execution
-      ? ExecutionRuntime.getExecutionPolicy(input.execution.executionID)?.allowedTools
-      : undefined
-    const requestedTools = allowedTools
-      ? new Set([...allowedTools, ...(allowedTools.length > 0 ? ["model_control"] : [])])
-      : loadAll
-        ? undefined
-        : new Set(["model_control"])
-
-    const context = (args: any, options: ToolCallOptions): Tool.Context => ({
-      sessionID: input.session.id,
-      abort: options.abortSignal!,
-      messageID: input.processor.message.id,
-      callID: options.toolCallId,
-      extra: {
-        model: input.model,
-        bypassAgentCheck: input.bypassAgentCheck,
-        execution: input.execution,
-        checkpointRequired: input.checkpointRequired,
-      },
-      agent: input.agent.name,
-      metadata: async (val: { title?: string; metadata?: any }) => {
-        const match = input.processor.partFromToolCall(options.toolCallId)
-        if (match && match.state.status === "running") {
-          await Session.updatePart({
-            ...match,
-            state: {
-              title: val.title,
-              metadata: val.metadata,
-              status: "running",
-              input: args,
-              time: {
-                start: Date.now(),
-              },
-            },
-          })
-        }
-      },
-      async ask(req) {
-        const latestSession = await Session.get(input.session.id)
-        await PermissionNext.ask({
-          ...req,
-          sessionID: input.session.id,
-          tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: PermissionNext.merge(input.agent.permission, latestSession.permission ?? []),
-        })
-      },
-    })
-
-    const tool = await getTool()
-    const jsonSchema = await getJsonSchema()
-
-    for (const item of await ToolRegistry.tools(input.model.providerID, input.agent, requestedTools)) {
-      if (item.id === "model_control" && input.session.parentID) continue
-      const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
-      tools[item.id] = tool({
-        id: item.id as any,
-        description: item.description,
-        inputSchema: jsonSchema(schema as any),
-        async execute(args, options) {
-          const ctx = context(args, options)
-          return ToolRuntime.execute({
-            tool: item.id,
-            args,
-            context: ctx,
-            mutating: item.mutating,
-            effects: item.effects,
-            execute: (nextArgs, nextContext) => item.execute(nextArgs, nextContext),
-          })
-        },
-        toModelOutput(result) {
-          return {
-            type: "text",
-            value: result.output,
-          }
-        },
-      })
-    }
-
-    if (!loadAll || allowedTools) return tools
-    // Timeout MCP tools loading to prevent hanging when MCP servers are slow/unreachable
-    const mcpAbort = new AbortController()
-    const mcpTimer = setTimeout(() => {
-      mcpAbort.abort()
-      log.debug("MCP tools are still initializing; skipping them for this turn")
-    }, 250)
-    const mcpTools = await MCP.tools(mcpAbort.signal, input.loadedMcpNames).catch(() => {
-      // MCP.tools() is atomic for a turn: if a later client aborts, its partial
-      // tool map is discarded, so discard the matching client metadata too.
-      input.loadedMcpNames.clear()
-      return {}
-    })
-    clearTimeout(mcpTimer)
-    for (const [key, item] of Object.entries(mcpTools)) {
-      const execute = item.execute
-      if (!execute) continue
-
-      // Wrap execute to add plugin hooks and format output
-      item.execute = async (args, opts) => {
-        const ctx = context(args, opts)
-        return ToolRuntime.execute({
-          tool: key,
-          args,
-          context: ctx,
-          permission: async (_nextArgs, nextContext) =>
-            nextContext.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] }),
-          execute: async (nextArgs, nextContext) => {
-            const result = await execute(nextArgs, { ...opts, abortSignal: nextContext.abort })
-            const textParts: string[] = []
-            const attachments: MessageV2.FilePart[] = []
-            for (const contentItem of result.content) {
-              if (contentItem.type === "text") textParts.push(contentItem.text)
-              else if (contentItem.type === "image") {
-                attachments.push({
-                  id: Identifier.ascending("part"),
-                  sessionID: input.session.id,
-                  messageID: input.processor.message.id,
-                  type: "file",
-                  mime: contentItem.mimeType,
-                  url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-                })
-              }
-            }
-            return {
-              title: "",
-              metadata: result.metadata ?? {},
-              output: textParts.join("\n\n"),
-              attachments,
-              content: result.content,
-            }
-          },
-        })
-      }
-      item.toModelOutput = (result) => {
-        return {
-          type: "text",
-          value: result.output,
-        }
-      }
-      tools[key] = item
-    }
-
-    return tools
-  }
-
   async function createUserMessage(input: PromptInput) {
-    const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
-    const info: MessageV2.Info = {
-      id: input.messageID ?? Identifier.ascending("message"),
-      role: "user",
-      sessionID: input.sessionID,
-      time: {
-        created: Date.now(),
-      },
-      tools: input.tools,
-      agent: agent.name,
-      model: input.model ?? agent.model ?? (await lastModel(input.sessionID)),
-      system: input.system,
-      variant: input.variant,
-      modelPinned: input.modelPinned,
-      thinkingPinned: input.thinkingPinned,
-      resumesExecutionID: input.resumesExecutionID,
-    }
-
-    const parts = await Promise.all(
-      input.parts.map(async (part): Promise<MessageV2.Part[]> => {
-        if (part.type === "file") {
-          // before checking the protocol we check if this is an mcp resource because it needs special handling
-          if (part.source?.type === "resource") {
-            const { clientName, uri } = part.source
-            log.info("mcp resource", { clientName, uri, mime: part.mime })
-
-            const pieces: MessageV2.Part[] = [
-              {
-                id: Identifier.ascending("part"),
-                messageID: info.id,
-                sessionID: input.sessionID,
-                type: "text",
-                synthetic: true,
-                text: `Reading MCP resource: ${part.filename} (${uri})`,
-              },
-            ]
-
-            try {
-              const resourceContent = await MCP.readResource(clientName, uri)
-              if (!resourceContent) {
-                throw new Error(`Resource not found: ${clientName}/${uri}`)
-              }
-
-              // Handle different content types
-              const contents = Array.isArray(resourceContent.contents)
-                ? resourceContent.contents
-                : [resourceContent.contents]
-
-              for (const content of contents) {
-                if ("text" in content && content.text) {
-                  pieces.push({
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: content.text as string,
-                  })
-                } else if ("blob" in content && content.blob) {
-                  // Handle binary content if needed
-                  const mimeType = "mimeType" in content ? content.mimeType : part.mime
-                  pieces.push({
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `[Binary content: ${mimeType}]`,
-                  })
-                }
-              }
-
-              pieces.push({
-                ...part,
-                id: part.id ?? Identifier.ascending("part"),
-                messageID: info.id,
-                sessionID: input.sessionID,
-              })
-            } catch (error: unknown) {
-              log.error("failed to read MCP resource", { error, clientName, uri })
-              const message = error instanceof Error ? error.message : String(error)
-              pieces.push({
-                id: Identifier.ascending("part"),
-                messageID: info.id,
-                sessionID: input.sessionID,
-                type: "text",
-                synthetic: true,
-                text: `Failed to read MCP resource ${part.filename}: ${message}`,
-              })
-            }
-
-            return pieces
-          }
-          const url = new URL(part.url)
-          switch (url.protocol) {
-            case "data:":
-              if (part.mime === "text/plain") {
-                return [
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `Called the Read tool with the following input: ${JSON.stringify({ filePath: part.filename })}`,
-                  },
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: DataUrl.decodeText(part.url),
-                  },
-                  {
-                    ...part,
-                    id: part.id ?? Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                  },
-                ]
-              }
-              break
-            case "file:":
-              log.info("file", { mime: part.mime })
-              // have to normalize, symbol search returns absolute paths
-              // Decode the pathname since URL constructor doesn't automatically decode it
-              const filepath = fileURLToPath(part.url)
-              if (
-                Instance.worktree &&
-                !Filesystem.contains(Instance.worktree, filepath) &&
-                !Filesystem.contains(Instance.directory, filepath)
-              ) {
-                throw new Error(`File path "${filepath}" is outside worktree boundary`)
-              }
-              const stat = await Bun.file(filepath).stat()
-
-              if (stat.isDirectory()) {
-                part.mime = "application/x-directory"
-              }
-
-              if (part.mime === "text/plain") {
-                let offset: number | undefined = undefined
-                let limit: number | undefined = undefined
-                const range = {
-                  start: url.searchParams.get("start"),
-                  end: url.searchParams.get("end"),
-                }
-                if (range.start != null) {
-                  const filePathURI = part.url.split("?")[0]
-                  let start = parseInt(range.start)
-                  let end = range.end ? parseInt(range.end) : undefined
-                  // some LSP servers (eg, gopls) don't give full range in
-                  // workspace/symbol searches, so we'll try to find the
-                  // symbol in the document to get the full range
-                  if (start === end) {
-                    const symbols = await LSP.documentSymbol(filePathURI)
-                    for (const symbol of symbols) {
-                      let range: LSP.Range | undefined
-                      if ("range" in symbol) {
-                        range = symbol.range
-                      } else if ("location" in symbol) {
-                        range = symbol.location.range
-                      }
-                      if (range?.start?.line && range?.start?.line === start) {
-                        start = range.start.line
-                        end = range?.end?.line ?? start
-                        break
-                      }
-                    }
-                  }
-                  offset = Math.max(start - 1, 0)
-                  if (end) {
-                    limit = end - offset
-                  }
-                }
-                const args = { filePath: filepath, offset, limit }
-
-                const pieces: MessageV2.Part[] = [
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `Called the Read tool with the following input: ${JSON.stringify(args)}`,
-                  },
-                ]
-
-                await ReadTool.init()
-                  .then(async (t) => {
-                    const model = await Provider.getModel(info.model.providerID, info.model.modelID)
-                    const readCtx: Tool.Context = {
-                      sessionID: input.sessionID,
-                      abort: new AbortController().signal,
-                      agent: input.agent!,
-                      messageID: info.id,
-                      extra: { bypassCwdCheck: true, model },
-                      metadata: async () => {},
-                      ask: async () => {},
-                    }
-                    const result = await t.execute(args, readCtx)
-                    pieces.push({
-                      id: Identifier.ascending("part"),
-                      messageID: info.id,
-                      sessionID: input.sessionID,
-                      type: "text",
-                      synthetic: true,
-                      text: result.output,
-                    })
-                    if (result.attachments?.length) {
-                      pieces.push(
-                        ...result.attachments.map((attachment) => ({
-                          ...attachment,
-                          synthetic: true,
-                          filename: attachment.filename ?? part.filename,
-                          messageID: info.id,
-                          sessionID: input.sessionID,
-                        })),
-                      )
-                    } else {
-                      pieces.push({
-                        ...part,
-                        id: part.id ?? Identifier.ascending("part"),
-                        messageID: info.id,
-                        sessionID: input.sessionID,
-                      })
-                    }
-                  })
-                  .catch((error) => {
-                    log.error("failed to read file", { error })
-                    const message = error instanceof Error ? error.message : error.toString()
-                    Bus.publish(Session.Event.Error, {
-                      sessionID: input.sessionID,
-                      error: new NamedError.Unknown({
-                        message,
-                      }).toObject(),
-                    })
-                    pieces.push({
-                      id: Identifier.ascending("part"),
-                      messageID: info.id,
-                      sessionID: input.sessionID,
-                      type: "text",
-                      synthetic: true,
-                      text: `Read tool failed to read ${filepath} with the following error: ${message}`,
-                    })
-                  })
-
-                return pieces
-              }
-
-              if (part.mime === "application/x-directory") {
-                const args = { path: filepath }
-                const listCtx: Tool.Context = {
-                  sessionID: input.sessionID,
-                  abort: new AbortController().signal,
-                  agent: input.agent!,
-                  messageID: info.id,
-                  extra: { bypassCwdCheck: true },
-                  metadata: async () => {},
-                  ask: async () => {},
-                }
-                const result = await FindTool.init().then((t) => t.execute({ mode: "tree", path: filepath }, listCtx))
-                return [
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `Called the find tool with the following input: ${JSON.stringify({ mode: "tree", path: filepath })}`,
-                  },
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: result.output,
-                  },
-                  {
-                    ...part,
-                    id: part.id ?? Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                  },
-                ]
-              }
-
-              const file = Bun.file(filepath)
-              FileTime.read(input.sessionID, filepath)
-              return [
-                {
-                  id: Identifier.ascending("part"),
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "text",
-                  text: `Called the Read tool with the following input: {\"filePath\":\"${filepath}\"}`,
-                  synthetic: true,
-                },
-                {
-                  id: part.id ?? Identifier.ascending("part"),
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "file",
-                  url: `data:${part.mime};base64,` + Buffer.from(await file.bytes()).toString("base64"),
-                  mime: part.mime,
-                  filename: part.filename!,
-                  source: part.source,
-                },
-              ]
-          }
-        }
-
-        // Handle skill injection for text parts
-        if (part.type === "text" && part.text) {
-          const skillMatches = ConfigMarkdown.files(part.text)
-          const skillParts: MessageV2.Part[] = []
-          const seenSkills = new Set<string>()
-
-          for (const match of skillMatches) {
-            const name = match[1]
-            if (seenSkills.has(name)) continue
-
-            const skill = await Skill.get(name)
-            if (skill) {
-              seenSkills.add(name)
-              try {
-                const parsed = await ConfigMarkdown.parse(skill.location)
-                skillParts.push({
-                  id: Identifier.ascending("part"),
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "text",
-                  synthetic: true,
-                  text: `\n<skill name="${skill.name}">\n${parsed.content.trim()}\n</skill>\n`,
-                })
-              } catch (error) {
-                log.error("failed to load skill", { name, error })
-              }
-            }
-          }
-
-          if (skillParts.length > 0) {
-            return [
-              {
-                id: Identifier.ascending("part"),
-                ...part,
-                messageID: info.id,
-                sessionID: input.sessionID,
-              },
-              ...skillParts,
-            ]
-          }
-        }
-
-        if (part.type === "agent") {
-          // Check if this agent would be denied by task permission
-          const perm = PermissionNext.evaluate("task", part.name, agent.permission)
-          const hint = perm.action === "deny" ? " . Invoked by user; guaranteed to exist." : ""
-          return [
-            {
-              id: Identifier.ascending("part"),
-              ...part,
-              messageID: info.id,
-              sessionID: input.sessionID,
-            },
-            {
-              id: Identifier.ascending("part"),
-              messageID: info.id,
-              sessionID: input.sessionID,
-              type: "text",
-              synthetic: true,
-              // An extra space is added here. Otherwise the 'Use' gets appended
-              // to user's last word; making a combined word
-              text:
-                " Use the above message and context to generate a prompt and call the agent tool with action='spawn', subagent_type: " +
-                part.name +
-                hint,
-            },
-          ]
-        }
-
-        return [
-          {
-            id: Identifier.ascending("part"),
-            ...part,
-            messageID: info.id,
-            sessionID: input.sessionID,
-          },
-        ]
-      }),
-    ).then((x) => x.flat())
-
-    await Plugin.trigger(
-      "chat.message",
-      {
-        sessionID: input.sessionID,
-        agent: input.agent,
-        model: input.model,
-        messageID: input.messageID,
-        variant: input.variant,
-      },
-      {
-        message: info,
-        parts,
-      },
-    )
-
-    await Session.updateMessage(info)
-    for (const part of parts) {
-      await Session.updatePart(part)
-    }
-
-    return {
-      info,
-      parts,
-    }
+    return createUserMessageImpl(input, { lastModel })
   }
 
-  export function insertReminders(input: {
-    messages: MessageV2.WithParts[]
-    agent: Agent.Info
-    step: number
-    taskflowAvailable?: boolean
-    checkpointRequired?: boolean
-  }) {
-    const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
-    if (!userMessage) return input.messages
-
-    const sessionID = userMessage.info.sessionID
-
-    // Single pass: collect synthetic text + metadata to avoid 6 separate O(n×m) scans.
-    // Each .some(m => m.parts.some(...)) previously scanned ALL messages × ALL parts.
-    // Now one pass builds a Set for O(1) lookups instead.
-    const syntheticTexts = new Set<string>()
-    let hasTaskflowCall = false
-    let wasPlan = false
-
-    for (const msg of input.messages) {
-      if (msg.info.role === "assistant" && msg.info.agent === "plan") wasPlan = true
-      for (const part of msg.parts) {
-        if (part.type === "tool" && (part.tool === "taskflow" || part.tool === "chainupdate")) {
-          hasTaskflowCall = true
-        }
-        if (part.type === "text" && (part as any).synthetic) {
-          syntheticTexts.add((part as any).text)
-        }
-      }
-    }
-
-    // Fast substring check across all synthetic texts
-    const hasSyntheticText = (substr: string) => {
-      for (const text of syntheticTexts) {
-        if (text.includes(substr)) return true
-      }
-      return false
-    }
-
-    let aggregatedReminders: string[] = []
-
-    if (input.checkpointRequired) {
-      aggregatedReminders.push(
-        [
-          "<execution_checkpoint>",
-          "Execution checkpoint required. Re-evaluate the root user objective, progress, failures, remaining work, and route.",
-          "Decide whether to continue, finish, or replan. Avoid repeated tool calls and stop when evidence is sufficient.",
-          "If continuing, keep the next work slice focused and update the durable taskflow plan when scope changes.",
-          'Respond with one raw JSON object only using decision="continue"|"finish"|"blocked", requestedCalls (required for continue; positive integer; harness clamps to 50), finalResponse (required for finish; user-facing answer), objectiveAssessment, progressSummary, discoveries, completedWork, remainingWork, failures, blockers, routeAssessment, planChanged, routeChanged, estimatedRemainingCalls, and nextActions.',
-          "Use [] for empty list fields, false for unchanged booleans, and 0 for estimatedRemainingCalls when finished. Do not call tools, use markdown fences, or emit a second object.",
-          "Do not expose hidden chain-of-thought.",
-          "</execution_checkpoint>",
-        ].join("\n"),
-      )
-    }
-
-    if (!["reviewer", "checker", "explore", "plan"].includes(input.agent.name)) {
-      const toolCallIDs = new Set<string>()
-      for (const message of input.messages) {
-        for (let index = 0; index < message.parts.length; index++) {
-          const part = message.parts[index]
-          if (part.type !== "tool") continue
-          toolCallIDs.add(part.id || `${message.info.id}:${index}`)
-        }
-      }
-      // Skip when taskflow is not in this turn's toolset (expert episode, last
-      // step, permission deny): instructing a call the provider would reject as
-      // unavailable produces an `invalid` repair loop instead of progress.
-      const progress =
-        input.taskflowAvailable === false
-          ? undefined
-          : HarnessState.consumeTaskflowReminder({
-              sessionID,
-              toolCallCount: toolCallIDs.size,
-            })
-      if (progress) {
-        const completed = progress.steps.filter((step) => step.status === "completed").length
-        const visibleSteps = progress.steps.slice(0, 20)
-        const omitted = progress.steps.length - visibleSteps.length
-        aggregatedReminders.push(
-          [
-            `<taskflow_progress trigger="${progress.trigger}" tool_calls_since_last="${progress.toolCallsSinceLast}">`,
-            `Taskflow progress: ${completed}/${progress.steps.length} completed.`,
-            ...visibleSteps.map((step) => `- [${step.status}] ${escapeXmlText(step.id)}: ${escapeXmlText(step.name)}`),
-            ...(omitted > 0 ? [`- ... ${omitted} additional step(s) omitted from this bounded reminder.`] : []),
-            progress.statusUnchanged
-              ? `Taskflow status has not changed since the previous checkpoint. Reconcile the active task and call taskflow update/complete/fail if its recorded status is stale.`
-              : `Review the active task and keep taskflow status synchronized as work proceeds.`,
-            `This reminder is advisory: do not mark work complete without evidence.`,
-            `</taskflow_progress>`,
-          ].join("\n"),
-        )
-      }
-    }
-
-    if (input.agent.name === "plan" && !syntheticTexts.has(PROMPT_PLAN)) {
-      aggregatedReminders.push(PROMPT_PLAN)
-    }
-
-    if (wasPlan && input.agent.name === "build") {
-      if (!syntheticTexts.has(BUILD_SWITCH)) {
-        aggregatedReminders.push(BUILD_SWITCH)
-      }
-
-      // Plan→Build barrier: require an active taskflow plan before writing code
-      const hasActivePlan = HarnessState.hasActivePlan(sessionID)
-      if (!hasActivePlan && input.step <= 2 && !hasSyntheticText("plan_barrier") && input.taskflowAvailable !== false) {
-        aggregatedReminders.push(
-          [
-            "<plan_barrier>",
-            "⛔ PLAN→BUILD TRANSITION BARRIER",
-            "No active taskflow plan found. Before writing any code you MUST:",
-            '1. Call taskflow [action="start", plan=[...]] to load the plan steps',
-            "2. Set the first step to running with taskflow update before proceeding",
-            "Do NOT skip this step. Jumping directly to code without an active taskflow violates the AUTONOMOUS_GOAL_LOOP rules.",
-            "</plan_barrier>",
-          ].join("\n"),
-        )
-      }
-    }
-
-    if (
-      input.step > 2 &&
-      !hasTaskflowCall &&
-      !hasSyntheticText("chain_reminder") &&
-      input.taskflowAvailable !== false &&
-      !["explore", "reviewer", "checker"].includes(input.agent.name)
-    ) {
-      aggregatedReminders.push(
-        "<chain_reminder>⚠️ Step threshold exceeded (>2 steps) without active progress plan. You SHOULD call taskflow [action=start] to initialize progress tracking for the user.</chain_reminder>",
-      )
-    }
-
-    // ── Harness: BLOCKING ORCHESTRATION MODE reminder ─────────────────────
-    if (!["reviewer", "checker", "explore", "plan"].includes(input.agent.name)) {
-      const activeWorkflowId = HarnessState.getActiveWorkflowId(sessionID)
-      if (activeWorkflowId && !hasSyntheticText("orchestrator_blocking")) {
-        aggregatedReminders.push(
-          [
-            `<orchestrator_blocking workflowId="${activeWorkflowId}">`,
-            `⛔ BLOCKING ORCHESTRATION MODE — workflow ${activeWorkflowId} is executing.`,
-            `ALL sub-agents are running. You CANNOT do any other work right now.`,
-            `Do NOT claim you are doing anything in parallel. You are blocked until all tasks complete.`,
-            `When orchestration finishes, you will receive the combined results automatically.`,
-            `</orchestrator_blocking>`,
-          ].join("\n"),
-        )
-      }
-    }
-
-    // ── Dynamic edit-count reminders (harness enforcement) ──────────────────
-    if (!["reviewer", "checker", "plan", "explore"].includes(input.agent.name)) {
-      const editReminder = HarnessState.consumeEditReminder(sessionID)
-
-      if (editReminder) {
-        if (editReminder.critical) {
-          aggregatedReminders.push(
-            [
-              '<edit_reminder type="critical">',
-              `<cause_id>edit_reminder:${sessionID}:${editReminder.revision}</cause_id>`,
-              "⚠️ System Reminder: A CRITICAL file (auth/config/database/migration/env/secret) was modified.",
-              "You MUST verify correctness before continuing. Run the project typecheck and test commands now.",
-              "</edit_reminder>",
-            ].join("\n"),
-          )
-        } else {
-          aggregatedReminders.push(
-            [
-              `<edit_reminder type="high" count="${editReminder.count}">`,
-              `<cause_id>edit_reminder:${sessionID}:${editReminder.revision}</cause_id>`,
-              `⚠️ System Reminder: ${editReminder.count}+ file edit(s) detected in this session.`,
-              "The review gate is ACTIVE: taskflow action='clear' is code-level blocked until the",
-              "reviewer sub-agent returns PASS on your changes. Before calling clear:",
-              "1. Run the project test and typecheck commands and capture raw output",
-              "2. Fix any failures — the reviewer will independently verify with raw logs",
-              "</edit_reminder>",
-            ].join("\n"),
-          )
-        }
-      }
-    }
-
-    if (aggregatedReminders.length > 0) {
-      input.messages.push({
-        info: {
-          id: Identifier.ascending("message"),
-          sessionID: sessionID,
-          role: "user",
-          time: { created: Date.now() },
-          agent: input.agent.name,
-          model: (userMessage.info as MessageV2.User).model,
-        } as MessageV2.User,
-        parts: aggregatedReminders.map(
-          (text) =>
-            ({
-              id: Identifier.ascending("part"),
-              messageID: "", // Replaced during generation, but not needed for in-memory mapping
-              sessionID: sessionID,
-              type: "text",
-              text: text,
-              synthetic: true,
-            }) as MessageV2.TextPart,
-        ),
-      })
-    }
-
-    return input.messages
-  }
-
-  export const ShellInput = z.object({
-    sessionID: Identifier.schema("session"),
-    messageID: Identifier.schema("message").optional(),
-    agent: z.string(),
-    model: z
-      .object({
-        providerID: z.string(),
-        modelID: z.string(),
-      })
-      .optional(),
-    command: z.string(),
-  })
-  export type ShellInput = z.infer<typeof ShellInput>
+  export const ShellInput = ShellCommand.Input
+  export type ShellInput = ShellCommand.Input
   export async function shell(input: ShellInput) {
-    const owner = start(input.sessionID)
-    if (!owner) {
-      throw new Session.BusyError(input.sessionID)
-    }
-    const abort = owner.signal
-    using _ = defer(() => finish(input.sessionID, owner))
-
-    const session = await Session.get(input.sessionID)
-    if (session.revert) {
-      SessionRevert.cleanup(session)
-    }
-    const agent = await Agent.get(input.agent)
-    const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
-    const userMsg: MessageV2.User = {
-      id: input.messageID ?? Identifier.ascending("message"),
-      sessionID: input.sessionID,
-      time: {
-        created: Date.now(),
-      },
-      role: "user",
-      agent: input.agent,
-      model: {
-        providerID: model.providerID,
-        modelID: model.modelID,
-      },
-    }
-    await Session.updateMessage(userMsg)
-    const userPart: MessageV2.Part = {
-      type: "text",
-      id: Identifier.ascending("part"),
-      messageID: userMsg.id,
-      sessionID: input.sessionID,
-      text: "The following tool was executed by the user",
-      synthetic: true,
-    }
-    await Session.updatePart(userPart)
-
-    const msg: MessageV2.Assistant = {
-      id: Identifier.ascending("message"),
-      sessionID: input.sessionID,
-      parentID: userMsg.id,
-      agent: input.agent,
-      cost: 0,
-      path: {
-        cwd: Instance.directory,
-        root: Instance.worktree,
-      },
-      time: {
-        created: Date.now(),
-      },
-      role: "assistant",
-      tokens: {
-        input: 0,
-        output: 0,
-        reasoning: 0,
-        cache: { read: 0, write: 0 },
-      },
-      modelID: model.modelID,
-      providerID: model.providerID,
-    }
-    await Session.updateMessage(msg)
-    const part: MessageV2.Part = {
-      type: "tool",
-      id: Identifier.ascending("part"),
-      messageID: msg.id,
-      sessionID: input.sessionID,
-      tool: "bash",
-      callID: ulid(),
-      state: {
-        status: "running",
-        time: {
-          start: Date.now(),
-        },
-        input: {
-          command: input.command,
-        },
-      },
-    }
-    await Session.updatePart(part)
-    const shell = Shell.preferred()
-    const shellName = (
-      process.platform === "win32" ? path.win32.basename(shell, ".exe") : path.basename(shell)
-    ).toLowerCase()
-
-    const invocations: Record<string, { args: string[] }> = {
-      nu: {
-        args: ["-c", input.command],
-      },
-      fish: {
-        args: ["-c", input.command],
-      },
-      zsh: {
-        args: [
-          "-c",
-          "-l",
-          `
-            [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
-            [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
-            eval ${JSON.stringify(input.command)}
-          `,
-        ],
-      },
-      bash: {
-        args: [
-          "-c",
-          "-l",
-          `
-            shopt -s expand_aliases
-            [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
-            eval ${JSON.stringify(input.command)}
-          `,
-        ],
-      },
-      // Windows cmd
-      cmd: {
-        args: ["/c", input.command],
-      },
-      // Windows PowerShell
-      powershell: {
-        args: ["-NoProfile", "-Command", input.command],
-      },
-      pwsh: {
-        args: ["-NoProfile", "-Command", input.command],
-      },
-      // Fallback: any shell that doesn't match those above
-      //  - No -l, for max compatibility
-      "": {
-        args: ["-c", `${input.command}`],
-      },
-    }
-
-    const matchingInvocation = invocations[shellName] ?? invocations[""]
-    const args = matchingInvocation?.args
-
-    const proc = spawn(shell, args, {
-      cwd: Instance.directory,
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: EnvPolicy.build({ cwd: Instance.directory, scope: "session:shell", overrides: { TERM: "dumb" } }),
-    })
-
-    let output = ""
-    let outputUpdateTimer: ReturnType<typeof setTimeout> | undefined
-    let outputUpdate = Promise.resolve()
-
-    const flushOutput = () => {
-      outputUpdateTimer = undefined
-      const snapshot = output
-      outputUpdate = outputUpdate
-        .then(async () => {
-          if (part.state.status !== "running") return
-          part.state.metadata = { output: snapshot, description: "" }
-          await Session.updatePart(part)
-        })
-        .catch((error) => {
-          log.warn("failed to publish batched shell output", {
-            sessionID: input.sessionID,
-            error: error instanceof Error ? error.name : "UnknownError",
-          })
-        })
-    }
-
-    const appendOutput = (chunk: unknown) => {
-      output = appendShellOutput(output, String(chunk))
-      if (!outputUpdateTimer) outputUpdateTimer = setTimeout(flushOutput, SHELL_UPDATE_INTERVAL_MS)
-    }
-
-    proc.stdout?.on("data", (chunk) => {
-      appendOutput(chunk)
-    })
-
-    proc.stderr?.on("data", (chunk) => {
-      appendOutput(chunk)
-    })
-
-    let aborted = false
-    let exited = false
-
-    const kill = () => Shell.killTree(proc, { exited: () => exited })
-
-    if (abort.aborted) {
-      aborted = true
-      await kill()
-    }
-
-    const abortHandler = () => {
-      aborted = true
-      void kill()
-    }
-
-    abort.addEventListener("abort", abortHandler, { once: true })
-
-    await new Promise<void>((resolve) => {
-      proc.on("close", () => {
-        exited = true
-        abort.removeEventListener("abort", abortHandler)
-        resolve()
-      })
-    })
-
-    if (outputUpdateTimer) {
-      clearTimeout(outputUpdateTimer)
-      outputUpdateTimer = undefined
-    }
-    await outputUpdate
-
-    if (aborted) {
-      output = appendShellOutput(output, "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n"))
-    }
-    msg.time.completed = Date.now()
-    await Session.updateMessage(msg)
-    if (part.state.status === "running") {
-      part.state = {
-        status: "completed",
-        time: {
-          ...part.state.time,
-          end: Date.now(),
-        },
-        input: part.state.input,
-        title: "",
-        metadata: {
-          output,
-          description: "",
-        },
-        output,
-      }
-      await Session.updatePart(part)
-    }
-    return { info: msg, parts: [part] }
-  }
-
-  export const CommandInput = z.object({
-    messageID: Identifier.schema("message").optional(),
-    sessionID: Identifier.schema("session"),
-    agent: z.string().optional(),
-    model: z.string().optional(),
-    arguments: z.string(),
-    command: z.string(),
-    variant: z.string().optional(),
-    modelPinned: z.boolean().optional(),
-    thinkingPinned: z.boolean().optional(),
-    parts: z
-      .array(
-        z.discriminatedUnion("type", [
-          MessageV2.FilePart.omit({
-            messageID: true,
-            sessionID: true,
-          }).partial({
-            id: true,
-          }),
-        ]),
-      )
-      .optional(),
-  })
-  export type CommandInput = z.infer<typeof CommandInput>
-  const bashRegex = /!`([^`]+)`/g
-  // Match [Image N] as single token, quoted strings, or non-space sequences
-  const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
-  const placeholderRegex = /\$(\d+)/g
-  const quoteTrimRegex = /^["']|["']$/g
-  /**
-   * Regular expression to match @ file references in text
-   * Matches @ followed by file paths, excluding commas, periods at end of sentences, and backticks
-   * Does not match when preceded by word characters or backticks (to avoid email addresses and quoted references)
-   */
-
-  export async function command(input: CommandInput) {
-    log.info("command", input)
-    const command = await Command.get(input.command)
-    const agentName = command.agent ?? input.agent ?? (await Agent.defaultAgent())
-
-    const raw = input.arguments.match(argsRegex) ?? []
-    const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
-
-    const templateCommand = await command.template
-
-    const placeholders = templateCommand.match(placeholderRegex) ?? []
-    let last = 0
-    for (const item of placeholders) {
-      const value = Number(item.slice(1))
-      if (value > last) last = value
-    }
-
-    // Let the final placeholder swallow any extra arguments so prompts read naturally
-    const withArgs = templateCommand.replaceAll(placeholderRegex, (_, index) => {
-      const position = Number(index)
-      const argIndex = position - 1
-      if (argIndex >= args.length) return ""
-      if (position === last) return args.slice(argIndex).join(" ")
-      return args[argIndex]
-    })
-    let template = withArgs.replaceAll("$ARGUMENTS", input.arguments)
-
-    const shell = ConfigMarkdown.shell(template)
-    if (shell.length > 0) {
-      const results = await Promise.all(
-        shell.map(async ([, cmd]) => {
-          try {
-            return await $`${{ raw: cmd }}`
-              .env(EnvPolicy.build({ cwd: Instance.directory, scope: "session:command-template" }))
-              .quiet()
-              .nothrow()
-              .text()
-          } catch (error) {
-            return `Error executing command: ${error instanceof Error ? error.message : String(error)}`
-          }
-        }),
-      )
-      let index = 0
-      template = template.replace(bashRegex, () => results[index++])
-    }
-    template = template.trim()
-
-    // System commands: handle directly without AI (e.g., "skill" lists installed skills)
-    if (input.command === Command.Default.SKILL) {
-      const msgId = Identifier.ascending("message")
-      const now = Date.now()
-      const msg = (await Session.updateMessage({
-        id: msgId,
-        sessionID: input.sessionID,
-        role: "assistant",
-        parentID: input.messageID ?? Identifier.ascending("message"),
-        agent: agentName,
-        path: {
-          cwd: Instance.directory,
-          root: Instance.worktree,
-        },
-        cost: 0,
-        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-        modelID: "",
-        providerID: "",
-        time: { created: now, completed: now },
-      })) as MessageV2.Assistant
-
-      const part = await Session.updatePart({
-        id: Identifier.ascending("part"),
-        messageID: msg.id,
-        sessionID: msg.sessionID,
-        type: "text",
-        text: template,
-      })
-
-      Bus.publish(Command.Event.Executed, {
-        name: input.command,
-        sessionID: input.sessionID,
-        arguments: input.arguments,
-        messageID: msg.id,
-      })
-
-      return { info: msg, parts: [part] } as MessageV2.WithParts
-    }
-
-    const model = await (async () => {
-      if (command.model) {
-        return Provider.parseModel(command.model)
-      }
-      if (command.agent) {
-        const cmdAgent = await Agent.get(command.agent)
-        if (cmdAgent?.model) {
-          return cmdAgent.model
-        }
-      }
-      if (input.model) return Provider.parseModel(input.model)
-      return await lastModel(input.sessionID)
-    })()
-
-    try {
-      await Provider.getModel(model.providerID, model.modelID)
-    } catch (e) {
-      if (Provider.ModelNotFoundError.isInstance(e)) {
-        const { providerID, modelID, suggestions } = e.data
-        const hint = suggestions?.length ? ` Did you mean: ${suggestions.join(", ")}?` : ""
-        Bus.publish(Session.Event.Error, {
-          sessionID: input.sessionID,
-          error: new NamedError.Unknown({ message: `Model not found: ${providerID}/${modelID}.${hint}` }).toObject(),
-        })
-      }
-      throw e
-    }
-    const agent = await Agent.get(agentName)
-    if (!agent) {
-      const available = await Agent.list().then((agents) => agents.filter((a) => !a.hidden).map((a) => a.name))
-      const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-      const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
-      Bus.publish(Session.Event.Error, {
-        sessionID: input.sessionID,
-        error: error.toObject(),
-      })
-      throw error
-    }
-
-    const templateParts = await resolvePromptParts(template)
-    const parts =
-      (agent.mode === "subagent" && command.subtask !== false) || command.subtask === true
-        ? [
-            {
-              type: "subtask" as const,
-              agent: agent.name,
-              description: command.description ?? "",
-              command: input.command,
-              // TODO: how can we make task tool accept a more complex input?
-              prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
-            },
-          ]
-        : [...templateParts, ...(input.parts ?? [])]
-
-    const result = (await prompt({
-      sessionID: input.sessionID,
-      messageID: input.messageID,
-      model,
-      agent: agentName,
-      parts,
-      variant: input.variant,
-      modelPinned: input.modelPinned,
-      thinkingPinned: input.thinkingPinned,
-    })) as MessageV2.WithParts
-
-    Bus.publish(Command.Event.Executed, {
-      name: input.command,
-      sessionID: input.sessionID,
-      arguments: input.arguments,
-      messageID: result.info.id,
-    })
-
-    return result
-  }
-
-  async function ensureTitle(input: { session: Session.Info; history: MessageV2.WithParts[] }) {
-    if (!AgentEval.executionPolicy(input.session.id).allowAuxiliarySummaries) return
-    if (input.session.parentID) return
-    if (!Session.isDefaultTitle(input.session.title)) return
-
-    // Find first non-synthetic user message
-    const firstRealUserIdx = input.history.findIndex(
-      (m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic),
-    )
-    if (firstRealUserIdx === -1) return
-
-    const isFirst =
-      input.history.filter((m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic))
-        .length === 1
-    if (!isFirst) return
-
-    const firstRealUser = input.history[firstRealUserIdx]
-
-    // For subtask-only messages (from command invocations), extract the prompt directly
-    // since toModelMessage converts subtask parts to generic "The following tool was executed by the user"
-    const subtaskParts = firstRealUser.parts.filter((p) => p.type === "subtask") as MessageV2.SubtaskPart[]
-    const hasOnlySubtaskParts = subtaskParts.length > 0 && firstRealUser.parts.every((p) => p.type === "subtask")
-
-    const text = hasOnlySubtaskParts
-      ? subtaskParts.map((part) => part.prompt).join(" ")
-      : firstRealUser.parts
-          .filter((part): part is MessageV2.TextPart => part.type === "text" && !part.synthetic)
-          .map((part) => part.text)
-          .join(" ")
-    const title = SessionSummary.localTitle(text)
-    if (!title) return
-    return Session.update(input.session.id, (draft) => {
-      draft.title = title
-    })
+    return ShellCommand.run(input, { start, finish, lastModel })
   }
 }

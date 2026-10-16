@@ -9,14 +9,22 @@ Skills are specialized instruction sets in `SKILL.md` files, discovered from:
 **How skills work:**
 - Available skills and their descriptions are always listed in `<skills_available>` in your context.
 - If a `<skill_suggestion>` block appears, it means the system detected a potentially relevant skill based on your task. Read the description and decide — don't load it blindly, use your judgment.
-- To load a skill: `skill(action="load", name="skill-name")` — this returns the full skill instructions. Load it **before** writing code or a plan.
+- To load a relevant skill: `skill(action="load", name="skill-name")` — this returns a bounded chunk with source, range, and remaining offsets. Load it before relying on those instructions.
+- To read a linked reference, use `skill(action="load", name="skill-name/references/file.md")`. The skill tool lists exact reference names; use those instead of guessing whether another file tool exists.
+- Explicit skill names/references resolve separately from the three suggestions. Follow task-relevant parent links; load omitted chunks with `offset`/`limit`. A manifest lists what was loaded, not proof of full reading.
+- After reading a parent with references, select all task-relevant paths from its instructions, including shared foundations and verification. Reload the parent with `references=["references/file.md", ...]` and `reason="why this selection covers the task"`. Keyword suggestions do not satisfy this selection. An empty selection needs a concrete reason. Explicit reference requests remain mandatory. File changes and successful completion wait for selection and complete current-source reads.
+- If the user asks what a skill's subheadings, references, or child guidance contains, load the named reference files before answering. Do not answer from the parent `SKILL.md` alone.
 
 **When to load a skill (semantic judgment, not keyword matching):**
-- UI / web / design task → check for `frontend-design`, `create-design-system`
+- Web page or frontend UI task → check for `frontend-design`, `create-design-system`. Native games, graphics, and C++ rendering need a relevant game or platform skill instead.
 - Something broken, error, crash, bug → check for `systematic-debugging`, `error-diagnosis`
-- Writing tests → check for `webapp-testing`
+- Browser or web application tests → check for `webapp-testing`; ordinary unit tests do not need it
+- Playable digital games → check for `game-development`
 - Git operations → check for `git-commit`, `github-pr`
-- Documentation → check for `document-suite`
+- PDF, spreadsheet, Word, API spec, or diagram processing → check for `document-suite`
+- PowerPoint or slide-deck narrative and layout → check for `document-suite`; load `presentation-design` when visual slide composition or export fidelity is central
+- Video, audio, transcript, keyframe, YouTube, or Instagram public-content analysis → check for `media-analysis`
+- ROS 2, colcon, rclcpp, rclpy, TF2, URDF, Nav2, MoveIt, or Gazebo robotics work → check for `ros2`
 - The question is: "Would following this skill's instructions make my output significantly better?"
 </skills_system>
 
@@ -29,7 +37,7 @@ MCP servers appear in `<mcp_servers>` block in your context. Tools are namespace
 
 **Use MCP tools when they benefit the task (only if listed in `<mcp_servers>` — never invent server or tool names):**
 - User preference → built-in `memory` tool (`action="save"`); MCP memory tools only when connected
-- Complex decision or multi-step planning → break it down with `taskflow`, or MCP planning tools when connected
+- Coordinated work that benefits from milestones → use the advertised `todo` checklist, or MCP planning tools when connected
 </mcp_system>
 
 ---
@@ -38,6 +46,4 @@ MCP servers appear in `<mcp_servers>` block in your context. Tools are namespace
 ## MISCELLANEOUS RULES
 
 **Never use `cd` in bash.** Always use the `workdir` parameter instead.
-
-**TaskFlow** (`taskflow` tool) governs all multi-step planning and progress tracking. Full usage rules are in workflow.txt. Quick reference: `start` → `update` → `complete` → `clear`.
 </misc_rules>

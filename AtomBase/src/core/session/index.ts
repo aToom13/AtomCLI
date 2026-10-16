@@ -135,7 +135,7 @@ export namespace Session {
     async (input) => {
       return createNext({
         parentID: input?.parentID,
-        directory: Instance.directory,
+        directory: Instance.sessionDirectory,
         title: input?.title,
         permission: input?.permission,
       })
@@ -149,7 +149,7 @@ export namespace Session {
     }),
     async (input) => {
       const session = await createNext({
-        directory: Instance.directory,
+        directory: Instance.sessionDirectory,
       })
       const msgs = await messages({ sessionID: input.sessionID })
       const idMap = new Map<string, string>()
@@ -231,6 +231,9 @@ export namespace Session {
 
   export const get = fn(Identifier.schema("session"), async (id) => {
     const read = await Storage.read<Info>(["session", Instance.project.id, id])
+    if (read && read.directory !== Instance.sessionDirectory) {
+      throw new Storage.NotFoundError({ message: `Session ${id} belongs to another directory` })
+    }
     return read as Info
   })
 
@@ -299,10 +302,12 @@ export namespace Session {
     },
   )
 
-  export async function* list() {
+  export async function* list(input: { directory?: string | null } = {}) {
     const project = Instance.project
     for (const item of await Storage.list(["session", project.id])) {
-      yield Storage.read<Info>(item)
+      const session = await Storage.read<Info>(item)
+      if (input.directory !== null && session.directory !== (input.directory ?? Instance.sessionDirectory)) continue
+      yield session
     }
   }
 
@@ -311,6 +316,7 @@ export namespace Session {
     const result = [] as Session.Info[]
     for (const item of await Storage.list(["session", project.id])) {
       const session = await Storage.read<Info>(item)
+      if (session.directory !== Instance.sessionDirectory) continue
       if (session.parentID !== parentID) continue
       result.push(session)
     }

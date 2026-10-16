@@ -3,7 +3,7 @@ import z from "zod"
 import { NamedError } from "@atomcli/util/error"
 // Note: ai package functions are imported dynamically to avoid Bun ESM resolution issues
 import type { ModelMessage, UIMessage } from "ai"
-import { getConvertToModelMessages, getLoadAPIKeyError, getAPICallError } from "@/util/util/ai-compat"
+import { getConvertToModelMessages, getAPICallError } from "@/util/util/ai-compat"
 import { Identifier } from "../id/id"
 import { LSP } from "@/integrations/lsp"
 import { Snapshot } from "@/core/snapshot"
@@ -42,7 +42,7 @@ export namespace MessageV2 {
   // frame. That is a transient transport failure, not a completed turn, so it
   // must stay retryable and fall back instead of terminating the execution.
   export const EMPTY_OUTPUT_MESSAGE =
-    "Model returned an empty response: the stream ended without text, tool calls, or error output. Send your message again or switch model."
+    'Model returned an empty response: the stream ended without text, tool calls, or error output. Send "devam et" to retry the same task, or switch model.'
 
   const PartBase = z.object({
     id: z.string(),
@@ -114,6 +114,10 @@ export namespace MessageV2 {
     failures: z.string().array(),
     blockers: z.string().array(),
     routeAssessment: z.string(),
+    routeDecision: z.enum(["keep", "revise"]).optional(),
+    selfCritique: z.string().optional(),
+    failedApproaches: z.string().array().optional(),
+    whatToChanges: z.string().array().optional(),
     nextActions: z.string().array(),
     runtime: z
       .object({
@@ -492,6 +496,13 @@ export namespace MessageV2 {
   export async function toModelMessage(input: WithParts[], targetProviderID?: string): Promise<ModelMessage[]> {
     const convertToModelMessages = await getConvertToModelMessages()
     const result: UIMessage[] = []
+    // Checkpoints are durable history, but replaying every checkpoint into the
+    // model repeats the same execution summary and crowds out live work. Keep
+    // the newest one; the runtime also injects a structured handoff separately.
+    const latestCheckpoint = input
+      .flatMap((message) => message.parts)
+      .filter((part): part is CheckpointPart => part.type === "checkpoint")
+      .reduce((latest, part) => (part.sequence > (latest?.sequence ?? 0) ? part : latest), undefined)
 
     for (const msg of input) {
       if (msg.parts.length === 0) continue
@@ -534,10 +545,12 @@ export namespace MessageV2 {
       }
 
       if (msg.info.role === "assistant") {
-        const completedTool = msg.parts.some((part) => part.type === "tool" && part.state.status === "completed")
+        const settledTool = msg.parts.some(
+          (part) => part.type === "tool" && (part.state.status === "completed" || part.state.status === "error"),
+        )
         if (
           msg.info.error &&
-          !completedTool &&
+          !settledTool &&
           !(
             MessageV2.AbortedError.isInstance(msg.info.error) &&
             msg.parts.some((part) => part.type !== "step-start" && part.type !== "reasoning")
@@ -551,8 +564,10 @@ export namespace MessageV2 {
           role: "assistant",
           parts: [],
         }
+        const attachments: UIMessage[] = []
         for (const part of msg.parts) {
           if (part.type === "checkpoint") {
+            if (part !== latestCheckpoint) continue
             assistantMessage.parts.push({
               type: "text",
               text: `Execution checkpoint #${part.sequence}: ${JSON.stringify({
@@ -577,21 +592,27 @@ export namespace MessageV2 {
             })
           if (part.type === "tool") {
             if (part.state.status === "completed") {
-              if (part.state.attachments?.length) {
-                result.push({
+              if (!part.state.time.compacted && part.state.attachments?.length) {
+                attachments.push({
                   id: Identifier.ascending("message"),
                   role: "user",
                   parts: [
                     {
                       type: "text",
-                      text: `Tool ${part.tool} returned an attachment:`,
+                      text: `Tool ${part.tool} (${part.callID}) returned an attachment:`,
                     },
-                    ...part.state.attachments.map((attachment) => ({
-                      type: "file" as const,
-                      url: attachment.url,
-                      mediaType: attachment.mime,
-                      filename: attachment.filename,
-                    })),
+                    ...part.state.attachments.flatMap((attachment, index) => [
+                      {
+                        type: "text" as const,
+                        text: `Attachment ${index + 1}: ${attachment.filename ?? attachment.mime}`,
+                      },
+                      {
+                        type: "file" as const,
+                        url: attachment.url,
+                        mediaType: attachment.mime,
+                        filename: attachment.filename,
+                      },
+                    ]),
                   ],
                 })
               }
@@ -625,14 +646,15 @@ export namespace MessageV2 {
             }
           }
         }
-        if (msg.info.error && completedTool) {
+        if (msg.info.error && settledTool) {
           assistantMessage.parts.push({
             type: "text",
-            text: "The provider failed after the completed tool result above. The completed tool must not be repeated automatically.",
+            text: "The provider failed after the tool result above. The action must not be repeated automatically; use its observed result when deciding how to recover.",
           })
         }
         if (assistantMessage.parts.length > 0) {
           result.push(assistantMessage)
+          result.push(...attachments)
         }
       }
     }
@@ -721,7 +743,6 @@ export namespace MessageV2 {
   }
 
   export async function fromError(e: unknown, ctx: { providerID: string }) {
-    const LoadAPIKeyError = await getLoadAPIKeyError()
     const APICallError = await getAPICallError()
     const sysError = e as SystemError
     const code = sysError?.code || (e as any)?.cause?.code

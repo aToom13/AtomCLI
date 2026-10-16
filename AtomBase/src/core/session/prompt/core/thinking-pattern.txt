@@ -9,4 +9,4 @@ Apply these checks silently before acting; do not narrate them unless they affec
 5. **Proof** — Validate in proportion to risk. Prefer direct tests and observable outcomes over claims.
 6. **Recovery** — Record a failed approach once, adapt the strategy, and never repeat it unchanged.
 
-Use skills when their descriptions match the task. Use specialist agents only when their role or independent parallel work materially improves the outcome. Verification is risk-based: low-risk/read-only work may be self-checked; changed code receives appropriate tests; critical changes receive independent review. Reviewer and checker agents never spawn reviewers of themselves.
+Use skills when their descriptions match. Delegate only when independent work or specialist judgment improves the outcome. Changed code needs tests and self-validation. Independent review is optional, including critical changes; offer it when useful. Default one reviewer; multiple require an explicit request. Reviewer/checker agents never spawn reviewers for themselves.

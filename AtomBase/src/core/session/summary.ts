@@ -17,6 +17,89 @@ export namespace SessionSummary {
   const DEBOUNCE_MS = 5_000
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+  // HIST-04: the debounce is only an optimization. The durable intent is the
+  // source of truth for pending summary work, so a process crash or restart
+  // reschedules the job instead of silently dropping it.
+  const Intent = z.object({
+    sessionID: z.string(),
+    messageID: z.string(),
+    enqueuedAt: z.number().int(),
+  })
+  type Intent = z.infer<typeof Intent>
+
+  function intentKey(sessionID: string) {
+    return ["session_summary_intent", sessionID]
+  }
+
+  function schedule(input: { sessionID: string; messageID: string }, delayMs = DEBOUNCE_MS) {
+    // Clear any pending debounce for this session
+    const existing = debounceTimers.get(input.sessionID)
+    if (existing) clearTimeout(existing)
+
+    // Schedule summarization after debounce period
+    debounceTimers.set(
+      input.sessionID,
+      setTimeout(async () => {
+        debounceTimers.delete(input.sessionID)
+        try {
+          const all = await Session.messages({ sessionID: input.sessionID, excludePatches: true })
+          await Promise.all([
+            summarizeSession({ sessionID: input.sessionID, messages: all }),
+            summarizeMessage({ messageID: input.messageID, messages: all }),
+          ])
+          // Only clear the durable intent once the work completed. A failed
+          // attempt keeps it pending so the next recovery retries it.
+          await Storage.remove(intentKey(input.sessionID)).catch(() => {})
+        } catch (err) {
+          log.error("summarize failed", { error: (err as Error).message })
+        }
+      }, delayMs),
+    )
+  }
+
+  export const summarize = fn(
+    z.object({
+      sessionID: z.string(),
+      messageID: z.string(),
+    }),
+    async (input) => {
+      await Storage.write(
+        intentKey(input.sessionID),
+        Intent.parse({ sessionID: input.sessionID, messageID: input.messageID, enqueuedAt: Date.now() }),
+      ).catch((err) => log.warn("failed to persist summary intent", { error: (err as Error).message }))
+      schedule(input)
+    },
+  )
+
+  /**
+   * HIST-04: reschedule every durable summary intent left behind by a crash or
+   * restart. Safe to call repeatedly; the debounce remains an optimization.
+   */
+  export async function recoverPending(options?: { delayMs?: number }) {
+    const keys = await Storage.list(["session_summary_intent"])
+    let scheduled = 0
+    for (const key of keys) {
+      const value = Intent.parse(await Storage.read(key))
+      schedule({ sessionID: value.sessionID, messageID: value.messageID }, options?.delayMs)
+      scheduled++
+    }
+    return scheduled
+  }
+
+  /**
+   * Cancel any pending debounce timer for the given session.
+   * Call this from the session teardown path to prevent the timer from firing
+   * on a closed session and leaking async work after cleanup. The durable
+   * intent is intentionally kept: it is rescheduled by the next recovery.
+   */
+  export function cancelPendingSummarize(sessionID: string): void {
+    const timer = debounceTimers.get(sessionID)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      debounceTimers.delete(sessionID)
+    }
+  }
+
   export function localTitle(text: string) {
     const cleaned = text
       .replace(/<think>[\s\S]*?<\/think>/gi, " ")
@@ -36,48 +119,6 @@ export namespace SessionSummary {
       .join(", ")
     const remaining = diffs.length > 8 ? ` and ${diffs.length - 8} more` : ""
     return `Changed ${diffs.length} file${diffs.length === 1 ? "" : "s"} (+${additions}/-${deletions}): ${files}${remaining}`
-  }
-
-  export const summarize = fn(
-    z.object({
-      sessionID: z.string(),
-      messageID: z.string(),
-    }),
-    async (input) => {
-      // Clear any pending debounce for this session
-      const existing = debounceTimers.get(input.sessionID)
-      if (existing) clearTimeout(existing)
-
-      // Schedule summarization after debounce period
-      debounceTimers.set(
-        input.sessionID,
-        setTimeout(async () => {
-          debounceTimers.delete(input.sessionID)
-          try {
-            const all = await Session.messages({ sessionID: input.sessionID, excludePatches: true })
-            await Promise.all([
-              summarizeSession({ sessionID: input.sessionID, messages: all }),
-              summarizeMessage({ messageID: input.messageID, messages: all }),
-            ])
-          } catch (err) {
-            log.error("summarize failed", { error: (err as Error).message })
-          }
-        }, DEBOUNCE_MS),
-      )
-    },
-  )
-
-  /**
-   * Cancel any pending debounce timer for the given session.
-   * Call this from the session teardown path to prevent the timer from firing
-   * on a closed session and leaking async work after cleanup.
-   */
-  export function cancelPendingSummarize(sessionID: string): void {
-    const timer = debounceTimers.get(sessionID)
-    if (timer !== undefined) {
-      clearTimeout(timer)
-      debounceTimers.delete(sessionID)
-    }
   }
 
   async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {

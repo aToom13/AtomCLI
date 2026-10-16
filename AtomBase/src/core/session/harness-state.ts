@@ -6,7 +6,7 @@
  *   2. EditedFilesTracker    — counts edited files and detects critical edits
  *   3. ExecutionLogs         — ring buffer of last N bash command outputs
  *
- * All state is per-session and per-project via Instance.state().
+ * All state is per-session and per-project via Instance.sessionState().
  */
 
 import { Instance } from "@/services/project/instance"
@@ -27,6 +27,7 @@ export interface TaskFlowStep {
 
 export interface ExecutionLog {
   command: string
+  workdir?: string
   /** Combined stdout + stderr, truncated to MAX_LOG_BYTES */
   output: string
   exitCode: number | null
@@ -63,6 +64,8 @@ export interface ReviewVerdict {
   /** Lifetime fail attempts across file-set changes — never resets, prevents reset-shopping */
   totalFailAttempts: number
   reviewedAt: number
+  acceptanceVerified?: boolean
+  acceptanceRequestHash?: string
   /** Previous verdict preserved while a review claim is pending — restored by releaseReview */
   prev?: ReviewVerdict
 }
@@ -103,6 +106,18 @@ export interface SessionHarness {
 const MAX_EXECUTION_LOGS = 5
 const MAX_LOG_BYTES = 10_000
 const MAX_COMMAND_BYTES = 2_000
+
+export function truncateUtf8(value: string, maxBytes: number, marker: string): string {
+  if (maxBytes <= 0) return ""
+  const bytes = Buffer.from(value)
+  if (bytes.byteLength <= maxBytes) return value
+  const suffix = Buffer.from(`\n\n${marker}`)
+  if (suffix.byteLength >= maxBytes) return suffix.subarray(0, maxBytes).toString("utf8").replace(/�/g, "")
+  const budget = maxBytes - suffix.byteLength
+  let prefix = bytes.subarray(0, budget)
+  while (prefix.length > 0 && prefix.toString("utf8").includes("�")) prefix = prefix.subarray(0, prefix.length - 1)
+  return `${prefix.toString("utf8")}${suffix.toString("utf8")}`
+}
 export const TASKFLOW_REMINDER_TOOL_INTERVAL = 5
 export const TASKFLOW_REMINDER_INTERVAL_MS = 5 * 60 * 1_000
 
@@ -115,6 +130,32 @@ export const REVIEW_TOTAL_ATTEMPT_MULTIPLIER = 3
 const CRITICAL_FILE_RE = /(^|[._/\\-])(auth|config|database|migration|\.env|secret|password|credentials?)([._/\\-]|$)/i
 const NON_PRODUCTION_PATH_RE =
   /(^|[/\\])(fixtures?|tests?|testdata|__fixtures__|__tests__|generated|examples?|samples?|mocks?)([/\\]|$)/i
+const BUN_TEST_REPORTERS = new Set(["dots", "verbose"])
+
+function verificationCommandKey(command: string): string {
+  // ponytail: normalize only direct, simple Bun test commands; use a shell parser if broader syntax equivalence is needed.
+  if (!/^bun\s+test(?:\s|$)/.test(command) || /["'`$\\;&|<>]/.test(command)) return command
+  const tokens = command.match(/\S+/g)
+  if (!tokens) return command
+  const normalized = [...tokens]
+  for (let index = 2; index < normalized.length; index++) {
+    const token = normalized[index]
+    if (token === "--") break
+    if (token.startsWith("--reporter=")) {
+      if (!BUN_TEST_REPORTERS.has(token.slice("--reporter=".length))) return command
+      normalized.splice(index, 1)
+      index--
+      continue
+    }
+    if (token === "--reporter") {
+      const reporter = normalized[index + 1]
+      if (!reporter || !BUN_TEST_REPORTERS.has(reporter)) return command
+      normalized.splice(index, 2)
+      index--
+    }
+  }
+  return normalized.join(" ")
+}
 
 /**
  * Escape untrusted text for embedding inside XML-tagged prompt sections.
@@ -133,7 +174,7 @@ export function escapeXmlText(value: string): string {
 
 // ─── State factory (per project instance) ────────────────────────────────────
 
-const store = Instance.state(
+const store = Instance.sessionState(
   (): Map<string, SessionHarness> => new Map(),
   async () => {
     // No async cleanup needed — GC handles Maps
@@ -417,16 +458,18 @@ export namespace HarnessState {
   }
 
   export function assertRuntimeOwnedStepCompletion(sessionID: string, stepID: string): void {
-    const step = getSession(sessionID).steps.find((item) => item.id === stepID)
-    const isReview =
-      step?.type === "independent_review" || (step?.name ? /independent\s+(review|verif)/i.test(step.name) : false)
-    if (!isReview) return
+    if (!isIndependentReviewStep(sessionID, stepID)) return
     const reviewerSessionID = getReviewerSession(sessionID)
     const verdict = getReviewVerdict(sessionID)
     if (reviewerSessionID && verdict?.status === "pass" && verdict.revision === getSession(sessionID).revision) return
     throw new Error(
       `Independent review step "${stepID}" requires reviewer invocation evidence and a current PASS verdict.`,
     )
+  }
+
+  export function isIndependentReviewStep(sessionID: string, stepID: string): boolean {
+    const step = getSession(sessionID).steps.find((item) => item.id === stepID)
+    return step?.type === "independent_review" || (step?.name ? /independent\s+(review|verif)/i.test(step.name) : false)
   }
 
   // ── EditedFilesTracker ────────────────────────────────────────────────────
@@ -611,7 +654,10 @@ export namespace HarnessState {
    * `invalidateReviewVerdict` resets attempts to 0, so a fresh review can
    * re-run — prevents permanent exhaustion deadlock on a stale file set.
    */
-  export function recordReviewVerdict(sessionID: string, verdict: { status: "pass" | "fail"; reason?: string }): void {
+  export function recordReviewVerdict(
+    sessionID: string,
+    verdict: { status: "pass" | "fail"; reason?: string; acceptanceVerified?: boolean; acceptanceRequestHash?: string },
+  ): void {
     const s = getSession(sessionID)
     const prev = s.reviewVerdict
     // Record against the beginReview snapshot when a claim exists, otherwise
@@ -621,6 +667,8 @@ export namespace HarnessState {
     s.reviewVerdict = {
       status: verdict.status,
       reason: verdict.reason,
+      ...(verdict.acceptanceVerified ? { acceptanceVerified: true } : {}),
+      ...(verdict.acceptanceRequestHash ? { acceptanceRequestHash: verdict.acceptanceRequestHash } : {}),
       fileSet,
       revision,
       attempts: verdict.status === "fail" ? (prev ? prev.attempts + 1 : 1) : 0,
@@ -697,15 +745,11 @@ export namespace HarnessState {
    */
   export function pushExecutionLog(
     sessionID: string,
-    entry: { command: string; output: string; exitCode: number | null },
+    entry: { command: string; workdir?: string; output: string; exitCode: number | null },
   ): void {
     const s = getSession(sessionID)
-    const truncated =
-      entry.output.length > MAX_LOG_BYTES ? entry.output.slice(0, MAX_LOG_BYTES) + "\n\n[...truncated]" : entry.output
-    const command =
-      entry.command.length > MAX_COMMAND_BYTES
-        ? entry.command.slice(0, MAX_COMMAND_BYTES) + "\n\n[...command truncated]"
-        : entry.command
+    const truncated = truncateUtf8(entry.output, MAX_LOG_BYTES, "[...truncated]")
+    const command = truncateUtf8(entry.command, MAX_COMMAND_BYTES, "[...command truncated]")
 
     s.executionLogs.push({ ...entry, command, output: truncated, timestamp: Date.now() })
 
@@ -722,6 +766,24 @@ export namespace HarnessState {
   export function getLastLogs(sessionID: string, n = MAX_EXECUTION_LOGS): ExecutionLog[] {
     const logs = getSession(sessionID).executionLogs
     return logs.slice(-n)
+  }
+
+  export function failedVerificationCommands(
+    sessionID: string,
+    notBefore = 0,
+    logs = getLastLogs(sessionID),
+  ): string[] {
+    const latest = new Map<string, ExecutionLog>()
+    // Syntax belongs to current static checks; diagnostic shell probes are not additional acceptance contracts.
+    for (const entry of [...logs].sort((first, second) => first.timestamp - second.timestamp)) {
+      if (entry.timestamp < notBefore) continue
+      const checks = entry.command.matchAll(
+        /(?:^|&&|\|\||[;\n])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:-]+\s+)*((?:static_check|bun\s+(?:test|run\s+(?:test|typecheck|build))|(?:npm|pnpm)\s+(?:test|run\s+(?:test|typecheck|build))|yarn\s+(?:test|typecheck|build)|pytest|go\s+test|cargo\s+test|tsc|tsgo)\b[^;&|\n]*)/g,
+      )
+      for (const check of checks)
+        latest.set(`${entry.workdir ?? Instance.directory}\0${verificationCommandKey(check[1].trim())}`, entry)
+    }
+    return [...new Set([...latest.values()].filter((entry) => entry.exitCode !== 0).map((entry) => entry.command))]
   }
 
   /**

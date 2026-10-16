@@ -21,7 +21,8 @@ import { ExecutionRuntime } from "@/core/execution/runtime"
 export namespace LLM {
   const log = Log.create({ service: "llm" })
 
-  export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  // Compaction headroom estimate, not the generation cap.
+  export const OUTPUT_TOKEN_MAX = Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 16_000
 
   // Common model hallucinations / renames for real tool IDs. Repairing them here
   // avoids the generic `invalid` round-trip (which the provider surfaces as
@@ -152,16 +153,15 @@ export namespace LLM {
     if (!provider) throw new Error(`Provider not found: ${input.model.providerID}`)
     const { params, isCodex } = await LLM.prepareRouteParams({ ...input, provider })
 
-    const maxOutputTokens = isCodex
-      ? undefined
-      : ProviderTransform.maxOutputTokens(
-          input.model.api.npm,
-          params.options,
-          input.model.limit.output,
-          OUTPUT_TOKEN_MAX,
-        )
+    const outputTokenLimit = ProviderTransform.maxOutputTokens(
+      input.model.api.npm,
+      params.options,
+      input.model.limit.output,
+      Flag.ATOMCLI_EXPERIMENTAL_OUTPUT_TOKEN_MAX || undefined,
+    )
+    const maxOutputTokens = isCodex ? undefined : outputTokenLimit
 
-    const tools = input.model.capabilities.toolcall !== false ? await resolveTools(input) : {}
+    const tools = input.model.capabilities.toolcall !== false ? await filterToolsForDispatch(input) : {}
     if (!input.model.capabilities.toolcall) {
       l.info("model does not support tool calls, skipping tools", {
         modelID: input.model.id,
@@ -199,14 +199,16 @@ export namespace LLM {
       injectedContext: input.user.system ? [input.user.system] : [],
     })
     if (process.env.ATOMCLI_TEST === "true") {
-      const replayed = await SessionReplay.renderModelInput(input.sessionID, envelope.requestID)
-      if (JSON.stringify(replayed.messages) !== JSON.stringify(finalMessages)) {
-        throw new Error(`Request replay invariant failed for ${envelope.requestID}`)
-      }
+      await SessionReplay.assertModelInput(input.sessionID, envelope.requestID, {
+        system,
+        messages: finalMessages,
+        tools: toolDefinitions,
+        route: { providerID: input.model.providerID, modelID: input.model.id, agent: input.agent.name },
+      })
     }
 
     const startTime = Date.now()
-    const estimatedOutputTokens = maxOutputTokens ?? Math.min(input.model.limit.output, OUTPUT_TOKEN_MAX)
+    const estimatedOutputTokens = outputTokenLimit
     const executionAttempt = input.finalizationOnly
       ? undefined
       : await ExecutionRuntime.admitModelCall({
@@ -361,7 +363,7 @@ export namespace LLM {
     return Object.assign(result, { __executionAttempt: executionAttempt, __verificationParams: params })
   }
 
-  async function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "user">) {
+  export async function filterToolsForDispatch(input: Pick<StreamInput, "tools" | "agent" | "user">) {
     const disabled = PermissionNext.disabled(Object.keys(input.tools), input.agent.permission)
     for (const tool of Object.keys(input.tools)) {
       if (input.user.tools?.[tool] === false || disabled.has(tool)) {

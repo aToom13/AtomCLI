@@ -34,7 +34,7 @@ export namespace SessionStatus {
     ),
   }
 
-  const state = Instance.state(() => {
+  const state = Instance.sessionState(() => {
     const data: Record<string, Info> = {}
     return data
   })
