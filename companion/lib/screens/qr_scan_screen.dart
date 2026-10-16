@@ -12,7 +12,6 @@ import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
 import '../services/auth_service.dart';
 import '../services/pairing_service.dart';
-import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/control_widgets.dart';
 

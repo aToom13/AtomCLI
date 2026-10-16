@@ -15,7 +15,7 @@ export const SessionCoreRoute = new Hono()
     "/",
     describeRoute({
       summary: "List sessions",
-      description: "Get a list of all AtomCLI sessions, sorted by most recently updated.",
+      description: "Get sessions for the active directory, sorted by most recently updated.",
       operationId: "session.list",
       responses: {
         200: {

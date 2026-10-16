@@ -198,6 +198,68 @@ void main() {
     expect(message.modelId, 'zai/glm-5.3-flash');
   });
 
+  test('checkpoint parts survive parsing with their structured fields', () {
+    final message = ConversationMessage.fromJson({
+      'id': 'message_cp',
+      'sessionID': 'session_cp',
+      'role': 'assistant',
+      'parts': [
+        {
+          'id': 'part_cp',
+          'messageID': 'message_cp',
+          'sessionID': 'session_cp',
+          'type': 'checkpoint',
+          'sequence': 2,
+          'decision': 'continue',
+          'requestedCalls': 30,
+          'grantedCalls': 30,
+          'objectiveAssessment': 'objective intact',
+          'progressSummary': 'halfway',
+          'discoveries': ['found the seam'],
+          'completedWork': ['implemented parser'],
+          'remainingWork': ['wire the renderer'],
+          'failures': <String>[],
+          'blockers': ['env missing'],
+          'routeAssessment': 'route is appropriate',
+          'nextActions': ['wire the renderer'],
+          'runtime': {
+            'executionID': 'exec_cp',
+            'reason': 'requested',
+            'model': 'xai/grok-4',
+            'allowance': {
+              'limit': 50,
+              'used': 20,
+              'extensions': 1,
+              'toolCalls': 20,
+            },
+          },
+        },
+      ],
+    });
+
+    expect(message.parts, hasLength(1));
+    final checkpoint = message.parts.single.checkpoint;
+    expect(checkpoint, isNotNull);
+    expect(checkpoint!.sequence, 2);
+    expect(checkpoint.decision, 'continue');
+    expect(checkpoint.requestedCalls, 30);
+    expect(checkpoint.grantedCalls, 30);
+    expect(checkpoint.objectiveAssessment, 'objective intact');
+    expect(checkpoint.progressSummary, 'halfway');
+    expect(checkpoint.discoveries, ['found the seam']);
+    expect(checkpoint.completedWork, ['implemented parser']);
+    expect(checkpoint.remainingWork, ['wire the renderer']);
+    expect(checkpoint.failures, isEmpty);
+    expect(checkpoint.blockers, ['env missing']);
+    expect(checkpoint.routeAssessment, 'route is appropriate');
+    expect(checkpoint.nextActions, ['wire the renderer']);
+    expect(checkpoint.runtime?.executionID, 'exec_cp');
+    expect(checkpoint.runtime?.allowance.limit, 50);
+    expect(checkpoint.runtime?.allowance.used, 20);
+    expect(checkpoint.runtime?.allowance.extensions, 1);
+    expect(checkpoint.runtime?.allowance.toolCalls, 20);
+  });
+
   test('connection endpoints prefer LAN before Tailscale routes', () {
     expect(
       AuthService.orderEndpoints([

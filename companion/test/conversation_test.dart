@@ -124,6 +124,53 @@ void main() {
     );
   });
 
+  test(
+    'checkpoint parts dedupe by sequence across snapshot and live updates',
+    () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(conversationProvider.notifier);
+
+      notifier.applyMessageParts([
+        {
+          'part': {
+            'id': 'snapshot:checkpoint:exec_cp:1',
+            'messageID': 'message_cp',
+            'sessionID': 'session_cp',
+            'type': 'checkpoint',
+            'sequence': 1,
+            'decision': 'continue',
+            'progressSummary': 'from snapshot',
+          },
+        },
+      ]);
+      notifier.applyMessageParts([
+        {
+          'part': {
+            'id': 'part_live_cp',
+            'messageID': 'message_cp',
+            'sessionID': 'session_cp',
+            'type': 'checkpoint',
+            'sequence': 1,
+            'decision': 'continue',
+            'progressSummary': 'from live event',
+          },
+        },
+      ]);
+
+      final message = container
+          .read(conversationProvider)
+          .messagesFor('session_cp')
+          .single;
+      expect(message.parts, hasLength(1));
+      expect(message.parts.single.checkpoint?.sequence, 1);
+      expect(
+        message.parts.single.checkpoint?.progressSummary,
+        'from live event',
+      );
+    },
+  );
+
   test('workflow and question state stays deduplicated across projects', () {
     final container = ProviderContainer();
     addTearDown(container.dispose);

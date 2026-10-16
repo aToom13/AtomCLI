@@ -13,70 +13,11 @@ import 'connection_state_machine.dart';
 import 'local_cache_database.dart';
 import 'power_policy.dart';
 import 'safe_outbox.dart';
+import 'websocket_types.dart';
 
-class BackendEvent {
-  final String type;
-  final int? seqId;
-  final String? bridgeEpoch;
-  final String? topic;
-  final Map<String, dynamic> payload;
+export 'websocket_types.dart';
 
-  const BackendEvent({
-    required this.type,
-    this.seqId,
-    this.bridgeEpoch,
-    this.topic,
-    required this.payload,
-  });
-
-  factory BackendEvent.fromJson(Map<String, dynamic> json) {
-    final rawType = json['type'];
-    final type = rawType is String
-        ? rawType
-        : json.containsKey('error')
-        ? 'protocol_error'
-        : json.containsKey('status')
-        ? 'action_result'
-        : 'unknown_message';
-    return BackendEvent(
-      type: type,
-      seqId: json['seq_id'] as int?,
-      bridgeEpoch: json['bridge_epoch'] as String?,
-      topic: json['topic'] as String?,
-      payload: Map<String, dynamic>.from(json['payload'] as Map? ?? json),
-    );
-  }
-}
-
-class ActionResult {
-  final String action;
-  final String status;
-  final String? id;
-  final String? error;
-  final Map<String, dynamic> payload;
-
-  const ActionResult({
-    required this.action,
-    required this.status,
-    this.id,
-    this.error,
-    required this.payload,
-  });
-
-  bool get isOk => status == 'ok';
-
-  factory ActionResult.fromEvent(BackendEvent event) {
-    return ActionResult(
-      action: event.payload['action'] as String? ?? event.type,
-      status: event.payload['status'] as String? ?? 'ok',
-      id: event.payload['id'] as String?,
-      error: event.payload['error'] as String?,
-      payload: event.payload,
-    );
-  }
-}
-
-enum WsLifecycle { connecting, connected, disconnected }
+part 'websocket_service_actions.dart';
 
 class WebSocketService {
   static const _connectTimeout = Duration(seconds: 10);
@@ -143,6 +84,7 @@ class WebSocketService {
   bool _terminalProtocolError = false;
   bool _resyncing = false;
   bool _flushingOutbox = false;
+  Future<void> _messageQueue = Future.value();
 
   String? get currentEndpoint => _currentEndpoint;
   String? get lastError => _lastError;
@@ -348,7 +290,13 @@ class WebSocketService {
 
       _retryCount = 0;
       _subscription = channel.stream.listen(
-        (raw) => unawaited(_handleMessage(attempt, raw)),
+        (raw) {
+          _messageQueue = _messageQueue
+              .then((_) => _handleMessage(attempt, raw))
+              .catchError((error) {
+                _reportError('Failed to process server message: $error');
+              });
+        },
         onDone: () => _handleDisconnect(attempt, 'Connection closed'),
         onError: (Object error) => _handleDisconnect(attempt, error.toString()),
         cancelOnError: true,
@@ -535,7 +483,7 @@ class WebSocketService {
           return;
         }
         if (_resyncing || event.seqId! <= _seqId) return;
-        _recordSequence(event.seqId!);
+        // Advance cursor only after event has been handed to the reducer.
       }
       final machineId = _peerIdentity?.machineId;
       if (machineId != null &&
@@ -554,6 +502,7 @@ class WebSocketService {
       }
       _completePendingAction(event);
       _controller.add(event);
+      if (event.seqId != null) _recordSequence(event.seqId!);
     } catch (error) {
       _reportError('Invalid server message: $error');
     }
@@ -648,282 +597,6 @@ class WebSocketService {
     onConnectionChange?.call(value);
   }
 
-  void requestSnapshot() {
-    _requireSend({'type': 'request_snapshot'});
-  }
-
-  Future<ActionResult> resolvePermission({
-    required String reqId,
-    required String resolution,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'permission_resolve',
-      'id': reqId,
-      'resolution': resolution,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> decideRoute({
-    required RouteProposal proposal,
-    required String decision,
-    String acceptScope = 'episode',
-  }) {
-    return _sendSignedAction({
-      'type': 'route_decision',
-      'session_id': proposal.sessionId,
-      'execution_id': proposal.executionId,
-      'proposal_id': proposal.id,
-      'expected_proposal_version': proposal.version,
-      'expected_route_revision': proposal.routeRevision,
-      'decision': decision,
-      if (decision == 'accept') 'accept_scope': acceptScope,
-      if (proposal.directory != null) 'directory': proposal.directory,
-    });
-  }
-
-  Future<ActionResult> createSession({
-    String? text,
-    String? model,
-    String? agent,
-    String? variant,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'create_session',
-      if (text != null && text.isNotEmpty) 'text': text,
-      if (model != null && model.isNotEmpty) 'model': model,
-      if (agent != null && agent.isNotEmpty) 'agent': agent,
-      if (variant != null && variant.isNotEmpty) 'variant': variant,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> getMessages({
-    required String sessionId,
-    String? directory,
-  }) {
-    return _sendReadRequest({
-      'type': 'get_messages',
-      'session_id': sessionId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<DirectoryListing> listDirectories({String? path}) async {
-    final result = await _sendReadRequest({
-      'type': 'list_directories',
-      if (path != null && path.isNotEmpty) 'path': path,
-    });
-    return DirectoryListing.fromJson(result.payload);
-  }
-
-  Future<ActionResult> sendChatMessage({
-    required String sessionId,
-    required String text,
-    String? model,
-    String? agent,
-    String? variant,
-    String? directory,
-    List<String> attachments = const [],
-  }) async {
-    final payload = <String, dynamic>{
-      'type': 'chat_message',
-      'session_id': sessionId,
-      'text': text,
-      if (attachments.isNotEmpty) 'attachments': attachments,
-      if (model != null && model.isNotEmpty) 'model': model,
-      if (agent != null && agent.isNotEmpty) 'agent': agent,
-      if (variant != null && variant.isNotEmpty) 'variant': variant,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    };
-    if (!isConnected) {
-      final entry = _outbox.enqueueChat(
-        targetMachineId: AuthService.instance.machineId ?? '',
-        targetProfileId: AuthService.instance.activeProfileId ?? '',
-        targetBridgeEpoch: AuthService.instance.bridgeEpoch,
-        payload: payload,
-      );
-      await _cache.saveOutboxEntry(entry);
-      return ActionResult(
-        action: 'chat_message',
-        status: 'queued',
-        id: entry.idempotencyKey,
-        payload: {'status': 'queued', 'outbox_id': entry.idempotencyKey},
-      );
-    }
-    return _sendSignedAction(payload);
-  }
-
-  Future<ActionResult> replyQuestion({
-    required String id,
-    required List<List<String>> answers,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'question_reply',
-      'id': id,
-      'answers': answers,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> rejectQuestion({required String id, String? directory}) {
-    return _sendSignedAction({
-      'type': 'question_reject',
-      'id': id,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> abortSession({
-    required String sessionId,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'abort_session',
-      'session_id': sessionId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> pauseSession({
-    required String sessionId,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'pause_session',
-      'session_id': sessionId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> deleteSession({
-    required String sessionId,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'delete_session',
-      'session_id': sessionId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> createUpload({
-    required String sessionId,
-    required String filename,
-    required String mime,
-    required int size,
-    String? sha256,
-    String? directory,
-    String? model,
-    String? agent,
-    String? variant,
-  }) {
-    return _sendRecoverableSignedAction({
-      'type': 'create_upload',
-      'session_id': sessionId,
-      'filename': filename,
-      'mime': mime,
-      'size': size,
-      if (sha256 != null && sha256.isNotEmpty) 'sha256': sha256,
-      if (model != null && model.isNotEmpty) 'model': model,
-      if (agent != null && agent.isNotEmpty) 'agent': agent,
-      if (variant != null && variant.isNotEmpty) 'variant': variant,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  /// Transfer tickets are safe to retry because the server caches action
-  /// results by device and client request ID. This specifically covers the
-  /// short foreground/background handoff window after Android's file picker:
-  /// the first request may have succeeded even if its acknowledgement arrived
-  /// on a socket that was being replaced.
-  Future<ActionResult> _sendRecoverableSignedAction(
-    Map<String, dynamic> message,
-  ) async {
-    final requestId = _uuidV4();
-    try {
-      return await _sendSignedAction(message, requestId: requestId);
-    } on TimeoutException {
-      await _forceRestoreConnection();
-      return _sendSignedAction(message, requestId: requestId);
-    } on StateError {
-      await _forceRestoreConnection();
-      return _sendSignedAction(message, requestId: requestId);
-    }
-  }
-
-  Future<void> _forceRestoreConnection() async {
-    final waiter = Completer<void>();
-    _connectionWaiters.add(waiter);
-    try {
-      await reconnect();
-      if (isConnected) return;
-      await waiter.future.timeout(
-        _connectTimeout,
-        onTimeout: () => throw TimeoutException(
-          _lastError ?? 'AtomCLI connection was not restored in time',
-        ),
-      );
-    } finally {
-      _connectionWaiters.remove(waiter);
-    }
-  }
-
-  Future<ActionResult> deleteArtifact({
-    required String artifactId,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'artifact_delete',
-      'artifact_id': artifactId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> previewLogs({
-    required String previewId,
-    String? directory,
-  }) {
-    return _sendReadRequest({
-      'type': 'preview_logs',
-      'preview_id': previewId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> previewAccess({
-    required String previewId,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'preview_access',
-      'preview_id': previewId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> stopPreview({
-    required String previewId,
-    String? directory,
-  }) {
-    return _sendSignedAction({
-      'type': 'preview_stop',
-      'preview_id': previewId,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
-    });
-  }
-
-  Future<ActionResult> unpair() {
-    return _sendSignedAction({'type': 'unpair'});
-  }
-
-  void getModels() {
-    _requireSend({'type': 'get_models'});
-  }
-
   void _authenticate(
     String challenge, {
     required int protocolVersion,
@@ -1015,6 +688,20 @@ class WebSocketService {
           );
           _outbox.markAcknowledged(entry.idempotencyKey);
           await _persistOutboxEntry(entry.idempotencyKey);
+          final sessionId = entry.payload['session_id'] as String?;
+          if (sessionId != null && sessionId.isNotEmpty && isConnected) {
+            await Future<void>.delayed(const Duration(milliseconds: 250));
+            await getMessages(
+              sessionId: sessionId,
+              directory: entry.payload['directory'] as String?,
+            ).catchError(
+              (_) => ActionResult(
+                action: 'get_messages',
+                status: 'error',
+                payload: const {},
+              ),
+            );
+          }
         } catch (error) {
           _outbox.markQueued(entry.idempotencyKey, error.toString());
           await _persistOutboxEntry(entry.idempotencyKey);

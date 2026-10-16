@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/app_providers.dart';
 import 'auth_service.dart';
 import 'background_connection_service.dart';
-import 'websocket_service.dart';
 
 class ProfileSwitchService {
   static Future<PairedMachineProfile> select(

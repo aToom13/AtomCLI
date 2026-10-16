@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import { Session } from "@/core/session"
 import { SessionCoreRoute } from "./core"
 import { SessionMessageRoute } from "./message"
 import { SessionToolRoute } from "./tool"
@@ -10,6 +11,14 @@ import { SessionExecutionRoute } from "./execution"
 // - tool.ts: Tools (revert, diff, command, etc.)
 
 export const SessionRoute = new Hono()
+  .use("/:sessionID", async (c, next) => {
+    if (c.req.param("sessionID") !== "status") await Session.get(c.req.param("sessionID"))
+    await next()
+  })
+  .use("/:sessionID/*", async (c, next) => {
+    if (c.req.param("sessionID") !== "status") await Session.get(c.req.param("sessionID"))
+    await next()
+  })
   .route("/", SessionCoreRoute)
   .route("/", SessionMessageRoute)
   .route("/", SessionToolRoute)

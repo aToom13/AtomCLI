@@ -1,13 +1,10 @@
 import { Hono } from "hono"
 import { upgradeWebSocket } from "hono/bun"
-import { describeRoute, resolver, validator } from "hono-openapi"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import z from "zod"
 import {
   CompanionAuth,
-  CompanionAudit,
   CompanionIdentity,
   CompanionProtocol as CompanionWireProtocol,
   MobileBridge,
@@ -18,14 +15,7 @@ import { SessionPrompt } from "@/core/session/prompt"
 import { Session } from "@/core/session"
 import { GlobalBus } from "@/core/bus/global"
 import { Bus } from "@/core/bus"
-import { Log } from "@/util/util/log"
-import { Provider } from "@/integrations/provider/provider"
 import { Instance } from "@/services/project/instance"
-import { InstanceBootstrap } from "@/services/project/bootstrap"
-import { Project } from "@/services/project/project"
-import { Filesystem } from "@/util/util/filesystem"
-import { Agent } from "@/integrations/agent/agent"
-import { Config } from "@/core/config/config"
 import { Question } from "@/interfaces/question"
 import { SessionTermination } from "@/core/session/termination"
 import { SessionStatus } from "@/core/session/status"
@@ -36,318 +26,13 @@ import { CompanionTransfer } from "@/services/companion/transfer"
 import { CompanionProtocol } from "./companion-protocol"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { ExecutionRuntime } from "@/core/execution/runtime"
-
-const log = Log.create({ service: "companion-ws" })
-const MAX_ACTIVE_DEVICES = 100
-const ACTION_RESULT_TTL_MS = 15 * 60_000
-const ACTION_RESULT_MAX = 1_000
-const ACTIVE_DEVICE_CONNECTIONS = new Map<string, { clientId: string; close: (reason: string) => void }>()
-const ACTION_RESULTS = new Map<string, { expiresAt: number; payload: Record<string, unknown> }>()
-const ACTIVE_ACTIONS = new Map<string, number>()
-const MOBILE_SYSTEM_CONTEXT =
-  "This user message was sent from the AtomCLI Android Companion. Use a fast, risk-proportionate execution profile: for low-risk prototypes and routine changes, prefer direct work or at most one implementation sub-agent, run one focused verification, do not spawn reviewer/checker agents manually, and return the useful result immediately. Independent review remains required for security-, authorization-, migration-, release-, or data-integrity-sensitive work. Treat this as a fresh user turn; do not resume unfinished plans or verification from an earlier request unless this message explicitly asks you to."
-const AUDITED_ACTIONS = new Set([
-  "permission_resolve",
-  "route_decision",
-  "question_reply",
-  "question_reject",
-  "abort_session",
-  "pause_session",
-  "delete_session",
-  "artifact_delete",
-  "preview_stop",
-  "unpair",
-])
-
-function diagnosticError(error: unknown) {
-  if (!(error instanceof Error)) return { kind: typeof error }
-  const code = (error as Error & { code?: unknown }).code
-  return {
-    name: error.name.slice(0, 64),
-    ...(typeof code === "string" && /^[a-z0-9_.-]{1,64}$/i.test(code) ? { code } : {}),
-  }
-}
-
-function actionResult(
-  ws: any,
-  action: string,
-  msg: { client_request_id?: string; device_id?: string; device_name?: string },
-  result: { status: "ok" | "conflict" | "error"; id?: string; error?: string; [key: string]: unknown },
-  cache = true,
-) {
-  const payload = {
-    type: "action_result",
-    action,
-    client_request_id: msg.client_request_id,
-    ...result,
-  }
-  if (AUDITED_ACTIONS.has(action)) {
-    const identity = msg as { device_id?: string; device_name?: string }
-    const claimedIdentity = identity.device_id ?? identity.device_name ?? "unknown-device"
-    const registeredDevice = CompanionAuth.getDevice(claimedIdentity)
-    CompanionAudit.record({
-      action,
-      outcome: result.status,
-      deviceId: registeredDevice?.deviceId ?? claimedIdentity,
-      errorCode: result.error,
-    })
-  }
-  if (cache) sendIdempotent(ws, msg, payload)
-  else ws.send(JSON.stringify(payload))
-}
-
-function actionKey(msg: { client_request_id?: string; device_id?: string; device_name?: string }) {
-  if (!msg.client_request_id) return undefined
-  const device = msg.device_id ?? msg.device_name
-  return device ? `${device}:${msg.client_request_id}` : undefined
-}
-
-function cachedAction(msg: { client_request_id?: string; device_id?: string; device_name?: string }) {
-  const key = actionKey(msg)
-  if (!key) return undefined
-  const cached = ACTION_RESULTS.get(key)
-  if (!cached) return undefined
-  if (cached.expiresAt > Date.now()) return cached.payload
-  ACTION_RESULTS.delete(key)
-  return undefined
-}
-
-function beginAction(msg: { client_request_id?: string; device_id?: string; device_name?: string }) {
-  const key = actionKey(msg)
-  if (!key) return "new" as const
-  const startedAt = ACTIVE_ACTIONS.get(key)
-  if (startedAt && Date.now() - startedAt < 30_000) return "active" as const
-  ACTIVE_ACTIONS.set(key, Date.now())
-  return "new" as const
-}
-
-function sendIdempotent(
-  ws: any,
-  msg: { client_request_id?: string; device_id?: string; device_name?: string },
-  payload: Record<string, unknown>,
-) {
-  const key = actionKey(msg)
-  if (key) {
-    ACTIVE_ACTIONS.delete(key)
-    ACTION_RESULTS.delete(key)
-    ACTION_RESULTS.set(key, { expiresAt: Date.now() + ACTION_RESULT_TTL_MS, payload })
-    while (ACTION_RESULTS.size > ACTION_RESULT_MAX) {
-      const oldest = ACTION_RESULTS.keys().next().value
-      if (!oldest) break
-      ACTION_RESULTS.delete(oldest)
-    }
-  }
-  ws.send(JSON.stringify(payload))
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function knownDirectories(current: string) {
-  const projects = await Project.list().catch(() => [])
-  const directories = new Set<string>()
-  for (const candidate of [current, ...projects.flatMap((project) => [project.worktree, ...project.sandboxes])]) {
-    if (!candidate) continue
-    try {
-      const resolved = await fs.realpath(candidate)
-      if ((await fs.stat(resolved)).isDirectory()) directories.add(resolved)
-    } catch {
-      // Stale project history must not break every Companion session list.
-    }
-  }
-  return Array.from(directories)
-}
-
-async function resolveCompanionDirectory(candidate: string | undefined, fallback: string) {
-  const requested = candidate ? path.resolve(candidate) : fallback
-  const home = await fs.realpath(os.homedir())
-  const resolved = await fs.realpath(requested)
-  const current = await fs.realpath(fallback)
-  const projectRoots = await knownDirectories(current)
-  if (
-    !Filesystem.contains(home, resolved) &&
-    !projectRoots.some((projectRoot) => Filesystem.contains(projectRoot, resolved))
-  ) {
-    throw new Error("Directory must be inside the user's home folder or a known AtomCLI workspace")
-  }
-  const stat = await fs.stat(resolved)
-  if (!stat.isDirectory()) throw new Error("Selected path is not a directory")
-  return resolved
-}
-
-async function inDirectory<R>(candidate: string | undefined, fallback: string, fn: () => R) {
-  const selected = await resolveCompanionDirectory(candidate, fallback)
-  return Instance.provide({ directory: selected, init: InstanceBootstrap, fn })
-}
-
-async function companionEndpoints(port: number) {
-  const { CompanionDiscovery } = await import("@atomcli/companion")
-  const endpoints = CompanionDiscovery.detectEndpoints(port).map((item) => item.url)
-  const magicDNS = await CompanionDiscovery.getTailscaleMagicDNS()
-  if (magicDNS) endpoints.push(`ws://${magicDNS}:${port}/companion/ws`)
-  return Array.from(new Set(endpoints))
-}
-
-async function sendSessionList(ws: any, currentDirectory = Instance.directory) {
-  try {
-    const sessions = new Map<
-      string,
-      { id: string; title: string; updated: number; directory: string; status: string }
-    >()
-    for (const directory of await knownDirectories(currentDirectory)) {
-      await Instance.provide({
-        directory,
-        fn: async () => {
-          for await (const s of Session.list()) {
-            sessions.set(s.id, {
-              id: s.id,
-              title: s.title,
-              updated: s.time.updated,
-              directory: s.directory,
-              status: SessionStatus.get(s.id).type,
-            })
-          }
-        },
-      })
-    }
-    const sorted = Array.from(sessions.values()).sort((a, b) => b.updated - a.updated)
-    ws.send(JSON.stringify({ type: "session_list", sessions: sorted, current_directory: currentDirectory }))
-  } catch (err) {
-    log.error("failed to send session list", { error: diagnosticError(err) })
-  }
-}
-
-async function sendModelList(ws: any) {
-  try {
-    const connected = await Provider.list()
-    const models = []
-    for (const [providerId, provider] of Object.entries(connected)) {
-      for (const [modelId, model] of Object.entries(provider.models)) {
-        models.push({
-          id: `${providerId}/${modelId}`,
-          name: model.name,
-          providerId,
-          providerName: provider.name,
-          family: model.family,
-          status: model.status,
-          free: model.cost.input === 0 && model.cost.output === 0,
-          cost: { input: model.cost.input, output: model.cost.output },
-          limit: { context: model.limit.context, output: model.limit.output },
-          reasoning: model.capabilities.reasoning,
-          capabilities: {
-            tools: model.capabilities.toolcall,
-            images: model.capabilities.input.image,
-            pdf: model.capabilities.input.pdf,
-            audio: model.capabilities.input.audio,
-            video: model.capabilities.input.video,
-          },
-          variants: Object.keys(model.variants ?? {}),
-        })
-      }
-    }
-    models.sort((a, b) => {
-      if (a.providerId === "atomcli" && b.providerId !== "atomcli") return -1
-      if (b.providerId === "atomcli" && a.providerId !== "atomcli") return 1
-      if (a.providerName !== b.providerName) return a.providerName.localeCompare(b.providerName)
-      if (a.free !== b.free) return a.free ? -1 : 1
-      return a.name.localeCompare(b.name)
-    })
-
-    // Resolve the server-configured default model so mobile can pre-select it
-    let default_model: string | undefined
-    try {
-      const cfg = await Config.get()
-      default_model = cfg.model ?? undefined
-    } catch {
-      /* non-fatal */
-    }
-
-    ws.send(JSON.stringify({ type: "models_list", models, default_model }))
-  } catch (err) {
-    log.error("failed to send model list", { error: diagnosticError(err) })
-  }
-}
-
-async function sendAgentList(ws: any) {
-  try {
-    const agents = await Agent.list()
-    const agentInfos = agents.map((a) => ({
-      name: a.name,
-      description: a.description,
-      mode: a.mode,
-      hidden: a.hidden,
-    }))
-    ws.send(JSON.stringify({ type: "agents_list", agents: agentInfos }))
-  } catch (err) {
-    log.error("failed to send agent list", { error: diagnosticError(err) })
-  }
-}
-
-async function sendBridgeSnapshot(clientId: string) {
-  const permissions = []
-  const questions = []
-  const routeProposals = []
-  const activeRoutes = []
-  for (const directory of await knownDirectories(Instance.directory)) {
-    await Instance.provide({
-      directory,
-      fn: async () => {
-        permissions.push(
-          ...(await PermissionNext.list()).map((permission) => ({
-            req_id: permission.id,
-            sessionID: permission.sessionID,
-            permission: permission.permission,
-            patterns: permission.patterns,
-            always: permission.always,
-            directory,
-            metadata: permission.metadata,
-          })),
-        )
-        questions.push(
-          ...(await Question.list()).map((question) => ({
-            req_id: question.id,
-            sessionID: question.sessionID,
-            directory,
-            questions: question.questions,
-            tool: question.tool,
-          })),
-        )
-        for await (const session of Session.list()) {
-          const snapshot = await Promise.resolve(ExecutionRuntime.snapshot(session.id)).catch(() => undefined)
-          if (!snapshot) continue
-          routeProposals.push(
-            ...snapshot.pendingProposals.map((proposal) => ({ ...proposal, sessionID: session.id, directory })),
-          )
-          activeRoutes.push(
-            ...snapshot.executions.flatMap((execution) =>
-              execution.id === snapshot.activeExecutionID && execution.route
-                ? [
-                    {
-                      sessionID: execution.rootSessionID,
-                      executionID: execution.id,
-                      routeRevision: execution.routeRevision,
-                      directory,
-                      ...execution.route,
-                    },
-                  ]
-                : [],
-            ),
-          )
-        }
-      },
-    })
-  }
-  MobileBridge.replacePendingPermissions(permissions)
-  MobileBridge.replacePendingQuestions(questions)
-  MobileBridge.replaceRouteState(routeProposals, activeRoutes)
-  MobileBridge.sendSnapshot(clientId)
-}
-
-// ---------------------------------------------------------------------------
-// Route
-// ---------------------------------------------------------------------------
-
+import { ConnectionStore, MAX_ACTIVE_DEVICES, beginAction, cachedAction } from "./companion/state"
+import { inDirectory, knownDirectories, resolveCompanionDirectory } from "./companion/directory"
+import { actionResult, sendIdempotent } from "./companion/actions"
+import { sendSessionList, sendModelList, sendAgentList } from "./companion/messages"
+import { sendBridgeSnapshot } from "./companion/bridge-snapshot"
+import { diagnosticError, companionEndpoints, MOBILE_SYSTEM_CONTEXT, log } from "./companion/helpers"
+import { CompanionUploadRoutes } from "./companion/uploads"
 export const CompanionRoute = new Hono()
   .get(
     "/companion/ws",
@@ -446,7 +131,7 @@ export const CompanionRoute = new Hono()
                   ws.send(JSON.stringify({ error: "device_identity_conflict" }))
                   return
                 }
-                const previous = ACTIVE_DEVICE_CONNECTIONS.get(deviceId)
+                const previous = ConnectionStore.get(deviceId)
                 if (previous && previous.clientId !== clientId) {
                   log.info("replacing existing device connection", {
                     device: msg.device_name,
@@ -456,12 +141,11 @@ export const CompanionRoute = new Hono()
                   MobileBridge.unregisterClient(previous.clientId)
                   previous.close("connection_replaced")
                 }
-                if (!ACTIVE_DEVICE_CONNECTIONS.has(deviceId) && ACTIVE_DEVICE_CONNECTIONS.size >= MAX_ACTIVE_DEVICES) {
-                  const oldest = ACTIVE_DEVICE_CONNECTIONS.entries().next().value
-                  if (oldest) {
-                    ACTIVE_DEVICE_CONNECTIONS.delete(oldest[0])
-                    MobileBridge.unregisterClient(oldest[1].clientId)
-                    oldest[1].close("connection_capacity")
+                if (!ConnectionStore.has(deviceId) && ConnectionStore.size >= MAX_ACTIVE_DEVICES) {
+                  const oldest = ConnectionStore.evictOldest()
+                  if (oldest?.connection) {
+                    MobileBridge.unregisterClient(oldest.connection.clientId)
+                    oldest.connection.close("connection_capacity")
                   }
                 }
                 connection = {
@@ -470,7 +154,7 @@ export const CompanionRoute = new Hono()
                   connectionId: crypto.randomUUID(),
                   lastCounter: 0,
                 }
-                ACTIVE_DEVICE_CONNECTIONS.set(deviceId, {
+                ConnectionStore.set(deviceId, {
                   clientId,
                   close(reason) {
                     try {
@@ -526,14 +210,15 @@ export const CompanionRoute = new Hono()
                   ws.send(JSON.stringify(cached))
                   return
                 }
-                if (beginAction(msg) === "active") {
+                const actionState = beginAction(msg)
+                if (actionState !== "new") {
                   ws.send(
                     JSON.stringify({
                       type: "action_result",
                       action: msg.type,
                       client_request_id: msg.client_request_id,
                       status: "conflict",
-                      error: "request_in_progress",
+                      error: actionState === "active" ? "request_in_progress" : "too_many_requests",
                     }),
                   )
                   return
@@ -820,23 +505,52 @@ export const CompanionRoute = new Hono()
                       time: m.info.time,
                       ...(m.info.role === "user"
                         ? {
-                            model: `${m.info.model.providerID}/${m.info.model.modelID}`,
+                            ...(m.info.model?.providerID && m.info.model?.modelID
+                              ? { model: `${m.info.model.providerID}/${m.info.model.modelID}` }
+                              : {}),
                             agent: m.info.agent,
                             variant: m.info.variant,
                           }
                         : {
-                            model: `${m.info.providerID}/${m.info.modelID}`,
+                            ...(m.info.providerID && m.info.modelID
+                              ? { model: `${m.info.providerID}/${m.info.modelID}` }
+                              : {}),
                             ...(m.info.error ? { error: MobileBridge.sanitizeMessageError(m.info.error) } : {}),
                           }),
                       parts: m.parts.map((p) => ({
                         id: p.id,
                         type: p.type,
+                        messageID: p.messageID,
+                        sessionID: p.sessionID,
                         // text / reasoning
                         ...("text" in p ? { text: p.text } : {}),
                         // tool
                         ...(p.type === "tool" ? { tool: p.tool, state: p.state, callID: p.callID } : {}),
                         // file attachment
                         ...(p.type === "file" ? { mime: p.mime, filename: p.filename, url: p.url } : {}),
+                        // checkpoint
+                        ...(p.type === "checkpoint"
+                          ? {
+                              sequence: p.sequence,
+                              decision: p.decision,
+                              requestedCalls: p.requestedCalls,
+                              grantedCalls: p.grantedCalls,
+                              objectiveAssessment: p.objectiveAssessment,
+                              progressSummary: p.progressSummary,
+                              discoveries: p.discoveries,
+                              completedWork: p.completedWork,
+                              remainingWork: p.remainingWork,
+                              failures: p.failures,
+                              blockers: p.blockers,
+                              routeAssessment: p.routeAssessment,
+                              routeDecision: p.routeDecision,
+                              selfCritique: p.selfCritique,
+                              failedApproaches: p.failedApproaches,
+                              whatToChanges: p.whatToChanges,
+                              nextActions: p.nextActions,
+                              runtime: p.runtime,
+                            }
+                          : {}),
                       })),
                     }))
                     ws.send(
@@ -944,8 +658,8 @@ export const CompanionRoute = new Hono()
                 case "unpair": {
                   actionResult(ws, msg.type, { ...msg, device_id: connection.deviceId }, { status: "ok" })
                   CompanionAuth.removeDevice(connection.deviceId)
-                  const active = ACTIVE_DEVICE_CONNECTIONS.get(connection.deviceId)
-                  if (active?.clientId === clientId) ACTIVE_DEVICE_CONNECTIONS.delete(connection.deviceId)
+                  const active = ConnectionStore.get(connection.deviceId)
+                  if (active?.clientId === clientId) ConnectionStore.delete(connection.deviceId)
                   if (registered) {
                     MobileBridge.unregisterClient(clientId)
                     registered = false
@@ -1130,15 +844,15 @@ export const CompanionRoute = new Hono()
 
         onClose() {
           log.info("client disconnected", { clientId })
-          const active = connection && ACTIVE_DEVICE_CONNECTIONS.get(connection.deviceId)
-          if (active?.clientId === clientId) ACTIVE_DEVICE_CONNECTIONS.delete(connection!.deviceId)
+          const active = connection && ConnectionStore.get(connection.deviceId)
+          if (active?.clientId === clientId) ConnectionStore.delete(connection!.deviceId)
           if (registered) MobileBridge.unregisterClient(clientId)
         },
 
         onError(err) {
           log.error("ws error", { clientId, error: diagnosticError(err) })
-          const active = connection && ACTIVE_DEVICE_CONNECTIONS.get(connection.deviceId)
-          if (active?.clientId === clientId) ACTIVE_DEVICE_CONNECTIONS.delete(connection!.deviceId)
+          const active = connection && ConnectionStore.get(connection.deviceId)
+          if (active?.clientId === clientId) ConnectionStore.delete(connection!.deviceId)
           if (registered) MobileBridge.unregisterClient(clientId)
         },
       }
@@ -1203,132 +917,5 @@ export const CompanionRoute = new Hono()
       return c.json({ error: "artifact_download_failed" }, 400)
     }
   })
-  .get("/companion/upload/:id", async (c) => {
-    const directory = c.req.query("directory")
-    const token = c.req.query("token") ?? ""
-    const selected = await resolveCompanionDirectory(directory, Instance.directory)
-    const status = await inDirectory(selected, Instance.directory, () =>
-      CompanionTransfer.uploadStatus(c.req.param("id"), token),
-    )
-    if (!status) return c.json({ error: "upload_not_found" }, 404)
-    return c.json(
-      {
-        offset: status.offset,
-        size: status.size,
-        expires_at: status.expiresAt,
-        chunk_size: status.chunkSize,
-      },
-      200,
-      { "cache-control": "no-store" },
-    )
-  })
-  .patch("/companion/upload/:id", async (c) => {
-    try {
-      const directory = c.req.query("directory")
-      const token = c.req.query("token") ?? ""
-      const selected = await resolveCompanionDirectory(directory, Instance.directory)
-      const offset = Number(c.req.header("upload-offset"))
-      const contentLength = Number(c.req.header("content-length"))
-      const result = await inDirectory(selected, Instance.directory, () =>
-        CompanionTransfer.acceptUploadChunk({
-          id: c.req.param("id"),
-          token,
-          offset,
-          contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
-          chunkSha256: c.req.header("x-chunk-sha256"),
-          body: c.req.raw.body,
-        }),
-      )
-      return c.json({
-        status: result.status,
-        offset: result.offset,
-        size: result.size,
-        ...(result.status === "complete" ? { artifact: result.artifact } : {}),
-      })
-    } catch (err) {
-      log.error("mobile upload chunk failed", { error: diagnosticError(err) })
-      return c.json({ error: err instanceof Error ? err.message : "upload_chunk_failed" }, 400)
-    }
-  })
-  .put("/companion/upload/:id", async (c) => {
-    try {
-      const directory = c.req.query("directory")
-      const token = c.req.query("token") ?? ""
-      const selected = await resolveCompanionDirectory(directory, Instance.directory)
-      const contentLengthHeader = c.req.header("content-length")
-      const contentLength = contentLengthHeader ? Number(contentLengthHeader) : undefined
-      const result = await inDirectory(selected, Instance.directory, () =>
-        CompanionTransfer.acceptUpload({
-          id: c.req.param("id"),
-          token,
-          contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
-          body: c.req.raw.body,
-        }),
-      )
-      return c.json({ status: "ok", artifact: result.artifact })
-    } catch (err) {
-      log.error("mobile upload failed", { error: diagnosticError(err) })
-      return c.json({ error: err instanceof Error ? err.message : "upload_failed" }, 400)
-    }
-  })
-
-/**
- * HTTP companion pair endpoint (for AtomBase server).
- * Mirrors the same logic in enterprise's /companion/pair for completeness.
- */
-export const CompanionPairRoute = new Hono().post(
-  "/companion/pair",
-  describeRoute({
-    summary: "Pair a mobile device",
-    operationId: "companion.pair",
-    responses: {
-      200: {
-        description: "Device paired",
-        content: {
-          "application/json": {
-            schema: resolver(
-              z.object({
-                status: z.literal("ok"),
-                device_id: z.string(),
-                machine_id: z.string().uuid(),
-                machine_name: z.string(),
-                process_id: z.string().uuid(),
-                bridge_id: z.string().uuid(),
-                project_directory: z.string(),
-              }),
-            ),
-          },
-        },
-      },
-      401: {
-        description: "Invalid token",
-        content: { "application/json": { schema: resolver(z.object({ error: z.string() })) } },
-      },
-    },
-  }),
-  validator(
-    "json",
-    z.object({
-      pairing_token: z.string().min(1),
-      public_key: z.string().min(1),
-      device_name: z.string().min(1).max(100),
-      device_id: z.string().min(1).max(128).optional(),
-    }),
-  ),
-  async (c) => {
-    const body = c.req.valid("json")
-    const valid = CompanionAuth.consumeToken(body.pairing_token)
-    if (!valid) return c.json({ error: "invalid_token" }, 401)
-    const device = CompanionAuth.registerDevice(body.device_name, body.public_key, body.device_id)
-    const machine = CompanionIdentity.machine()
-    return c.json({
-      status: "ok" as const,
-      device_id: device.deviceId ?? device.deviceName,
-      machine_id: machine.machineId,
-      machine_name: machine.machineName,
-      process_id: CompanionIdentity.processId(),
-      bridge_id: MobileBridge.bridgeId(),
-      project_directory: Instance.directory,
-    })
-  },
-)
+  .route("", CompanionUploadRoutes)
+export { CompanionPairRoute } from "./companion/pair"

@@ -149,6 +149,7 @@ export namespace CompanionAuth {
   const _tokens = new Map<string, { expiresAt: number }>()
 
   export function issueToken(ttlMs = 5 * 60 * 1000): string {
+    purgeExpiredTokens()
     const token = globalThis.crypto.randomUUID()
     _tokens.set(token, { expiresAt: Date.now() + ttlMs })
     return token

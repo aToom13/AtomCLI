@@ -735,7 +735,11 @@ export class Config extends HeyApiClient {
       }
       review?: {
         /**
-         * Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are reviewed by the reviewer agent before taskflow clear is allowed to complete.
+         * Spawn reviewer agents automatically during agent completion only when explicitly enabled
+         */
+        auto?: boolean
+        /**
+         * Enable review policy evaluation. Advisory mode reports review recommendations without spawning reviewers.
          */
         enabled?: boolean
         /**
@@ -743,13 +747,13 @@ export class Config extends HeyApiClient {
          */
         max_attempts?: number
         /**
-         * Number of independent reviewer agents to run in parallel
+         * Number of independent reviewer agents to run when review is explicitly required
          */
         reviewer_count?: number
         /**
-         * Run independent review only for high-risk edits, for every edit, or never
+         * Recommend review without spawning, enforce high-risk review, review every edit, or disable
          */
-        policy?: "adaptive" | "always" | "off"
+        policy?: "advisory" | "enforced" | "adaptive" | "always" | "off"
         /**
          * Additional regular expressions that mark edited paths as high risk
          */
@@ -882,9 +886,17 @@ export class Config extends HeyApiClient {
          */
         continue_loop_on_deny?: boolean
         /**
-         * Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled
+         * Enable model-based semantic execution classification; enabled by default unless explicitly false
          */
         execution_classification?: boolean
+        /**
+         * Runtime scope escalation policy; ask supports one-time and always approval through permissions
+         */
+        scope_escalation?: {
+          mode?: "off" | "ask" | "auto"
+          max_per_session?: number
+          cooldown_ms?: number
+        }
         /**
          * Enable automatic model selection per task category in orchestrate tool
          */
@@ -2058,7 +2070,7 @@ export class Session extends HeyApiClient {
   /**
    * List sessions
    *
-   * Get a list of all AtomCLI sessions, sorted by most recently updated.
+   * Get sessions for the active directory, sorted by most recently updated.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {

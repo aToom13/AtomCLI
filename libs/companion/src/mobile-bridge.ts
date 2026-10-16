@@ -28,6 +28,13 @@ export interface PendingPermission {
   metadata: Record<string, unknown>
 }
 
+export interface RecentCheckpoint {
+  sessionID: string
+  executionID: string
+  directory: string
+  part: Record<string, unknown>
+}
+
 export interface RouteProposalState {
   id: string
   executionID: string
@@ -124,7 +131,9 @@ let _seq = 0
 const _epoch = crypto.randomUUID()
 const _bridgeId = crypto.randomUUID()
 const STATE_BUFFER_MAX = 200
-const _buffer: BridgeEvent[] = []
+const STATE_BUFFER_MAX_BYTES = 2 * 1024 * 1024
+const _buffer: { seq_id: number; data: string; bytes: number }[] = []
+let _bufferBytes = 0
 const _dagSteps = new Map<string, DagStep>()
 const _pendingPermissions = new Map<string, PendingPermission>()
 const _routeProposals = new Map<string, RouteProposalState>()
@@ -134,7 +143,9 @@ const _subAgentActivityBroadcastAt = new Map<string, number>()
 const _pendingQuestions = new Map<string, PendingQuestion>()
 const _artifacts = new Map<string, CompanionArtifact>()
 const _previews = new Map<string, CompanionPreview>()
+const _recentCheckpoints: RecentCheckpoint[] = []
 const TRANSFER_STATE_MAX = 100
+const RECENT_CHECKPOINTS_MAX = 50
 const MAX_MESSAGE_ERROR_LENGTH = 500
 const MAX_SUB_AGENT_ACTIVITIES = 40
 const SUB_AGENT_ACTIVITY_BROADCAST_INTERVAL_MS = 750
@@ -143,6 +154,12 @@ function shouldReplaceSubAgentActivity(previous: SubAgentActivity | undefined, c
   if (!previous || previous.kind !== current.kind) return false
   if (current.kind === "transcript") return true
   return previous.status === "pending" || previous.status === "running"
+}
+
+function clearSubAgentActivityBroadcastAt(sessionID: string): void {
+  for (const kind of ["tool", "command", "transcript"]) {
+    _subAgentActivityBroadcastAt.delete(`${sessionID}:${kind}`)
+  }
 }
 
 function emitSubAgentActivity(sessionID: string, activity: SubAgentActivity): void {
@@ -245,8 +262,19 @@ function clearDag(directory: string | undefined, workflowId?: string, sessionID?
 
 function bufferEvent(event: BridgeEvent): void {
   event.bridge_epoch = _epoch
-  _buffer.push(event)
-  if (_buffer.length > STATE_BUFFER_MAX) _buffer.shift()
+  const data = JSON.stringify(event)
+  const bytes = Buffer.byteLength(data)
+  if (bytes > STATE_BUFFER_MAX_BYTES) {
+    _buffer.length = 0
+    _bufferBytes = 0
+    return
+  }
+  _buffer.push({ seq_id: event.seq_id, data, bytes })
+  _bufferBytes += bytes
+  while (_buffer.length > STATE_BUFFER_MAX || _bufferBytes > STATE_BUFFER_MAX_BYTES) {
+    const removed = _buffer.shift()
+    if (removed) _bufferBytes -= removed.bytes
+  }
 }
 
 function broadcast(event: BridgeEvent): void {
@@ -306,6 +334,11 @@ export namespace MobileBridge {
     for (const question of questions) _pendingQuestions.set(question.req_id, question)
   }
 
+  export function replaceRecentCheckpoints(checkpoints: RecentCheckpoint[]): void {
+    _recentCheckpoints.length = 0
+    _recentCheckpoints.push(...checkpoints.slice(-RECENT_CHECKPOINTS_MAX))
+  }
+
   export function replayMissed(
     clientId: string,
     lastSeqId: number,
@@ -319,7 +352,7 @@ export namespace MobileBridge {
     if (lastSeqId < _seq && (oldest === undefined || lastSeqId < oldest - 1)) return "buffer_gap"
     for (const event of _buffer.filter((e) => e.seq_id > lastSeqId)) {
       try {
-        send(JSON.stringify(event))
+        send(event.data)
       } catch {
         /* ignore */
       }
@@ -348,6 +381,7 @@ export namespace MobileBridge {
             pending_questions: Array.from(_pendingQuestions.values()),
             artifacts: Array.from(_artifacts.values()),
             previews: Array.from(_previews.values()),
+            recent_checkpoints: _recentCheckpoints,
             current_seq_id: _seq,
           },
         }),
@@ -686,6 +720,11 @@ export namespace MobileBridge {
           const agentType = (p.agentType ?? p.agent ?? "unknown") as string
           const name = (p.name ?? p.description ?? agentType) as string
           if (sessionID) {
+            if (!_subAgentSessions.has(sessionID) && _subAgentSessions.size >= TRANSFER_STATE_MAX) {
+              const oldest = _subAgentSessions.keys().next().value
+              if (oldest) clearSubAgentActivityBroadcastAt(oldest)
+            }
+            clearSubAgentActivityBroadcastAt(sessionID)
             const subAgent: SubAgentSession = {
               sessionID,
               parentSessionID,
@@ -797,9 +836,7 @@ export namespace MobileBridge {
           const sessionID = (p.sessionId ?? p.sessionID) as string | undefined
           if (sessionID) {
             _subAgentSessions.delete(sessionID)
-            for (const kind of ["tool", "command", "transcript"]) {
-              _subAgentActivityBroadcastAt.delete(`${sessionID}:${kind}`)
-            }
+            clearSubAgentActivityBroadcastAt(sessionID)
             const event: BridgeEvent = { seq_id: nextSeq(), type: "sub_agent_removed", payload: { sessionID } }
             bufferEvent(event)
             broadcast(event)
@@ -809,16 +846,18 @@ export namespace MobileBridge {
 
         // --- Message / Part events (relay agent replies in real time) ---
         case "message.part.updated": {
-          // Full message history remains authoritative on disk and is fetched
-          // when a phone reconnects. Avoid allocating, serializing and
-          // buffering every streaming token while nobody is listening.
-          if (_clients.size === 0) break
           // p is { part, delta }
           const part = p.part as Record<string, unknown>
           if (!part) break
-          // Only forward text, reasoning, and tool-state events to keep data small
           const type_ = part.type as string
-          if (type_ === "text" || type_ === "reasoning" || type_ === "tool") {
+          // Checkpoint parts are rare and durable: they must reach the replay
+          // buffer even when nobody is listening so a reconnecting phone can
+          // recover them via cursor replay. Streaming parts still skip
+          // allocation/buffering without listeners to avoid holding every token.
+          const durable = type_ === "checkpoint"
+          if (!durable && _clients.size === 0) break
+          // Only forward text, reasoning, tool-state and checkpoint events to keep data small
+          if (type_ === "text" || type_ === "reasoning" || type_ === "tool" || durable) {
             const event: BridgeEvent = {
               seq_id: nextSeq(),
               type: "message_part",
@@ -841,6 +880,55 @@ export namespace MobileBridge {
             seq_id: nextSeq(),
             type: "message_updated",
             payload: { info: safeInfo },
+          }
+          bufferEvent(event)
+          broadcast(event)
+          break
+        }
+
+        case "message.removed": {
+          const event: BridgeEvent = {
+            seq_id: nextSeq(),
+            type: "message_removed",
+            payload: p,
+          }
+          bufferEvent(event)
+          broadcast(event)
+          break
+        }
+
+        case "message.part.removed": {
+          const event: BridgeEvent = {
+            seq_id: nextSeq(),
+            type: "message_part_removed",
+            payload: p,
+          }
+          bufferEvent(event)
+          broadcast(event)
+          break
+        }
+
+        case "session.created":
+        case "session.updated": {
+          const info = p.info as Record<string, unknown>
+          if (!info) break
+          const event: BridgeEvent = {
+            seq_id: nextSeq(),
+            type: type === "session.created" ? "session_created_event" : "session_updated",
+            payload: { info: { ...info, directory: info.directory ?? directory } },
+          }
+          bufferEvent(event)
+          broadcast(event)
+          break
+        }
+
+        case "session.deleted": {
+          const info = p.info as Record<string, unknown>
+          if (!info) break
+          const event: BridgeEvent = {
+            seq_id: nextSeq(),
+            type: "session_deleted",
+            payload: { info: { ...info, directory: info.directory ?? directory } },
           }
           bufferEvent(event)
           broadcast(event)

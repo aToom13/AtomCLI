@@ -4,20 +4,6 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {})
 }
 
-export type EventInstallationUpdated = {
-  type: "installation.updated"
-  properties: {
-    version: string
-  }
-}
-
-export type EventInstallationUpdateAvailable = {
-  type: "installation.update-available"
-  properties: {
-    version: string
-  }
-}
-
 export type Project = {
   id: string
   worktree: string
@@ -51,6 +37,20 @@ export type EventGlobalDisposed = {
   type: "global.disposed"
   properties: {
     [key: string]: unknown
+  }
+}
+
+export type EventInstallationUpdated = {
+  type: "installation.updated"
+  properties: {
+    version: string
+  }
+}
+
+export type EventInstallationUpdateAvailable = {
+  type: "installation.update-available"
+  properties: {
+    version: string
   }
 }
 
@@ -883,11 +883,15 @@ export type Config = {
     ask_user_after?: number
   }
   /**
-   * Automatic reviewer gate configuration for the main agent
+   * Optional independent review; automatic review requires explicit auto opt-in
    */
   review?: {
     /**
-     * Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are reviewed by the reviewer agent before taskflow clear is allowed to complete.
+     * Spawn reviewer agents automatically during agent completion only when explicitly enabled
+     */
+    auto?: boolean
+    /**
+     * Enable review policy evaluation. Advisory mode reports review recommendations without spawning reviewers.
      */
     enabled?: boolean
     /**
@@ -895,13 +899,13 @@ export type Config = {
      */
     max_attempts?: number
     /**
-     * Number of independent reviewer agents to run in parallel
+     * Number of independent reviewer agents to run when review is explicitly required
      */
     reviewer_count?: number
     /**
-     * Run independent review only for high-risk edits, for every edit, or never
+     * Recommend review without spawning, enforce high-risk review, review every edit, or disable
      */
-    policy?: "adaptive" | "always" | "off"
+    policy?: "advisory" | "enforced" | "adaptive" | "always" | "off"
     /**
      * Additional regular expressions that mark edited paths as high risk
      */
@@ -1049,9 +1053,17 @@ export type Config = {
      */
     continue_loop_on_deny?: boolean
     /**
-     * Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled
+     * Enable model-based semantic execution classification; enabled by default unless explicitly false
      */
     execution_classification?: boolean
+    /**
+     * Runtime scope escalation policy; ask supports one-time and always approval through permissions
+     */
+    scope_escalation?: {
+      mode?: "off" | "ask" | "auto"
+      max_per_session?: number
+      cooldown_ms?: number
+    }
     /**
      * Enable automatic model selection per task category in orchestrate tool
      */
@@ -1119,78 +1131,457 @@ export type EventConfigUpdated = {
   }
 }
 
-export type QuestionOption = {
-  /**
-   * Display text (1-5 words, concise)
-   */
-  label: string
-  /**
-   * Explanation of choice
-   */
-  description: string
+export type EventLspClientDiagnostics = {
+  type: "lsp.client.diagnostics"
+  properties: {
+    serverID: string
+    path: string
+  }
 }
 
-export type QuestionInfo = {
-  /**
-   * Complete question
-   */
-  question: string
-  /**
-   * Short label (max 96 chars)
-   */
-  header: string
-  /**
-   * Input type
-   */
-  type?: "select" | "text" | "password"
-  /**
-   * Placeholder text for input
-   */
-  placeholder?: string
-  /**
-   * Available choices (required for select type)
-   */
-  options?: Array<QuestionOption>
-  /**
-   * Allow selecting multiple choices
-   */
-  multiple?: boolean
+export type EventLspUpdated = {
+  type: "lsp.updated"
+  properties: {
+    [key: string]: unknown
+  }
 }
 
-export type QuestionRequest = {
+export type FileDiff = {
+  file: string
+  before: string
+  after: string
+  additions: number
+  deletions: number
+  truncated?: boolean
+}
+
+export type UserMessage = {
   id: string
   sessionID: string
-  /**
-   * Questions to ask
-   */
-  questions: Array<QuestionInfo>
-  tool?: {
+  role: "user"
+  time: {
+    created: number
+  }
+  summary?: {
+    title?: string
+    body?: string
+    diffs: Array<FileDiff>
+  }
+  agent: string
+  model: {
+    providerID: string
+    modelID: string
+  }
+  system?: string
+  tools?: {
+    [key: string]: boolean
+  }
+  variant?: string
+  modelPinned?: boolean
+  thinkingPinned?: boolean
+  resumesExecutionID?: string
+}
+
+export type ProviderAuthError = {
+  name: "ProviderAuthError"
+  data: {
+    providerID: string
+    message: string
+  }
+}
+
+export type UnknownError = {
+  name: "UnknownError"
+  data: {
+    message: string
+  }
+}
+
+export type MessageOutputLengthError = {
+  name: "MessageOutputLengthError"
+  data: {
+    [key: string]: unknown
+  }
+}
+
+export type MessageAbortedError = {
+  name: "MessageAbortedError"
+  data: {
+    message: string
+  }
+}
+
+export type ApiError = {
+  name: "APIError"
+  data: {
+    message: string
+    statusCode?: number
+    isRetryable: boolean
+    responseHeaders?: {
+      [key: string]: string
+    }
+    responseBody?: string
+    metadata?: {
+      [key: string]: string
+    }
+  }
+}
+
+export type AssistantMessage = {
+  id: string
+  sessionID: string
+  role: "assistant"
+  time: {
+    created: number
+    completed?: number
+  }
+  error?: ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError | ApiError
+  parentID: string
+  modelID: string
+  providerID: string
+  agent: string
+  path: {
+    cwd: string
+    root: string
+  }
+  summary?: boolean
+  cost: number
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  finish?: string
+}
+
+export type Message = UserMessage | AssistantMessage
+
+export type EventMessageUpdated = {
+  type: "message.updated"
+  properties: {
+    info: Message
+  }
+}
+
+export type EventMessageRemoved = {
+  type: "message.removed"
+  properties: {
+    sessionID: string
     messageID: string
-    callID: string
   }
 }
 
-export type EventQuestionAsked = {
-  type: "question.asked"
-  properties: QuestionRequest
-}
-
-export type QuestionAnswer = Array<string>
-
-export type EventQuestionReplied = {
-  type: "question.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    answers: Array<QuestionAnswer>
+export type TextPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "text"
+  text: string
+  synthetic?: boolean
+  ignored?: boolean
+  time?: {
+    start: number
+    end?: number
+  }
+  metadata?: {
+    [key: string]: unknown
   }
 }
 
-export type EventQuestionRejected = {
-  type: "question.rejected"
+export type ReasoningPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "reasoning"
+  text: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+    end?: number
+  }
+}
+
+export type CheckpointPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "checkpoint"
+  sequence: number
+  decision: "continue" | "finish" | "blocked"
+  requestedCalls?: number
+  grantedCalls?: number
+  objectiveAssessment: string
+  progressSummary: string
+  discoveries: Array<string>
+  completedWork: Array<string>
+  remainingWork: Array<string>
+  failures: Array<string>
+  blockers: Array<string>
+  routeAssessment: string
+  routeDecision?: "keep" | "revise"
+  selfCritique?: string
+  failedApproaches?: Array<string>
+  whatToChanges?: Array<string>
+  nextActions: Array<string>
+  runtime?: {
+    executionID: string
+    reason: string
+    model: string
+    allowance: {
+      limit: number
+      used: number
+      extensions: number
+      toolCalls: number
+    }
+  }
+}
+
+export type FilePartSourceText = {
+  value: string
+  start: number
+  end: number
+}
+
+export type FileSource = {
+  text: FilePartSourceText
+  type: "file"
+  path: string
+}
+
+export type Range = {
+  start: {
+    line: number
+    character: number
+  }
+  end: {
+    line: number
+    character: number
+  }
+}
+
+export type SymbolSource = {
+  text: FilePartSourceText
+  type: "symbol"
+  path: string
+  range: Range
+  name: string
+  kind: number
+}
+
+export type ResourceSource = {
+  text: FilePartSourceText
+  type: "resource"
+  clientName: string
+  uri: string
+}
+
+export type FilePartSource = FileSource | SymbolSource | ResourceSource
+
+export type FilePart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "file"
+  mime: string
+  filename?: string
+  url: string
+  source?: FilePartSource
+}
+
+export type ToolStatePending = {
+  status: "pending"
+  input: {
+    [key: string]: unknown
+  }
+  raw: string
+}
+
+export type ToolStateRunning = {
+  status: "running"
+  input: {
+    [key: string]: unknown
+  }
+  title?: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+  }
+}
+
+export type ToolStateCompleted = {
+  status: "completed"
+  input: {
+    [key: string]: unknown
+  }
+  output: string
+  title: string
+  metadata: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+    end: number
+    compacted?: number
+  }
+  attachments?: Array<FilePart>
+}
+
+export type ToolStateError = {
+  status: "error"
+  input: {
+    [key: string]: unknown
+  }
+  error: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    start: number
+    end: number
+  }
+}
+
+export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
+
+export type ToolPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "tool"
+  callID: string
+  tool: string
+  state: ToolState
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type StepStartPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "step-start"
+  snapshot?: string
+}
+
+export type StepFinishPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "step-finish"
+  reason: string
+  snapshot?: string
+  cost: number
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+}
+
+export type SnapshotPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "snapshot"
+  snapshot: string
+}
+
+export type PatchPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "patch"
+  hash: string
+  files: Array<string>
+  after?: string
+  total?: number
+  truncated?: boolean
+}
+
+export type AgentPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "agent"
+  name: string
+  source?: {
+    value: string
+    start: number
+    end: number
+  }
+}
+
+export type RetryPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "retry"
+  attempt: number
+  error: ApiError
+  time: {
+    created: number
+  }
+}
+
+export type CompactionPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "compaction"
+  auto: boolean
+}
+
+export type Part =
+  | TextPart
+  | {
+      id: string
+      sessionID: string
+      messageID: string
+      type: "subtask"
+      prompt: string
+      description: string
+      agent: string
+      command?: string
+    }
+  | ReasoningPart
+  | CheckpointPart
+  | FilePart
+  | ToolPart
+  | StepStartPart
+  | StepFinishPart
+  | SnapshotPart
+  | PatchPart
+  | AgentPart
+  | RetryPart
+  | CompactionPart
+
+export type EventMessagePartUpdated = {
+  type: "message.part.updated"
+  properties: {
+    part: Part
+    delta?: string
+  }
+}
+
+export type EventMessagePartRemoved = {
+  type: "message.part.removed"
   properties: {
     sessionID: string
-    requestID: string
+    messageID: string
+    partID: string
   }
 }
 
@@ -1520,479 +1911,6 @@ export type EventMcpToolsChanged = {
   }
 }
 
-export type EventProviderModelAvailabilityUpdated = {
-  type: "provider.model.availability.updated"
-  properties: {
-    providerID: string
-    modelID: string
-    availability?: {
-      status: "rate_limited" | "unavailable"
-      retryAt?: number
-      source?: "retry-after" | "rate-limit-reset" | "daily-window" | "provider-response"
-    }
-  }
-}
-
-export type EventLspClientDiagnostics = {
-  type: "lsp.client.diagnostics"
-  properties: {
-    serverID: string
-    path: string
-  }
-}
-
-export type EventLspUpdated = {
-  type: "lsp.updated"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type FileDiff = {
-  file: string
-  before: string
-  after: string
-  additions: number
-  deletions: number
-  truncated?: boolean
-}
-
-export type UserMessage = {
-  id: string
-  sessionID: string
-  role: "user"
-  time: {
-    created: number
-  }
-  summary?: {
-    title?: string
-    body?: string
-    diffs: Array<FileDiff>
-  }
-  agent: string
-  model: {
-    providerID: string
-    modelID: string
-  }
-  system?: string
-  tools?: {
-    [key: string]: boolean
-  }
-  variant?: string
-  modelPinned?: boolean
-  thinkingPinned?: boolean
-  resumesExecutionID?: string
-}
-
-export type ProviderAuthError = {
-  name: "ProviderAuthError"
-  data: {
-    providerID: string
-    message: string
-  }
-}
-
-export type UnknownError = {
-  name: "UnknownError"
-  data: {
-    message: string
-  }
-}
-
-export type MessageOutputLengthError = {
-  name: "MessageOutputLengthError"
-  data: {
-    [key: string]: unknown
-  }
-}
-
-export type MessageAbortedError = {
-  name: "MessageAbortedError"
-  data: {
-    message: string
-  }
-}
-
-export type ApiError = {
-  name: "APIError"
-  data: {
-    message: string
-    statusCode?: number
-    isRetryable: boolean
-    responseHeaders?: {
-      [key: string]: string
-    }
-    responseBody?: string
-    metadata?: {
-      [key: string]: string
-    }
-  }
-}
-
-export type AssistantMessage = {
-  id: string
-  sessionID: string
-  role: "assistant"
-  time: {
-    created: number
-    completed?: number
-  }
-  error?: ProviderAuthError | UnknownError | MessageOutputLengthError | MessageAbortedError | ApiError
-  parentID: string
-  modelID: string
-  providerID: string
-  agent: string
-  path: {
-    cwd: string
-    root: string
-  }
-  summary?: boolean
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-  finish?: string
-}
-
-export type Message = UserMessage | AssistantMessage
-
-export type EventMessageUpdated = {
-  type: "message.updated"
-  properties: {
-    info: Message
-  }
-}
-
-export type EventMessageRemoved = {
-  type: "message.removed"
-  properties: {
-    sessionID: string
-    messageID: string
-  }
-}
-
-export type TextPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "text"
-  text: string
-  synthetic?: boolean
-  ignored?: boolean
-  time?: {
-    start: number
-    end?: number
-  }
-  metadata?: {
-    [key: string]: unknown
-  }
-}
-
-export type ReasoningPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "reasoning"
-  text: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-    end?: number
-  }
-}
-
-export type CheckpointPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "checkpoint"
-  sequence: number
-  decision: "continue" | "finish" | "blocked"
-  requestedCalls?: number
-  grantedCalls?: number
-  objectiveAssessment: string
-  progressSummary: string
-  discoveries: Array<string>
-  completedWork: Array<string>
-  remainingWork: Array<string>
-  failures: Array<string>
-  blockers: Array<string>
-  routeAssessment: string
-  nextActions: Array<string>
-  runtime?: {
-    executionID: string
-    reason: string
-    model: string
-    allowance: {
-      limit: number
-      used: number
-      extensions: number
-      toolCalls: number
-    }
-  }
-}
-
-export type FilePartSourceText = {
-  value: string
-  start: number
-  end: number
-}
-
-export type FileSource = {
-  text: FilePartSourceText
-  type: "file"
-  path: string
-}
-
-export type Range = {
-  start: {
-    line: number
-    character: number
-  }
-  end: {
-    line: number
-    character: number
-  }
-}
-
-export type SymbolSource = {
-  text: FilePartSourceText
-  type: "symbol"
-  path: string
-  range: Range
-  name: string
-  kind: number
-}
-
-export type ResourceSource = {
-  text: FilePartSourceText
-  type: "resource"
-  clientName: string
-  uri: string
-}
-
-export type FilePartSource = FileSource | SymbolSource | ResourceSource
-
-export type FilePart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "file"
-  mime: string
-  filename?: string
-  url: string
-  source?: FilePartSource
-}
-
-export type ToolStatePending = {
-  status: "pending"
-  input: {
-    [key: string]: unknown
-  }
-  raw: string
-}
-
-export type ToolStateRunning = {
-  status: "running"
-  input: {
-    [key: string]: unknown
-  }
-  title?: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-  }
-}
-
-export type ToolStateCompleted = {
-  status: "completed"
-  input: {
-    [key: string]: unknown
-  }
-  output: string
-  title: string
-  metadata: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-    end: number
-    compacted?: number
-  }
-  attachments?: Array<FilePart>
-}
-
-export type ToolStateError = {
-  status: "error"
-  input: {
-    [key: string]: unknown
-  }
-  error: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    start: number
-    end: number
-  }
-}
-
-export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
-
-export type ToolPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "tool"
-  callID: string
-  tool: string
-  state: ToolState
-  metadata?: {
-    [key: string]: unknown
-  }
-}
-
-export type StepStartPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "step-start"
-  snapshot?: string
-}
-
-export type StepFinishPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "step-finish"
-  reason: string
-  snapshot?: string
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-}
-
-export type SnapshotPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "snapshot"
-  snapshot: string
-}
-
-export type PatchPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "patch"
-  hash: string
-  files: Array<string>
-  after?: string
-  total?: number
-  truncated?: boolean
-}
-
-export type AgentPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "agent"
-  name: string
-  source?: {
-    value: string
-    start: number
-    end: number
-  }
-}
-
-export type RetryPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "retry"
-  attempt: number
-  error: ApiError
-  time: {
-    created: number
-  }
-}
-
-export type CompactionPart = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "compaction"
-  auto: boolean
-}
-
-export type Part =
-  | TextPart
-  | {
-      id: string
-      sessionID: string
-      messageID: string
-      type: "subtask"
-      prompt: string
-      description: string
-      agent: string
-      command?: string
-    }
-  | ReasoningPart
-  | CheckpointPart
-  | FilePart
-  | ToolPart
-  | StepStartPart
-  | StepFinishPart
-  | SnapshotPart
-  | PatchPart
-  | AgentPart
-  | RetryPart
-  | CompactionPart
-
-export type EventMessagePartUpdated = {
-  type: "message.part.updated"
-  properties: {
-    part: Part
-    delta?: string
-  }
-}
-
-export type EventMessagePartRemoved = {
-  type: "message.part.removed"
-  properties: {
-    sessionID: string
-    messageID: string
-    partID: string
-  }
-}
-
-export type EventCommandExecuted = {
-  type: "command.executed"
-  properties: {
-    name: string
-    sessionID: string
-    arguments: string
-    messageID: string
-  }
-}
-
 export type PermissionRequest = {
   id: string
   sessionID: string
@@ -2019,6 +1937,16 @@ export type EventPermissionReplied = {
     sessionID: string
     requestID: string
     reply: "once" | "always" | "reject"
+  }
+}
+
+export type EventCommandExecuted = {
+  type: "command.executed"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    messageID: string
   }
 }
 
@@ -2103,6 +2031,137 @@ export type EventSessionError = {
   }
 }
 
+export type EventFileEdited = {
+  type: "file.edited"
+  properties: {
+    file: string
+  }
+}
+
+export type EventFileChanged = {
+  type: "file.changed"
+  properties: {
+    paths: Array<string>
+  }
+}
+
+export type EventFileCreated = {
+  type: "file.created"
+  properties: {
+    paths: Array<string>
+  }
+}
+
+export type EventFileDeleted = {
+  type: "file.deleted"
+  properties: {
+    paths: Array<string>
+  }
+}
+
+export type EventFileWatcherUpdated = {
+  type: "file.watcher.updated"
+  properties: {
+    file: string
+    event: "add" | "change" | "unlink"
+  }
+}
+
+export type EventVcsBranchUpdated = {
+  type: "vcs.branch.updated"
+  properties: {
+    branch?: string
+  }
+}
+
+export type EventProviderModelAvailabilityUpdated = {
+  type: "provider.model.availability.updated"
+  properties: {
+    providerID: string
+    modelID: string
+    availability?: {
+      status: "rate_limited" | "unavailable"
+      retryAt?: number
+      source?: "retry-after" | "rate-limit-reset" | "daily-window" | "provider-response"
+    }
+  }
+}
+
+export type QuestionOption = {
+  /**
+   * Display text (1-5 words, concise)
+   */
+  label: string
+  /**
+   * Explanation of choice
+   */
+  description: string
+}
+
+export type QuestionInfo = {
+  /**
+   * Complete question
+   */
+  question: string
+  /**
+   * Short label (max 96 chars)
+   */
+  header: string
+  /**
+   * Input type
+   */
+  type?: "select" | "text" | "password"
+  /**
+   * Placeholder text for input
+   */
+  placeholder?: string
+  /**
+   * Available choices (required for select type)
+   */
+  options?: Array<QuestionOption>
+  /**
+   * Allow selecting multiple choices
+   */
+  multiple?: boolean
+}
+
+export type QuestionRequest = {
+  id: string
+  sessionID: string
+  /**
+   * Questions to ask
+   */
+  questions: Array<QuestionInfo>
+  tool?: {
+    messageID: string
+    callID: string
+  }
+}
+
+export type EventQuestionAsked = {
+  type: "question.asked"
+  properties: QuestionRequest
+}
+
+export type QuestionAnswer = Array<string>
+
+export type EventQuestionReplied = {
+  type: "question.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+    answers: Array<QuestionAnswer>
+  }
+}
+
+export type EventQuestionRejected = {
+  type: "question.rejected"
+  properties: {
+    sessionID: string
+    requestID: string
+  }
+}
+
 export type Pty = {
   id: string
   title: string
@@ -2147,15 +2206,18 @@ export type EventPtyDeleted = {
 }
 
 export type Event =
-  | EventInstallationUpdated
-  | EventInstallationUpdateAvailable
   | EventProjectUpdated
   | EventServerInstanceDisposed
   | EventGlobalDisposed
+  | EventInstallationUpdated
+  | EventInstallationUpdateAvailable
   | EventConfigUpdated
-  | EventQuestionAsked
-  | EventQuestionReplied
-  | EventQuestionRejected
+  | EventLspClientDiagnostics
+  | EventLspUpdated
+  | EventMessageUpdated
+  | EventMessageRemoved
+  | EventMessagePartUpdated
+  | EventMessagePartRemoved
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow
@@ -2184,21 +2246,24 @@ export type Event =
   | EventTuiSubagentReactivate
   | EventTuiSubagentRemove
   | EventMcpToolsChanged
-  | EventProviderModelAvailabilityUpdated
-  | EventLspClientDiagnostics
-  | EventLspUpdated
-  | EventMessageUpdated
-  | EventMessageRemoved
-  | EventMessagePartUpdated
-  | EventMessagePartRemoved
-  | EventCommandExecuted
   | EventPermissionAsked
   | EventPermissionReplied
+  | EventCommandExecuted
   | EventSessionCreated
   | EventSessionUpdated
   | EventSessionDeleted
   | EventSessionDiff
   | EventSessionError
+  | EventFileEdited
+  | EventFileChanged
+  | EventFileCreated
+  | EventFileDeleted
+  | EventFileWatcherUpdated
+  | EventVcsBranchUpdated
+  | EventProviderModelAvailabilityUpdated
+  | EventQuestionAsked
+  | EventQuestionReplied
+  | EventQuestionRejected
   | EventPtyCreated
   | EventPtyUpdated
   | EventPtyExited
@@ -2206,19 +2271,15 @@ export type Event =
   | EventExecutionRouteProposal
   | EventExecutionRouteChanged
   | EventExecutionUpdated
+  | EventExecutionTaskUpdated
+  | EventExecutionScopeChanged
   | EventExecutionCheckpoint
-  | EventFileEdited
-  | EventFileChanged
-  | EventFileCreated
-  | EventFileDeleted
   | EventSessionStatus
   | EventSessionCompacted
+  | EventTodoUpdated
   | EventCompanionArtifactShared
   | EventCompanionArtifactDeleted
   | EventCompanionPreviewUpdated
-  | EventFileWatcherUpdated
-  | EventVcsBranchUpdated
-  | EventTodoUpdated
 
 export type GlobalEvent = {
   sequence: number
@@ -2498,41 +2559,47 @@ export type EventExecutionUpdated = {
   }
 }
 
+export type EventExecutionTaskUpdated = {
+  type: "execution.task.updated"
+  properties: {
+    sessionID: string
+    executionID: string
+    taskID: string
+    status:
+      | "pending"
+      | "running"
+      | "submitted"
+      | "verifying"
+      | "accepted"
+      | "needs_revision"
+      | "blocked"
+      | "failed"
+      | "cancelled"
+    revision: number
+    version: number
+  }
+}
+
+export type EventExecutionScopeChanged = {
+  type: "execution.scope.changed"
+  properties: {
+    sessionID: string
+    executionID: string
+    from: "direct" | "focused" | "coordinated"
+    to: "direct" | "focused" | "coordinated"
+    reason: string
+  }
+}
+
 export type EventExecutionCheckpoint = {
   type: "execution.checkpoint"
   properties: {
     sessionID: string
     executionID: string
+    messageID: string
+    triggerMessageID?: string
     sequence: number
     checkpoint: unknown
-  }
-}
-
-export type EventFileEdited = {
-  type: "file.edited"
-  properties: {
-    file: string
-  }
-}
-
-export type EventFileChanged = {
-  type: "file.changed"
-  properties: {
-    paths: Array<string>
-  }
-}
-
-export type EventFileCreated = {
-  type: "file.created"
-  properties: {
-    paths: Array<string>
-  }
-}
-
-export type EventFileDeleted = {
-  type: "file.deleted"
-  properties: {
-    paths: Array<string>
   }
 }
 
@@ -2562,6 +2629,33 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
+  }
+}
+
+export type Todo = {
+  /**
+   * Brief description of the task
+   */
+  content: string
+  /**
+   * Current status of the task: pending, in_progress, completed, cancelled
+   */
+  status: string
+  /**
+   * Priority level of the task: high, medium, low
+   */
+  priority: string
+  /**
+   * Unique identifier for the todo item
+   */
+  id: string
+}
+
+export type EventTodoUpdated = {
+  type: "todo.updated"
+  properties: {
+    sessionID: string
+    todos: Array<Todo>
   }
 }
 
@@ -2607,48 +2701,6 @@ export type EventCompanionPreviewUpdated = {
     sessionID?: string
     exitCode?: number
     accessExpiresAt?: number
-  }
-}
-
-export type EventFileWatcherUpdated = {
-  type: "file.watcher.updated"
-  properties: {
-    file: string
-    event: "add" | "change" | "unlink"
-  }
-}
-
-export type EventVcsBranchUpdated = {
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
-  }
-}
-
-export type Todo = {
-  /**
-   * Brief description of the task
-   */
-  content: string
-  /**
-   * Current status of the task: pending, in_progress, completed, cancelled
-   */
-  status: string
-  /**
-   * Priority level of the task: high, medium, low
-   */
-  priority: string
-  /**
-   * Unique identifier for the todo item
-   */
-  id: string
-}
-
-export type EventTodoUpdated = {
-  type: "todo.updated"
-  properties: {
-    sessionID: string
-    todos: Array<Todo>
   }
 }
 
@@ -3289,11 +3341,15 @@ export type ConfigUpdateData = {
       ask_user_after?: number
     }
     /**
-     * Automatic reviewer gate configuration for the main agent
+     * Optional independent review; automatic review requires explicit auto opt-in
      */
     review?: {
       /**
-       * Enable the blocking reviewer sub-agent gate. When enabled, the main agent's edits are reviewed by the reviewer agent before taskflow clear is allowed to complete.
+       * Spawn reviewer agents automatically during agent completion only when explicitly enabled
+       */
+      auto?: boolean
+      /**
+       * Enable review policy evaluation. Advisory mode reports review recommendations without spawning reviewers.
        */
       enabled?: boolean
       /**
@@ -3301,13 +3357,13 @@ export type ConfigUpdateData = {
        */
       max_attempts?: number
       /**
-       * Number of independent reviewer agents to run in parallel
+       * Number of independent reviewer agents to run when review is explicitly required
        */
       reviewer_count?: number
       /**
-       * Run independent review only for high-risk edits, for every edit, or never
+       * Recommend review without spawning, enforce high-risk review, review every edit, or disable
        */
-      policy?: "adaptive" | "always" | "off"
+      policy?: "advisory" | "enforced" | "adaptive" | "always" | "off"
       /**
        * Additional regular expressions that mark edited paths as high risk
        */
@@ -3455,9 +3511,17 @@ export type ConfigUpdateData = {
        */
       continue_loop_on_deny?: boolean
       /**
-       * Enable model-based semantic execution classification; adaptive execution remains active with conservative defaults when disabled
+       * Enable model-based semantic execution classification; enabled by default unless explicitly false
        */
       execution_classification?: boolean
+      /**
+       * Runtime scope escalation policy; ask supports one-time and always approval through permissions
+       */
+      scope_escalation?: {
+        mode?: "off" | "ask" | "auto"
+        max_per_session?: number
+        cooldown_ms?: number
+      }
       /**
        * Enable automatic model selection per task category in orchestrate tool
        */
@@ -5612,9 +5676,11 @@ export type SessionExecutionsEventsResponses = {
         | "execution.updated"
         | "execution.deleted"
         | "execution.route.changed"
+        | "execution.scope.escalated"
         | "execution.budget.warning"
         | "execution.blocker.updated"
         | "route.proposal.updated"
+        | "execution.task.updated"
       properties: {
         [key: string]: unknown
       }

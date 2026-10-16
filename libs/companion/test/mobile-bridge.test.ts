@@ -3,8 +3,9 @@ import { EventEmitter } from "events"
 import { MobileBridge } from "../src/mobile-bridge"
 
 describe("MobileBridge", () => {
+  const bus = new EventEmitter()
+
   test("forwards question events and keeps the pending snapshot authoritative", () => {
-    const bus = new EventEmitter()
     const messages: Record<string, any>[] = []
     MobileBridge.initialize(bus)
     MobileBridge.registerClient("phone", (data) => messages.push(JSON.parse(data)))
@@ -217,6 +218,32 @@ describe("MobileBridge", () => {
     expect(JSON.stringify(messages.at(-1))).not.toContain("sensitive provider response")
     expect(JSON.stringify(messages.at(-1))).not.toContain("user:pass")
 
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "message.removed",
+        properties: { sessionID: "session_live", messageID: "message_failed" },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "message_removed",
+      payload: { sessionID: "session_live", messageID: "message_failed" },
+    })
+
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "session.updated",
+        properties: {
+          info: { id: "session_live", title: "Renamed", updated: 10 },
+        },
+      },
+    })
+    expect(messages.at(-1)).toMatchObject({
+      type: "session_updated",
+      payload: { info: { id: "session_live", title: "Renamed", directory: "/home/user/project" } },
+    })
+
     for (const directory of ["/home/user/project-a", "/home/user/project-b"]) {
       bus.emit("event", {
         directory,
@@ -425,5 +452,217 @@ describe("MobileBridge", () => {
     expect(messages).toEqual([])
 
     MobileBridge.unregisterClient("stale-phone")
+  })
+
+  test("forwards checkpoint parts to live clients with full payload", () => {
+    const messages: Record<string, any>[] = []
+    MobileBridge.registerClient("cp-phone", (data) => messages.push(JSON.parse(data)))
+
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "part_checkpoint",
+            messageID: "message_cp",
+            sessionID: "session_cp",
+            type: "checkpoint",
+            sequence: 2,
+            decision: "continue",
+            requestedCalls: 30,
+            grantedCalls: 30,
+            objectiveAssessment: "objective intact",
+            progressSummary: "halfway",
+            discoveries: ["found the seam"],
+            completedWork: ["implemented parser"],
+            remainingWork: ["wire the renderer"],
+            failures: [],
+            blockers: [],
+            routeAssessment: "route is appropriate",
+            nextActions: ["wire the renderer"],
+            runtime: {
+              executionID: "exec_cp",
+              reason: "requested",
+              model: "atomcli/test",
+              allowance: { limit: 50, used: 20, extensions: 1, toolCalls: 20 },
+            },
+          },
+        },
+      },
+    })
+
+    expect(messages.at(-1)).toMatchObject({
+      type: "message_part",
+      payload: {
+        part: {
+          type: "checkpoint",
+          messageID: "message_cp",
+          sessionID: "session_cp",
+          sequence: 2,
+          decision: "continue",
+          grantedCalls: 30,
+          progressSummary: "halfway",
+          completedWork: ["implemented parser"],
+          remainingWork: ["wire the renderer"],
+          nextActions: ["wire the renderer"],
+        },
+      },
+    })
+    expect(messages.at(-1)?.payload.part.runtime.allowance).toEqual({
+      limit: 50,
+      used: 20,
+      extensions: 1,
+      toolCalls: 20,
+    })
+
+    MobileBridge.unregisterClient("cp-phone")
+  })
+
+  test("buffers checkpoint parts without listeners so reconnecting phones can replay them", () => {
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "part_checkpoint_offline",
+            messageID: "message_cp_offline",
+            sessionID: "session_cp",
+            type: "checkpoint",
+            sequence: 3,
+            decision: "blocked",
+            objectiveAssessment: "stuck on environment",
+            progressSummary: "blocked",
+            discoveries: [],
+            completedWork: [],
+            remainingWork: ["retry environment setup"],
+            failures: ["network unavailable"],
+            blockers: ["no network access"],
+            routeAssessment: "keep route",
+            nextActions: ["retry environment setup"],
+          },
+        },
+      },
+    })
+
+    const messages: Record<string, any>[] = []
+    MobileBridge.registerClient("replay-phone", (data) => messages.push(JSON.parse(data)))
+    expect(MobileBridge.replayMissed("replay-phone", 0)).toBe("replayed")
+    const checkpointParts = messages
+      .filter((message) => message.type === "message_part" && message.payload?.part?.type === "checkpoint")
+      .map((message) => message.payload.part as Record<string, any>)
+    expect(checkpointParts.some((part) => part.id === "part_checkpoint_offline")).toBe(true)
+
+    MobileBridge.unregisterClient("replay-phone")
+  })
+
+  test("still skips streaming text parts without listeners", () => {
+    const messages: Record<string, any>[] = []
+    MobileBridge.registerClient("seq-probe", (data) => messages.push(JSON.parse(data)))
+    MobileBridge.sendSnapshot("seq-probe")
+    const before = messages.at(-1)?.payload.current_seq_id
+    MobileBridge.unregisterClient("seq-probe")
+
+    bus.emit("event", {
+      directory: "/home/user/project",
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          delta: "streaming token",
+          part: {
+            id: "part_text_idle",
+            messageID: "message_text_idle",
+            sessionID: "session_cp",
+            type: "text",
+            text: "streaming token",
+          },
+        },
+      },
+    })
+
+    MobileBridge.registerClient("seq-probe", (data) => messages.push(JSON.parse(data)))
+    MobileBridge.sendSnapshot("seq-probe")
+    expect(messages.at(-1)?.payload.current_seq_id).toBe(before)
+
+    MobileBridge.unregisterClient("seq-probe")
+  })
+
+  test("snapshot exposes recent checkpoints supplied by the server", () => {
+    const messages: Record<string, any>[] = []
+    MobileBridge.registerClient("snapshot-phone", (data) => messages.push(JSON.parse(data)))
+
+    MobileBridge.replaceRecentCheckpoints([
+      {
+        sessionID: "session_cp",
+        executionID: "exec_cp",
+        directory: "/home/user/project",
+        part: {
+          id: "snapshot:checkpoint:exec_cp:1",
+          messageID: "message_cp",
+          sessionID: "session_cp",
+          type: "checkpoint",
+          sequence: 1,
+          decision: "continue",
+          progressSummary: "bootstrapped",
+        },
+      },
+    ])
+    MobileBridge.sendSnapshot("snapshot-phone")
+    expect(messages.at(-1)?.payload.recent_checkpoints).toHaveLength(1)
+    expect(messages.at(-1)?.payload.recent_checkpoints[0]).toMatchObject({
+      sessionID: "session_cp",
+      executionID: "exec_cp",
+      part: { type: "checkpoint", sequence: 1, messageID: "message_cp" },
+    })
+
+    MobileBridge.replaceRecentCheckpoints([])
+    MobileBridge.sendSnapshot("snapshot-phone")
+    expect(messages.at(-1)?.payload.recent_checkpoints).toEqual([])
+
+    MobileBridge.unregisterClient("snapshot-phone")
+  })
+
+  test("requires resync after an event exceeds the replay byte budget", () => {
+    const messages: Record<string, any>[] = []
+    MobileBridge.registerClient("byte-budget-phone", (data) => messages.push(JSON.parse(data)))
+    MobileBridge.sendSnapshot("byte-budget-phone")
+    const before = messages.at(-1)?.payload.current_seq_id as number
+    bus.emit("event", {
+      payload: { type: "session.status", properties: { data: "x".repeat(2 * 1024 * 1024) } },
+    })
+    expect(MobileBridge.replayMissed("byte-budget-phone", before)).toBe("buffer_gap")
+    MobileBridge.unregisterClient("byte-budget-phone")
+  })
+
+  test("clears activity throttling when a sub-agent is evicted and starts again", () => {
+    const messages: Record<string, any>[] = []
+    const client = "sub-agent-eviction-phone"
+    const sessionId = "sub-agent-eviction-original"
+    const now = Date.now
+    Date.now = () => 1000
+    MobileBridge.registerClient(client, (data) => messages.push(JSON.parse(data)))
+    try {
+      const active = (id: string) =>
+        bus.emit("event", {
+          payload: { type: "tui.subagent.active", properties: { sessionId: id, agentType: "build" } },
+        })
+      const activity = () =>
+        bus.emit("event", {
+          payload: {
+            type: "tui.subagent.activity",
+            properties: { sessionId, kind: "tool", label: "read", status: "running" },
+          },
+        })
+      active(sessionId)
+      activity()
+      for (let i = 0; i < 100; i++) active(`sub-agent-eviction-${i}`)
+      active(sessionId)
+      activity()
+      expect(messages.filter((message) => message.type === "sub_agent_activity" && message.payload.sessionID === sessionId)).toHaveLength(2)
+    } finally {
+      MobileBridge.unregisterClient(client)
+      Date.now = now
+    }
   })
 })
