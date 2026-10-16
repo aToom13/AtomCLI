@@ -33,6 +33,34 @@ async function addUserMessage(sessionID: string, text: string) {
 }
 
 describe("RepoMap Transcript Regression Suite", () => {
+  test("browser recovery between repeated clears is progress, consecutive unchanged results still stop", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const userID = await addUserMessage(session.id, "Verify edited reading list")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: userID })
+        ExecutionRuntime.setExecutionContract(execution.executionID, ExecutionContract.fallback("browser recovery"))
+        for (const action of ["clear-search", "assert-empty", "clear-search", "reload-page", "clear-search"]) {
+          ExecutionRuntime.recordSemanticActionResult(execution.executionID, action, "passed")
+        }
+        expect(ExecutionRuntime.checkpointReason(execution.executionID)).toBeUndefined()
+        expect(ExecutionRuntime.finalizationConstraints(execution.executionID)).not.toContain(
+          "The same semantic action was repeated without new evidence.",
+        )
+        for (let index = 0; index < 2; index++) {
+          ExecutionRuntime.recordSemanticActionResult(execution.executionID, "clear-search", "passed")
+        }
+        expect(ExecutionRuntime.checkpointReason(execution.executionID)).toBe("repeated_semantic_action")
+        expect(ExecutionRuntime.finalizationConstraints(execution.executionID)).toContain(
+          "The same semantic action was repeated without new evidence.",
+        )
+        ExecutionRuntime.cancelExecution(execution)
+      },
+    })
+  })
+
   test("npm run test:all semantic repeat <= 3 (watchdog blocks semantic repetition)", async () => {
     await using tmp = await tmpdir({ config: {} })
     await Instance.provide({
@@ -90,6 +118,10 @@ describe("RepoMap Transcript Regression Suite", () => {
           failures: [],
           blockers: [],
           routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
           planChanged: false,
           routeChanged: false,
           estimatedRemainingCalls: 30,
@@ -128,6 +160,10 @@ describe("RepoMap Transcript Regression Suite", () => {
           failures: [],
           blockers: [],
           routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
           planChanged: false,
           routeChanged: false,
           estimatedRemainingCalls: 0,
@@ -171,13 +207,17 @@ describe("RepoMap Transcript Regression Suite", () => {
           failures: [],
           blockers: [],
           routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
           planChanged: false,
           routeChanged: false,
           estimatedRemainingCalls: 30,
           nextActions: ["work"],
         }
 
-        // Apply 6 extensions (MAX_EXTENSIONS)
+        // Apply MAX_EXTENSIONS extensions
         for (let i = 1; i <= ExecutionCheckpoint.MAX_EXTENSIONS; i++) {
           const applied = ExecutionRuntime.applyCheckpoint(executionID, `cp-${i}`, {
             ...checkpoint,
@@ -186,8 +226,11 @@ describe("RepoMap Transcript Regression Suite", () => {
           expect(applied.grantedCalls).toBe(30)
         }
 
-        // Attempt 7th extension: must grant 0 calls and flag extension limit reached
-        const overLimit = ExecutionRuntime.applyCheckpoint(executionID, "cp-7", { ...checkpoint, requestedCalls: 30 })
+        // Attempt one past the limit: must grant 0 calls and flag extension limit reached
+        const overLimit = ExecutionRuntime.applyCheckpoint(executionID, "cp-over", {
+          ...checkpoint,
+          requestedCalls: 30,
+        })
         expect(overLimit.grantedCalls).toBeUndefined()
         expect(overLimit.extensionLimitReached).toBe(true)
 
@@ -198,7 +241,7 @@ describe("RepoMap Transcript Regression Suite", () => {
     })
   })
 
-  test("stale taskflow nedeniyle yeni work grant = 0", async () => {
+  test("open taskflow keeps execution active for reconciliation", async () => {
     await using tmp = await tmpdir({ config: {} })
     await Instance.provide({
       directory: tmp.path,
@@ -229,23 +272,43 @@ describe("RepoMap Transcript Regression Suite", () => {
           failures: [],
           blockers: [],
           routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
           planChanged: false,
           routeChanged: false,
           estimatedRemainingCalls: 0,
           nextActions: [],
         }
 
-        // Reconcile checkpoint must refuse new work grant (0 calls) and block for taskflow reconciliation
+        // Open review work needs a grant so the parent can receive the reviewer
+        // result and fix defects instead of terminating with not_active.
         const reconciled = ExecutionRuntime.reconcileCheckpoint(executionID, checkpoint)
-        expect(reconciled.decision).toBe("blocked")
-        expect(reconciled.requestedCalls).toBeUndefined()
-        expect(reconciled.blockers).toContain(
-          "The objective is complete, but the durable taskflow contains stale unresolved state and requires reconciliation.",
+        expect(reconciled.decision).toBe("continue")
+        // Reconciliation stays possible without buying a large unverified slice.
+        expect(reconciled.requestedCalls).toBe(10)
+        expect(reconciled.remainingWork.join(" ")).toContain("open steps")
+        const prematureFinish = ExecutionRuntime.reconcileCheckpoint(executionID, {
+          ...checkpoint,
+          decision: "finish",
+          requestedCalls: undefined,
+          finalResponse: "Done",
+        })
+        expect(prematureFinish.decision).toBe("continue")
+        expect(prematureFinish.requestedCalls).toBeGreaterThan(0)
+        expect(prematureFinish.finalResponse).toBeUndefined()
+        const reviewerFinish = ExecutionRuntime.reconcileCheckpoint(
+          executionID,
+          { ...checkpoint, decision: "finish", requestedCalls: undefined, finalResponse: "Review rejected" },
+          "reviewer-child-session",
         )
+        expect(reviewerFinish.decision).toBe("finish")
+        expect(reviewerFinish.finalResponse).toBe("Review rejected")
 
-        // Applying the reconciled checkpoint grants 0 calls
+        // Applying the reconciled checkpoint leaves tool access available.
         const applied = ExecutionRuntime.applyCheckpoint(executionID, "cp-stale-reconcile", reconciled)
-        expect(applied.grantedCalls).toBeUndefined()
+        expect(applied.grantedCalls).toBeGreaterThan(0)
 
         ExecutionRuntime.cancelExecution(execution)
       },

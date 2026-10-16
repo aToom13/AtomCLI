@@ -164,6 +164,68 @@ describe("AgentEval.recordSession", () => {
     })
   })
 
+  test("counts all models used by an adaptive benchmark turn", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-adaptive"
+        const input = messages(sessionID)
+        const final = input[1].info as MessageV2.Assistant
+        final.time.created = 150
+        final.time.completed = 200
+        input.splice(1, 0, {
+          info: {
+            ...final,
+            id: "message-expert",
+            providerID: "expert-provider",
+            modelID: "expert-model",
+            time: { created: 110, completed: 145 },
+            finish: "tool-calls",
+            tokens: { input: 6, output: 3, reasoning: 0, cache: { read: 2, write: 0 } },
+          } as MessageV2.Assistant,
+          parts: [
+            {
+              id: "part-expert-test",
+              sessionID,
+              messageID: "message-expert",
+              type: "tool",
+              callID: "call-expert-test",
+              tool: "bash",
+              state: {
+                status: "completed",
+                input: { command: "bun test" },
+                output: "passed",
+                title: "Bash",
+                metadata: { exit: 0 },
+                time: { start: 120, end: 140 },
+              },
+            },
+          ],
+        })
+        AgentEval.registerBenchmark(sessionID, {
+          suite: "adaptive-signals",
+          caseID: "mixed-models",
+          runID: "run-adaptive",
+          routingMode: "adaptive",
+        })
+        try {
+          const [result] = await AgentEval.recordSession(sessionID, input)
+          expect(result).toMatchObject({
+            providerID: "provider",
+            modelID: "model",
+            toolCalls: 1,
+            testsPassed: true,
+            inputTokens: 12,
+            outputTokens: 5,
+          })
+        } finally {
+          AgentEval.unregisterBenchmark(sessionID)
+        }
+      },
+    })
+  })
+
   test("marks a completed answer unsuccessful when an observed test command fails", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -199,6 +261,38 @@ describe("AgentEval.recordSession", () => {
         const [result] = await AgentEval.recordSession(sessionID, input)
         expect(result.testsPassed).toBe(false)
         expect(result.success).toBe(false)
+      },
+    })
+  })
+
+  test("a corrected test run supersedes its earlier failure", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-repaired-test"
+        const input = messages(sessionID)
+        const testPart = (id: string, exit: number): MessageV2.ToolPart => ({
+          id,
+          sessionID,
+          messageID: "message-assistant",
+          type: "tool",
+          callID: id,
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: { command: "bun test" },
+            output: exit === 0 ? "passed" : "failed",
+            title: "Bash",
+            metadata: { exit },
+            time: { start: exit === 0 ? 150 : 120, end: exit === 0 ? 170 : 140 },
+          },
+        })
+        input[1].parts = [testPart("first-test", 1), testPart("second-test", 0), ...input[1].parts]
+        const [result] = await AgentEval.recordSession(sessionID, input)
+        expect(result.testsPassed).toBe(true)
+        expect(result.toolCalls).toBe(2)
+        expect(result.success).toBe(true)
       },
     })
   })

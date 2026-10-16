@@ -2,6 +2,7 @@ import "../preload"
 import { describe, expect, test } from "bun:test"
 import { ReviewV2 } from "@/core/verification/review-v2"
 import { tmpdir } from "../fixture/fixture"
+import { SubAgentRuntime } from "@/integrations/tool/subagent-runtime"
 
 const finding = (overrides: Partial<ReviewV2.Finding> = {}): ReviewV2.Finding => ({
   file: "src/example.ts",
@@ -22,6 +23,278 @@ const output = (findings: ReviewV2.Finding[], verdict: ReviewV2.ReviewerOutput["
 })
 
 describe("ReviewV2", () => {
+  test("HUD-only completion misses upfront 3D acceptance; changed requests invalidate review hashes", () => {
+    const request = "Build a functional 3D browser game with camera and collision"
+    const calls = [
+      { tool: "browser" as const, input: { action: "click", selector: "#collect" }, output: "Clicked Collect" },
+      { tool: "browser" as const, input: { action: "evaluate", script: "score" }, output: "score: 1" },
+    ]
+    const result = ReviewV2.aggregate({
+      sources: new Map(),
+      allowedFiles: ["index.html"],
+      acceptance: { request, startedAt: 10 },
+      results: [
+        {
+          reviewer: "qa",
+          messages: [
+            {
+              parts: calls.map((call) => ({
+                type: "tool",
+                tool: call.tool,
+                state: { status: "completed", ...call, metadata: {}, time: { start: 20, end: 21 } },
+              })),
+            },
+          ] as any,
+          output: {
+            verdict: "passed",
+            summary: "Score increased",
+            findings: [],
+            checks: [
+              {
+                criterion: request,
+                setup: "Game open",
+                action: "Click Collect",
+                expected: "Score increases",
+                observed: "score: 1",
+                evidence: calls.map((call) => ({ ...call, input: JSON.stringify(call.input) })),
+              },
+            ],
+          },
+        },
+      ],
+    })
+    expect(result.verdict).toBe("inconclusive")
+    expect(result.rejectedChecks?.some((check) => check.criterion?.includes("projection"))).toBe(true)
+    expect(result.rejectedChecks?.some((check) => check.criterion?.includes("Collision"))).toBe(true)
+    expect(ReviewV2.acceptanceRequestHash(request)).not.toBe(
+      ReviewV2.acceptanceRequestHash(`${request}; WebGL required`),
+    )
+  })
+  test("native reviewer runtime accepts generated schema without dropping long criteria", () => {
+    expect(SubAgentRuntime.parseSchema(ReviewV2.OutputSchema)).toEqual(ReviewV2.OutputSchema)
+    const request = "x".repeat(10_000) + "y".repeat(10_000) + "z".repeat(5_001)
+    expect(ReviewV2.acceptanceCriteria(request).join("")).toBe(request)
+    expect(ReviewV2.acceptanceCriteria(request).every((criterion) => criterion.length <= 10_000)).toBe(true)
+  })
+  test("browser PASS needs current independent behavior evidence covering full request and listed criteria", () => {
+    const request = "Two games must respond to input.\n- Game one responds to controls\n- Game two responds to controls"
+    const criteria = ReviewV2.acceptanceCriteria(request)
+    expect(criteria).toEqual([request, "Game one responds to controls", "Game two responds to controls"])
+    const calls = [
+      {
+        tool: "browser",
+        input: { action: "press", selector: "#one", key: "ArrowRight" },
+        output: "Pressed ArrowRight for #one",
+      },
+      {
+        tool: "browser",
+        input: { action: "evaluate", script: "JSON.stringify(games.one.position)" },
+        output: '{"x":4,"y":0,"z":1}',
+      },
+      {
+        tool: "browser",
+        input: { action: "press", selector: "#two", key: "ArrowRight" },
+        output: "Pressed ArrowRight for #two",
+      },
+      {
+        tool: "browser",
+        input: { action: "evaluate", script: "JSON.stringify(games.two.position)" },
+        output: '{"x":8,"y":0,"z":2}',
+      },
+    ]
+    const evidence = calls.map((call) => ({
+      ...call,
+      input: JSON.stringify(call.input),
+    })) as ReviewV2.AcceptanceCheck["evidence"]
+    const checks = criteria.map(
+      (criterion, index): ReviewV2.AcceptanceCheck => ({
+        criterion,
+        setup: "Open the requested game with its initial position",
+        action: "Press ArrowRight",
+        expected: "Game world position changes",
+        observed: calls[index === 1 ? 1 : 3].output,
+        evidence: index === 0 ? evidence : evidence.slice(index === 1 ? 0 : 2, index === 1 ? 2 : 4),
+      }),
+    )
+    const messages = [
+      {
+        parts: calls.map((call, index) => ({
+          type: "tool",
+          tool: call.tool,
+          state: {
+            status: "completed",
+            input: call.input,
+            output: call.output,
+            metadata: {},
+            time: { start: 20 + index * 2, end: 21 + index * 2 },
+          },
+        })),
+      },
+    ] as never
+    const review = (changed: Partial<ReviewV2.ReviewerResult> = {}, changedChecks: unknown = checks, startedAt = 10) =>
+      ReviewV2.aggregate({
+        sources: new Map(),
+        allowedFiles: ["index.html"],
+        acceptance: { request, startedAt },
+        results: [
+          {
+            reviewer: "independent",
+            messages,
+            output: { verdict: "passed", summary: "Verified", findings: [], checks: changedChecks },
+            ...changed,
+          },
+        ],
+      })
+    expect(review().verdict).toBe("passed")
+    expect(review().checks).toHaveLength(3)
+    expect(review({}, []).verdict).toBe("inconclusive")
+    const partial = review({}, checks.slice(0, 2))
+    expect(partial.verdict).toBe("inconclusive")
+    expect(partial.rejectedChecks?.some((item) => item.criterion === criteria[2])).toBe(true)
+    expect(review({ messages: [] }).verdict).toBe("inconclusive")
+    expect(review({}, checks, 100).verdict).toBe("inconclusive")
+    expect(
+      review(
+        {},
+        checks.map((check) => ({ ...check, observed: "Invented movement" })),
+      ).verdict,
+    ).toBe("inconclusive")
+    expect(
+      review(
+        {},
+        checks.map((check) => ({ ...check, criterion: "Other game" })),
+      ).verdict,
+    ).toBe("inconclusive")
+    expect(
+      review(
+        {},
+        checks.map((check) => ({
+          ...check,
+          evidence: check.evidence.map((item) => ({ ...item, input: '{"action":"evaluate","script":"fabricated"}' })),
+        })),
+      ).verdict,
+    ).toBe("inconclusive")
+    expect(
+      review({
+        messages: [
+          {
+            parts: calls.map((call) => ({
+              type: "tool",
+              tool: call.tool,
+              state: {
+                status: "completed",
+                input: call.input,
+                output: call.output,
+                metadata: { error: "Unavailable" },
+                time: { start: 20, end: 21 },
+              },
+            })),
+          },
+        ] as never,
+      }).verdict,
+    ).toBe("inconclusive")
+  })
+
+  test.each(["rg game index.html", "bun run build", "echo 'bun test'", "bun test --help", "bun test || echo passed"])(
+    "structural or disguised command cannot prove browser behavior: %s",
+    (command) => {
+      const input = { command, description: "Verify" }
+      const check: ReviewV2.AcceptanceCheck = {
+        criterion: "Two playable games",
+        setup: "Project",
+        action: "Run check",
+        expected: "Game works",
+        observed: "Game works",
+        evidence: [{ tool: "bash", input: JSON.stringify(input), output: "Game works" }],
+      }
+      const report = ReviewV2.aggregate({
+        sources: new Map(),
+        allowedFiles: ["index.html"],
+        acceptance: { request: check.criterion, startedAt: 10 },
+        results: [
+          {
+            reviewer: "QA",
+            output: {
+              verdict: "passed",
+              summary: "Verified",
+              findings: [],
+              checks: [check],
+            },
+            messages: [
+              {
+                parts: [
+                  {
+                    type: "tool",
+                    tool: "bash",
+                    state: {
+                      status: "completed",
+                      input,
+                      output: "Game works",
+                      metadata: { exit: 0 },
+                      time: { start: 20, end: 21 },
+                    },
+                  },
+                ],
+              },
+            ] as never,
+          },
+        ],
+      })
+      expect(report.verdict).toBe("inconclusive")
+      expect(report.rejectedChecks?.[0].reason).toContain("behavior requires")
+    },
+  )
+
+  test("successful direct test run can substantiate a criterion; failed run cannot", () => {
+    const input = {
+      command: "MODELS_DEV_API_JSON=test/fixtures.json bun test test/game.test.ts",
+      description: "Verify movement",
+    }
+    const check: ReviewV2.AcceptanceCheck = {
+      criterion: "Game movement",
+      setup: "Initial world position",
+      action: "Run movement regression",
+      expected: "Position becomes 4",
+      observed: "position=4",
+      evidence: [{ tool: "bash", input: JSON.stringify(input), output: "position=4" }],
+    }
+    const report = (exit: number) =>
+      ReviewV2.aggregate({
+        sources: new Map(),
+        allowedFiles: ["game.html"],
+        acceptance: { request: check.criterion, startedAt: 10 },
+        results: [
+          {
+            reviewer: "QA",
+            output: {
+              verdict: "passed",
+              summary: "Verified",
+              findings: [],
+              checks: [check],
+            },
+            messages: [
+              {
+                parts: [
+                  {
+                    type: "tool",
+                    tool: "bash",
+                    state: {
+                      status: "completed",
+                      input,
+                      output: "position=4",
+                      metadata: { exit },
+                      time: { start: 20, end: 21 },
+                    },
+                  },
+                ],
+              },
+            ] as never,
+          },
+        ],
+      })
+    expect(report(0).verdict).toBe("passed")
+    expect(report(1).verdict).toBe("inconclusive")
+  })
   test("validates findings against real file content and rejects forged paths, ranges, and evidence", async () => {
     await using tmp = await tmpdir({
       init: async (dir) => {

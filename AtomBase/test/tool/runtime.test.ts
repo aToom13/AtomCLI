@@ -6,9 +6,147 @@ import { tmpdir } from "../fixture/fixture"
 import { Storage } from "@/core/storage/storage"
 import { ExecutionRuntime } from "@/core/execution/runtime"
 import { Tool } from "@/integrations/tool/tool"
+import { TaskFlow } from "@/integrations/tool/taskflow"
 import z from "zod"
+import { Session } from "@/core/session"
+import { Identifier } from "@/core/id/id"
+import { ExecutionContract } from "@/core/routing/execution-contract"
+import { BrowserTool } from "@/integrations/tool/browser"
+import { TodoTool } from "@/integrations/tool/todo-tool"
 
 describe("ToolRuntime", () => {
+  test("browser flow, saved captures and checklist changes retain verification until a source edit", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        ExecutionRuntime.setExecutionContract(
+          execution.executionID,
+          ExecutionContract.parseSafe({
+            intent: "change",
+            scope: "focused",
+            risk: "low",
+            confidence: 1,
+            needsMutation: true,
+          }),
+        )
+        const context = {
+          sessionID: session.id,
+          messageID,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { execution },
+          metadata() {},
+          async ask() {},
+        }
+        const browser = await BrowserTool.init()
+        for (const [index, args] of [
+          { action: "flow", steps: [{ action: "navigate", url: "http://127.0.0.1/" }, { action: "assert" }] },
+          { action: "screenshot", save: true },
+        ].entries()) {
+          await ToolRuntime.execute({
+            tool: "browser",
+            args,
+            effects: browser.effects as (args: any) => Tool.ToolEffects,
+            mutating: browser.mutating as (args: any) => boolean,
+            context: { ...context, callID: `browser-${index}` },
+            execute: async () => ({ title: "verified", output: "verified", metadata: {} }),
+          })
+        }
+        expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+          browserNavigations: 1,
+          browserVerificationCalls: 2,
+          mutatingCalls: 0,
+        })
+        const verified = ExecutionRuntime.getExecutionEvidence(execution.executionID)
+        const todo = await TodoTool.init()
+        const added = await ToolRuntime.execute({
+          tool: "todo",
+          args: { action: "add", content: "Verify browser behavior" } as const,
+          effects: todo.effects,
+          context: { ...context, callID: "todo-add" },
+          execute: todo.execute,
+        })
+        await ToolRuntime.execute({
+          tool: "todo",
+          args: { action: "check", id: added.metadata.id } as const,
+          effects: todo.effects,
+          context: { ...context, callID: "todo-check" },
+          execute: todo.execute,
+        })
+        expect(JSON.parse((await todo.execute({ action: "list" }, context)).output)[0].status).toBe("completed")
+        expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+          browserNavigations: 1,
+          browserVerificationCalls: 2,
+          mutatingCalls: 0,
+          toolCalls: verified.toolCalls + 2,
+          recentSemanticActionResults: verified.recentSemanticActionResults,
+        })
+        await ToolRuntime.execute({
+          tool: "write",
+          args: { filePath: `${project.path}/index.html` },
+          context: { ...context, callID: "source-edit" },
+          execute: async (args) => {
+            await Bun.write(args.filePath, "<!doctype html><title>fixture</title>")
+            return { title: "written", output: "written", metadata: {} }
+          },
+        })
+        expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+          browserNavigations: 0,
+          browserVerificationCalls: 0,
+          mutatingCalls: 1,
+        })
+        const sourceEdited = ExecutionRuntime.getExecutionEvidence(execution.executionID)
+        for (const action of ["reload", "screenshot"])
+          await ToolRuntime.execute({
+            tool: "browser",
+            args: { action },
+            effects: browser.effects as (args: any) => Tool.ToolEffects,
+            mutating: browser.mutating as (args: any) => boolean,
+            context: { ...context, callID: `blank-${action}` },
+            execute: async () => ({ title: "blank", output: action, metadata: { url: "about:blank" } }),
+          })
+        expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+          browserNavigations: 0,
+          browserVerificationCalls: 0,
+          toolCalls: sourceEdited.toolCalls + 2,
+          successfulToolCalls: sourceEdited.successfulToolCalls + 2,
+          recentSemanticActionResults: sourceEdited.recentSemanticActionResults,
+        })
+        await ToolRuntime.execute({
+          tool: "browser",
+          args: { action: "reload" },
+          effects: browser.effects as (args: any) => Tool.ToolEffects,
+          mutating: browser.mutating as (args: any) => boolean,
+          context: { ...context, callID: "reload-edited-source" },
+          execute: async () => ({ title: "reloaded", output: "reloaded", metadata: {} }),
+        })
+        expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+          browserNavigations: 1,
+          browserVerificationCalls: 0,
+        })
+      },
+    })
+  })
+
+  test("counts browser flow navigation and verification evidence", () => {
+    expect(
+      ToolRuntime.browserRuntimeEvidence("browser", {
+        action: "flow",
+        steps: [
+          { action: "navigate", url: "http://127.0.0.1:8765/" },
+          { action: "click", role: "button", accessibleName: "Increment" },
+          { action: "assert", targetText: "1", assertion: "visible" },
+          { action: "evaluate", script: "document.title" },
+        ],
+      }),
+    ).toEqual({ browserNavigations: 1, browserVerificationCalls: 2 })
+    expect(ToolRuntime.browserRuntimeEvidence("browser", { action: "snapshot" })).toEqual({})
+  })
+
   test("normalizes bash semantic signatures across non-semantic metadata", () => {
     const first = ToolRuntime.semanticSignature("bash", {
       command: "npm   run test:all",
@@ -57,6 +195,7 @@ describe("ToolRuntime", () => {
           state: "failed",
           version: 3,
         })
+        const activate = spyOn(TaskFlow, "activateForWork")
         try {
           await expect(
             ToolRuntime.execute({
@@ -88,11 +227,43 @@ describe("ToolRuntime", () => {
           ).rejects.toThrow("LSP unavailable")
           expect(register).toHaveBeenCalledWith(expect.objectContaining({ mutating: false }))
           expect(finish).toHaveBeenCalledWith(expect.objectContaining({ state: "failed" }))
+          register.mockClear()
+          activate.mockClear()
+          await expect(
+            ToolRuntime.execute({
+              tool: "scope_control",
+              args: { action: "status" },
+              context: {
+                sessionID: "session-read-only",
+                messageID: "message-read-only",
+                callID: "call-scope-status",
+                agent: "build",
+                abort: new AbortController().signal,
+                extra: {
+                  execution: {
+                    executionID: "execution-read-only",
+                    rootSessionID: "session-read-only",
+                    invocationID: "invocation-read-only",
+                    ownerID: "owner-read-only",
+                    fence: 1,
+                  },
+                },
+                metadata() {},
+                async ask() {},
+              },
+              execute: async () => {
+                throw new Error("status unavailable")
+              },
+            }),
+          ).rejects.toThrow("status unavailable")
+          expect(register).toHaveBeenCalledWith(expect.objectContaining({ mutating: false }))
+          expect(activate).not.toHaveBeenCalled()
         } finally {
           active.mockRestore()
           register.mockRestore()
           begin.mockRestore()
           finish.mockRestore()
+          activate.mockRestore()
         }
       },
     })
@@ -424,6 +595,7 @@ describe("ToolRuntime", () => {
         const active = spyOn(ExecutionRuntime, "assertActive").mockResolvedValue(undefined)
         const reserve = spyOn(ExecutionRuntime, "reserveToolCall").mockImplementation(() => undefined as any)
         const evidence = spyOn(ExecutionRuntime, "recordRuntimeEvidence").mockReturnValue({} as any)
+        const semantic = spyOn(ExecutionRuntime, "recordSemanticActionResult").mockReturnValue({} as any)
         const register = spyOn(ExecutionRuntime, "registerWork").mockResolvedValue({
           registered: true,
           idempotent: false,
@@ -470,9 +642,11 @@ describe("ToolRuntime", () => {
           })
 
           expect(reserve).toHaveBeenCalledWith("execution-effects")
+          expect(semantic).toHaveBeenCalledWith("execution-effects", expect.any(String), expect.any(String))
           expect(evidence).toHaveBeenCalledWith("execution-effects", {
             filesRead: [],
             filesChanged: ["src/auth.ts"],
+            fileWriteCounts: { "src/auth.ts": 1 },
             mutatingCalls: 1,
             externalCalls: 1,
             hasDestructiveAction: true,
@@ -480,6 +654,7 @@ describe("ToolRuntime", () => {
           })
 
           evidence.mockClear()
+          semantic.mockClear()
           await ToolRuntime.execute({
             tool: "bash",
             args: { command: "false" },
@@ -513,10 +688,12 @@ describe("ToolRuntime", () => {
             }),
           )
           expect(finish).toHaveBeenLastCalledWith(expect.objectContaining({ state: "failed" }))
+          expect(semantic).not.toHaveBeenCalled()
         } finally {
           active.mockRestore()
           reserve.mockRestore()
           evidence.mockRestore()
+          semantic.mockRestore()
           register.mockRestore()
           begin.mockRestore()
           finish.mockRestore()

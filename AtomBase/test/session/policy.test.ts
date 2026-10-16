@@ -30,10 +30,13 @@ describe("SessionPolicy", () => {
 
   test("decideModel returns fallback model structure", async () => {
     await using tmp = await tmpdir()
-    await Instance.provide({ directory: tmp.path, fn: async () => {
-      const model = await SessionPolicy.decideModel("coder", "coding")
-      expect(model.providerID).toBeDefined()
-      expect(model.modelID).toBeDefined()
-    } })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const model = await SessionPolicy.decideModel("coder", "coding")
+        expect(model.providerID).toBeDefined()
+        expect(model.modelID).toBeDefined()
+      },
+    })
   })
 })

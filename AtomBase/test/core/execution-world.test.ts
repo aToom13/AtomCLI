@@ -11,9 +11,9 @@ describe("ExecutionWorld", () => {
   })
 
   test("fails closed when required enforcement is unavailable", () => {
-    expect(() =>
-      ExecutionWorld.prepare(command, { workspaceRoot: "/workspace", sandbox: "require" }, []),
-    ).toThrow("Sandbox was required")
+    expect(() => ExecutionWorld.prepare(command, { workspaceRoot: "/workspace", sandbox: "require" }, [])).toThrow(
+      "Sandbox was required",
+    )
   })
 
   test("reports the selected provider and its enforcement", () => {
@@ -32,7 +32,7 @@ describe("ExecutionWorld", () => {
   })
 
   test("uses platform-correct shell invocation arguments", () => {
-    expect(ExecutionWorld.shellArguments("/bin/bash", "echo ok")).toEqual(["-c", "echo ok"])
+    expect(ExecutionWorld.shellArguments("/bin/bash", "echo ok")).toEqual(["-e", "-o", "pipefail", "-c", "echo ok"])
     expect(ExecutionWorld.shellArguments("C:\\Windows\\System32\\cmd.exe", "echo ok")).toEqual([
       "/d",
       "/s",

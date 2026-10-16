@@ -69,6 +69,38 @@ describe("TaskFlowTool", () => {
     })
   })
 
+  test("independent review step stays open until reviewer PASS", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        const ctx = { ...dummyCtx, sessionID: session.id }
+        const tool = await TaskFlowTool.init({})
+        await tool.execute(
+          { action: "start", plan: [{ id: "review", name: "Independent review", type: "independent_review" }] },
+          ctx,
+        )
+        await tool.execute({ action: "update", step_id: "review", status: "running" }, ctx)
+
+        const blocked = await tool.execute({ action: "complete", step_id: "review" }, ctx)
+        expect(blocked.metadata.status).toBe("error")
+        expect(blocked.output).toContain("needs edited files")
+        expect(HarnessState.getRunningStep(session.id)).toBe("review")
+
+        HarnessState.addEditedFile(session.id, "src/example.ts")
+        HarnessState.setReviewerSession(session.id, "ses_test_reviewer")
+        HarnessState.recordReviewVerdict(session.id, { status: "pass" })
+        const completed = await tool.execute({ action: "complete", step_id: "review" }, ctx)
+        expect(completed.metadata.status).toBe("completed")
+        expect(HarnessState.getSteps(session.id)[0].status).toBe("completed")
+        expect((await tool.execute({ action: "clear" }, ctx)).metadata.status).toBe("cleared")
+        HarnessState.reset(session.id)
+      },
+    })
+  })
+
   test("action='start' initializes plan with steps and todos", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -165,6 +197,29 @@ describe("TaskFlowTool", () => {
     })
   })
 
+  test("cannot report completion without a running plan step", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = `ses_taskflow_pending_${crypto.randomUUID()}`
+        const ctx = { ...dummyCtx, sessionID }
+        const tool = await TaskFlowTool.init({})
+        await tool.execute({ action: "start", plan: [{ id: "pending", name: "Pending step" }] }, ctx)
+        for (const params of [
+          { action: "complete" as const },
+          { action: "update" as const, status: "completed" as const },
+          { action: "complete" as const, step_id: "missing" },
+        ]) {
+          const result = await tool.execute(params, ctx)
+          expect(result.metadata.status).toBe("error")
+          expect(HarnessState.getSteps(sessionID)[0].status).toBe("pending")
+        }
+        HarnessState.reset(sessionID)
+      },
+    })
+  })
+
   test("honors start status, serializes dependent calls and restores a durable plan after memory loss", async () => {
     await using tmp = await tmpdir({
       config: { review: { enabled: false, max_attempts: 1, reviewer_count: 1, policy: "off", high_risk_patterns: [] } },
@@ -232,7 +287,7 @@ describe("TaskFlowTool", () => {
           ctx,
         )
 
-        await TaskFlow.activateForWork(ctx)
+        await TaskFlow.activateForWork(ctx, { tool: "bash", args: { command: "bun test" } })
 
         expect(HarnessState.getSteps(session.id).map((step) => step.status)).toEqual(["running", "pending"])
         const binding = HarnessState.getPlanBinding(session.id)!

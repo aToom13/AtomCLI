@@ -1,6 +1,6 @@
 /**
  * Memory System Tests - Phase 1: Core Infrastructure
- * 
+ *
  * Tests for types, storage, and embedding services.
  */
 
@@ -25,10 +25,7 @@ import {
   euclideanDistance,
 } from "@/core/memory/index"
 
-import type {
-  MemoryItem as MemoryItemType,
-  UserPreference,
-} from "@/core/memory/types"
+import type { MemoryItem as MemoryItemType, UserPreference } from "@/core/memory/types"
 
 // Test paths
 const testDir = path.join(os.tmpdir(), "atomcli-memory-test")
@@ -73,12 +70,7 @@ describe("Memory Types", () => {
   })
 
   it("should create user preference", () => {
-    const pref = createUserPreference(
-      "user123",
-      "code_style",
-      "indent_size",
-      4
-    )
+    const pref = createUserPreference("user123", "code_style", "indent_size", 4)
 
     expect(pref.id).toBeDefined()
     expect(pref.userId).toBe("user123")
@@ -152,33 +144,39 @@ describe("JSON Storage", () => {
     await storage.initialize()
 
     // Create test items
-    await storage.create(createMemoryItem({
-      type: "error",
-      title: "TypeScript Type Error",
-      content: "Type checking failed",
-      context: "TypeScript",
-    }))
+    await storage.create(
+      createMemoryItem({
+        type: "error",
+        title: "TypeScript Type Error",
+        content: "Type checking failed",
+        context: "TypeScript",
+      }),
+    )
 
-    await storage.create(createMemoryItem({
-      type: "solution",
-      title: "Fix TypeScript Types",
-      content: "Add type annotations",
-      context: "TypeScript",
-    }))
+    await storage.create(
+      createMemoryItem({
+        type: "solution",
+        title: "Fix TypeScript Types",
+        content: "Add type annotations",
+        context: "TypeScript",
+      }),
+    )
 
-    await storage.create(createMemoryItem({
-      type: "pattern",
-      title: "Python Best Practices",
-      content: "Use type hints in Python",
-      context: "Python",
-    }))
+    await storage.create(
+      createMemoryItem({
+        type: "pattern",
+        title: "Python Best Practices",
+        content: "Use type hints in Python",
+        context: "Python",
+      }),
+    )
 
     // Search for TypeScript
     const results = await storage.search("TypeScript")
     // Should return at least the 2 TypeScript items we created
     expect(results.length).toBeGreaterThanOrEqual(2)
     // All TypeScript results should have TypeScript context
-    const typescriptResults = results.filter(r => r.context === "TypeScript")
+    const typescriptResults = results.filter((r) => r.context === "TypeScript")
     expect(typescriptResults.length).toBe(2)
   })
 
@@ -191,19 +189,21 @@ describe("JSON Storage", () => {
 
     const errors = await storage.searchByType("error")
     expect(errors.length).toBe(2)
-    expect(errors.every(e => e.type === "error")).toBe(true)
+    expect(errors.every((e) => e.type === "error")).toBe(true)
   })
 
   it("should get recent items", async () => {
     await storage.initialize()
 
     for (let i = 0; i < 5; i++) {
-      await storage.create(createMemoryItem({
-        type: "knowledge",
-        title: `Item ${i}`,
-        content: `Content ${i}`,
-        context: "test",
-      }))
+      await storage.create(
+        createMemoryItem({
+          type: "knowledge",
+          title: `Item ${i}`,
+          content: `Content ${i}`,
+          context: "test",
+        }),
+      )
     }
 
     const recent = await storage.getRecent(3)
@@ -298,7 +298,7 @@ describe("JSON Storage", () => {
         title: `Bulk Item ${i}`,
         content: `Content ${i}`,
         context: "test",
-      })
+      }),
     )
 
     await storage.createMany(items)
@@ -306,7 +306,7 @@ describe("JSON Storage", () => {
     expect(count).toBe(10)
 
     // Delete multiple
-    const ids = items.slice(0, 5).map(i => i.id)
+    const ids = items.slice(0, 5).map((i) => i.id)
     await storage.deleteMany(ids)
 
     const countAfter = await storage.getCount()

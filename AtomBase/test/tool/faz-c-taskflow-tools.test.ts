@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test"
+import "../preload"
+import { describe, expect, test, spyOn } from "bun:test"
 import { SubAgent } from "@/integrations/tool/subagent"
 import { TaskTool } from "@/integrations/tool/task"
 import { PermissionNext } from "@/util/permission/next"
@@ -18,9 +19,7 @@ const mockCtx = (sessionID = "test-session-123") => ({
 
 describe("Faz C: SubAgent permission and spawn utilities", () => {
   test("buildPermissions merges parent permissions with BASE_DENIED_PERMISSIONS", () => {
-    const parentPermissions: PermissionNext.Rule[] = [
-      { permission: "bash", pattern: "*", action: "allow" },
-    ]
+    const parentPermissions: PermissionNext.Rule[] = [{ permission: "bash", pattern: "*", action: "allow" }]
     const merged = SubAgent.buildPermissions(parentPermissions)
 
     expect(merged).toContainEqual({ permission: "todowrite", pattern: "*", action: "deny" })
@@ -32,9 +31,7 @@ describe("Faz C: SubAgent permission and spawn utilities", () => {
   test("buildFromAgent uses agent permission base and enforces deny rules", () => {
     const agentInfo = {
       name: "reviewer",
-      permission: [
-        { permission: "read", pattern: "*", action: "allow" as const },
-      ],
+      permission: [{ permission: "read", pattern: "*", action: "allow" as const }],
     } as any
 
     const merged = SubAgent.buildFromAgent(agentInfo)
@@ -47,6 +44,53 @@ describe("Faz C: SubAgent permission and spawn utilities", () => {
 })
 
 describe("Faz C: TaskTool parameter validation and abort action", () => {
+  test("direct task abort rejects a foreign child before cancellation", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const owner = await Session.create({})
+        const stranger = await Session.create({})
+        const child = await Session.create({ parentID: owner.id })
+        const cancel = spyOn(SubAgent, "cancel").mockResolvedValue(undefined)
+        try {
+          const tool = await TaskTool.init()
+          await expect(tool.execute({ action: "abort", session_id: child.id }, mockCtx(stranger.id))).rejects.toThrow(
+            "is not a child of the current session",
+          )
+          expect(cancel).not.toHaveBeenCalled()
+        } finally {
+          cancel.mockRestore()
+        }
+      },
+    })
+  })
+
+  test("direct task run rejects a foreign continuation session", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const owner = await Session.create({})
+        const stranger = await Session.create({})
+        const child = await Session.create({ parentID: owner.id })
+        const tool = await TaskTool.init()
+        await expect(
+          tool.execute(
+            {
+              action: "run",
+              session_id: child.id,
+              subagent_type: "explore",
+              prompt: "Continue",
+              description: "Continue task",
+            },
+            mockCtx(stranger.id),
+          ),
+        ).rejects.toThrow("is not a child of the current session")
+      },
+    })
+  })
+
   test("action='abort' requires session_id", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -55,9 +99,9 @@ describe("Faz C: TaskTool parameter validation and abort action", () => {
         const ctx = mockCtx()
         const taskToolInstance = await TaskTool.init()
 
-        expect(
-          taskToolInstance.execute({ action: "abort" }, ctx),
-        ).rejects.toThrow("session_id is required to abort a task")
+        expect(taskToolInstance.execute({ action: "abort" }, ctx)).rejects.toThrow(
+          "session_id is required to abort a task",
+        )
       },
     })
   })
@@ -70,12 +114,9 @@ describe("Faz C: TaskTool parameter validation and abort action", () => {
         const ctx = mockCtx()
         const taskToolInstance = await TaskTool.init()
 
-        expect(
-          taskToolInstance.execute(
-            { description: "Test", prompt: "Do something" },
-            ctx,
-          ),
-        ).rejects.toThrow("description, prompt, and subagent_type are required")
+        expect(taskToolInstance.execute({ description: "Test", prompt: "Do something" }, ctx)).rejects.toThrow(
+          "description, prompt, and subagent_type are required",
+        )
       },
     })
   })

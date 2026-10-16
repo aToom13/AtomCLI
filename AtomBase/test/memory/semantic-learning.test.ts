@@ -1,6 +1,6 @@
 /**
  * Semantic Learning Tests
- * 
+ *
  * Tests for LLM-based information extraction
  */
 
@@ -24,7 +24,7 @@ describe("SemanticLearningService", () => {
 
   // Note: Full LLM extraction tests would require mocking or actual API calls
   // These are integration tests that would run in a real environment
-  
+
   it("should have extractUserInformation method", () => {
     expect(typeof SemanticLearningService.extractUserInformation).toBe("function")
   })

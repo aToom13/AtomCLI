@@ -42,6 +42,19 @@ describe("SessionMemoryIntegration", () => {
     }
   })
 
+  it("forwards the active session ID through a conversation turn", async () => {
+    const message = spyOn(SessionMemoryIntegration, "learnFromMessage").mockResolvedValue()
+    const response = spyOn(SessionMemoryIntegration, "learnFromResponse").mockResolvedValue()
+    try {
+      await SessionMemoryIntegration.processConversationTurn("remember this", "ack", undefined, "session-42")
+      expect(message).toHaveBeenCalledWith("remember this", undefined, "session-42")
+      expect(response).toHaveBeenCalledWith("ack", "remember this", undefined, "session-42")
+    } finally {
+      message.mockRestore()
+      response.mockRestore()
+    }
+  })
+
   it("does not spend a model request on ordinary task instructions", async () => {
     const extract = spyOn(SemanticLearningService, "extractUserInformation").mockResolvedValue({
       hasInformation: false,
@@ -51,6 +64,16 @@ describe("SessionMemoryIntegration", () => {
       expect(extract).not.toHaveBeenCalled()
     } finally {
       extract.mockRestore()
+    }
+  })
+
+  it("does not analyze assistant responses for ordinary task turns", async () => {
+    const analyze = spyOn(SemanticLearningService, "analyzeAssistantResponse").mockResolvedValue({})
+    try {
+      await SessionMemoryIntegration.learnFromResponse("Use the existing helper", "Fix the failing test")
+      expect(analyze).not.toHaveBeenCalled()
+    } finally {
+      analyze.mockRestore()
     }
   })
 

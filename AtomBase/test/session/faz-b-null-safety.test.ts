@@ -50,8 +50,7 @@ describe("Faz B Null Safety & Boundary Checks", () => {
   })
 
   test("B3. processor.ts converts null/undefined/string/Error values safely to string", () => {
-    const errorStringify = (error: any) =>
-      error instanceof Error ? error.message : String(error ?? "")
+    const errorStringify = (error: any) => (error instanceof Error ? error.message : String(error ?? ""))
 
     expect(errorStringify(null)).toBe("")
     expect(errorStringify(undefined)).toBe("")
@@ -72,7 +71,7 @@ describe("Faz B Null Safety & Boundary Checks", () => {
         modelID: "mock",
         name: "Mock Model",
         api: { url: "http://localhost" },
-      } as any)
+      }) as any
 
     await using tmp = await tmpdir({ git: true })
     try {
@@ -107,7 +106,7 @@ describe("Faz B Null Safety & Boundary Checks", () => {
   test("B5. browser.ts screenshot checks external workdir directory permissions", async () => {
     const { BrowserTool } = await import("@/integrations/tool/browser")
     const { Browser } = await import("@/integrations/browser")
-    
+
     // Mock Playwright availability to true so permission check runs
     const origAvailable = Browser.isPlaywrightAvailable
     Browser.isPlaywrightAvailable = async () => true

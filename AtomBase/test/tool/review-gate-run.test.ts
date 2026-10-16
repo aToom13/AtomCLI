@@ -24,6 +24,17 @@ const { ModelVerification } = await import("@/integrations/provider/verification
 const { tmpdir } = await import("../fixture/fixture")
 const { evaluateReviewDecision, runBlockingReview } = await import("@/integrations/tool/review-gate")
 
+const enforcedReview = {
+  review: {
+    auto: true,
+    enabled: true,
+    policy: "enforced" as const,
+    reviewer_count: 2,
+    max_attempts: 3,
+    high_risk_patterns: [],
+  },
+}
+
 function resetSpawn() {
   spawnMock.mockReset()
   spawnMock.mockImplementation(async () => ({
@@ -40,8 +51,145 @@ beforeEach(() => {
 })
 
 describe("ReviewGate - runBlockingReview", () => {
+  test("HTML review refuses legacy QA and missing evidence, accepts current tool evidence and keeps root criteria across continue", async () => {
+    await using tmp = await tmpdir({ git: true, config: { review: { ...enforcedReview.review, policy: "always" } } })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const parent = await Session.create({})
+        const userID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: parent.id, invocationID: userID })
+        const request = "ArrowRight moves the player"
+        ExecutionRuntime.recordObjective(execution.executionID, userID, request)
+        await Bun.write(path.join(tmp.path, "game.html"), "<button>Move</button>\n")
+        HarnessState.addEditedFile(parent.id, "game.html")
+        ExecutionRuntime.recordQAReview({
+          executionID: execution.executionID,
+          revision: ExecutionRuntime.mutationRevision(execution.executionID)!,
+          reviewedFiles: ["game.html"],
+        })
+        let supplyEvidence = false
+        spawnMock.mockImplementation(async (args: any) => {
+          const reviewer = await Session.create({ parentID: parent.id })
+          await args.onSession?.({ sessionId: reviewer.id, isNewSession: true })
+          const messageID = Identifier.ascending("message")
+          await Session.updateMessage({
+            id: messageID,
+            sessionID: reviewer.id,
+            parentID: userID,
+            role: "assistant",
+            agent: "reviewer",
+            path: { cwd: tmp.path, root: tmp.path },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            providerID: "test",
+            modelID: "fixture",
+            time: { created: Date.now() },
+          })
+          const calls = [
+            { input: { action: "press", key: "ArrowRight", selector: "#game" }, output: "Pressed ArrowRight" },
+            { input: { action: "evaluate", script: "({x: player.x})" }, output: '{"x":24}' },
+          ]
+          if (supplyEvidence)
+            for (const [index, call] of calls.entries()) {
+              const now = Date.now()
+              await Session.updatePart({
+                id: Identifier.ascending("part"),
+                messageID,
+                sessionID: reviewer.id,
+                type: "tool",
+                tool: "browser",
+                callID: `acceptance-${index}`,
+                state: {
+                  status: "completed",
+                  ...call,
+                  title: "Browser",
+                  metadata: { tabId: "game" },
+                  time: { start: now, end: now },
+                },
+              })
+            }
+          return {
+            sessionId: reviewer.id,
+            isNewSession: true,
+            output: "",
+            parts: [],
+            structuredOutput: {
+              verdict: "passed",
+              summary: "Movement checked",
+              findings: [],
+              ...(supplyEvidence
+                ? {
+                    checks: [
+                      {
+                        criterion: request,
+                        setup: "Player starts at x=20",
+                        action: "Press ArrowRight",
+                        expected: "Position increases",
+                        observed: '"x":24',
+                        evidence: calls.map((call) => ({
+                          tool: "browser",
+                          input: JSON.stringify(call.input),
+                          output: call.output,
+                        })),
+                      },
+                    ],
+                  }
+                : {}),
+            },
+          }
+        })
+        const missing = await runBlockingReview(parent.id, { executionID: execution.executionID })
+        expect(missing.passed).toBe(false)
+        expect(missing.report?.verdict).toBe("inconclusive")
+        expect(spawnMock).toHaveBeenCalledTimes(2)
+        supplyEvidence = true
+        const verified = await runBlockingReview(parent.id, { executionID: execution.executionID })
+        expect(verified.passed).toBe(true)
+        expect(HarnessState.getReviewVerdict(parent.id)?.acceptanceVerified).toBe(true)
+        expect((await runBlockingReview(parent.id, { executionID: execution.executionID })).skipped).toBe(true)
+        expect(spawnMock).toHaveBeenCalledTimes(4)
+        const continueID = Identifier.ascending("message")
+        await Session.updateMessage({
+          id: continueID,
+          sessionID: parent.id,
+          role: "user",
+          agent: "build",
+          model: { providerID: "test", modelID: "fixture" },
+          time: { created: Date.now() },
+        })
+        await Session.updatePart({
+          id: Identifier.ascending("part"),
+          messageID: continueID,
+          sessionID: parent.id,
+          type: "text",
+          synthetic: true,
+          text: "continue",
+        })
+        expect((await evaluateReviewDecision(parent.id, execution.executionID)).originalPrompt).toBe(request)
+        await Session.updatePart({
+          id: Identifier.ascending("part"),
+          messageID: continueID,
+          sessionID: parent.id,
+          type: "text",
+          text: "Add a working Reset control",
+        })
+        const modelSpy = spyOn(Provider, "getModel").mockResolvedValue({ providerID: "test", id: "fixture" } as any)
+        try {
+          const changedCriteria = await runBlockingReview(parent.id, { executionID: execution.executionID })
+          expect(changedCriteria.skipped).toBe(false)
+          expect(changedCriteria.passed).toBe(false)
+          expect(changedCriteria.report?.verdict).toBe("inconclusive")
+        } finally {
+          modelSpy.mockRestore()
+        }
+      },
+    })
+  })
+
   test("skips stale required decisions when no mutations exist", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -104,7 +252,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("PASS verdict records pass and returns passed", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -124,7 +272,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("a staged final decision reuses a fresh PASS for the same revision", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -143,7 +291,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("binds reused PASS evidence to every final-review ledger session", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -178,8 +326,85 @@ describe("ReviewGate - runBlockingReview", () => {
     })
   })
 
+  test("reuses a durable orchestrator QA PASS for the current revision", async () => {
+    await using tmp = await tmpdir({ config: enforcedReview })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const sessionID = "session-gate-qa-reuse"
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+
+        const root = await Session.create({})
+        const userID = Identifier.ascending("message")
+        await Session.updateMessage({
+          id: userID,
+          sessionID: root.id,
+          role: "user",
+          agent: "build",
+          model: { providerID: "test", modelID: "fixture" },
+          time: { created: Date.now() },
+        })
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const revision = ExecutionRuntime.mutationRevision(execution.executionID)
+        expect(revision).toBeDefined()
+        ExecutionRuntime.recordQAReview({
+          executionID: execution.executionID,
+          revision: revision!,
+          reviewedFiles: ["src/auth/a.ts"],
+        })
+        expect(ExecutionRuntime.qaReviewPassed(execution.executionID, revision!)).toBe(true)
+
+        const result = await runBlockingReview(sessionID, { executionID: execution.executionID })
+        expect(result).toMatchObject({ passed: true, exhausted: false, skipped: true })
+        expect(spawnMock).toHaveBeenCalledTimes(0)
+
+        // A different execution without a QA decision still spawns reviewers.
+        const secondUserID = Identifier.ascending("message")
+        await Session.updateMessage({
+          id: secondUserID,
+          sessionID: root.id,
+          role: "user",
+          agent: "build",
+          model: { providerID: "test", modelID: "fixture" },
+          time: { created: Date.now() },
+        })
+        const secondExecution = await ExecutionRuntime.resolveInvocation({
+          sessionID: root.id,
+          invocationID: secondUserID,
+        })
+        expect(ExecutionRuntime.qaReviewPassed(secondExecution.executionID, revision!)).toBe(false)
+        const otherSession = "session-gate-qa-not-covered"
+        HarnessState.addEditedFile(otherSession, "src/auth/b.ts")
+        const uncovered = await runBlockingReview(otherSession, { executionID: secondExecution.executionID })
+        expect(uncovered.passed).toBe(true)
+        expect(spawnMock).toHaveBeenCalledTimes(2)
+      },
+    })
+  })
+
+  test("maps a decided durable claim to a reusable review result", async () => {
+    const { SessionPrompt } = await import("@/core/session/prompt")
+    expect(SessionPrompt._internals.reviewFromDurableClaim("passed")).toMatchObject({
+      passed: true,
+      exhausted: false,
+      skipped: true,
+    })
+    expect(SessionPrompt._internals.reviewFromDurableClaim("rejected")).toMatchObject({
+      passed: false,
+      exhausted: true,
+      skipped: true,
+    })
+    expect(SessionPrompt._internals.reviewFromDurableClaim("inconclusive")).toMatchObject({
+      passed: false,
+      error: true,
+      skipped: true,
+    })
+  })
+
   test("reuses every reviewer slot on the next changed revision", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -210,7 +435,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("pins reviewers to the parent's verified AtomCLI Free route", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -263,6 +488,7 @@ describe("ReviewGate - runBlockingReview", () => {
 
   test("PASS is rejected when the same file changes while review is running", async () => {
     await using tmp = await tmpdir({
+      config: enforcedReview,
       init: async (dir) => {
         const target = path.join(dir, "src/auth/a.ts")
         await fs.mkdir(path.dirname(target), { recursive: true })
@@ -298,6 +524,7 @@ describe("ReviewGate - runBlockingReview", () => {
   test("reviewer source writes invalidate the verdict without leaving a pending claim", async () => {
     await using tmp = await tmpdir({
       git: true,
+      config: enforcedReview,
       init: async (dir) => {
         const target = path.join(dir, "src/auth/a.ts")
         await fs.mkdir(path.dirname(target), { recursive: true })
@@ -336,6 +563,7 @@ describe("ReviewGate - runBlockingReview", () => {
 
   test("PASS is rejected when a descendant changes during review", async () => {
     await using tmp = await tmpdir({
+      config: enforcedReview,
       init: async (dir) => {
         const target = path.join(dir, "src/auth/child.ts")
         await fs.mkdir(path.dirname(target), { recursive: true })
@@ -374,7 +602,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("does not return PASS after its parent operation is cancelled", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -425,6 +653,7 @@ describe("ReviewGate - runBlockingReview", () => {
     }))
 
     await using tmp = await tmpdir({
+      config: enforcedReview,
       init: async (dir) => {
         const target = path.join(dir, "src/auth/a.ts")
         await fs.mkdir(path.dirname(target), { recursive: true })
@@ -452,7 +681,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("exhausted short-circuit: no re-spawn after max_attempts fails", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -498,7 +727,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("no edits returns skipped without spawning", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -519,7 +748,7 @@ describe("ReviewGate - runBlockingReview", () => {
       throw new Error("provider unavailable")
     })
 
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -540,7 +769,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("aggregates descendant sub-agent edits so the gate is not bypassed", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -570,7 +799,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("no sub-agent edits means parent-only edits still trigger review", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -593,7 +822,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("concurrent runBlockingReview calls spawn the reviewer exactly once", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -616,7 +845,7 @@ describe("ReviewGate - runBlockingReview", () => {
   })
 
   test("deleting a sub-agent session does not bypass the review gate", async () => {
-    await using tmp = await tmpdir()
+    await using tmp = await tmpdir({ config: enforcedReview })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -643,7 +872,7 @@ describe("ReviewGate - runBlockingReview", () => {
 
   test("reviewer agent disabled via config fails closed without leaking a pending claim", async () => {
     await using tmp = await tmpdir({
-      config: { agent: { reviewer: { disable: true } } },
+      config: { ...enforcedReview, agent: { reviewer: { disable: true } } },
     })
     await Instance.provide({
       directory: tmp.path,

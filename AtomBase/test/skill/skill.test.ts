@@ -1,3 +1,4 @@
+import "../preload"
 import { test, expect } from "bun:test"
 import { Skill } from "@/integrations/skill"
 import { Instance } from "@/services/project/instance"
@@ -52,6 +53,72 @@ Instructions here.
       expect(testSkill).toBeDefined()
       expect(testSkill!.description).toBe("A test skill for verification.")
       expect(testSkill!.location).toContain("skill/test-skill/SKILL.md")
+    },
+  })
+})
+
+test("project skill takes precedence over a global skill with the same name", async () => {
+  await using project = await tmpdir({ git: true })
+  await using home = await tmpdir({ git: true })
+  const projectFile = path.join(project.path, ".atomcli", "skills", "priority", "SKILL.md")
+  const globalFile = path.join(home.path, ".atomcli", "skills", "priority", "SKILL.md")
+  const skill = (description: string) => `---\nname: priority\ndescription: ${description}\n---\n\n# Priority\n`
+  await Bun.write(projectFile, skill("Project guidance"))
+  await Bun.write(globalFile, skill("Global guidance"))
+  const originalHome = process.env.ATOMCLI_TEST_HOME
+  process.env.ATOMCLI_TEST_HOME = home.path
+  try {
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        expect((await Skill.get("priority"))?.location).toBe(projectFile)
+      },
+    })
+  } finally {
+    process.env.ATOMCLI_TEST_HOME = originalHome
+  }
+})
+
+test("source checkout skill tree takes precedence over an outdated global copy", async () => {
+  await using project = await tmpdir({ git: true })
+  await using home = await tmpdir({ git: true })
+  await Bun.write(
+    path.join(home.path, ".atomcli", "skills", "frontend-design", "SKILL.md"),
+    "---\nname: frontend-design\ndescription: Old global copy.\n---\n",
+  )
+  const originalHome = process.env.ATOMCLI_TEST_HOME
+  process.env.ATOMCLI_TEST_HOME = home.path
+  try {
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const skill = await Skill.get("frontend-design")
+        expect(skill?.location).toBe(path.resolve(import.meta.dir, "../../../.atomcli/skills/frontend-design/SKILL.md"))
+        expect((await fs.stat(path.join(path.dirname(skill!.location), "references", "3d-web.md"))).isFile()).toBe(true)
+      },
+    })
+  } finally {
+    process.env.ATOMCLI_TEST_HOME = originalHome
+  }
+})
+
+test("short skill triggers match words, not letters inside unrelated requirements", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Bun.write(
+    path.join(tmp.path, ".atomcli", "skills", "frontend-design", "SKILL.md"),
+    "---\nname: frontend-design\ndescription: Web frontend design.\ntrigger_words: [ui, web app]\n---\n",
+  )
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      expect(
+        (await Skill.findAutoInjectCandidates("Requirements: build a C++ skateboarding game")).map(
+          (skill) => skill.name,
+        ),
+      ).not.toContain("frontend-design")
+      expect((await Skill.findAutoInjectCandidates("Build a UI for a web app")).map((skill) => skill.name)).toContain(
+        "frontend-design",
+      )
     },
   })
 })

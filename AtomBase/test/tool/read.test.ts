@@ -2,6 +2,7 @@ import "../preload"
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { ReadTool } from "@/integrations/tool/read"
+import { EditAnchor } from "@/integrations/tool/edit-anchor"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { PermissionNext } from "@/util/permission/next"
@@ -251,11 +252,11 @@ describe("tool.read truncation", () => {
     })
   })
 
-  test("truncates long lines", async () => {
+  test("reads minified source within the byte budget without hiding edit targets", async () => {
+    const line = "/*" + "x".repeat(9000) + "*/ .game-overlay .ghost{pointer-events:none}"
     await using tmp = await tmpdir({
       init: async (dir) => {
-        const longLine = "x".repeat(3000)
-        await Bun.write(path.join(dir, "long-line.txt"), longLine)
+        await Bun.write(path.join(dir, "long-line.txt"), line)
       },
     })
     await Instance.provide({
@@ -263,8 +264,29 @@ describe("tool.read truncation", () => {
       fn: async () => {
         const read = await ReadTool.init()
         const result = await read.execute({ filePath: path.join(tmp.path, "long-line.txt") }, ctx)
-        expect(result.output).toContain("...")
-        expect(result.output.length).toBeLessThan(3000)
+        expect(result.output).toContain(line)
+        expect(result.metadata.truncated).toBe(false)
+        expect(() =>
+          EditAnchor.resolveRange(line, result.metadata.startAnchor!, result.metadata.endAnchor!),
+        ).not.toThrow()
+      },
+    })
+  })
+
+  test.each(["x", "界", "😀"])("bounds oversized single lines and preserves anchors: %s", async (character) => {
+    const source = character.repeat(60_000)
+    await using tmp = await tmpdir({ init: (dir) => Bun.write(path.join(dir, "huge.txt"), source) })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const result = await (await ReadTool.init()).execute({ filePath: path.join(tmp.path, "huge.txt") }, ctx)
+        expect(result.metadata.truncated).toBe(true)
+        expect(result.output).toContain("Output truncated at")
+        expect(result.output).not.toContain("�")
+        expect(Buffer.byteLength(result.metadata.preview)).toBeLessThanOrEqual(50 * 1024)
+        expect(() =>
+          EditAnchor.resolveRange(source, result.metadata.startAnchor!, result.metadata.endAnchor!),
+        ).not.toThrow()
       },
     })
   })

@@ -4,6 +4,7 @@ import { ReviewPolicy } from "@/core/verification/review-policy"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { ExecutionPolicy } from "@/core/routing/execution-policy"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import * as RouteGuidanceStore from "@/core/execution/route-guidance"
 import { ExecutionLedger } from "@/core/execution/ledger"
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { HarnessState } from "@/core/session/harness-state"
@@ -69,6 +70,21 @@ describe("Pipeline Fixes Integration Suite", () => {
     expect(evidence?.toolCalls).toBe(1)
   })
 
+  test("a workspace edit invalidates earlier browser verification", () => {
+    const executionID = "test-browser-evidence-after-edit"
+    ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+    ExecutionRuntime.recordRuntimeEvidence(executionID, { browserNavigations: 1, browserVerificationCalls: 1 })
+    expect(ExecutionRuntime.getExecutionEvidence(executionID)).toMatchObject({
+      browserNavigations: 1,
+      browserVerificationCalls: 1,
+    })
+    ExecutionRuntime.recordRuntimeEvidence(executionID, { mutatingCalls: 1, filesChanged: ["index.html"] })
+    expect(ExecutionRuntime.getExecutionEvidence(executionID)).toMatchObject({
+      browserNavigations: 0,
+      browserVerificationCalls: 0,
+    })
+  })
+
   test("stops repeated model checkpoint grants at the hard extension ceiling", async () => {
     await using tmp = await tmpdir({ config: {} })
     await Instance.provide({
@@ -113,12 +129,16 @@ describe("Pipeline Fixes Integration Suite", () => {
           failures: [],
           blockers: [],
           routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
           planChanged: false,
           routeChanged: false,
           estimatedRemainingCalls: 50,
           nextActions: ["verify"],
         }
-        for (let index = 1; index <= 6; index++) {
+        for (let index = 1; index <= ExecutionCheckpoint.MAX_EXTENSIONS; index++) {
           expect(
             ExecutionRuntime.applyCheckpoint(executionID, `checkpoint-${index}`, {
               ...checkpoint,
@@ -133,8 +153,215 @@ describe("Pipeline Fixes Integration Suite", () => {
           blockers: expect.arrayContaining(["Execution extension limit reached."]),
         })
         expect(
-          ExecutionRuntime.applyCheckpoint(executionID, "checkpoint-7", { ...checkpoint, requestedCalls: 30 }),
+          ExecutionRuntime.applyCheckpoint(executionID, `checkpoint-${ExecutionCheckpoint.MAX_EXTENSIONS + 1}`, {
+            ...checkpoint,
+            requestedCalls: 30,
+          }),
         ).toMatchObject({ grantedCalls: undefined, extensionLimitReached: true })
+      },
+    })
+  })
+
+  test("checkpoint grants cannot override the explicit execution call limit", async () => {
+    await using tmp = await tmpdir({
+      config: { execution_budget: { max_calls: 2, max_steps: 20, unknown_price: "block" } },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "hard limit checkpoint")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+
+        // Fill the hard call limit that execution_budget installs.
+        const first = await ExecutionRuntime.admitModelCall({
+          sessionID: root.id,
+          purpose: "main",
+          estimateMicrousd: 0,
+          execution,
+        })
+        expect(first).toBeDefined()
+        await ExecutionRuntime.admitModelCall({ sessionID: root.id, purpose: "main", estimateMicrousd: 0, execution })
+        await expect(
+          ExecutionRuntime.admitModelCall({ sessionID: root.id, purpose: "main", estimateMicrousd: 0, execution }),
+        ).rejects.toMatchObject({ name: "ExecutionBudgetExceededError", reason: "call_limit" })
+
+        // The adaptive work slice can continue, but explicit user limits stay hard.
+        const applied = ExecutionRuntime.applyCheckpoint(executionID, "checkpoint-hard-limit", {
+          decision: "continue",
+          requestedCalls: 3,
+          objectiveAssessment: "unchanged",
+          progressSummary: "progress",
+          discoveries: [],
+          completedWork: ["partial work"],
+          remainingWork: ["verify"],
+          failures: [],
+          blockers: [],
+          routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 3,
+          nextActions: ["verify"],
+        })
+        expect(applied.grantedCalls).toBe(3)
+
+        expect(ExecutionRuntime.view(executionID)?.budget.execution.calls.limit).toBe(2)
+        await expect(
+          ExecutionRuntime.admitModelCall({ sessionID: root.id, purpose: "main", estimateMicrousd: 0, execution }),
+        ).rejects.toMatchObject({ name: "ExecutionBudgetExceededError", reason: "call_limit" })
+      },
+    })
+  })
+
+  test("checkpoint progress detection uses file sets and write revisions (CP-02)", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "evidence progress")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+        const checkpoint = {
+          decision: "continue" as const,
+          requestedCalls: 10,
+          objectiveAssessment: "unchanged",
+          progressSummary: "progress",
+          discoveries: [],
+          completedWork: [],
+          remainingWork: ["continue"],
+          failures: [],
+          blockers: [],
+          routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 10,
+          nextActions: ["continue"],
+        }
+        const sliceEvidence = () =>
+          ExecutionRuntime.checkpoints(executionID).at(-1)?.payload.evidence as { noProgressSlices?: number }
+
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          filesRead: ["src/a.ts"],
+          successfulToolCalls: 1,
+          recentToolCallSignatures: ["read:src/a.ts"],
+        })
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-evidence-1", checkpoint)
+
+        // Same-length file lists with a new path must count as progress.
+        ExecutionRuntime.recordRuntimeEvidence(executionID, { filesRead: ["src/b.ts"] })
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-evidence-2", checkpoint)
+        expect(sliceEvidence().noProgressSlices).toBe(0)
+
+        // A second successful write to the same file is a new revision.
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          filesChanged: ["src/c.ts"],
+          fileWriteCounts: { "src/c.ts": 1 },
+        })
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-evidence-3", checkpoint)
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          fileWriteCounts: { "src/c.ts": 1 },
+          recentToolCallSignatures: ["edit:src/c.ts:v2"],
+        })
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-evidence-4", checkpoint)
+        expect(sliceEvidence().noProgressSlices).toBe(0)
+
+        // A successful call without a new path, revision, or semantic result is
+        // not progress; call count alone must not keep exploration alive.
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          successfulToolCalls: 2,
+          recentToolCallSignatures: ["read:src/a.ts"],
+        })
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-evidence-5", checkpoint)
+        expect(sliceEvidence().noProgressSlices).toBe(1)
+
+        // Browser runtime checks advance verification even when a screenshot
+        // or assertion returns the same textual result as an earlier call.
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          browserNavigations: 1,
+          browserVerificationCalls: 1,
+          recentToolCallSignatures: ["browser:navigate", "browser:screenshot"],
+        })
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-evidence-browser", checkpoint)
+        expect(sliceEvidence().noProgressSlices).toBe(0)
+
+        // Exact repeated calls stay non-progress: the watchdog boundary holds.
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          recentToolCallSignatures: ["edit:same", "edit:same", "edit:same"],
+          fileWriteCounts: { "src/same.ts": 3 },
+        })
+        const reconciled = ExecutionRuntime.reconcileCheckpoint(executionID, checkpoint)
+        expect(reconciled.decision).toBe("blocked")
+        expect(reconciled.blockers).toContain("The same tool call was repeated without new evidence.")
+      },
+    })
+  })
+
+  test("evicts idle execution states and reloads persisted state (PIPE-03)", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "cache ttl")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        ExecutionRuntime.setExecutionContract(execution.executionID, ExecutionContract.fallback("test"))
+        expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)).toBeDefined()
+
+        const pruned = ExecutionRuntime._internals.pruneExecutionStates(
+          Date.now() + ExecutionRuntime._internals.EXECUTION_STATE_TTL_MS + 1,
+        )
+        expect(pruned).toBeGreaterThanOrEqual(1)
+
+        // Eviction only drops memory: the persisted state reloads from the ledger.
+        expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)).toBeDefined()
+        // A fresh access resets the idle clock, so an immediate prune keeps it.
+        expect(ExecutionRuntime._internals.pruneExecutionStates()).toBe(0)
+      },
+    })
+  })
+
+  test("evicts idle route guidance so checkpoint hints cannot grow without bound", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const internals = ExecutionRuntime._internals
+        const executionID = "exec-guidance-ttl"
+
+        internals.seedRouteGuidance(executionID, Date.now())
+        expect(ExecutionRuntime.getRouteGuidance(executionID)).toBeDefined()
+        // A fresh write resets the idle clock, so an immediate prune keeps it.
+        expect(internals.pruneRouteGuidance()).toBe(0)
+
+        expect(internals.pruneRouteGuidance(Date.now() + internals.ROUTE_GUIDANCE_TTL_MS + 1)).toBeGreaterThanOrEqual(1)
+        // Guidance is a soft steering hint, not durable state: evicting it only means
+        // the next work slice starts without the hint.
+        expect(ExecutionRuntime.getRouteGuidance(executionID)).toBeUndefined()
+
+        // The hard cap bounds growth even when every entry is fresh.
+        const now = Date.now()
+        for (let index = 0; index <= internals.MAX_ROUTE_GUIDANCE; index++) {
+          internals.seedRouteGuidance(`exec-guidance-cap-${index}`, now + index)
+        }
+        expect(internals.pruneRouteGuidance(now + internals.MAX_ROUTE_GUIDANCE + 1)).toBeGreaterThanOrEqual(1)
+        // The most recently written entry survives; the oldest are dropped.
+        expect(ExecutionRuntime.getRouteGuidance(`exec-guidance-cap-${internals.MAX_ROUTE_GUIDANCE}`)).toBeDefined()
       },
     })
   })
@@ -156,6 +383,10 @@ describe("Pipeline Fixes Integration Suite", () => {
           failures: [],
           blockers: [],
           routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
           planChanged: false,
           routeChanged: false,
           estimatedRemainingCalls: 10,
@@ -164,7 +395,7 @@ describe("Pipeline Fixes Integration Suite", () => {
         const cases = [
           {
             evidence: {
-              recentSemanticActionResults: ["verify:same", "read:other", "verify:same", "grep:other", "verify:same"],
+              recentSemanticActionResults: ["verify:same", "verify:same", "verify:same"],
             },
             reason: "The same semantic action was repeated without new evidence.",
           },
@@ -230,7 +461,7 @@ describe("Pipeline Fixes Integration Suite", () => {
     )
   })
 
-  test("requires a checkpoint before coordinated work without a durable plan", async () => {
+  test("coordinated work does not checkpoint solely for absent legacy taskflow", async () => {
     await using tmp = await tmpdir({ config: {} })
     await Instance.provide({
       directory: tmp.path,
@@ -251,7 +482,137 @@ describe("Pipeline Fixes Integration Suite", () => {
         })
         expect(ExecutionRuntime.hasUnresolvedExecutionTaskflow(executionID)).toBe(false)
 
-        expect(ExecutionRuntime.isCheckpointRequired(executionID)).toBe(true)
+        expect(ExecutionRuntime.isCheckpointRequired(executionID)).toBe(false)
+      },
+    })
+  })
+
+  test("does not call completed durable plans missing plans", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "coordinated completed plan")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test", { scope: "coordinated" }))
+
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          successfulToolCalls: 24,
+          toolCalls: 24,
+          recentToolCallSignatures: ["a", "b", "c"],
+        })
+        const plan = await ExecutionRuntime.createPlan({
+          sessionID: root.id,
+          execution,
+          items: [{ id: "step-1", resourceScope: "plan-item:step-1:done" }],
+        })
+        const running = await ExecutionRuntime.transitionBlocker({
+          sessionID: root.id,
+          execution,
+          blockerID: plan.blockers[0].id,
+          expectedVersion: plan.blockers[0].version,
+          state: "running",
+        })
+        await ExecutionRuntime.transitionBlocker({
+          sessionID: root.id,
+          execution,
+          blockerID: plan.blockers[0].id,
+          expectedVersion: running.version,
+          state: "resolved",
+          evidence: "verified",
+          resolutionCode: "test",
+        })
+
+        expect(ExecutionRuntime.hasUnresolvedExecutionTaskflow(executionID)).toBe(false)
+        expect(ExecutionRuntime.isCheckpointRequired(executionID)).toBe(false)
+      },
+    })
+  })
+
+  test("same target with a new write revision is not a repeated-target stall", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "repeat target with progress")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+        const checkpoint = {
+          decision: "continue" as const,
+          requestedCalls: 10,
+          objectiveAssessment: "working",
+          progressSummary: "progress",
+          discoveries: [],
+          completedWork: [],
+          remainingWork: ["continue"],
+          failures: [],
+          blockers: [],
+          routeAssessment: "appropriate",
+          routeDecision: "keep" as const,
+          selfCritique: "No issues.",
+          failedApproaches: [],
+          whatToChanges: [],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 10,
+          nextActions: ["continue"],
+        }
+
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          recentToolTargets: ["edit:graph.ts"],
+          fileWriteCounts: { "graph.ts": 1 },
+        })
+        ExecutionRuntime.applyCheckpoint(executionID, "repeat-target-1", checkpoint)
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          recentToolTargets: ["edit:graph.ts", "edit:graph.ts", "edit:graph.ts"],
+          fileWriteCounts: { "graph.ts": 1 },
+        })
+
+        expect(ExecutionRuntime.finalizationConstraints(executionID)).not.toContain(
+          "The same tool target was revisited without new evidence.",
+        )
+        ExecutionRuntime.applyCheckpoint(executionID, "repeat-target-2", checkpoint)
+        for (let index = 0; index < 3; index++) {
+          ExecutionRuntime.recordToolCall(
+            executionID,
+            { successfulToolCalls: 1 },
+            { family: "bash", signature: `inspect-${index}` },
+          )
+        }
+        expect(ExecutionRuntime.isCheckpointRequired(executionID)).toBe(false)
+        expect(ExecutionRuntime.finalizationConstraints(executionID)).not.toContain(
+          "The same tool target was revisited without new evidence.",
+        )
+      },
+    })
+  })
+
+  test("same target with distinct diagnostic results does not trigger repeated-target checkpoint", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "debug the same file with new diagnostics")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+
+        ExecutionRuntime.recordRuntimeEvidence(executionID, {
+          recentToolTargets: ["read:src/graph.ts:", "read:src/graph.ts:", "read:src/graph.ts:"],
+          recentSemanticActionResults: ["read:v1", "read:v2", "read:v3"],
+          successfulToolCalls: 3,
+          toolCalls: 3,
+        })
+
+        expect(ExecutionRuntime.checkpointReason(executionID)).toBeUndefined()
       },
     })
   })
@@ -384,6 +745,155 @@ describe("Pipeline Fixes Integration Suite", () => {
         expect(HarnessState.hasActivePlan(sessionID, "exec-old-11")).toBe(true)
         expect(HarnessState.hasActivePlan(sessionID, "exec-new-11")).toBe(false)
         HarnessState.clearPlan(sessionID)
+      },
+    })
+  })
+
+  test("checkpoint route guidance records revise decisions and failed approaches", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "route guidance")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+
+        expect(ExecutionRuntime.getRouteGuidance(executionID)).toBeUndefined()
+
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-revise-1", {
+          decision: "continue",
+          requestedCalls: 30,
+          objectiveAssessment: "still working",
+          progressSummary: "partial",
+          discoveries: [],
+          completedWork: [],
+          remainingWork: ["try a different approach"],
+          failures: ["edit kept failing"],
+          blockers: [],
+          routeAssessment: "current approach is stuck",
+          routeDecision: "revise",
+          selfCritique: "I keep retrying the same edit without reading the surrounding code first.",
+          failedApproaches: ["repeated edit on the same string"],
+          whatToChanges: ["read the file before editing", "use a different anchor"],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 30,
+          nextActions: ["read the file"],
+        })
+
+        const afterRevise = ExecutionRuntime.getRouteGuidance(executionID)
+        expect(afterRevise?.routeRevised).toBe(true)
+        expect(afterRevise?.consecutiveRevisions).toBe(1)
+        expect(afterRevise?.whatToChanges).toEqual(["read the file before editing", "use a different anchor"])
+        expect(afterRevise?.failedApproaches).toEqual(["repeated edit on the same string"])
+        RouteGuidanceStore.set(executionID, { ...RouteGuidanceStore.get(executionID)!, updatedAt: 0 })
+        RouteGuidanceStore.prune()
+        expect(ExecutionRuntime.getRouteGuidance(executionID)).toEqual(afterRevise)
+        expect(ExecutionRuntime.getRouteGuidance(executionID)?.consecutiveRevisions).toBe(1)
+
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-keep-1", {
+          decision: "continue",
+          requestedCalls: 30,
+          objectiveAssessment: "new approach works",
+          progressSummary: "good",
+          discoveries: [],
+          completedWork: ["read the file"],
+          remainingWork: ["apply the edit"],
+          failures: [],
+          blockers: [],
+          routeAssessment: "keep going",
+          routeDecision: "keep",
+          selfCritique: "Reading first fixed the repeated failures.",
+          failedApproaches: [],
+          whatToChanges: [],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 30,
+          nextActions: ["apply the edit"],
+        })
+
+        const afterKeep = ExecutionRuntime.getRouteGuidance(executionID)
+        expect(afterKeep?.routeRevised).toBe(false)
+        expect(afterKeep?.consecutiveRevisions).toBe(0)
+        // Failed approaches accumulate across checkpoints even after a keep decision.
+        expect(afterKeep?.failedApproaches).toEqual(["repeated edit on the same string"])
+
+        ExecutionRuntime.applyCheckpoint(executionID, "cp-revise-2", {
+          decision: "continue",
+          requestedCalls: 30,
+          objectiveAssessment: "stuck again",
+          progressSummary: "no progress",
+          discoveries: [],
+          completedWork: [],
+          remainingWork: ["something else"],
+          failures: ["test still fails"],
+          blockers: [],
+          routeAssessment: "stuck",
+          routeDecision: "revise",
+          selfCritique: "Second failed strategy change.",
+          failedApproaches: ["guessing the anchor"],
+          whatToChanges: ["inspect the actual error output"],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 30,
+          nextActions: ["inspect the error"],
+        })
+
+        const accumulated = ExecutionRuntime.getRouteGuidance(executionID)
+        expect(accumulated?.consecutiveRevisions).toBe(1)
+        expect(accumulated?.failedApproaches).toEqual(["repeated edit on the same string", "guessing the anchor"])
+      },
+    })
+  })
+
+  test("consecutive route revisions without progress become a stall reason", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const userID = await addUserMessage(root.id, "revision stall")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
+        const executionID = execution.executionID
+        ExecutionRuntime.setExecutionContract(executionID, ExecutionContract.fallback("test"))
+
+        const revise = {
+          decision: "continue" as const,
+          requestedCalls: 30,
+          objectiveAssessment: "stuck",
+          progressSummary: "no progress",
+          discoveries: [],
+          completedWork: [],
+          remainingWork: ["keep trying"],
+          failures: ["still broken"],
+          blockers: [],
+          routeAssessment: "needs a different approach",
+          routeDecision: "revise" as const,
+          selfCritique: "Strategy change attempt.",
+          failedApproaches: ["one dead end"],
+          whatToChanges: ["try something else"],
+          planChanged: false,
+          routeChanged: false,
+          estimatedRemainingCalls: 30,
+          nextActions: ["try something else"],
+        }
+
+        // Three prior revisions put the counter at 3; the fourth must be treated
+        // as stall evidence rather than granting another slice.
+        for (let index = 1; index <= 3; index++) {
+          ExecutionRuntime.applyCheckpoint(executionID, `cp-stall-${index}`, revise)
+        }
+        expect(ExecutionRuntime.getRouteGuidance(executionID)?.consecutiveRevisions).toBe(3)
+
+        const reconciled = ExecutionRuntime.reconcileCheckpoint(executionID, revise)
+        expect(reconciled.decision).toBe("blocked")
+        expect(reconciled.blockers).toContain(
+          "Multiple consecutive route revisions without progress. Strategy changes are not producing results.",
+        )
       },
     })
   })

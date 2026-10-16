@@ -1,3 +1,4 @@
+import "../preload"
 import { test, expect } from "bun:test"
 import { Question } from "@/interfaces/question"
 import { Instance } from "@/services/project/instance"
@@ -23,6 +24,9 @@ test("ask - returns pending promise", async () => {
         ],
       })
       expect(promise).toBeInstanceOf(Promise)
+      const [pending] = await Question.list()
+      await Question.reply({ requestID: pending.id, answers: [["Option 1"]] })
+      await promise
     },
   })
 })
@@ -44,7 +48,7 @@ test("ask - adds to pending list", async () => {
         },
       ]
 
-      Question.ask({
+      const promise = Question.ask({
         sessionID: "ses_test",
         questions,
       })
@@ -52,6 +56,8 @@ test("ask - adds to pending list", async () => {
       const pending = await Question.list()
       expect(pending.length).toBe(1)
       expect(pending[0].questions).toEqual(questions)
+      await Question.reply({ requestID: pending[0].id, answers: [["Option 1"]] })
+      await promise
     },
   })
 })
@@ -268,7 +274,7 @@ test("list - returns all pending requests", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      Question.ask({
+      const first = Question.ask({
         sessionID: "ses_test1",
         questions: [
           {
@@ -280,7 +286,7 @@ test("list - returns all pending requests", async () => {
         ],
       })
 
-      Question.ask({
+      const second = Question.ask({
         sessionID: "ses_test2",
         questions: [
           {
@@ -294,6 +300,8 @@ test("list - returns all pending requests", async () => {
 
       const pending = await Question.list()
       expect(pending.length).toBe(2)
+      for (const request of pending) await Question.reply({ requestID: request.id, answers: [[]] })
+      await Promise.all([first, second])
     },
   })
 })

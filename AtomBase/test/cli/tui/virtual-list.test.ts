@@ -83,5 +83,6 @@ describe("VirtualWindow", () => {
     expect(VirtualWindow.isAtTail(957, viewportHeight, totalHeight)).toBe(true)
     // Farther above bottom
     expect(VirtualWindow.isAtTail(956, viewportHeight, totalHeight)).toBe(false)
+    expect(VirtualWindow.isAtTail(959, viewportHeight, totalHeight, 0)).toBe(false)
   })
 })

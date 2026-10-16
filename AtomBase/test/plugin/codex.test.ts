@@ -71,14 +71,20 @@ describe("plugin.codex", () => {
       const state = new URL(flow.url).searchParams.get("state")!
       const callbackUrl = new URL(new URL(flow.url).searchParams.get("redirect_uri")!)
       callbackUrl.hostname = "127.0.0.1"
-      const callback = flow.callback().catch((error): Error => (error instanceof Error ? error : new Error(String(error))))
+      const callback = flow
+        .callback()
+        .catch((error): Error => (error instanceof Error ? error : new Error(String(error))))
 
       callbackUrl.search = "?state=forged&error=access_denied"
       const forged = await fetch(callbackUrl)
       expect(forged.status).toBe(400)
 
       const malicious = '<script>alert("oauth")</script>'
-      callbackUrl.search = new URLSearchParams({ state, error: "access_denied", error_description: malicious }).toString()
+      callbackUrl.search = new URLSearchParams({
+        state,
+        error: "access_denied",
+        error_description: malicious,
+      }).toString()
       const rejected = await fetch(callbackUrl)
       const page = await rejected.text()
       expect(rejected.status).toBe(400)
@@ -97,7 +103,9 @@ describe("plugin.codex", () => {
     test("reports a callback port collision without retaining server state", async () => {
       const blocker = await listenOnEphemeralPort()
       try {
-        await expect(CodexOAuth.startServer(blocker.port)).rejects.toThrow(`callback port ${blocker.port} is unavailable`)
+        await expect(CodexOAuth.startServer(blocker.port)).rejects.toThrow(
+          `callback port ${blocker.port} is unavailable`,
+        )
       } finally {
         CodexOAuth.stopServer()
         await closeServer(blocker.server)

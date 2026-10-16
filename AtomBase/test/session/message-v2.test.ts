@@ -49,6 +49,54 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
+  test("replays only newest execution checkpoint to keep history compact", async () => {
+    const input: MessageV2.WithParts[] = [
+      {
+        info: assistantInfo("a-old", "u-old"),
+        parts: [
+          {
+            ...basePart("a-old", "cp-old"),
+            type: "checkpoint",
+            sequence: 1,
+            decision: "continue",
+            objectiveAssessment: "same",
+            progressSummary: "old",
+            discoveries: [],
+            completedWork: [],
+            remainingWork: ["work"],
+            failures: [],
+            blockers: [],
+            routeAssessment: "keep",
+            nextActions: ["continue"],
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo("a-new", "u-new"),
+        parts: [
+          {
+            ...basePart("a-new", "cp-new"),
+            type: "checkpoint",
+            sequence: 2,
+            decision: "continue",
+            objectiveAssessment: "same",
+            progressSummary: "new",
+            discoveries: [],
+            completedWork: [],
+            remainingWork: ["work"],
+            failures: [],
+            blockers: [],
+            routeAssessment: "keep",
+            nextActions: ["continue"],
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+    const output = JSON.stringify(await MessageV2.toModelMessage(input))
+    expect(output).toContain("new")
+    expect(output).not.toContain("old")
+  })
+
   test("filters out messages with no parts", async () => {
     const input: MessageV2.WithParts[] = [
       {
@@ -208,7 +256,7 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
-  test("converts assistant tool completion into tool-call + tool-result messages and emits attachment message", async () => {
+  test("places attachments after their result with adjacent labels that survive image conversion", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
 
@@ -252,6 +300,13 @@ describe("session.message-v2.toModelMessage", () => {
                   filename: "attachment.png",
                   url: "https://example.com/attachment.png",
                 },
+                {
+                  ...basePart(assistantID, "file-2"),
+                  type: "file",
+                  mime: "image/png",
+                  filename: "reverse-360.png",
+                  url: "https://example.com/reverse-360.png",
+                },
               ],
             },
             metadata: { openai: { tool: "meta" } },
@@ -264,18 +319,6 @@ describe("session.message-v2.toModelMessage", () => {
       {
         role: "user",
         content: [{ type: "text", text: "run tool" }],
-      },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "Tool bash returned an attachment:" },
-          {
-            type: "file",
-            mediaType: "image/png",
-            filename: "attachment.png",
-            data: "https://example.com/attachment.png",
-          },
-        ],
       },
       {
         role: "assistant",
@@ -302,10 +345,30 @@ describe("session.message-v2.toModelMessage", () => {
           },
         ],
       },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Tool bash (call-1) returned an attachment:" },
+          { type: "text", text: "Attachment 1: attachment.png" },
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "attachment.png",
+            data: "https://example.com/attachment.png",
+          },
+          { type: "text", text: "Attachment 2: reverse-360.png" },
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "reverse-360.png",
+            data: "https://example.com/reverse-360.png",
+          },
+        ],
+      },
     ])
   })
 
-  test("replaces compacted tool output with placeholder", async () => {
+  test("replaces compacted tool output with placeholder without replaying its old images", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
 
@@ -335,6 +398,15 @@ describe("session.message-v2.toModelMessage", () => {
               title: "Bash",
               metadata: {},
               time: { start: 0, end: 1, compacted: 1 },
+              attachments: [
+                {
+                  ...basePart(assistantID, "old-image"),
+                  type: "file",
+                  mime: "image/png",
+                  filename: "obsolete-scene.png",
+                  url: "https://example.com/obsolete-scene.png",
+                },
+              ],
             },
           },
         ] as MessageV2.Part[],
@@ -463,39 +535,51 @@ describe("session.message-v2.toModelMessage", () => {
     expect(await MessageV2.toModelMessage(input)).toStrictEqual([])
   })
 
-  test("preserves completed tool evidence when the provider fails afterward", async () => {
-    const assistantID = "m-assistant-tool-then-error"
-    const input: MessageV2.WithParts[] = [
-      {
-        info: assistantInfo(
-          assistantID,
-          "m-parent",
-          new MessageV2.APIError({ message: "provider failed", isRetryable: true }).toObject() as MessageV2.APIError,
-        ),
-        parts: [
-          {
-            ...basePart(assistantID, "tool-completed"),
-            type: "tool",
-            callID: "call-completed",
-            tool: "write",
-            state: {
-              status: "completed",
-              input: { filePath: "done.txt", content: "done" },
-              output: "Wrote done.txt",
-              title: "done.txt",
-              metadata: {},
-              time: { start: 0, end: 1 },
+  test.each(["completed", "error"] as const)(
+    "preserves %s tool evidence when the provider fails afterward",
+    async (status) => {
+      const assistantID = "m-assistant-tool-then-error"
+      const input: MessageV2.WithParts[] = [
+        {
+          info: assistantInfo(
+            assistantID,
+            "m-parent",
+            new MessageV2.APIError({ message: "provider failed", isRetryable: true }).toObject() as MessageV2.APIError,
+          ),
+          parts: [
+            {
+              ...basePart(assistantID, "tool-completed"),
+              type: "tool",
+              callID: "call-completed",
+              tool: "write",
+              state:
+                status === "completed"
+                  ? {
+                      status,
+                      input: { filePath: "done.txt", content: "done" },
+                      output: "Wrote done.txt",
+                      title: "done.txt",
+                      metadata: {},
+                      time: { start: 0, end: 1 },
+                    }
+                  : {
+                      status,
+                      input: { filePath: "done.txt", content: "done" },
+                      error: "Stale edit: source changed",
+                      metadata: {},
+                      time: { start: 0, end: 1 },
+                    },
             },
-          },
-        ] as MessageV2.Part[],
-      },
-    ]
+          ] as MessageV2.Part[],
+        },
+      ]
 
-    const output = JSON.stringify(await MessageV2.toModelMessage(input))
-    expect(output).toContain("call-completed")
-    expect(output).toContain("Wrote done.txt")
-    expect(output).toContain("must not be repeated automatically")
-  })
+      const output = JSON.stringify(await MessageV2.toModelMessage(input))
+      expect(output).toContain("call-completed")
+      expect(output).toContain(status === "completed" ? "Wrote done.txt" : "Stale edit: source changed")
+      expect(output).toContain("must not be repeated automatically")
+    },
+  )
 
   test("includes aborted assistant messages only when they have non-step-start/reasoning content", async () => {
     const assistantID1 = "m-assistant-1"

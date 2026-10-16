@@ -1,11 +1,28 @@
 import "../preload"
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { Browser } from "@/integrations/browser"
 import { BrowserTool } from "@/integrations/tool/browser"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
+
+import { AgentEval } from "@/core/eval/harness"
+
+import { Identifier } from "@/core/id/id"
+
+import { Session } from "@/core/session"
+
+import { SessionPrompt } from "@/core/session/prompt"
+
+import { SessionProcessor } from "@/core/session/processor"
+
+import { Provider } from "@/integrations/provider/provider"
+
+import { ExecutionRuntime } from "@/core/execution/runtime"
+
+import { ToolRuntime } from "@/integrations/tool/runtime"
+import { ReviewV2 } from "@/core/verification/review-v2"
 
 const enabled = process.env.ATOMCLI_BROWSER_E2E === "1"
 let server: ReturnType<typeof Bun.serve> | undefined
@@ -22,6 +39,7 @@ const mainPage = `<!doctype html>
     <label><input type="checkbox" name="subscribe"> Subscribe</label>
     <label>Upload <input type="file" name="upload"></label>
     <button id="save">Save</button>
+    <button id="game-launch" style="display:grid" onclick="this.dataset.clicked='yes'"><span>&#128665;</span><span>Drift City</span></button>
     <button id="prompt">Prompt</button>
     <a href="/popup" target="_blank">Open popup</a>
     <a href="/download">Download report</a>
@@ -49,11 +67,17 @@ const gamePage = `<!doctype html>
     <h1>Canvas game</h1>
     <canvas id="game" width="320" height="180" tabindex="0" style="box-sizing:border-box;width:320px;height:180px;border:1px solid black"></canvas>
     <output id="state"></output>
+    <button id="reset">Reset</button>
     <script>
       const canvas = document.querySelector('#game')
       const context = canvas.getContext('2d')
       const keys = new Set()
       const state = window.gameState = { x: 20, y: 90, frames: 0, clicks: 0, lastClick: null, keys: [] }
+      document.querySelector('#reset').addEventListener('click', () => {
+        keys.clear()
+        Object.assign(state, { x: 20, y: 90, clicks: 0, lastClick: null, keys: [] })
+        draw()
+      })
       addEventListener('keydown', event => { keys.add(event.key); state.keys = [...keys] })
       addEventListener('keyup', event => { keys.delete(event.key); state.keys = [...keys] })
       canvas.addEventListener('click', event => {
@@ -126,6 +150,125 @@ afterAll(async () => {
 })
 
 describe("tool.browser real Chromium", () => {
+  afterEach(async () => {
+    if (enabled) await Browser.close()
+  })
+
+  test.skipIf(!enabled)("physical movement waits on a goal and failed evidence releases input", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const tool = await BrowserTool.init()
+        const ctx = {
+          sessionID: "browser-observed-input-e2e",
+          messageID: "observed-message",
+          callID: "observed-call",
+          agent: "build",
+          abort: new AbortController().signal,
+          metadata: () => {},
+          ask: async () => {},
+        }
+        const result = await tool.execute(
+          {
+            action: "flow",
+            steps: [
+              { action: "navigate", url: `${origin}/game` },
+              { action: "key_down", key: "ArrowRight" },
+              {
+                action: "evaluate",
+                script:
+                  "new Promise((resolve, reject) => { const end = performance.now() + 4000; function poll() { if (window.gameState.x >= 80) return resolve(window.gameState.x); if (performance.now() >= end) return reject(new Error('Movement target not reached')); setTimeout(poll, 16); } poll(); })",
+              },
+              { action: "key_up", key: "ArrowRight" },
+            ],
+          },
+          ctx,
+        )
+        expect(result.metadata.status).not.toBe("failed")
+        const page = await Browser.getPage()
+        expect(await page.evaluate(() => (window as any).gameState.x)).toBeGreaterThanOrEqual(80)
+        expect(await page.evaluate(() => (window as any).gameState.keys)).toEqual([])
+        const failed = await tool.execute(
+          {
+            action: "flow",
+            steps: [
+              { action: "key_down", key: "ArrowRight" },
+              { action: "evaluate", script: "Promise.reject(new Error('Goal not reached'))" },
+              { action: "key_up", key: "ArrowRight" },
+            ],
+          },
+          ctx,
+        )
+        expect(failed.metadata.status).toBe("failed")
+        expect(await page.evaluate(() => (window as any).gameState.keys)).toEqual([])
+        const stopped = await page.evaluate(() => (window as any).gameState.x)
+        await page.waitForTimeout(100)
+        expect(await page.evaluate(() => (window as any).gameState.x)).toBe(stopped)
+      },
+    })
+  })
+
+  test.skipIf(!enabled)("wait honors elapsed time, target text and cancellation", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const tool = await BrowserTool.init()
+        const ctx = {
+          sessionID: "browser-wait-e2e",
+          messageID: "wait-message",
+          callID: "wait-call",
+          agent: "build",
+          abort: new AbortController().signal,
+          metadata: () => {},
+          ask: async () => {},
+        }
+        await tool.execute({ action: "navigate", url: origin }, ctx)
+        const flow = await tool.execute(
+          {
+            action: "flow",
+            steps: [
+              {
+                action: "evaluate",
+                script:
+                  "window.waitStarted = performance.now(); document.querySelector('#status').textContent = 'pending'; setTimeout(() => document.querySelector('#status').textContent = 'expired (1).', 800)",
+              },
+              { action: "wait", duration: 1000 },
+              {
+                action: "evaluate",
+                script:
+                  "if (performance.now() - window.waitStarted < 1000) throw new Error('Duration ignored'); if (document.querySelector('#status').textContent !== 'expired (1).') throw new Error('Timer has not expired')",
+              },
+              {
+                action: "evaluate",
+                script:
+                  "document.querySelector('#status').textContent = 'pending'; setTimeout(() => document.querySelector('#status').textContent = 'expired (1).', 250)",
+              },
+              { action: "wait", selector: "#status", text: "expired (1).", exact: true, timeout: 2000 },
+              { action: "assert", selector: "#status", assertion: "text", expected: "expired (1).", exact: true },
+              { action: "wait", duration: 10, selector: "#status", text: "expired (1).", exact: true },
+            ],
+          },
+          ctx,
+        )
+        expect(flow.metadata.failed).not.toBe(true)
+        expect(flow.output).toContain("Step 7: wait")
+        const controller = new AbortController()
+        const started = performance.now()
+        const timer = setTimeout(() => controller.abort(new Error("wait cancelled")), 50)
+        try {
+          await expect(
+            tool.execute({ action: "wait", duration: 3000 }, { ...ctx, abort: controller.signal }),
+          ).rejects.toThrow("Browser action 'wait' was aborted")
+          expect(performance.now() - started).toBeLessThan(2000)
+        } finally {
+          clearTimeout(timer)
+        }
+      },
+    })
+  })
+
   test.skipIf(!enabled)(
     "controls a complete local UI workflow",
     async () => {
@@ -153,6 +296,37 @@ describe("tool.browser real Chromium", () => {
           expect(snapshot.output).toContain("Shadow action")
           expect(snapshot.output).toContain("box=")
           expect(snapshot.metadata.frameCount).toBe(2)
+          const clickPage = await Browser.getPage()
+          expect(snapshot.output).toContain('button "🚙 Drift City"')
+          await tool.execute({ action: "click", role: "button", accessibleName: "🚙 Drift City" }, baseCtx)
+          expect(await clickPage.locator("#game-launch").getAttribute("data-clicked")).toBe("yes")
+          await clickPage.evaluate(() => {
+            const surface = document.createElement("canvas")
+            surface.id = "pointer-surface"
+            Object.assign(surface.style, {
+              position: "fixed",
+              left: "400px",
+              top: "200px",
+              width: "80px",
+              height: "80px",
+              zIndex: "2147483647",
+            })
+            surface.addEventListener("click", () => void surface.requestPointerLock())
+            document.body.append(surface)
+          })
+          try {
+            await clickPage.locator("#pointer-surface").click()
+            await clickPage.waitForFunction(() => document.pointerLockElement !== null)
+            const blocked = await tool.execute({ action: "click", selector: "#save", timeout: 1200 }, baseCtx)
+            expect(blocked.metadata.status).toBe("failed")
+            expect(blocked.output).toContain("intercepts pointer events")
+            expect(blocked.output).toContain("performing click action")
+            expect(await clickPage.locator("#status").textContent()).toBe("Idle")
+          } finally {
+            await clickPage.evaluate(() => document.exitPointerLock())
+            await clickPage.waitForFunction(() => document.pointerLockElement === null)
+            await clickPage.locator("#pointer-surface").evaluate((element) => element.remove())
+          }
           await tool.execute(
             { action: "click", role: "button", accessibleName: "Frame action", frameUrl: "/frame" },
             baseCtx,
@@ -162,7 +336,7 @@ describe("tool.browser real Chromium", () => {
             {
               action: "flow",
               steps: [
-                { action: "type", label: "Email", text: "ada@example.com" },
+                { action: "fill", label: "Email", text: "ada@example.com" },
                 { action: "select_option", label: "Plan", optionValues: ["pro"] },
                 { action: "check", label: "Subscribe" },
                 { action: "click", role: "button", accessibleName: "Save", returnSnapshot: true },
@@ -332,17 +506,36 @@ describe("tool.browser real Chromium", () => {
           expect(offline.output).toBe("false")
           await tool.execute({ action: "emulate", reset: true }, baseCtx)
 
-          const gameSetup = await tool.execute(
-            {
-              action: "flow",
-              steps: [
-                { action: "clock", clockOperation: "install" },
-                { action: "navigate", url: `${origin}/game` },
-                { action: "clock", clockOperation: "pause" },
-              ],
-            },
-            baseCtx,
-          )
+          const page = await Browser.getPage()
+          const pauseAt = page.clock.pauseAt.bind(page.clock)
+          let delayedPause = false
+          const pause = spyOn(page.clock, "pauseAt").mockImplementation(async (time) => {
+            if (!delayedPause) {
+              delayedPause = true
+              await Bun.sleep(50)
+            }
+            await pauseAt(time)
+          })
+          let gameSetup
+          try {
+            gameSetup = await tool.execute(
+              {
+                action: "flow",
+                steps: [
+                  { action: "clock", clockOperation: "install" },
+                  { action: "navigate", url: `${origin}/game` },
+                  { action: "clock", clockOperation: "pause" },
+                ],
+              },
+              baseCtx,
+            )
+            expect(pause).toHaveBeenCalledTimes(2)
+            const pausedTime = await page.evaluate(() => Date.now())
+            await Bun.sleep(50)
+            expect(await page.evaluate(() => Date.now())).toBe(pausedTime)
+          } finally {
+            pause.mockRestore()
+          }
           expect(gameSetup.output).toContain("Step 3: clock")
           const gameBox = await tool.execute({ action: "box", selector: "#game" }, baseCtx)
           expect((gameBox.metadata.box as { width: number }).width).toBe(320)
@@ -402,6 +595,12 @@ describe("tool.browser real Chromium", () => {
           )
           const releasedKeys = await tool.execute({ action: "evaluate", script: `window.gameState.keys` }, baseCtx)
           expect(JSON.parse(releasedKeys.output)).toEqual([])
+          await tool.execute({ action: "click", selector: "#reset" }, baseCtx)
+          const resetState = await tool.execute(
+            { action: "evaluate", script: `({ reset: window.gameState.x === 20 && window.gameState.y === 90 })` },
+            baseCtx,
+          )
+          expect(JSON.parse(resetState.output).reset).toBe(true)
           await tool.execute({ action: "clock", clockOperation: "fast_forward", duration: 10 }, baseCtx)
           await tool.execute({ action: "clock", clockOperation: "resume" }, baseCtx)
 
@@ -419,3 +618,140 @@ describe("tool.browser real Chromium", () => {
     120_000,
   )
 })
+
+for (const chromium of [false, true])
+  (chromium && process.env.ATOMCLI_BROWSER_E2E !== "1" ? test.skip : test)(
+    `a message during ${chromium ? "Chromium navigation" : "running browser work"} settles and continues the same execution`,
+    async () => {
+      await using tmp = await tmpdir({ git: true })
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const session = await Session.create({ title: "Streaming amendment test" })
+          const provider = (await Provider.getProvider("atomcli"))!
+          const model = Object.values(provider.models).find(
+            (item) => !item.id.startsWith("atomcli-") && item.capabilities.toolcall,
+          )!
+          const user = await Session.updateMessage({
+            id: Identifier.ascending("message"),
+            sessionID: session.id,
+            role: "user",
+            agent: "agent",
+            model: { providerID: model.providerID, modelID: model.id },
+            time: { created: Date.now() },
+          })
+          await Session.updatePart({
+            id: Identifier.ascending("part"),
+            sessionID: session.id,
+            messageID: user.id,
+            type: "text",
+            text: "Selam",
+          })
+          const executions: string[] = []
+          const users: string[] = []
+          const policy = spyOn(AgentEval, "executionPolicy").mockReturnValue({
+            allowAuxiliarySummaries: false,
+          } as never)
+          const processor = spyOn(SessionProcessor, "create").mockImplementation(
+            (input) =>
+              ({
+                message: input.assistantMessage,
+                partFromToolCall: () => undefined,
+                async process(stream) {
+                  executions.push(stream.execution.executionID)
+                  users.push(stream.user.id)
+                  if (executions.length === 1) {
+                    let release: () => void
+                    let began: () => void
+                    const started = new Promise<void>((resolve) => {
+                      began = resolve
+                    })
+                    const pending = new Promise<void>((resolve) => {
+                      release = resolve
+                    })
+                    const server = chromium
+                      ? Bun.serve({
+                          hostname: "127.0.0.1",
+                          port: 0,
+                          async fetch() {
+                            began()
+                            await pending
+                            return new Response(
+                              "<!doctype html><title>Steering fixture</title><h1>Navigation completed</h1>",
+                              {
+                                headers: { "content-type": "text/html" },
+                              },
+                            )
+                          },
+                        })
+                      : undefined
+                    const context = {
+                      sessionID: session.id,
+                      messageID: input.assistantMessage.id,
+                      callID: "browser-steered",
+                      agent: "agent",
+                      abort: stream.abort,
+                      extra: { execution: stream.execution },
+                      metadata() {},
+                      async ask() {},
+                    }
+                    const work = ToolRuntime.execute({
+                      tool: "browser",
+                      args: {
+                        action: "navigate" as const,
+                        url: server ? `http://127.0.0.1:${server.port}` : "http://localhost:4096",
+                      },
+                      mutating: true,
+                      context,
+                      execute: async (args) => {
+                        if (chromium) return (await BrowserTool.init()).execute(args, context)
+                        began()
+                        await pending
+                        return { title: "Browser navigation", output: "Navigation completed", metadata: {} }
+                      },
+                    })
+                    try {
+                      await Promise.race([
+                        started,
+                        work.then((result) => {
+                          throw new Error(`Navigation finished before request arrived: ${result.output}`)
+                        }),
+                      ])
+                      await SessionPrompt.prompt({
+                        sessionID: session.id,
+                        model: { providerID: model.providerID, modelID: model.id },
+                        parts: [{ type: "text", text: "Selam tekrar" }],
+                      })
+                      expect(stream.abort.aborted).toBe(false)
+                      release()
+                      const result = await work
+                      expect(result.output).toContain(chromium ? "Navigated to" : "Navigation completed")
+                      if (chromium)
+                        expect(await (await Browser.getPage()).locator("h1").textContent()).toBe("Navigation completed")
+                      expect(ExecutionRuntime.view(stream.execution.executionID)?.unknownWork).toEqual([])
+                    } finally {
+                      release()
+                      await work.catch(() => {})
+                      server?.stop(true)
+                      if (chromium) await Browser.close()
+                    }
+                  }
+                  input.assistantMessage.finish = "stop"
+                  return { status: "stop" }
+                },
+              }) as never,
+          )
+          try {
+            await SessionPrompt.loop(session.id)
+            expect(executions).toHaveLength(2)
+            expect(executions[1]).toBe(executions[0])
+            expect(users[1]).not.toBe(users[0])
+            expect(ExecutionRuntime.view(executions[0])?.outcome).not.toBe("cancelled")
+          } finally {
+            processor.mockRestore()
+            policy.mockRestore()
+          }
+        },
+      })
+    },
+  )

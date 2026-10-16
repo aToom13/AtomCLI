@@ -21,6 +21,8 @@ describe("tool.lsp", () => {
     const mutating = tool.mutating as (args: any) => boolean
     expect(mutating({ operation: "hover" })).toBe(false)
     expect(mutating({ operation: "codeActions", apply: false })).toBe(false)
+    expect(mutating({ operation: "formatting", apply: false })).toBe(false)
+    expect(mutating({ operation: "formatting", apply: true })).toBe(true)
     expect(mutating({ operation: "renameSymbol" })).toBe(true)
     expect(mutating({ operation: "codeActions", apply: true })).toBe(true)
 
@@ -259,18 +261,32 @@ describe("tool.lsp", () => {
             permissionRequests.push(request.permission)
           },
         }
+        const preview = await tool.execute(
+          {
+            operation: "formatting",
+            filePath: consumer,
+            tabSize: 2,
+            insertSpaces: true,
+            apply: false,
+          },
+          mutationCtx,
+        )
+        expect(preview.metadata.textEdits).toBeGreaterThan(0)
+        expect(await Bun.file(consumer).text()).toContain("import {value} from './old-name'")
+        expect(permissionRequests).toEqual(["lsp"])
         const formatted = await tool.execute(
           {
             operation: "formatting",
             filePath: consumer,
             tabSize: 2,
             insertSpaces: true,
+            apply: true,
           },
           mutationCtx,
         )
         expect(formatted.metadata.textEdits).toBeGreaterThan(0)
         expect(await Bun.file(consumer).text()).toContain("import { value } from './old-name'")
-        expect(permissionRequests).toEqual(["lsp", "edit"])
+        expect(permissionRequests).toEqual(["lsp", "lsp", "edit"])
 
         const actions = await tool.execute(
           {

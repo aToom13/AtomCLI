@@ -1,13 +1,66 @@
 import "../preload"
 import { describe, expect, test } from "bun:test"
 import { HarnessState } from "@/core/session/harness-state"
-import { buildReviewPrompt, collectDescendantIds } from "@/integrations/tool/review-gate"
+import {
+  buildReviewPrompt,
+  collectDescendantIds,
+  evaluateReviewDecision,
+  runBlockingReview,
+} from "@/integrations/tool/review-gate"
+import { Config } from "@/core/config/config"
 import { Instance } from "@/services/project/instance"
 import { Session } from "@/core/session"
 import { Identifier } from "@/core/id/id"
 import { tmpdir } from "../fixture/fixture"
 
 describe("ReviewGate - buildReviewPrompt", () => {
+  test("explicit review step requires review when automatic review is off", async () => {
+    await using tmp = await tmpdir({ config: {} })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        HarnessState.addEditedFile(session.id, "src/example.ts")
+        expect((await evaluateReviewDecision(session.id)).decision.requirement).toBe("not_required")
+        const explicit = await evaluateReviewDecision(session.id, undefined, true)
+        expect(explicit.decision.requirement).toBe("required")
+        expect(explicit.decision.requiredReviewers).toBeGreaterThan(0)
+        HarnessState.reset(session.id)
+      },
+    })
+  })
+
+  test("explicit review step reports disabled review", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        review: {
+          enabled: false,
+          auto: false,
+          max_attempts: 1,
+          reviewer_count: 1,
+          policy: "off",
+          high_risk_patterns: [],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const session = await Session.create({})
+        HarnessState.addEditedFile(session.id, "src/example.ts")
+        const result = await runBlockingReview(session.id, { independentReviewStep: true })
+        expect(result).toMatchObject({
+          passed: false,
+          skipped: true,
+          reason: "Independent review is disabled by review configuration.",
+        })
+        HarnessState.reset(session.id)
+      },
+    })
+  })
+
   test("includes original request, edited files, and review checklist", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
@@ -28,6 +81,11 @@ describe("ReviewGate - buildReviewPrompt", () => {
         expect(prompt).toContain('"passed" or "inconclusive"')
         expect(prompt).toContain("git diff")
         expect(prompt).toContain("Security scan")
+        expect(prompt).toContain("each requested acceptance criterion")
+        expect(prompt).toContain("Names, text matches, source presence, screenshots alone")
+        expect(prompt).toContain("Exercise each requested game/control")
+        expect(prompt).toContain("Missing behavioral evidence is inconclusive")
+        expect(prompt).toContain("Canvas 2D alone neither proves nor disproves 3D")
       },
     })
   })

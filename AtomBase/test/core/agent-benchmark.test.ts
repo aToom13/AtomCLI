@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, spyOn } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { AgentBenchmark } from "@/core/eval/benchmark"
@@ -415,6 +415,208 @@ describe("AgentBenchmark", () => {
     const again = await AgentBenchmark.relocateVerifierSources(casesRoot)
     await again.restore()
     expect(await AgentBenchmark.restoreStashedVerifiers(casesRoot)).toBe(false)
+  })
+
+  test("rejects a corrupt recovery manifest without discarding the stash", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
+    await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    await Bun.write(path.join(stashRoot, "manifest.json"), "{broken")
+
+    await expect(AgentBenchmark.restoreStashedVerifiers(casesRoot, stashRoot)).rejects.toThrow()
+    expect(await Bun.file(path.join(stashRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+  })
+
+  test("keeps recovery manifest when verifier is missing from both locations", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const original = path.join(casesRoot, "solo", "verify")
+    const stash = path.join(stashRoot, "solo", "verify")
+    await Bun.write(
+      path.join(stashRoot, "manifest.json"),
+      JSON.stringify({ casesRoot, movedAt: Date.now(), entries: [{ original, stash }] }),
+    )
+
+    await expect(AgentBenchmark.restoreStashedVerifiers(casesRoot, stashRoot)).rejects.toThrow(
+      "missing from both source and stash",
+    )
+    expect(await Bun.file(path.join(stashRoot, "manifest.json")).exists()).toBe(true)
+  })
+
+  test("rejects recovery paths outside the expected case and stash roots", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const outside = path.join(tmp.path, "outside")
+    await Bun.write(path.join(stashRoot, "solo", "verify", "run.sh"), "true\n")
+    await Bun.write(
+      path.join(stashRoot, "manifest.json"),
+      JSON.stringify({
+        casesRoot,
+        movedAt: Date.now(),
+        entries: [{ original: path.join(outside, "verify"), stash: path.join(stashRoot, "solo", "verify") }],
+      }),
+    )
+
+    await expect(AgentBenchmark.restoreStashedVerifiers(casesRoot, stashRoot)).rejects.toThrow("Invalid verifier")
+    expect(await Bun.file(path.join(outside, "verify", "run.sh")).exists()).toBe(false)
+  })
+
+  test("does not treat missing cases or unreadable verifier paths as an empty suite", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    await expect(AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)).rejects.toThrow()
+    await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
+    const verify = path.join(casesRoot, "solo", "verify")
+    const original = fs.lstat
+    const lstat = spyOn(fs, "lstat").mockImplementation(
+      (async (location: string, options?: Parameters<typeof fs.lstat>[1]) => {
+        if (location === verify) throw Object.assign(new Error("permission denied"), { code: "EACCES" })
+        return original(location, options as never)
+      }) as typeof fs.lstat,
+    )
+    try {
+      await expect(AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)).rejects.toThrow("permission denied")
+    } finally {
+      lstat.mockRestore()
+    }
+    expect(await Bun.file(path.join(verify, "run.sh")).exists()).toBe(true)
+  })
+
+  test("rejects symbolic links in verifier paths", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const actual = path.join(tmp.path, "actual")
+    await Bun.write(path.join(actual, "run.sh"), "true\n")
+    await fs.mkdir(path.join(casesRoot, "solo"), { recursive: true })
+    await fs.symlink(actual, path.join(casesRoot, "solo", "verify"))
+    await expect(AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)).rejects.toThrow(
+      "Verifier path must be a directory",
+    )
+    expect(await Bun.file(path.join(actual, "run.sh")).exists()).toBe(true)
+  })
+
+  test("restore failure preserves verifier stash for a later retry", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    const copy = spyOn(fs, "cp").mockRejectedValue(new Error("disk full"))
+    try {
+      await expect(relocation.restore()).rejects.toThrow("disk full")
+      expect(await Bun.file(path.join(stashRoot, "manifest.json")).exists()).toBe(true)
+      expect(await Bun.file(path.join(stashRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+    } finally {
+      copy.mockRestore()
+    }
+    await relocation.restore()
+    expect(await Bun.file(path.join(casesRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+  })
+
+  test("restoring replaces a verifier directory recreated by the agent", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const verify = path.join(casesRoot, "solo", "verify")
+    await Bun.write(path.join(verify, "run.sh"), "expected\n")
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    await Bun.write(path.join(verify, "agent-created.sh"), "unexpected\n")
+
+    await relocation.restore()
+    expect(await Bun.file(path.join(verify, "run.sh")).text()).toBe("expected\n")
+    expect(await Bun.file(path.join(verify, "agent-created.sh")).exists()).toBe(false)
+  })
+
+  test("writes recovery manifest before moving verifier files", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
+    const renameOriginal = fs.rename
+    const rename = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (source === path.join(casesRoot, "solo", "verify")) {
+        const manifest = await Bun.file(path.join(stashRoot, "manifest.json")).json()
+        expect(manifest.entries).toContainEqual({ original: source, stash: destination })
+      }
+      return renameOriginal(source, destination)
+    })
+    try {
+      const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+      await relocation.restore()
+    } finally {
+      rename.mockRestore()
+    }
+  })
+
+  test("does not hide a rename failure by falling back to copy", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const original = path.join(casesRoot, "solo", "verify")
+    await Bun.write(path.join(original, "run.sh"), "true\n")
+    const renameOriginal = fs.rename
+    const rename = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (source === original) throw Object.assign(new Error("permission denied"), { code: "EACCES" })
+      return renameOriginal(source, destination)
+    })
+    try {
+      await expect(AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)).rejects.toThrow("permission denied")
+      expect(await Bun.file(path.join(original, "run.sh")).exists()).toBe(true)
+      expect(await Bun.file(path.join(stashRoot, "solo", "verify", "run.sh")).exists()).toBe(false)
+    } finally {
+      rename.mockRestore()
+    }
+  })
+
+  test("cross-device copy failure leaves source intact and no partial stash", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const original = path.join(casesRoot, "solo", "verify")
+    await Bun.write(path.join(original, "run.sh"), "true\n")
+    const renameOriginal = fs.rename
+    const rename = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (source === original) throw Object.assign(new Error("EXDEV"), { code: "EXDEV" })
+      return renameOriginal(source, destination)
+    })
+    const copy = spyOn(fs, "cp").mockRejectedValue(new Error("copy interrupted"))
+    try {
+      await expect(AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)).rejects.toThrow("copy interrupted")
+      expect(await Bun.file(path.join(original, "run.sh")).exists()).toBe(true)
+      expect(await Bun.file(path.join(stashRoot, "solo", "verify", "run.sh")).exists()).toBe(false)
+    } finally {
+      copy.mockRestore()
+      rename.mockRestore()
+    }
+    expect(await AgentBenchmark.restoreStashedVerifiers(casesRoot, stashRoot)).toBe(true)
+  })
+
+  test("cross-device fallback stages complete verifier before removing source", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const original = path.join(casesRoot, "solo", "verify")
+    await Bun.write(path.join(original, "run.sh"), "true\n")
+    const renameOriginal = fs.rename
+    const rename = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+      if (source === original) throw Object.assign(new Error("EXDEV"), { code: "EXDEV" })
+      return renameOriginal(source, destination)
+    })
+    try {
+      const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+      expect(await Bun.file(path.join(original, "run.sh")).exists()).toBe(false)
+      expect(await Bun.file(path.join(stashRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+      await relocation.restore()
+      expect(await Bun.file(path.join(original, "run.sh")).exists()).toBe(true)
+    } finally {
+      rename.mockRestore()
+    }
   })
 
   test("the shipped atomcli-core suite is fully materialized on disk", async () => {

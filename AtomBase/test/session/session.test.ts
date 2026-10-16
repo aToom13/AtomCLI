@@ -4,11 +4,34 @@ import { Session } from "@/core/session"
 import { Bus } from "@/core/bus"
 import { Log } from "@/util/util/log"
 import { Instance } from "@/services/project/instance"
+import { Storage } from "@/core/storage/storage"
 
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
 
 describe("session.started event", () => {
+  test("lists and opens sessions only from the active directory", async () => {
+    await Instance.provide({
+      directory: projectRoot,
+      fn: async () => {
+        const current = await Session.create({ title: "current directory" })
+        const foreign = await Session.createNext({
+          directory: path.join(projectRoot, "other-directory"),
+          title: "foreign",
+        })
+
+        const listed = [] as Session.Info[]
+        for await (const session of Session.list()) listed.push(session)
+        expect(listed.map((session) => session.id)).toContain(current.id)
+        expect(listed.map((session) => session.id)).not.toContain(foreign.id)
+        await expect(Session.get(foreign.id)).rejects.toMatchObject({ name: "NotFoundError" })
+
+        await Session.remove(current.id)
+        await Storage.remove(["session", current.projectID, foreign.id])
+      },
+    })
+  })
+
   test("should emit session.started event when session is created", async () => {
     await Instance.provide({
       directory: projectRoot,

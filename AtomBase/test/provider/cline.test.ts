@@ -5,6 +5,11 @@ import type { Provider } from "@/integrations/provider/provider"
 import { ClineOAuth } from "@/integrations/plugin/cline"
 
 describe("provider.cline", () => {
+  test("exposes free 4.1 fallback for exhausted Cline Pass routes", () => {
+    expect(Cline.FREE_FALLBACK_MODEL).toBe("cline/cline-free/deepseek-v4.1-flash")
+    expect(Cline.API_PROVIDER_ID).toBe("cline-pass")
+  })
+
   test("merges promoted and catalog-suffix free models", () => {
     const models = { stale: { id: "stale" } } as unknown as Provider.Info["models"]
     const count = Cline.applyModels(

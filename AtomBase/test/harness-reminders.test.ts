@@ -471,6 +471,47 @@ describe("SessionPrompt Synthetic Reminders", () => {
     })
   })
 
+  test("does not push taskflow planning when taskflow is hidden from the model surface", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-no-taskflow-push"
+        const messages = [createUserMessage(sessionID, "Fix the failing build")]
+        // A multi-step focused turn would normally trigger the chain_reminder, but
+        // when taskflow is not advertised the reminder must stay out so simple
+        // work does not spawn an unnecessary execution plan.
+        const hidden = SessionPrompt.insertReminders({
+          messages,
+          agent: mockAgentInfo,
+          step: 5,
+          taskflowAvailable: false,
+        })
+        const anyTaskflowPush = hidden.some((message) =>
+          message.parts.some(
+            (part) =>
+              part.type === "text" &&
+              (part.text.includes("chain_reminder") || part.text.includes("coordinated_plan")),
+          ),
+        )
+        expect(anyTaskflowPush).toBe(false)
+
+        // When taskflow IS available the reminder is offered again.
+        const visible = SessionPrompt.insertReminders({
+          messages,
+          agent: mockAgentInfo,
+          step: 5,
+          taskflowAvailable: true,
+        })
+        expect(
+          visible.some((message) =>
+            message.parts.some((part) => part.type === "text" && part.text.includes("chain_reminder")),
+          ),
+        ).toBe(true)
+      },
+    })
+  })
+
   test("bypasses edit reminders for excluded agents (reviewer, checker, plan, explore)", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({

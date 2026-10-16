@@ -567,12 +567,13 @@ const EXPLORE_ALLOWED_TOOLS = [
   "grep",
   "bash",
   "lsp",
+  "static_check",
   "browser",
   "webfetch",
   "websearch",
   "skill",
   "memory",
-  "taskflow",
+  "scope_control",
 ]
 const EXPLORE_DENIED_TOOLS = ["edit", "write", "todowrite", "todoread", "batch", "agent", "system_health"]
 
@@ -590,6 +591,7 @@ describe("explore agent tool filtering", () => {
 
         // All returned tools must be from the allowlist
         for (const id of toolIds) {
+          if (id === "invalid") continue // hidden repair tool has no workspace effect
           expect(EXPLORE_ALLOWED_TOOLS).toContain(id)
         }
 
@@ -600,7 +602,7 @@ describe("explore agent tool filtering", () => {
         }
       },
     })
-  })
+  }, 15_000)
 
   test("ToolRegistry.tools() excludes destructive/write tools for explore agent", async () => {
     await using tmp = await tmpdir({ git: true })

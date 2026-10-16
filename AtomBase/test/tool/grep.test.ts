@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { GrepTool } from "@/integrations/tool/grep"
@@ -17,6 +18,20 @@ const ctx = {
 const projectRoot = path.join(__dirname, "../..")
 
 describe("tool.grep", () => {
+  test("shows the matching restart handler at the end of a minified line", async () => {
+    await using tmp = await tmpdir({
+      init: (dir) => Bun.write(path.join(dir, "game.js"), "/*" + "x".repeat(9000) + "*/g.restart.onclick=reset"),
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const result = await (await GrepTool.init()).execute({ pattern: "g\\.restart\\.onclick" }, ctx)
+        expect(result.metadata.matches).toBe(1)
+        expect(result.metadata.truncated).toBe(false)
+        expect(result.output).toContain("g.restart.onclick=reset")
+      },
+    })
+  })
   test("basic search", async () => {
     await Instance.provide({
       directory: projectRoot,

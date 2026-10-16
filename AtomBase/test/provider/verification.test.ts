@@ -1,4 +1,5 @@
 import "../preload"
+import fs from "fs/promises"
 import { describe, expect, test } from "bun:test"
 import { ModelVerification } from "@/integrations/provider/verification"
 
@@ -161,5 +162,24 @@ describe("ModelVerification", () => {
     await Bun.write(ModelVerification._internals.filepath, JSON.stringify({ version: 999, entries: {} }))
 
     expect(await ModelVerification.get(`missing-${crypto.randomUUID()}`)).toBeUndefined()
+  })
+
+  test("propagates store read errors instead of replacing evidence", async () => {
+    const filepath = ModelVerification._internals.filepath
+    const backup = `${filepath}.${crypto.randomUUID()}.backup`
+    let saved = false
+    try {
+      await fs.rename(filepath, backup)
+      saved = true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    await fs.mkdir(filepath)
+    try {
+      await expect(ModelVerification.get(`missing-${crypto.randomUUID()}`)).rejects.toThrow()
+    } finally {
+      await fs.rmdir(filepath)
+      if (saved) await fs.rename(backup, filepath)
+    }
   })
 })

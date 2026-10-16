@@ -1,3 +1,4 @@
+import "../../preload"
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "fs/promises"
 import { tmpdir } from "os"
@@ -37,64 +38,38 @@ function runningTool(toolName: string, input: Record<string, unknown>) {
 }
 
 describe("TUI session recovery", () => {
-  test("orders unknown work and builds bounded user reconciliation payloads", () => {
-    const work = SessionRecovery.unknownWork({
-      executions: [
-        {
-          id: "exec-new",
-          version: 7,
-          lifecycle: "active",
-          unknownWork: [
-            {
-              id: "operation-new",
-              executionID: "exec-new",
-              invocationID: "invocation-new",
-              kind: "tool:write",
-              mutating: true,
-              state: "unknown",
-              version: 3,
-              createdAt: 20,
-            },
-          ],
-        },
-        {
-          id: "exec-old",
-          version: 4,
-          lifecycle: "terminal",
-          unknownWork: [
-            {
-              id: "operation-old",
-              executionID: "exec-old",
-              invocationID: "invocation-old",
-              kind: "tool:bash",
-              mutating: true,
-              state: "unknown",
-              version: 2,
-              createdAt: 10,
-              beganAt: 11,
-            },
-          ],
-        },
-      ],
-    } as any)
-
-    expect(work.map((item) => item.id)).toEqual(["operation-old", "operation-new"])
-    expect(SessionRecovery.reconciliation(work[0], "completed", "request-1")).toEqual({
-      executionID: "exec-old",
-      requestID: "request-1",
-      operationID: "operation-old",
-      state: "completed",
-      expectedVersion: 4,
-      expectedWorkVersion: 2,
-      evidence: "User confirmed operation operation-old completed and verified its effect.",
-      resolutionCode: "user_confirmed_completed",
-    })
-    expect(SessionRecovery.reconciliation(work[1], "cancelled", "request-2")).toMatchObject({
-      state: "cancelled",
-      expectedVersion: 7,
-      expectedWorkVersion: 3,
-      resolutionCode: "user_confirmed_not_applied",
-    })
+  test.each([
+    ["terminal", "idle", "budget_exhausted", "stopped"],
+    ["terminal", "idle", "blocked", "blocked"],
+    ["terminal", "idle", "completed", "stopped"],
+    ["active", "waiting_input", null, "waiting_user"],
+    ["active", "awaiting_reconciliation", null, "blocked"],
+    ["draining", "draining", null, "stopped"],
+  ] as const)("projects %s / %s task state without completing open work", (lifecycle, phase, outcome, status) => {
+    const chain = SessionRecovery.chain([
+      tool("taskflow", {
+        action: "start",
+        plan: [
+          { id: "build", name: "Build" },
+          { id: "verify", name: "Verify" },
+        ],
+      }),
+      tool("taskflow", { action: "complete", step_id: "0" }),
+      tool("taskflow", { action: "update", step_id: "1", status: "running" }),
+    ])!
+    const projected = SessionRecovery.executionChain(chain, { lifecycle, phase, outcome })!
+    expect(projected.status).toBe(status)
+    expect(projected.steps.map((step) => step.status)).toEqual(["complete", status])
+    expect(chain.steps[1].status).toBe("running")
+    expect(SessionRecovery.executionChain(chain, { lifecycle: "active", phase: "tools", outcome: null })).toBe(chain)
+    const complete = {
+      ...chain,
+      steps: chain.steps.map((step) => ({ ...step, status: "complete" as const })),
+      status: "complete" as const,
+    }
+    const completedProjection = SessionRecovery.executionChain(complete, { lifecycle, phase, outcome })!
+    expect(completedProjection.status).toBe(outcome === "completed" ? "complete" : status)
+    expect(completedProjection.steps.every((step) => step.status === "complete")).toBe(true)
   })
 
   test("replays persisted taskflow calls after reopening a session", () => {

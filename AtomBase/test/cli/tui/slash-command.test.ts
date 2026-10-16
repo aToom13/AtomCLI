@@ -16,7 +16,7 @@ describe("TUI slash commands", () => {
       command: { action: "adaptive-routing.set" },
     })
   })
-  test("shows only six intent-based command families", () => {
+  test("shows command families and exit", () => {
     const commands = SlashCommand.list(active)
     expect(commands.map((command) => command.name)).toEqual([
       "session",
@@ -25,6 +25,7 @@ describe("TUI slash commands", () => {
       "settings",
       "workflow",
       "help",
+      "exit",
     ])
     const names = commands.flatMap((command) => [command.name, ...(command.aliases ?? [])])
     expect(new Set(names).size).toBe(names.length)
@@ -32,7 +33,7 @@ describe("TUI slash commands", () => {
 
   test("expands every command-tree level into contextual subcommands", () => {
     const root = SlashCommand.suggestions("", active)
-    expect(root).toHaveLength(6)
+    expect(root).toHaveLength(7)
     expect(root.find((item) => item.value === "session")?.expand).toBe(true)
 
     const session = SlashCommand.suggestions("session ", active).map((item) => item.value)
@@ -97,9 +98,16 @@ describe("TUI slash commands", () => {
     expect(SlashCommand.parse("/settings mcp", active)?.command.action).toBe("mcp.list")
     expect(SlashCommand.parse("/settings approvals autonomous", active)?.command.action).toBe("mode.autonomous")
     expect(SlashCommand.parse("/workflow", active)?.command.action).toBe("group.help")
+    expect(SlashCommand.parse("/exit", active)?.command.action).toBe("app.exit")
   })
 
   test("passes free-form and selected preset arguments", () => {
+    expect(SlashCommand.suggestions("agent ", active).map((item) => item.value)).toContain("agent brainstorm")
+    const brainstorm = SlashCommand.parse("/agent brainstorm Plastik pet şişeleri", active)
+    expect(brainstorm?.command.action).toBe("workflow.prompt")
+    expect(brainstorm?.arguments).toBe("Plastik pet şişeleri")
+    expect(SlashCommand.renderWorkflow(brainstorm!.command, brainstorm!.arguments)).toContain("Plastik pet şişeleri")
+
     const thinking = SlashCommand.parse("/model think high", active)
     expect(thinking?.command.action).toBe("think.set")
     expect(thinking?.arguments).toBe("high")
@@ -115,6 +123,10 @@ describe("TUI slash commands", () => {
   })
 
   test("keeps old flat commands parse-only for compatibility", () => {
+    expect(SlashCommand.parse("/brainstorm bir fikir", active)?.arguments).toBe("bir fikir")
+    expect(SlashCommand.parse("/write-plan bir hedef", active)?.arguments).toBe("bir hedef")
+    expect(SlashCommand.parse("/execute-plan bir plan", active)?.arguments).toBe("bir plan")
+    expect(["brainstorm", "write-plan", "execute-plan"].every((name) => SlashCommand.reserved().has(name))).toBe(true)
     expect(SlashCommand.parse("/compact", active)?.command.action).toBe("session.compact")
     expect(SlashCommand.parse("/session undo", active)?.command.action).toBe("session.undo")
     expect(SlashCommand.parse("/settings autonomous", active)?.command.action).toBe("mode.autonomous")
@@ -134,7 +146,6 @@ describe("TUI slash commands", () => {
     expect(SlashCommand.parse("/model think high unexpected", active)).toBeUndefined()
     expect(SlashCommand.parse("/session compact unexpected", active)).toBeUndefined()
     expect(SlashCommand.parse("/commands", active)).toBeUndefined()
-    expect(SlashCommand.parse("/exit", active)).toBeUndefined()
     expect(SlashCommand.parse("/yolo", active)).toBeUndefined()
   })
 

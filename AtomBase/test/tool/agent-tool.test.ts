@@ -6,6 +6,7 @@ import { tmpdir } from "../fixture/fixture"
 import { Session } from "@/core/session"
 import { SessionStatus } from "@/core/session/status"
 import { SessionExecutionProfile } from "@/core/session/execution-profile"
+import { Config } from "@/core/config/config"
 
 describe("AgentTool", () => {
   const dummyCtx = {
@@ -264,7 +265,7 @@ describe("AgentTool", () => {
     })
   })
 
-  test("companion fast profile blocks a redundant low-risk reviewer spawn", async () => {
+  test("companion fast profile permits explicitly planned low-risk reviewer", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
@@ -273,19 +274,16 @@ describe("AgentTool", () => {
         SessionExecutionProfile.set(sessionID, "companion-fast")
         const instance = await AgentTool.init({})
 
-        expect(instance.description).toContain("Companion fast sessions reject")
-        expect(
-          instance.execute(
+        const result = await instance.execute(
             {
-              action: "spawn",
-              subagent_type: "reviewer",
-              description: "Verify pipe art",
-              prompt: "Check the Flappy Bird pipe orientation after the visual fix.",
-              owns: ["flappy-pixel/game.js"],
+              action: "workflow",
+              workflow_action: "plan",
+              tasks: [{ id: "review", agent: "reviewer", prompt: "Check pipe orientation", owns: ["flappy-pixel/game.js"] }],
             },
             { ...dummyCtx, sessionID },
-          ),
-        ).rejects.toThrow("blocks redundant reviewer/checker agents")
+          )
+        expect(result.metadata.error).not.toBe(true)
+        expect(result.output).toContain("review")
       },
     })
   })
@@ -316,6 +314,135 @@ describe("AgentTool", () => {
 
         expect(result.metadata.error).not.toBe(true)
         expect(result.output).toContain("review-auth")
+      },
+    })
+  })
+
+  test("companion fast profile does not block reviewers when review is disabled", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        review: {
+          enabled: false,
+          policy: "adaptive",
+          reviewer_count: 1,
+          max_attempts: 1,
+          high_risk_patterns: [],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "companion-fast-review-disabled"
+        SessionExecutionProfile.set(sessionID, "companion-fast")
+        const instance = await AgentTool.init({})
+
+        const result = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [
+              {
+                id: "review-disabled",
+                prompt: "Check the pipe art after the visual fix.",
+                agent: "reviewer",
+                owns: ["flappy-pixel/game.js"],
+              },
+            ],
+          },
+          { ...dummyCtx, sessionID },
+        )
+
+        expect(result.metadata.error).not.toBe(true)
+        expect(result.output).toContain("review-disabled")
+      },
+    })
+  })
+
+  test("companion fast profile does not block reviewers when policy is off", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        review: {
+          enabled: true,
+          policy: "off",
+          reviewer_count: 1,
+          max_attempts: 1,
+          high_risk_patterns: [],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "companion-fast-policy-off"
+        SessionExecutionProfile.set(sessionID, "companion-fast")
+        const instance = await AgentTool.init({})
+
+        const result = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [
+              {
+                id: "review-off",
+                prompt: "Check the pipe art after the visual fix.",
+                agent: "reviewer",
+                owns: ["flappy-pixel/game.js"],
+              },
+            ],
+          },
+          { ...dummyCtx, sessionID },
+        )
+
+        expect(result.metadata.error).not.toBe(true)
+        expect(result.output).toContain("review-off")
+      },
+    })
+  })
+
+  test("companion fast profile honours configured high risk patterns", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      config: {
+        review: {
+          enabled: true,
+          policy: "adaptive",
+          reviewer_count: 1,
+          max_attempts: 1,
+          high_risk_patterns: ["pipe-art"],
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const sessionID = "companion-fast-custom-pattern"
+        SessionExecutionProfile.set(sessionID, "companion-fast")
+        const instance = await AgentTool.init({})
+
+        const result = await instance.execute(
+          {
+            action: "workflow",
+            workflow_action: "plan",
+            tasks: [
+              {
+                id: "review-pipe-art",
+                prompt: "Check the rendering change.",
+                agent: "reviewer",
+                owns: ["src/pipe-art-renderer.ts"],
+              },
+            ],
+          },
+          { ...dummyCtx, sessionID },
+        )
+
+        expect(result.metadata.error).not.toBe(true)
+        expect(result.output).toContain("review-pipe-art")
       },
     })
   })

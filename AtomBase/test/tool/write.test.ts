@@ -18,6 +18,33 @@ const ctx = {
 }
 
 describe("tool.write", () => {
+  test("supplies a small unread file snapshot without overwriting it", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "unread.txt")
+        await Bun.write(filePath, "Original content")
+        const write = await WriteTool.init()
+        let permissionRequests = 0
+        await expect(
+          write.execute(
+            { filePath, content: "New content" },
+            {
+              ...ctx,
+              sessionID: "snapshot-test",
+              ask: async () => {
+                permissionRequests++
+              },
+            },
+          ),
+        ).rejects.toThrow(/Read snapshot supplied below; review it before retrying\.[\s\S]*Original content/)
+        expect(await Bun.file(filePath).text()).toBe("Original content")
+        expect(permissionRequests).toBe(1)
+      },
+    })
+  })
+
   test("rejects oversized existing files before reading or asking permission", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -235,6 +262,56 @@ describe("tool.write permissions", () => {
         expect(requests[0].patterns).toContain("test.txt")
         expect(requests[0].metadata?.filepath).toBe(filePath)
         expect(requests[0].metadata?.diff).toBeDefined()
+      },
+    })
+  })
+
+  test("detects a concurrent modification while awaiting permission", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "concurrent.txt")
+        await Bun.write(filePath, "original")
+        FileTime.read(ctx.sessionID, filePath)
+        const write = await WriteTool.init()
+
+        await expect(
+          write.execute(
+            { filePath, content: "agent write" },
+            {
+              ...ctx,
+              ask: async () => {
+                await Bun.write(filePath, "external edit")
+              },
+            },
+          ),
+        ).rejects.toThrow(/while awaiting permission/)
+        expect(await Bun.file(filePath).text()).toBe("external edit")
+      },
+    })
+  })
+
+  test("detects a file created by another writer while awaiting permission", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "raced-into-existence.txt")
+        const write = await WriteTool.init()
+
+        await expect(
+          write.execute(
+            { filePath, content: "agent write" },
+            {
+              ...ctx,
+              ask: async () => {
+                await Bun.write(filePath, "external edit")
+              },
+            },
+          ),
+        ).rejects.toThrow(/while awaiting permission/)
+        expect(await Bun.file(filePath).text()).toBe("external edit")
       },
     })
   })

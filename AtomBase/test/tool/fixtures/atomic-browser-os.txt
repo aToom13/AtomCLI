@@ -1,0 +1,9 @@
+Using html, css and js, generate a browser OS with the following features:
+
+At least 5 applications
+Two of the 5 applications must be FUNCTIONAL 3D games, with one of them being a GTA clone, the other up to you
+Procedurally generated wallpapers with movement
+An email client
+A "special" feature that you decide on and document what it is & why it is special.
+
+The result must be contained within a single script, and be able to be opened in Chrome browser.

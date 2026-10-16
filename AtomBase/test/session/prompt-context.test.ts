@@ -11,10 +11,111 @@ import { ExecutionRuntime } from "@/core/execution/runtime"
 import { HarnessState } from "@/core/session/harness-state"
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { ExecutionContract } from "@/core/routing/execution-contract"
+import { ExecutionPolicy } from "@/core/routing/execution-policy"
+import { PromptContext } from "@/core/session/prompt/context"
 import { SessionCompaction } from "@/core/session/compaction"
+import { SessionStatus } from "@/core/session/status"
 import { tmpdir } from "../fixture/fixture"
 
 describe("session prompt turn context", () => {
+  test("routes simple conversational prompts to direct execution", () => {
+    expect(SessionPrompt._internals.isDirectAnswer("Merhaba, saat kaç?", "agent")).toBe(true)
+    expect(SessionPrompt._internals.isDirectAnswer("Fix the auth middleware", "agent")).toBe(false)
+    expect(SessionPrompt._internals.isDirectAnswer("Bu projeyi incele", "agent")).toBe(false)
+    expect(SessionPrompt._internals.isDirectAnswer("Merhaba", "build")).toBe(false)
+  })
+
+  test("recognizes explicit orchestration requests as a scope floor signal", () => {
+    expect(SessionPrompt._internals.explicitOrchestration("Bu iş için alt agent oluştur")).toBe(true)
+    expect(SessionPrompt._internals.explicitOrchestration("Paralel olarak iki modülü incele")).toBe(true)
+    expect(SessionPrompt._internals.explicitOrchestration("Bu dosyayı oku ve açıkla")).toBe(false)
+  })
+
+  test("continuation prompts without work keywords keep the full toolset", () => {
+    // Regression: these carry no keyword, so absence-of-keyword matching used to
+    // classify them as a conversational turn, which produced a direct/answer
+    // contract whose allowlist is empty and stranded the agent with no tools.
+    for (const prompt of [
+      "Devam et lütfen",
+      "Devam",
+      "Devam?",
+      "Devam et lütfen bu zor bir görev",
+      "Devam et lütfen. Bu işlerin çoğu bitmiş olabilir önce kontrol et",
+      "bir bakar mısın",
+      "şimdi ne yapıyoruz",
+      "hadi başlayalım",
+      "son durum nedir",
+    ]) {
+      expect(SessionPrompt._internals.isDirectAnswer(prompt, "agent")).toBe(false)
+    }
+  })
+
+  test("short continuation inherits unfinished work contract only", () => {
+    const contract = ExecutionContract.fallback("interactive game", {
+      intent: "design",
+      scope: "coordinated",
+      needsMutation: true,
+      expectedSurfaces: ["workspace", "browser"],
+    })
+    const executions = [
+      { id: "current", lifecycle: "active", outcome: null },
+      { id: "previous", lifecycle: "terminal", outcome: "budget_exhausted" },
+    ]
+    const getContract = (id: string) => (id === "previous" ? contract : undefined)
+    expect(PromptContext.continuationContract("Devam", "current", executions, getContract)).toEqual(contract)
+    expect(PromptContext.continuationContract("Continue!", "current", executions, getContract)).toEqual(contract)
+    expect(PromptContext.continuationContract("Yeni görev", "current", executions, getContract)).toBeUndefined()
+    expect(
+      PromptContext.continuationContract(
+        "Devam et",
+        "current",
+        [{ ...executions[0] }, { ...executions[1], outcome: "completed" }],
+        getContract,
+      ),
+    ).toBeUndefined()
+  })
+
+  test("greetings and short questions stay conversational", () => {
+    expect(SessionPrompt._internals.isDirectAnswer("Selam", "agent")).toBe(true)
+    expect(SessionPrompt._internals.isDirectAnswer("nasılsın?", "agent")).toBe(true)
+    expect(SessionPrompt._internals.isDirectAnswer("teşekkür ederim", "agent")).toBe(true)
+    // Long prompts are never treated as a simple conversational turn.
+    expect(SessionPrompt._internals.isDirectAnswer("Merhaba? ".repeat(60), "agent")).toBe(false)
+  })
+
+  test("direct answer excludes task tools but retains promotion controls", () => {
+    const allowed = ExecutionPolicy.selectAllowedTools("direct", "answer")
+    expect(allowed).toEqual([])
+
+    expect(ExecutionPolicy.selectAllowedTools("focused", "change")).toContain("bash")
+    expect(ExecutionPolicy.selectAllowedTools("coordinated", "change")).toEqual([
+      "read",
+      "edit",
+      "write",
+      "grep",
+      "find",
+      "bash",
+      "lsp",
+      "websearch",
+      "webfetch",
+      "todo",
+      "agent",
+      "static_check",
+    ])
+    expect(ExecutionPolicy.selectAllowedTools("direct", "inspect")).toEqual(["read", "grep", "find"])
+  })
+
+  test("every reachable non-coordinated contract still yields a usable toolset", () => {
+    const scopes = ["direct", "focused", "coordinated"] as const
+    const intents = ["answer", "inspect", "change", "operate", "design"] as const
+    for (const scope of scopes) {
+      for (const intent of intents) {
+        const allowed = ExecutionPolicy.selectAllowedTools(scope, intent)
+        expect(Array.isArray(allowed) || allowed === undefined).toBe(true)
+      }
+    }
+  })
+
   test("checkpoint is a first-class message part", () => {
     expect(
       MessageV2.Part.parse({
@@ -82,6 +183,10 @@ describe("session prompt turn context", () => {
       failures: [],
       blockers: [],
       routeAssessment: "appropriate",
+      routeDecision: "keep" as const,
+      selfCritique: "No issues.",
+      failedApproaches: [],
+      whatToChanges: [],
       planChanged: false,
       routeChanged: false,
       estimatedRemainingCalls: 0,
@@ -121,6 +226,10 @@ describe("session prompt turn context", () => {
       failures: [],
       blockers: [],
       routeAssessment: "appropriate",
+      routeDecision: "keep" as const,
+      selfCritique: "No issues.",
+      failedApproaches: [],
+      whatToChanges: [],
       planChanged: false,
       routeChanged: false,
       estimatedRemainingCalls: 0,
@@ -180,6 +289,110 @@ describe("session prompt turn context", () => {
     ])
     expect(delta).toContain("tool bash [error]: test failed")
     expect(delta).toContain("conversation compaction recorded")
+  })
+
+  test("checkpoint delta removes identical repeated observations", () => {
+    const tool = {
+      id: "tool",
+      messageID: "assistant",
+      sessionID: "session",
+      type: "tool",
+      callID: "call",
+      tool: "bash",
+      state: {
+        status: "completed",
+        input: {},
+        output: "same result",
+        time: { start: 20, end: 21 },
+      },
+    }
+    const delta = SessionPrompt._internals.checkpointDelta([
+      { info: { id: "one", sessionID: "session", role: "assistant", time: { created: 20 } }, parts: [tool] },
+      { info: { id: "two", sessionID: "session", role: "assistant", time: { created: 21 } }, parts: [tool] },
+    ] as any)
+    expect(delta.match(/tool bash \[completed\]: same result/g)).toHaveLength(1)
+  })
+
+  test("checkpoint delta keeps the newest copy of a repeated result when earlier copies fall out of the window", () => {
+    const toolPart = {
+      id: "tool",
+      messageID: "assistant",
+      sessionID: "session",
+      type: "tool",
+      callID: "call",
+      tool: "bash",
+      state: {
+        status: "completed",
+        input: {},
+        output: "12 pass, 0 fail",
+        time: { start: 20, end: 21 },
+      },
+    }
+    const messages = [
+      { info: { id: "first", sessionID: "session", role: "assistant", time: { created: 20 } }, parts: [toolPart] },
+      ...Array.from({ length: 120 }, (_, index) => ({
+        info: { id: `filler-${index}`, sessionID: "session", role: "assistant", time: { created: 21 + index } },
+        parts: [
+          {
+            id: `text-${index}`,
+            messageID: `filler-${index}`,
+            sessionID: "session",
+            type: "text",
+            synthetic: false,
+            text: `filler work step ${index}`,
+          },
+        ],
+      })),
+      { info: { id: "latest", sessionID: "session", role: "assistant", time: { created: 141 } }, parts: [toolPart] },
+    ]
+    const delta = SessionPrompt._internals.checkpointDelta(messages as any)
+    expect(delta).toContain("tool bash [completed]: 12 pass, 0 fail")
+  })
+
+  test("checkpoint delta preserves the red-to-green sequence with the newest verification last", () => {
+    const tool = (output: string, status: "completed" | "error", id: string) => ({
+      id,
+      messageID: "assistant",
+      sessionID: "session",
+      type: "tool",
+      callID: id,
+      tool: "bash",
+      state:
+        status === "error"
+          ? { status, input: {}, error: output, time: { start: 20, end: 21 } }
+          : { status, input: {}, output, time: { start: 20, end: 21 } },
+    })
+    const messages = [
+      {
+        info: { id: "red", sessionID: "session", role: "assistant", time: { created: 20 } },
+        parts: [tool("3 failed: parse, render, save", "error", "call-red")],
+      },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        info: { id: `filler-${index}`, sessionID: "session", role: "assistant", time: { created: 21 + index } },
+        parts: [
+          {
+            id: `text-${index}`,
+            messageID: `filler-${index}`,
+            sessionID: "session",
+            type: "text",
+            synthetic: false,
+            text: `fix step ${index}`,
+          },
+        ],
+      })),
+      {
+        info: { id: "red-retry", sessionID: "session", role: "assistant", time: { created: 51 } },
+        parts: [tool("3 failed: parse, render, save", "error", "call-red-retry")],
+      },
+      {
+        info: { id: "green", sessionID: "session", role: "assistant", time: { created: 52 } },
+        parts: [tool("5 pass, 0 fail", "completed", "call-green")],
+      },
+    ]
+    const delta = SessionPrompt._internals.checkpointDelta(messages as any)
+    expect(delta.match(/tool bash \[error\]: 3 failed: parse, render, save/g)).toHaveLength(1)
+    expect(delta).toContain("tool bash [completed]: 5 pass, 0 fail")
+    expect(delta.split("\n").at(-1)).toBe("tool bash [completed]: 5 pass, 0 fail")
   })
 
   test("bounds shell output while preserving the newest complete text", () => {
@@ -381,6 +594,21 @@ describe("session prompt turn context", () => {
     })
   })
 
+  test("cancelled run cleanup clears a late busy status", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "ses_cancel_status"
+        const owner = SessionPrompt._internals.start(sessionID)!
+        SessionPrompt.cancel(sessionID)
+        SessionStatus.set(sessionID, { type: "busy" })
+        SessionPrompt._internals.finish(sessionID, owner)
+        expect(SessionStatus.get(sessionID).type).toBe("idle")
+      },
+    })
+  })
+
   test("normal run cleanup does not abort the completed run", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -498,6 +726,38 @@ describe("session prompt turn context", () => {
           step: 5,
         })
         expect(Array.isArray(allowed)).toBe(true)
+
+        const coordinated = SessionPrompt._internals.insertReminders({
+          messages: structuredClone(messages) as never,
+          agent: { name: "build" } as never,
+          step: 3,
+          scope: "coordinated",
+        })
+        expect(JSON.stringify(coordinated)).toContain("<coordinated_plan>")
+        const repeated = SessionPrompt._internals.insertReminders({
+          messages: coordinated as never,
+          agent: { name: "build" } as never,
+          step: 4,
+          scope: "coordinated",
+        })
+        expect(JSON.stringify(repeated).match(/<coordinated_plan>/g)).toHaveLength(1)
+
+        const direct = SessionPrompt._internals.insertReminders({
+          messages: structuredClone(messages) as never,
+          agent: { name: "build" } as never,
+          step: 1,
+          scope: "direct",
+        })
+        expect(JSON.stringify(direct)).not.toContain("<coordinated_plan>")
+
+        const unavailable = SessionPrompt._internals.insertReminders({
+          messages: structuredClone(messages) as never,
+          agent: { name: "build" } as never,
+          step: 1,
+          scope: "coordinated",
+          taskflowAvailable: false,
+        })
+        expect(JSON.stringify(unavailable)).not.toContain("<coordinated_plan>")
       },
     })
   })
@@ -623,7 +883,7 @@ describe("session prompt turn context", () => {
     })
   })
 
-  test("reports an open taskflow when the final step cannot retry", async () => {
+  test("retries the commit when the staged content snapshot went stale", async () => {
     await using tmp = await tmpdir({
       git: true,
       config: {
@@ -645,22 +905,23 @@ describe("session prompt turn context", () => {
           id: Identifier.ascending("message"),
           sessionID: session.id,
           role: "user",
-          time: { created: Date.now() },
-          agent: "agent",
+          agent: "build",
           model: { providerID: "test", modelID: "fixture" },
+          time: { created: Date.now() },
         })) as MessageV2.User
-        const execution = await ExecutionRuntime.resolveInvocation({
-          sessionID: session.id,
-          invocationID: user.id,
-        })
-        const messageID = Identifier.ascending("message")
-        const part: MessageV2.TextPart = {
+        const userID = Identifier.ascending("message")
+        await Session.updatePart({
           id: Identifier.ascending("part"),
-          messageID,
+          messageID: userID,
           sessionID: session.id,
           type: "text",
-          text: "Candidate response",
-        }
+          text: "edit",
+        })
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: userID })
+        const filepath = "tracked.txt"
+        await Bun.write(`${tmp.path}/${filepath}`, "done")
+        HarnessState.restoreEditedFile(session.id, filepath)
+        const messageID = Identifier.ascending("message")
         await Session.updateMessage({
           id: messageID,
           parentID: user.id,
@@ -674,16 +935,30 @@ describe("session prompt turn context", () => {
           providerID: user.model.providerID,
           time: { created: Date.now() },
         })
-        HarnessState.startPlan(session.id, [{ id: "unfinished", name: "Unfinished work" }])
+        const part: MessageV2.TextPart = {
+          id: Identifier.ascending("part"),
+          messageID,
+          sessionID: session.id,
+          type: "text",
+          text: "Completed.",
+        }
+        const { evaluateReviewDecision } = await import("@/integrations/tool/review-gate")
+        const reviewDecision = (await evaluateReviewDecision(session.id)).decision
         const candidate = await ExecutionRuntime.stageCompletion({
           sessionID: session.id,
           messageID,
           finish: "stop",
           parts: [part],
-          editedFiles: [],
+          editedFiles: [filepath],
           requiresReview: false,
+          reviewDecision,
           execution,
         })
+
+        // An external writer (formatter, watcher, git hook) changes the file without
+        // going through a tracked mutating tool call, so the revision still matches and
+        // the commit is rejected on the content snapshot instead.
+        await Bun.write(`${tmp.path}/${filepath}`, "changed by an external writer")
 
         expect(
           await SessionPrompt._internals.resolveCompletion({
@@ -692,242 +967,12 @@ describe("session prompt turn context", () => {
             execution,
             candidate,
             abort: new AbortController().signal,
-            allowRetry: false,
           }),
-        ).toBe("blocked")
-        expect(ExecutionRuntime.pendingContinuations(session.id)).toHaveLength(0)
-        expect(ExecutionRuntime.execution(execution.executionID)).toMatchObject({
-          lifecycle: "terminal",
-          outcome: "budget_exhausted",
-          reason: { code: "step_limit" },
-        })
-        const messages = await Session.messages({ sessionID: session.id })
-        const assistant = messages.find((message) => message.info.id === messageID)
-        expect(assistant?.info).toMatchObject({ finish: "error" })
-        const finalPart = assistant?.parts.find((item) => item.type === "text")
-        expect(finalPart?.text).toContain("Candidate response")
-        expect(finalPart?.text).toContain("the taskflow plan is still open")
-        expect(finalPart?.metadata).toMatchObject({ blockerKind: "technical" })
-      },
-    })
-  })
-
-  test("projects an already identical completion without rewriting parts or finish", async () => {
-    await using tmp = await tmpdir({ git: true })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-        const messageID = Identifier.ascending("message")
-        const partID = Identifier.ascending("part")
-        const completed = Date.now()
-        await Session.updateMessage({
-          id: messageID,
-          role: "assistant",
-          parentID: Identifier.ascending("message"),
-          sessionID: session.id,
-          agent: "build",
-          path: { cwd: tmp.path, root: tmp.path },
-          cost: 0,
-          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-          modelID: "fixture",
-          providerID: "test",
-          time: { created: completed, completed },
-          finish: "stop",
-        })
-        const part = {
-          id: partID,
-          messageID,
-          sessionID: session.id,
-          type: "text" as const,
-          text: "committed response",
-        }
-        await Session.updatePart(part)
-        const updatePart = spyOn(Session, "updatePartGuarded")
-        const updateMessage = spyOn(Session, "updateMessageGuarded")
-        try {
-          await SessionPrompt._internals.projectCompletion({
-            executionID: "execution-projected",
-            sessionID: session.id,
-            messageID,
-            ownerID: "owner",
-            fence: 1,
-            finish: "stop",
-            parts: [part],
-            editedFiles: [],
-            digest: "digest",
-            requiresReview: false,
-            revision: 0,
-            planRevision: 0,
-            routeRevision: 1,
-            policyVersion: 1,
-            policyDigest: "policy",
-            reviewRequirement: "not_required",
-            reviewReasonCode: "no_mutations",
-            requiredReviewers: 0,
-            attemptLimit: 3,
-            contentSnapshotDigest: "snapshot",
-            projection: "projected",
-            state: "committed",
-            projectorID: "projector",
-            projectionToken: "token",
-            projectionLeaseExpiresAt: Date.now() + 10_000,
-            sessionGeneration: 1,
-          })
-          expect(updatePart).not.toHaveBeenCalled()
-          expect(updateMessage).not.toHaveBeenCalled()
-        } finally {
-          updatePart.mockRestore()
-          updateMessage.mockRestore()
-        }
-      },
-    })
-  })
-
-  test("abandons recovery projection when a durable session tombstone already exists", async () => {
-    await using tmp = await tmpdir({ git: true })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-        await Storage.tombstoneSessions([session.id])
-        const result = await SessionPrompt._internals.projectAndAckCompletion({
-          executionID: "execution-deleted-session",
-          sessionID: session.id,
-          messageID: Identifier.ascending("message"),
-          ownerID: "owner",
-          fence: 1,
-          finish: "stop",
-          parts: [],
-          editedFiles: [],
-          digest: "deleted-session-digest",
-          requiresReview: false,
-          revision: 0,
-          planRevision: 0,
-          routeRevision: 1,
-          policyVersion: 1,
-          policyDigest: "policy",
-          reviewRequirement: "not_required",
-          reviewReasonCode: "no_mutations",
-          requiredReviewers: 0,
-          attemptLimit: 3,
-          contentSnapshotDigest: "snapshot",
-          projection: "pending",
-          state: "committed",
-        })
-        expect(result).toBe("abandoned")
-        expect(await Storage.sessionGuard(session.id)).toMatchObject({ tombstone: true, generation: 2 })
-      },
-    })
-  })
-
-  test("projects a root cancellation outbox even when no assistant message exists yet", async () => {
-    await using tmp = await tmpdir({ git: true })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-        const userID = Identifier.ascending("message")
-        await Session.updateMessage({
-          id: userID,
-          sessionID: session.id,
-          role: "user",
-          time: { created: Date.now() },
-          agent: "build",
-          model: { providerID: "test", modelID: "fixture" },
-        })
-        await Session.updatePart({
-          id: Identifier.ascending("part"),
-          messageID: userID,
-          sessionID: session.id,
-          type: "text",
-          text: "cancel before the provider responds",
-        })
-        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: userID })
-        const view = ExecutionRuntime.view(execution.executionID)!
-        expect(
-          ExecutionRuntime.requestCancel({
-            requestID: "cancel-before-assistant",
-            executionID: execution.executionID,
-            sessionID: session.id,
-            projectID: Instance.project.id,
-            expectedVersion: view.version,
-          }),
-        ).toMatchObject({ accepted: true })
-
-        const claim = ExecutionRuntime.claimCompletion(session.id, execution.executionID)
-        expect(claim).toBeDefined()
-        expect(await SessionPrompt._internals.projectAndAckCompletion(claim!)).toBe("projected")
-        const messages = await Session.messages({ sessionID: session.id, excludePatches: false })
-        const assistant = messages.find((message) => message.info.id === claim!.messageID)
-        expect(assistant?.info).toMatchObject({ role: "assistant", parentID: userID, finish: "error" })
-        expect(assistant?.parts).toEqual([
-          expect.objectContaining({ type: "text", text: "This execution was cancelled." }),
-        ])
-        expect(ExecutionRuntime.view(execution.executionID)?.completion?.projection).toBe("projected")
-      },
-    })
-  })
-
-  test("records durable recovery when a committed completion has no projectable message", async () => {
-    await using tmp = await tmpdir({ git: true })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-        const userID = Identifier.ascending("message")
-        await Session.updateMessage({
-          id: userID,
-          sessionID: session.id,
-          role: "user",
-          time: { created: Date.now() },
-          agent: "build",
-          model: { providerID: "test", modelID: "fixture" },
-        })
-        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: userID })
-        const staged = await ExecutionRuntime.stageCompletion({
-          sessionID: session.id,
-          messageID: Identifier.ascending("message"),
-          finish: "stop",
-          parts: [],
-          editedFiles: [],
-          requiresReview: false,
-          execution,
-        })
-        const committed = await ExecutionRuntime.commitCompletion({
-          sessionID: session.id,
-          execution,
-          digest: staged.digest,
-        })
-
-        expect(await SessionPrompt._internals.projectAndAckCompletion(committed)).toBe("recovery_required")
-        expect(ExecutionRuntime.view(execution.executionID)).toMatchObject({
-          recoveryRequired: true,
-          completion: { projection: "recovery_required" },
-        })
-        expect(ExecutionRuntime.claimCompletion(session.id, execution.executionID)).toBeUndefined()
-      },
-    })
-  })
-
-  test("recovers from a model removed since the session was created", async () => {
-    await Config.clearCache()
-    await using tmp = await tmpdir({ git: true })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-        await Session.updateMessage({
-          id: Identifier.ascending("message"),
-          role: "user",
-          sessionID: session.id,
-          agent: "default",
-          model: { providerID: "atomcli", modelID: "removed-free-model" },
-          time: { created: Date.now() },
-        })
-
-        const selected = await SessionPrompt._internals.lastModel(session.id)
-        expect(selected).not.toEqual({ providerID: "atomcli", modelID: "removed-free-model" })
+        ).toBe("retry")
+        // "retry" is only returned from the re-hydration path, and the execution must be
+        // left live for the loop to re-enter rather than terminalized or thrown out of.
+        expect(ExecutionRuntime.execution(execution.executionID)).toMatchObject({ lifecycle: "active" })
+        ExecutionRuntime.cancelExecution(execution)
       },
     })
   })

@@ -154,7 +154,7 @@ describe("checkpoint durability", () => {
       expect(recovered.getPolicyState("exec-race")).toMatchObject({
         extensionCount: 1,
         sliceStartCalls: 13,
-        policy: { budget: { maxToolCalls: 30, maxSteps: 13 } },
+        policy: { budget: { maxToolCalls: 30, maxSteps: 26 } },
       })
       expect(recovered.checkpointFailures("exec-race")).toBe(0)
       expect(recovered.checkpoints("exec-race")[0].payload.triggerMessageID).toBe("rejected-final")

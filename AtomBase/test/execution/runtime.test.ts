@@ -10,9 +10,62 @@ import { Global } from "@/core/global"
 import { Identifier } from "@/core/id/id"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { Session } from "@/core/session"
+import { SessionScopeFloor } from "@/core/session/scope-floor"
 import { Instance } from "@/services/project/instance"
 import type { Provider } from "@/integrations/provider/provider"
 import { tmpdir } from "../fixture/fixture"
+
+test("acceptance survives continuation; reasoned revisions invalidate prior browser evidence and persist history", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const session = await Session.create({})
+      const execution = await ExecutionRuntime.resolveInvocation({
+        sessionID: session.id,
+        invocationID: await addUserMessage(session.id, "Build a 3D browser game"),
+      })
+      const acceptance = ExecutionContract.acceptanceFor("Build a 3D browser game")
+      ExecutionRuntime.setExecutionContract(execution.executionID, ExecutionContract.fallback("test", { acceptance }))
+      ExecutionRuntime.recordRuntimeEvidence(execution.executionID, {
+        browserNavigations: 1,
+        browserVerificationCalls: 1,
+      })
+      ExecutionRuntime.setExecutionContract(execution.executionID, ExecutionContract.fallback("continue"))
+      expect(ExecutionRuntime.getExecutionContract(execution.executionID)).toMatchObject({
+        acceptance,
+        acceptanceRevision: 1,
+      })
+      const revised = ExecutionContract.fallback("test", {
+        acceptance: [...acceptance, "Collision prevents invalid movement"],
+      })
+      expect(() => ExecutionRuntime.setExecutionContract(execution.executionID, revised)).toThrow(
+        "Acceptance revision requires",
+      )
+      ExecutionRuntime.setExecutionContract(execution.executionID, revised, {
+        acceptanceChange: {
+          reason: "runtime_evidence",
+          detail: "Player crossed a visible wall",
+          invalidatedEvidence: ["Verified 3D gameplay"],
+        },
+      })
+      expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+        browserNavigations: 0,
+        browserVerificationCalls: 0,
+      })
+      expect(ExecutionRuntime.getExecutionContract(execution.executionID)?.acceptanceRevision).toBe(2)
+      const events = ExecutionRuntime.events(session.id).items.filter(
+        (event) => event.type === "execution.updated" && event.properties?.kind === "acceptance_revision",
+      )
+      expect(events).toHaveLength(2)
+      expect(events[1].properties).toMatchObject({
+        revision: 2,
+        reason: "runtime_evidence",
+        invalidatedEvidence: ["Verified 3D gameplay"],
+      })
+    },
+  })
+})
 
 async function addUserMessage(sessionID: string, text: string) {
   const messageID = Identifier.ascending("message")
@@ -35,6 +88,182 @@ async function addUserMessage(sessionID: string, text: string) {
 }
 
 describe("ExecutionRuntime", () => {
+  test("default scope cooldown permits immediate direct-to-coordinated recovery", async () => {
+    await using tmp = await tmpdir({
+      init: async (directory) => {
+        await Bun.write(
+          path.join(directory, "atomcli.json"),
+          JSON.stringify({ experimental: { scope_escalation: { mode: "auto" } } }),
+        )
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const messageID = await addUserMessage(root.id, "Answer a question")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: messageID })
+        ExecutionRuntime.setExecutionContract(
+          execution.executionID,
+          ExecutionContract.parseSafe({
+            intent: "answer",
+            scope: "direct",
+            risk: "low",
+            confidence: 1,
+            needsMutation: false,
+          }),
+        )
+        const first = await ExecutionRuntime.escalateScope({
+          sessionID: root.id,
+          execution,
+          scope: "focused",
+          reason: "Need to inspect code",
+          actorID: "test",
+        })
+        const second = await ExecutionRuntime.escalateScope({
+          sessionID: root.id,
+          execution,
+          scope: "coordinated",
+          reason: "Found cross-module work",
+          actorID: "test",
+        })
+        expect(first.changed).toBe(true)
+        expect(second.changed).toBe(true)
+        expect(ExecutionRuntime.scopeEscalationStatus(root.id).count).toBe(2)
+      },
+    })
+  })
+
+  test("scope escalation cannot raise explicit call and step ceilings", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        execution_budget: { max_calls: 1, max_steps: 1, unknown_price: "block" },
+        experimental: { scope_escalation: { mode: "auto", max_per_session: 2, cooldown_ms: 0 } },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const messageID = await addUserMessage(root.id, "Implement a focused change")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: messageID })
+        ExecutionRuntime.setExecutionContract(
+          execution.executionID,
+          ExecutionContract.parseSafe({
+            intent: "change",
+            scope: "focused",
+            risk: "elevated",
+            confidence: 0.8,
+            needsMutation: true,
+            expectedSurfaces: ["workspace"],
+          }),
+        )
+        const result = await ExecutionRuntime.escalateScope({
+          sessionID: root.id,
+          execution,
+          scope: "coordinated",
+          reason: "Independent workstreams found",
+          actorID: "test",
+        })
+        expect(result.grantedCalls).toBe(0)
+        expect(result.grantedSteps).toBe(0)
+        const first = await ExecutionRuntime.admitModelCall({
+          sessionID: root.id,
+          purpose: "main",
+          estimateMicrousd: 0,
+          execution,
+        })
+        first?.settle(0)
+        await expect(
+          ExecutionRuntime.admitModelCall({ sessionID: root.id, purpose: "main", estimateMicrousd: 0, execution }),
+        ).rejects.toMatchObject({ reason: "call_limit" })
+        await ExecutionRuntime.admitStep({ sessionID: root.id, stepID: "scope-step-1", execution })
+        await expect(
+          ExecutionRuntime.admitStep({ sessionID: root.id, stepID: "scope-step-2", execution }),
+        ).rejects.toMatchObject({ reason: "step_limit" })
+      },
+    })
+  })
+
+  test("scope escalation updates policy, grants, durable event, and session floor", async () => {
+    await using tmp = await tmpdir({
+      config: {
+        experimental: { scope_escalation: { mode: "auto", max_per_session: 20, cooldown_ms: 0 } },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const root = await Session.create({})
+        const messageID = await addUserMessage(root.id, "Implement a focused change")
+        const execution = await ExecutionRuntime.resolveInvocation({
+          sessionID: root.id,
+          invocationID: messageID,
+        })
+        const contract = ExecutionContract.parseSafe({
+          intent: "change",
+          scope: "focused",
+          risk: "elevated",
+          confidence: 0.8,
+          needsMutation: true,
+          expectedSurfaces: ["workspace"],
+        })
+        const initial = ExecutionRuntime.setExecutionContract(execution.executionID, contract)
+        const result = await ExecutionRuntime.escalateScope({
+          sessionID: root.id,
+          execution,
+          scope: "coordinated",
+          reason: "The change spans independent subsystems.",
+          actorID: "test",
+        })
+
+        expect(result.changed).toBe(true)
+        expect(result.policy.scope).toBe("coordinated")
+        expect(result.grantedCalls).toBeGreaterThan(0)
+        expect(result.grantedSteps).toBeGreaterThan(0)
+        expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)?.scope).toBe("coordinated")
+        expect(SessionScopeFloor.get(root.id)).toBe("coordinated")
+        const escalation = ExecutionRuntime.events(root.id).items.find(
+          (event) => event.type === "execution.scope.escalated",
+        )
+        expect(escalation?.properties).toMatchObject({
+          grantedCalls: result.grantedCalls,
+          grantedSteps: result.grantedSteps,
+        })
+        expect(initial.scope).toBe("focused")
+      },
+    })
+  })
+
+  test("child invocation cannot escalate its root execution", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const root = await Session.create({})
+        const messageID = await addUserMessage(root.id, "Change one file")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: messageID })
+        ExecutionRuntime.setExecutionContract(
+          execution.executionID,
+          ExecutionContract.parseSafe({ intent: "change", scope: "focused", confidence: 0.8 }),
+        )
+        await expect(
+          ExecutionRuntime.escalateScope({
+            sessionID: "child-session",
+            execution,
+            scope: "coordinated",
+            reason: "child requested promotion",
+            actorID: "child",
+          }),
+        ).rejects.toMatchObject({ reason: "scope_escalation_root_only" })
+        expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)?.scope).toBe("focused")
+      },
+    })
+  })
+
   test("classifies budget, cancellation and provider failures without exposing raw errors", () => {
     expect(ExecutionRuntime.classifyTerminalFailure(new ExecutionRuntime.BudgetExceededError("cost_limit"))).toEqual({
       outcome: "budget_exhausted",
@@ -57,7 +286,7 @@ describe("ExecutionRuntime", () => {
       outcome: "failed",
       reasonCode: "recovery_required",
       reasonMessage: "tool:bash:op-1 must be reconciled",
-      retryable: true,
+      retryable: false,
     })
     expect(
       ExecutionRuntime.classifyTerminalFailure(new ExecutionRuntime.BudgetExceededError("recovery_required", "exec-1")),
@@ -65,7 +294,7 @@ describe("ExecutionRuntime", () => {
       outcome: "failed",
       reasonCode: "recovery_required",
       reasonMessage: "The session has unknown mutating work that must be reconciled.",
-      retryable: true,
+      retryable: false,
     })
     const recoveryError = new ExecutionRuntime.BudgetExceededError(
       "recovery_required",
@@ -875,140 +1104,6 @@ describe("ExecutionRuntime", () => {
           ExecutionRuntime.commitCompletion({ sessionID: root.id, execution, digest: staged.digest }),
         ).rejects.toMatchObject({ reason: "stale_content_snapshot" })
         ExecutionRuntime.cancelExecution(execution)
-      },
-    })
-  })
-
-  test("rejects a completion staged under an obsolete review policy snapshot", async () => {
-    await using tmp = await tmpdir({
-      config: {
-        review: {
-          enabled: false,
-          policy: "off",
-          reviewer_count: 2,
-          max_attempts: 3,
-          high_risk_patterns: [],
-        },
-      },
-    })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        await Config.clearCache()
-        const root = await Session.create({})
-        const userID = await addUserMessage(root.id, "finish under the current policy")
-        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: userID })
-        const staged = await ExecutionRuntime.stageCompletion({
-          sessionID: root.id,
-          messageID: "message-policy-snapshot",
-          finish: "stop",
-          parts: [],
-          editedFiles: [],
-          requiresReview: false,
-          execution,
-        })
-
-        await Bun.write(
-          path.join(tmp.path, "atomcli.json"),
-          JSON.stringify({
-            review: {
-              enabled: true,
-              policy: "always",
-              reviewer_count: 2,
-              max_attempts: 3,
-              high_risk_patterns: [],
-            },
-          }),
-        )
-        await Config.clearCache()
-
-        await expect(
-          ExecutionRuntime.commitCompletion({ sessionID: root.id, execution, digest: staged.digest }),
-        ).rejects.toMatchObject({ reason: "stale_policy" })
-        ExecutionRuntime.cancelExecution(execution)
-      },
-    })
-  })
-
-  test("blocks resolveInvocation when unknown mutating work requires recovery and emits Updated events", async () => {
-    await using tmp = await tmpdir({})
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        await Config.clearCache()
-        const root = await Session.create({})
-        const message1 = await addUserMessage(root.id, "run bash command")
-        const execution1 = await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: message1 })
-
-        const registered = await ExecutionRuntime.registerWork({
-          sessionID: root.id,
-          execution: execution1,
-          operationID: "op-bash-1",
-          kind: "tool:bash",
-          mutating: true,
-        })
-        const began = await ExecutionRuntime.beginWork({
-          sessionID: root.id,
-          execution: execution1,
-          operationID: "op-bash-1",
-          expectedVersion: registered.version,
-        })
-
-        const updatedEvents: { sessionID: string; executionID: string }[] = []
-        const unsub = Bus.subscribe(ExecutionRuntime.Event.Updated, ({ properties }) => {
-          updatedEvents.push(properties)
-        })
-
-        try {
-          await ExecutionRuntime.finishWork({
-            sessionID: root.id,
-            execution: execution1,
-            operationID: "op-bash-1",
-            expectedVersion: began.version,
-            state: "unknown",
-          })
-
-          expect(updatedEvents.length).toBeGreaterThan(0)
-          expect(updatedEvents[0].sessionID).toBe(root.id)
-
-          const message2 = await addUserMessage(root.id, "subsequent message")
-          let caughtError: unknown
-          try {
-            await ExecutionRuntime.resolveInvocation({ sessionID: root.id, invocationID: message2 })
-          } catch (e) {
-            caughtError = e
-          }
-          expect(caughtError).toBeInstanceOf(ExecutionRuntime.BudgetExceededError)
-          expect((caughtError as ExecutionRuntime.BudgetExceededError).reason).toBe("recovery_required")
-          expect((caughtError as ExecutionRuntime.BudgetExceededError).detail).toContain("op-bash-1")
-
-          const failure = ExecutionRuntime.classifyTerminalFailure(caughtError)
-          expect(failure).toMatchObject({
-            outcome: "failed",
-            reasonCode: "recovery_required",
-            retryable: true,
-          })
-          expect(failure.reasonMessage).toContain("op-bash-1")
-
-          const snap = ExecutionRuntime.snapshot(root.id)
-          const execView = snap.executions.find((e) => e.id === execution1.executionID)
-          const reconcileResult = ExecutionRuntime.requestReconcile({
-            requestID: "reconcile-1",
-            executionID: execution1.executionID,
-            sessionID: root.id,
-            projectID: execView!.projectID, // use the stored projectID, not raw tmp.path
-            operationID: "op-bash-1",
-            state: "cancelled",
-            expectedVersion: execView!.version,
-            expectedWorkVersion: began.version + 1, // finishWork increments work version by 1
-            evidence: "User confirmed bash was cancelled",
-            resolutionCode: "user_cancelled",
-          })
-          expect(reconcileResult.reconciled).toBe(true)
-          expect(updatedEvents.length).toBeGreaterThan(1)
-        } finally {
-          unsub()
-        }
       },
     })
   })

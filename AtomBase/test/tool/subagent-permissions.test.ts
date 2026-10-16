@@ -1,10 +1,11 @@
+import "../preload"
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
 import { Flag } from "@/interfaces/flag/flag"
 import { tmpdir } from "../fixture/fixture"
 import { SubAgent } from "@/integrations/tool/subagent"
-import type { Agent } from "@/integrations/agent/agent"
+import { Agent } from "@/integrations/agent/agent"
 
 /**
  * Build a reviewer-like agent definition, mirroring the structure in
@@ -47,6 +48,31 @@ function reviewerLikeAgent(): Agent.Info {
 }
 
 describe("SubAgent.buildFromAgent — allowlist agent permissions", () => {
+  test("native reviewer retains browser observations under global grants without gaining interaction or source writes", async () => {
+    await using tmp = await tmpdir({ config: { permission: { "*": "allow" } } })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const reviewer = (await Agent.get("reviewer"))!
+        const rules = SubAgent.buildFromAgent(reviewer)
+        expect(PermissionNext.disabled(["browser"], rules).has("browser")).toBe(false)
+        for (const action of ["navigate", "snapshot", "assert", "console_logs"])
+          expect(PermissionNext.evaluate("browser", `${action}:fixture`, rules).action).toBe("allow")
+        for (const action of ["click", "evaluate", "input_sequence", "flow"])
+          expect(PermissionNext.evaluate("browser", `${action}:fixture`, rules).action).toBe("deny")
+        for (const name of ["edit", "write", "todowrite", "todoread", "task"])
+          expect(PermissionNext.evaluate(name, "fixture", rules).action).toBe("deny")
+        expect(PermissionNext.evaluate("bash", "curl https://example.invalid", rules).action).toBe("deny")
+        const denied = SubAgent.buildFromAgent({
+          ...reviewer,
+          permission: [...reviewer.permission, { permission: "browser", pattern: "*", action: "deny" }],
+        })
+        expect(PermissionNext.disabled(["browser"], denied).has("browser")).toBe(true)
+        expect(PermissionNext.evaluate("browser", "navigate:fixture", denied).action).toBe("deny")
+      },
+    })
+  })
+
   test("explicit read allow wins over the catch-all deny baseline", () => {
     const agent = reviewerLikeAgent()
     const ruleset = SubAgent.buildFromAgent(agent)

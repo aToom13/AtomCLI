@@ -1,7 +1,10 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test"
+import { describe, expect, test, mock, beforeEach, spyOn } from "bun:test"
 import "../preload"
 import fs from "fs/promises"
 import path from "path"
+
+const completedTaskOutput = (text: string) =>
+  `${text}\n<agent_result>{"status":"complete","summary":"${text}","failures":[]}</agent_result>`
 
 // Mock SubAgent.spawn so AgentTool spawn never hits a real model.
 // The mock must be registered BEFORE agent-tool / orchestrate are imported.
@@ -56,6 +59,8 @@ mock.module("../../src/integrations/tool/subagent", () => ({
 }))
 
 const { AgentTool } = await import("@/integrations/tool/agent-tool")
+const { OrchestrateTool } = await import("@/integrations/tool/orchestrate")
+const { abortWorkflow } = await import("@/integrations/tool/orchestrate/actions")
 const { Session } = await import("@/core/session")
 const { Storage } = await import("@/core/storage/storage")
 const { Identifier } = await import("@/core/id/id")
@@ -67,6 +72,8 @@ const { Bus } = await import("@/core/bus")
 const { TuiEvent } = await import("@/interfaces/cli/cmd/tui/event")
 const { SubAgentRuntime } = await import("@/integrations/tool/subagent-runtime")
 const { Config } = await import("@/core/config/config")
+const { WorkflowFS } = await import("@/integrations/tool/workflow-fs")
+const { WorkflowStateStore } = await import("@/integrations/tool/orchestrate/state")
 const { tmpdir } = await import("../fixture/fixture")
 
 beforeEach(() => {
@@ -144,6 +151,95 @@ async function createAssistantMessageContext() {
 }
 
 describe("AgentTool spawn (blocking orchestrator behavior)", () => {
+  test("explicit reviewer spawn runs exactly one reviewer without nested QA", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const tool = await AgentTool.init()
+        const result = await tool.execute(
+          {
+            action: "spawn",
+            subagent_type: "reviewer",
+            description: "Independent review",
+            prompt: "Inspect changes and test results independently",
+          },
+          mockCtx(session.id, messageID),
+        )
+        expect(result.metadata.status).toBe("completed")
+        expect(spawnMock).toHaveBeenCalledTimes(1)
+        expect(spawnMock.mock.calls[0][0].agent.name).toBe("reviewer")
+        expect(HarnessState.getReviewVerdict(session.id)).toBeUndefined()
+      },
+    })
+  })
+
+  test("permission denial terminalizes one-call workflow instead of leaking a planned slot", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const ctx = {
+          ...mockCtx(session.id, messageID),
+          extra: {},
+          ask: async () => {
+            throw new Error("denied")
+          },
+        }
+        await expect((await OrchestrateTool.init()).execute({ request: "Inspect files" }, ctx)).rejects.toThrow(
+          "denied",
+        )
+        const workflows = WorkflowStateStore.entries()
+        expect(workflows.at(-1)?.[1]).toMatchObject({ status: "failed" })
+      },
+    })
+  })
+
+  test("abort during permission prompt never dispatches a child", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const ctx = {
+          ...mockCtx(session.id, messageID),
+          extra: {},
+          ask: async () => {
+            const [id] = WorkflowStateStore.entries().at(-1)!
+            expect((await abortWorkflow({ workflowId: id }, session.id)).metadata.error).toBe(false)
+          },
+        }
+        const result = await (await OrchestrateTool.init()).execute({ request: "Inspect files" }, ctx)
+        expect(result.metadata?.status).toBe("failed")
+        expect(spawnMock).not.toHaveBeenCalled()
+      },
+    })
+  })
+
+  test("one-call orchestration accepts plain request and checks task permission", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const permissions: string[] = []
+        const ctx = {
+          ...mockCtx(session.id, messageID),
+          extra: {},
+          ask: async (request: { patterns: string[] }) => {
+            permissions.push(...request.patterns)
+          },
+        }
+        const result = await (await OrchestrateTool.init()).execute({ request: "Analyze codebase structure" }, ctx)
+        expect(result.metadata?.status).toBe("completed")
+        expect(permissions).toEqual(["explore"])
+        expect(spawnMock).toHaveBeenCalledTimes(1)
+      },
+    })
+  })
+
   test("spawn without required params throws validation error", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -185,6 +281,141 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
         // Read-only analysis uses the primary sub-agent result directly.
         const descriptions = spawnMock.mock.calls.map(([args]) => (args as any).description)
         expect(descriptions.some((d) => d && d.startsWith("[QA"))).toBe(false)
+      },
+    })
+  })
+
+  test.each(["missing", "incomplete", "complete"])(
+    "owned coding result is validated even without edits: %s",
+    async (status) => {
+      await using tmp = await tmpdir({ git: true })
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          spawnMock.mockImplementation(async (args: any) => {
+            const sessionId = args.sessionId ?? "ses_unchanged_coder"
+            await args.onSession?.({ sessionId, isNewSession: !args.sessionId })
+            return {
+              sessionId,
+              parts: [],
+              output:
+                status === "missing"
+                  ? "Not complete. index.html unchanged; patch failed; no verification ran."
+                  : `<agent_result>${JSON.stringify({ status, summary: "No edits", failures: status === "complete" ? [] : ["Patch failed; gameplay unverified"] })}</agent_result>`,
+            }
+          })
+          const { session, messageID } = await createAssistantMessageContext()
+          const result = await (
+            await AgentTool.init({})
+          ).execute(
+            {
+              action: "spawn",
+              subagent_type: "coder",
+              prompt: "Repair index.html",
+              description: "Repair game",
+              owns: ["index.html"],
+              isolation: "auto",
+              validationMode: "strict",
+            },
+            mockCtx(session.id, messageID),
+          )
+          expect(result.metadata.status).toBe(status === "complete" ? "completed" : "failed")
+          expect(result.output).toContain(status === "complete" ? "1 succeeded" : "0 succeeded")
+        },
+      })
+    },
+  )
+
+  test.each(["complete", "incomplete"])("reviewer %s report returns product findings once", async (status) => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        let prompt = ""
+        spawnMock.mockImplementation(async (args: any) => {
+          prompt = args.parts.map((part: { text?: string }) => part.text ?? "").join("\n")
+          await args.onSession?.({ sessionId: "ses_review_findings", isNewSession: true })
+          return {
+            sessionId: "ses_review_findings",
+            parts: [],
+            output: `<agent_result>${JSON.stringify({ status, productVerdict: "rejected", summary: "Inspection done; product fails", findings: ["3D interaction missing"], failures: status === "complete" ? [] : ["3D interaction missing"] })}</agent_result>`,
+          }
+        })
+        const { session, messageID } = await createAssistantMessageContext()
+        const result = await (
+          await AgentTool.init({})
+        ).execute(
+          {
+            action: "spawn",
+            subagent_type: "reviewer",
+            prompt: "Review two functional 3D games",
+            description: "Review games",
+          },
+          mockCtx(session.id, messageID),
+        )
+        expect(spawnMock).toHaveBeenCalledTimes(1)
+        expect(prompt).toContain("status describes whether the inspection is finished")
+        expect(result.output).toContain("3D interaction missing")
+        expect(result.output).toContain("rejected")
+        expect(result.metadata.status).toBe(status === "complete" ? "completed" : "failed")
+      },
+    })
+  })
+
+  test("failed workflow archive write reports error without rerunning completed worker", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const write = spyOn(WorkflowFS, "writeSuccess").mockRejectedValue(new Error("disk full"))
+        try {
+          const { session, messageID } = await createAssistantMessageContext()
+          const instance = await AgentTool.init({})
+          const result = await instance.execute(
+            { action: "spawn", subagent_type: "explore", prompt: "Inspect files", description: "Inspect files" },
+            mockCtx(session.id, messageID),
+          )
+          expect(result.metadata?.status).toBe("completed")
+          expect(result.output).toContain("Workflow output persistence failed: disk full")
+          expect(spawnMock).toHaveBeenCalledTimes(1)
+        } finally {
+          write.mockRestore()
+        }
+      },
+    })
+  })
+
+  test("retries an edited task that reports failed syntax before marking workflow complete", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        let runs = 0
+        let retryPrompt = ""
+        spawnMock.mockImplementation(async (args: any) => {
+          runs++
+          const sessionId = args.sessionId ?? "ses_syntax_worker"
+          await args.onSession?.({ sessionId, isNewSession: !args.sessionId })
+          HarnessState.addEditedFile(sessionId, path.join(tmp.path, "index.html"))
+          retryPrompt = args.parts.map((part: { text?: string }) => part.text ?? "").join("\n")
+          return {
+            sessionId,
+            output:
+              runs === 1
+                ? '<agent_result>{"status":"incomplete","summary":"Not ready","failures":["SyntaxError: Unexpected token ]"]}</agent_result>'
+                : completedTaskOutput("Syntax fixed"),
+            parts: [],
+          }
+        })
+        const { session, messageID } = await createAssistantMessageContext()
+        const instance = await AgentTool.init({})
+        const result = await instance.execute(
+          { action: "spawn", subagent_type: "coder", prompt: "Build browser app", description: "Browser app" },
+          mockCtx(session.id, messageID),
+        )
+        expect(result.metadata?.status).toBe("completed")
+        expect(runs).toBe(2)
+        expect(retryPrompt).toContain("SyntaxError: Unexpected token ]")
       },
     })
   })
@@ -232,6 +463,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
       directory: tmp.path,
       fn: async () => {
         const { session, messageID } = await createAssistantMessageContext()
+        const child = await Session.create({ parentID: session.id })
         const ctx = mockCtx(session.id, messageID)
         const instance = await AgentTool.init({})
 
@@ -241,7 +473,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
             subagent_type: "explore",
             prompt: "Analyze the codebase structure",
             description: "Analyze codebase",
-            session_id: "ses-existing-123",
+            session_id: child.id,
           },
           ctx,
         )
@@ -249,7 +481,35 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
         expect(result.metadata?.status).toBe("completed")
         const spawnArgs = spawnMock.mock.calls.map(([args]) => args as any)
         const taskSpawn = spawnArgs.find((a) => a.description && !a.description.startsWith("[QA"))
-        expect(taskSpawn?.sessionId).toBe("ses-existing-123")
+        expect(taskSpawn?.sessionId).toBe(child.id)
+      },
+    })
+  })
+
+  test("spawn rejects missing and foreign continuation sessions before dispatch", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { session, messageID } = await createAssistantMessageContext()
+        const other = await Session.create({})
+        const foreign = await Session.create({ parentID: other.id })
+        const instance = await AgentTool.init({})
+        for (const session_id of [session.id, foreign.id, "ses_missing_continuation"]) {
+          await expect(
+            instance.execute(
+              {
+                action: "spawn",
+                subagent_type: "explore",
+                prompt: "Continue",
+                description: "Continue analysis",
+                session_id,
+              },
+              mockCtx(session.id, messageID),
+            ),
+          ).rejects.toMatchObject({ applied: false })
+        }
+        expect(spawnMock).not.toHaveBeenCalled()
       },
     })
   })
@@ -322,7 +582,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
           const file = args.description.includes("left") ? "src/auth-left.ts" : "src/auth-right.ts"
           await fs.mkdir(path.dirname(path.join(args.workingDirectory, file)), { recursive: true })
           await fs.writeFile(path.join(args.workingDirectory, file), `export const side = "${file}"\n`)
-          return { sessionId, isNewSession: true, output: `Implemented ${file}`, parts: [] }
+          return { sessionId, isNewSession: true, output: completedTaskOutput(`Implemented ${file}`), parts: [] }
         })
 
         const { session, messageID } = await createAssistantMessageContext()
@@ -432,6 +692,8 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        await fs.writeFile(path.join(tmp.path, "atomcli.json"), JSON.stringify({ review: { auto: true } }))
+        await Config.clearCache()
         let taskSpawnCount = 0
         let reviewerSpawnCount = 0
         spawnMock.mockImplementation(async (args: any) => {
@@ -498,6 +760,8 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        await fs.writeFile(path.join(tmp.path, "atomcli.json"), JSON.stringify({ review: { auto: true } }))
+        await Config.clearCache()
         let taskSpawnCount = 0
         let reviewerSpawnCount = 0
         spawnMock.mockImplementation(async (args: any) => {
@@ -509,7 +773,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
             return {
               sessionId: "ses_task_under_review",
               isNewSession: true,
-              output: "Task output awaiting review",
+              output: completedTaskOutput("Task output awaiting review"),
               parts: [],
             }
           }
@@ -541,7 +805,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
         )
 
         expect(taskSpawnCount).toBe(1)
-        expect(reviewerSpawnCount).toBe(2)
+        expect(reviewerSpawnCount).toBe(1)
         expect(result.metadata?.status).toBe("failed")
       },
     })
@@ -552,6 +816,8 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        await fs.writeFile(path.join(tmp.path, "atomcli.json"), JSON.stringify({ review: { auto: true } }))
+        await Config.clearCache()
         let taskRuns = 0
         let qaRuns = 0
         let retryPrompt = ""
@@ -598,7 +864,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
             path.join(args.workingDirectory, "src/auth/token.ts"),
             `export const token = "${taskRuns === 1 ? "unsafe" : "safe"}"\n`,
           )
-          return { sessionId, output: "Implemented token.", parts: [] }
+          return { sessionId, output: completedTaskOutput("Implemented token."), parts: [] }
         })
 
         const { session, messageID } = await createAssistantMessageContext()
@@ -615,17 +881,92 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
 
         expect(result.metadata?.status).toBe("completed")
         expect(taskRuns).toBe(2)
-        expect(qaRuns).toBe(4)
+        expect(qaRuns).toBe(2)
         expect(retryPrompt).toContain("Unsafe token remains")
       },
     })
   })
 
-  test("retries malformed reviewer output without rerunning the worker", async () => {
+  test.each([false, true])("rejected QA repeats only with new evidence: %s", async (newEvidence) => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        await Bun.write(path.join(tmp.path, "atomcli.json"), JSON.stringify({ review: { auto: true } }))
+        await Config.clearCache()
+        let taskRuns = 0
+        let qaRuns = 0
+        spawnMock.mockImplementation(async (args: any) => {
+          const isQA = args.description.startsWith("[QA")
+          const sessionId = args.sessionId ?? `ses_${isQA ? "qa" : "worker"}_unchanged`
+          await args.onSession?.({ sessionId, isNewSession: !args.sessionId })
+          if (isQA) {
+            qaRuns++
+            return {
+              sessionId,
+              parts: [],
+              output: "Review done",
+              structuredOutput:
+                qaRuns === 1
+                  ? {
+                      verdict: "rejected",
+                      summary: "Verification missing",
+                      findings: [
+                        {
+                          file: "src/auth/token.ts",
+                          startLine: 1,
+                          endLine: 1,
+                          severity: "P1",
+                          confidence: 1,
+                          title: "Verification missing",
+                          evidence: 'export const token = "test-value"',
+                          recommendation: "Verify token behavior",
+                        },
+                      ],
+                    }
+                  : { verdict: "passed", summary: "Verified", findings: [] },
+            }
+          }
+          taskRuns++
+          await fs.mkdir(path.join(args.workingDirectory, "src/auth"), { recursive: true })
+          await Bun.write(path.join(args.workingDirectory, "src/auth/token.ts"), 'export const token = "test-value"\n')
+          if (newEvidence && taskRuns > 1) {
+            await Instance.provide({
+              directory: args.workingDirectory,
+              sessionDirectory: Instance.sessionDirectory,
+              fn: async () => {
+                HarnessState.pushExecutionLog(sessionId, {
+                  command: "bun test token.test.ts",
+                  output: "1 pass; token behavior verified",
+                  exitCode: 0,
+                })
+              },
+            })
+          }
+          return { sessionId, output: completedTaskOutput("Implemented token"), parts: [] }
+        })
+        const { session, messageID } = await createAssistantMessageContext()
+        const result = await (
+          await AgentTool.init({})
+        ).execute(
+          { action: "spawn", subagent_type: "coder", prompt: "Implement token helper", description: "Token helper" },
+          mockCtx(session.id, messageID),
+        )
+        expect(taskRuns).toBe(2)
+        expect(qaRuns).toBe(newEvidence ? 2 : 1)
+        expect(result.metadata.status).toBe(newEvidence ? "completed" : "failed")
+        if (!newEvidence) expect(result.output).toContain("No new workspace or verification evidence")
+      },
+    })
+  })
+
+  test("incomplete optional QA stays separate without rerunning the worker", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await fs.writeFile(path.join(tmp.path, "atomcli.json"), JSON.stringify({ review: { auto: true } }))
+        await Config.clearCache()
         let taskRuns = 0
         let qaRuns = 0
         const signals: AbortSignal[] = []
@@ -653,7 +994,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
           taskRuns++
           await fs.mkdir(path.join(args.workingDirectory, "src/auth"), { recursive: true })
           await fs.writeFile(path.join(args.workingDirectory, "src/auth/token.ts"), 'export const token = "safe"\n')
-          return { sessionId, output: "Implemented token.", parts: [] }
+          return { sessionId, output: completedTaskOutput("Implemented token."), parts: [] }
         })
 
         const { session, messageID } = await createAssistantMessageContext()
@@ -671,7 +1012,12 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
 
         expect(result.metadata?.status).toBe("completed")
         expect(taskRuns).toBe(1)
-        expect(qaRuns).toBe(4)
+        expect(qaRuns).toBe(1)
+        expect(result.output).toContain("Independent Review:")
+        expect(result.output).toContain("inconclusive")
+        expect(WorkflowStateStore.get(result.metadata.workflowId)?.results.implement_token.review?.status).toBe(
+          "inconclusive",
+        )
         expect(signals.every((signal) => signal === ctx.abort)).toBe(true)
       },
     })
@@ -684,7 +1030,9 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
       fn: async () => {
         await fs.writeFile(
           path.join(tmp.path, "atomcli.json"),
-          JSON.stringify({ review: { enabled: true, policy: "always", reviewer_count: 3, max_attempts: 1 } }),
+          JSON.stringify({
+            review: { auto: true, enabled: true, policy: "always", reviewer_count: 3, max_attempts: 1 },
+          }),
         )
         await Config.clearCache()
         let taskRuns = 0
@@ -720,7 +1068,7 @@ describe("AgentTool spawn (blocking orchestrator behavior)", () => {
           taskRuns++
           await fs.mkdir(path.join(args.workingDirectory, "src/auth"), { recursive: true })
           await fs.writeFile(path.join(args.workingDirectory, "src/auth/token.ts"), 'export const token = "unsafe"\n')
-          return { sessionId, output: "Implemented token.", parts: [] }
+          return { sessionId, output: completedTaskOutput("Implemented token."), parts: [] }
         })
 
         const { session, messageID } = await createAssistantMessageContext()

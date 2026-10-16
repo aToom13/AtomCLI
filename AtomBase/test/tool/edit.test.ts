@@ -8,6 +8,7 @@ import type { PermissionNext } from "@/util/permission/next"
 import { FileTime } from "@/services/file/time"
 import { EditAnchor } from "@/integrations/tool/edit-anchor"
 import { ReadTool } from "@/integrations/tool/read"
+import { WriteTool } from "@/integrations/tool/write"
 import { ToolRuntime } from "@/integrations/tool/runtime"
 
 const ctx = {
@@ -26,6 +27,52 @@ function markFileAsRead(filepath: string) {
 }
 
 describe("tool.edit", () => {
+  test("supplies an authorized read snapshot after an unread edit attempt", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "unread.txt")
+        await Bun.write(filePath, "first line\nsecond line\nreplace me\nlast line")
+        const edit = await EditTool.init()
+        const input = { filePath, oldString: "replace me", newString: "fixed" }
+        const error = await edit.execute(input, ctx).catch((error) => error)
+
+        expect(error).toBeInstanceOf(ToolRuntime.NotAppliedError)
+        expect(String(error)).toContain("replace me")
+        expect(String(error)).toContain(EditAnchor.contentHash(await Bun.file(filePath).text()))
+        expect(await Bun.file(filePath).text()).toContain("replace me")
+
+        await edit.execute(input, ctx)
+        expect(await Bun.file(filePath).text()).toContain("fixed")
+      },
+    })
+  })
+
+  test("does not reveal an unread file when read permission is denied", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "read-denied.txt")
+        await Bun.write(filePath, "private content")
+        const edit = await EditTool.init()
+        const denied = {
+          ...ctx,
+          ask: async (request: { permission: string }) => {
+            if (request.permission === "read") throw new Error("read denied")
+          },
+        }
+        const error = await edit
+          .execute({ filePath, oldString: "private", newString: "public" }, denied)
+          .catch((error) => error)
+        expect(error).toBeInstanceOf(ToolRuntime.NotAppliedError)
+        expect(String(error)).not.toContain("private content")
+        expect(await Bun.file(filePath).text()).toBe("private content")
+      },
+    })
+  })
+
   test("uses oldString and newString when operations is empty", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -36,9 +83,33 @@ describe("tool.edit", () => {
         markFileAsRead(filePath)
         const edit = await EditTool.init()
 
-        await edit.execute({ filePath, oldString: "before", newString: "after", operations: [] }, ctx)
+        const result = await edit.execute({ filePath, oldString: "before", newString: "after", operations: [] }, ctx)
 
         expect(await Bun.file(filePath).text()).toBe("after")
+        expect(result.output).toContain("Edit applied.")
+      },
+    })
+  })
+
+  test("rejects mixed edit modes without silently dropping a replacement", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "mixed.txt")
+        await Bun.write(filePath, "hud below canvas\nconst restart = undefined")
+        markFileAsRead(filePath)
+        const edit = await EditTool.init()
+        const operations = [{ oldString: "undefined", newString: "button" }]
+        const error = await edit
+          .execute({ filePath, oldString: "below", newString: "above", operations }, ctx)
+          .catch((error) => error)
+        expect(error).toBeInstanceOf(ToolRuntime.NotAppliedError)
+        expect(String(error)).toContain("mixed edits are not applied")
+        expect(await Bun.file(filePath).text()).toBe("hud below canvas\nconst restart = undefined")
+
+        await edit.execute({ filePath, oldString: "", newString: "", operations }, ctx)
+        expect(await Bun.file(filePath).text()).toBe("hud below canvas\nconst restart = button")
       },
     })
   })
@@ -89,6 +160,188 @@ describe("tool.edit", () => {
         expect(await Bun.file(filePath).text()).toBe("alpha gamma")
         expect(result.metadata.contentHashBefore).toBe(snapshot.metadata.contentHash)
         expect(result.metadata.contentHashAfter).toBe(EditAnchor.contentHash("alpha gamma"))
+      },
+    })
+  })
+
+  test("binds omitted hashes to trusted reads and rejects backdated external changes", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "remembered.txt")
+        const executionCtx = { ...ctx, extra: { execution: { executionID: "remembered-read" } } }
+        await Bun.write(filePath, "alpha beta")
+        await (await ReadTool.init()).execute({ filePath }, executionCtx)
+        const edit = await EditTool.init()
+        await edit.execute({ filePath, oldString: "alpha", newString: "first" }, executionCtx)
+        await edit.execute({ filePath, oldString: "beta", newString: "next" }, executionCtx)
+        expect(await Bun.file(filePath).text()).toBe("first next")
+        await Bun.write(filePath, "first zeta")
+        const { utimes } = await import("fs/promises")
+        await utimes(filePath, new Date(0), new Date(0))
+        await expect(edit.execute({ filePath, oldString: "first", newString: "other" }, executionCtx)).rejects.toThrow(
+          /Stale edit: content changed/,
+        )
+        expect(await Bun.file(filePath).text()).toBe("first zeta")
+      },
+    })
+  })
+
+  test("an explicit incorrect hash is never replaced by remembered read evidence", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "explicit-hash.txt")
+        const executionCtx = { ...ctx, extra: { execution: { executionID: "explicit-read" } } }
+        await Bun.write(filePath, "alpha beta")
+        await (await ReadTool.init()).execute({ filePath }, executionCtx)
+        await expect(
+          (await EditTool.init()).execute(
+            { filePath, oldString: "beta", newString: "gamma", contentHash: "sha256:" + "0".repeat(64) },
+            executionCtx,
+          ),
+        ).rejects.toThrow(/Stale edit: content changed/)
+        expect(await Bun.file(filePath).text()).toBe("alpha beta")
+      },
+    })
+  })
+
+  test("native writes advance remembered hashes and reject backdated external overwrites", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "shared-revision.txt")
+        const executionCtx = { ...ctx, extra: { execution: { executionID: "shared-revision" } } }
+        await Bun.write(filePath, "alpha beta")
+        await (await ReadTool.init()).execute({ filePath }, executionCtx)
+        const write = await WriteTool.init()
+        await write.execute({ filePath, content: "alpha gamma" }, executionCtx)
+        await (await EditTool.init()).execute({ filePath, oldString: "alpha", newString: "first" }, executionCtx)
+        expect(await Bun.file(filePath).text()).toBe("first gamma")
+        await Bun.write(filePath, "first delta")
+        const { utimes } = await import("fs/promises")
+        await utimes(filePath, new Date(0), new Date(0))
+        await expect(write.execute({ filePath, content: "replacement" }, executionCtx)).rejects.toThrow(
+          /Stale write: content changed/,
+        )
+        expect(await Bun.file(filePath).text()).toBe("first delta")
+      },
+    })
+  })
+
+  test("accepts a prior read hash for later edits in the same execution only", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "revision.txt")
+        await Bun.write(filePath, "alpha beta gamma")
+        const read = await ReadTool.init()
+        const snapshot = await read.execute({ filePath }, ctx)
+        const edit = await EditTool.init()
+        const executionCtx = { ...ctx, extra: { execution: { executionID: "revision-test" } } }
+
+        await edit.execute(
+          { filePath, oldString: "alpha", newString: "one", contentHash: snapshot.metadata.contentHash },
+          executionCtx,
+        )
+        await edit.execute(
+          { filePath, oldString: "beta", newString: "two", contentHash: snapshot.metadata.contentHash },
+          executionCtx,
+        )
+        expect(await Bun.file(filePath).text()).toBe("one two gamma")
+
+        await expect(
+          edit.execute(
+            { filePath, oldString: "gamma", newString: "three", contentHash: snapshot.metadata.contentHash },
+            { ...ctx, extra: { execution: { executionID: "other-execution" } } },
+          ),
+        ).rejects.toThrow(/Stale edit: content changed/)
+
+        await Bun.write(filePath, "external change")
+        await expect(
+          edit.execute(
+            { filePath, oldString: "external", newString: "agent", contentHash: snapshot.metadata.contentHash },
+            executionCtx,
+          ),
+        ).rejects.toThrow(/Stale edit: content changed/)
+      },
+    })
+  })
+
+  test("rebases a read anchor after its own earlier edit shifts the target line", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "rebase-anchor.txt")
+        await Bun.write(filePath, "header\nrepeat\nfirst end\nsection\nrepeat\nsecond end")
+        const executionCtx = { ...ctx, extra: { execution: { executionID: "anchor-rebase" } } }
+        const read = await ReadTool.init()
+        const snapshot = await read.execute({ filePath, offset: 3, limit: 3 }, executionCtx)
+        const edit = await EditTool.init()
+
+        await edit.execute(
+          { filePath, oldString: "header", newString: "header\nnew line", contentHash: snapshot.metadata.contentHash },
+          executionCtx,
+        )
+        await edit.execute(
+          {
+            filePath,
+            oldString: "repeat",
+            newString: "changed",
+            contentHash: snapshot.metadata.contentHash,
+            startAnchor: snapshot.metadata.startAnchor,
+            endAnchor: snapshot.metadata.endAnchor,
+          },
+          executionCtx,
+        )
+
+        expect(await Bun.file(filePath).text()).toBe(
+          "header\nnew line\nrepeat\nfirst end\nsection\nchanged\nsecond end",
+        )
+      },
+    })
+  })
+
+  test("rejects a tracked anchor when an own edit crosses its boundary", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "crossed-anchor.txt")
+        await Bun.write(filePath, "outside\nsection\ntarget\nend")
+        const executionCtx = { ...ctx, extra: { execution: { executionID: "anchor-crossing" } } }
+        const read = await ReadTool.init()
+        const snapshot = await read.execute({ filePath, offset: 1, limit: 2 }, executionCtx)
+        const edit = await EditTool.init()
+
+        await edit.execute(
+          {
+            filePath,
+            oldString: "outside\nsection",
+            newString: "merged\nsection changed",
+            contentHash: snapshot.metadata.contentHash,
+          },
+          executionCtx,
+        )
+        await expect(
+          edit.execute(
+            {
+              filePath,
+              oldString: "target",
+              newString: "changed",
+              contentHash: snapshot.metadata.contentHash,
+              startAnchor: snapshot.metadata.startAnchor,
+              endAnchor: snapshot.metadata.endAnchor,
+            },
+            executionCtx,
+          ),
+        ).rejects.toThrow(/Stale edit: anchored content changed/)
+        expect(await Bun.file(filePath).text()).toBe("merged\nsection changed\ntarget\nend")
       },
     })
   })
@@ -152,6 +405,46 @@ describe("tool.edit", () => {
         )
 
         expect(await Bun.file(filePath).text()).toBe("first\nchanged once\nend first\nsecond\nrepeat me\nend second")
+      },
+    })
+  })
+
+  test("applies repeated read anchors across a batch and leaves failed batches untouched", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const filePath = path.join(tmp.path, "batch-anchor.txt")
+        await Bun.write(filePath, "first\nsecond\nthird")
+        const snapshot = await (await ReadTool.init()).execute({ filePath }, ctx)
+        const edit = await EditTool.init()
+        const anchor = { startAnchor: snapshot.metadata.startAnchor, endAnchor: snapshot.metadata.endAnchor }
+        await expect(
+          edit.execute(
+            {
+              filePath,
+              contentHash: snapshot.metadata.contentHash,
+              operations: [
+                { oldString: "first", newString: "changed first", ...anchor },
+                { oldString: "missing", newString: "changed", ...anchor },
+              ],
+            },
+            ctx,
+          ),
+        ).rejects.toThrow(/oldString not found/)
+        expect(await Bun.file(filePath).text()).toBe("first\nsecond\nthird")
+        await edit.execute(
+          {
+            filePath,
+            contentHash: snapshot.metadata.contentHash,
+            operations: [
+              { oldString: "first", newString: "changed first", ...anchor },
+              { oldString: "second", newString: "changed second", ...anchor },
+            ],
+          },
+          ctx,
+        )
+        expect(await Bun.file(filePath).text()).toBe("changed first\nchanged second\nthird")
       },
     })
   })

@@ -1,3 +1,4 @@
+import "../preload"
 import { test, expect } from "bun:test"
 import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
@@ -486,6 +487,7 @@ test("ask - returns pending promise when action is ask", async () => {
     directory: tmp.path,
     fn: async () => {
       const promise = PermissionNext.ask({
+        id: "permission_pending_test",
         sessionID: "session_test",
         permission: "bash",
         patterns: ["ls"],
@@ -495,7 +497,8 @@ test("ask - returns pending promise when action is ask", async () => {
       })
       // Promise should be pending, not resolved
       expect(promise).toBeInstanceOf(Promise)
-      // Don't await - just verify it returns a promise
+      await PermissionNext.reply({ requestID: "permission_pending_test", reply: "once" })
+      await promise
     },
   })
 })

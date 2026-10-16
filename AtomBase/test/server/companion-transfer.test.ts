@@ -1,7 +1,9 @@
 import "../preload"
 import { describe, expect, test } from "bun:test"
 import { createHash } from "crypto"
+import fs from "fs/promises"
 import path from "path"
+import { Bus } from "@/core/bus"
 import { CompanionTransfer } from "@/services/companion/transfer"
 import { Server } from "@/server/server"
 import { Instance } from "@/services/project/instance"
@@ -49,6 +51,20 @@ describe("companion transfer", () => {
         expect(CompanionTransfer.deleteArtifact(shared.id)).toBe(true)
         expect(CompanionTransfer.artifact(shared.id, url.searchParams.get("token")!)).toBeUndefined()
         expect(await Bun.file(filePath).exists()).toBe(true)
+      },
+    })
+  })
+
+  test("cleans evicted snapshots during concurrent shares", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const source = path.join(tmp.path, "shared.txt")
+    await Bun.write(source, "content")
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Promise.all(Array.from({ length: 105 }, () => CompanionTransfer.shareFile({ filePath: source })))
+        const outgoing = path.join(tmp.path, ".atomcli", "transfers", "outgoing")
+        expect((await fs.readdir(outgoing)).length).toBe(100)
       },
     })
   })
@@ -150,6 +166,10 @@ describe("companion transfer", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        const updates: Record<string, unknown>[] = []
+        const unsubscribe = Bus.subscribe(CompanionTransfer.Event.PreviewUpdated, (event) =>
+          updates.push(event.properties),
+        )
         const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") })
         const targetPort = probe.port
         await probe.stop(true)
@@ -160,6 +180,8 @@ describe("companion transfer", () => {
           title: "Test preview",
         })
         expect(preview.status).toBe("running")
+        expect(updates.at(-1)).toEqual(preview)
+        expect(Object.keys(updates.at(-1)!)).not.toContain("accessToken")
         const endpoint = new URL(preview.endpoints[0])
         expect(endpoint.port).not.toBe(String(targetPort))
         expect(endpoint.searchParams.get("atomcli_token")).toBeTruthy()
@@ -182,6 +204,7 @@ describe("companion transfer", () => {
         expect(refreshed.endpoints[0]).not.toBe(preview.endpoints[0])
         expect(await fetch(`http://127.0.0.1:${targetPort}`).then((response) => response.text())).toBe("ok")
         expect(CompanionTransfer.stopPreview(preview.id).status).toBe("stopped")
+        unsubscribe()
       },
     })
   })
@@ -211,6 +234,52 @@ describe("companion transfer", () => {
       },
     })
   })
+
+  test("reserves a preview port before concurrent startup finishes", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") })
+        const port = probe.port
+        await probe.stop(true)
+        const command = `bun -e 'Bun.serve({ port: ${port}, fetch: () => new Response("ready") })'`
+        const first = CompanionTransfer.startPreview({ command, port })
+        await expect(CompanionTransfer.startPreview({ command, port })).rejects.toThrow(
+          `A companion preview is already using port ${port}`,
+        )
+        const preview = await first
+        expect(preview.status).toBe("running")
+        CompanionTransfer.stopPreview(preview.id)
+      },
+    })
+  })
+
+  test("evicts stopped previews before a running preview", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const command =
+          "bun -e 'Bun.serve({port:Number(process.env.PORT),hostname:process.env.HOST,fetch:()=>new Response(\"ready\")})'"
+        const launch = async () => {
+          const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") })
+          const port = probe.port
+          await probe.stop(true)
+          return CompanionTransfer.startPreview({ command, port })
+        }
+        const active = await launch()
+        for (let i = 0; i < 19; i++) {
+          const stopped = await launch()
+          CompanionTransfer.stopPreview(stopped.id)
+        }
+        const newest = await launch()
+        expect(CompanionTransfer.preview(active.id)?.status).toBe("running")
+        CompanionTransfer.stopPreview(newest.id)
+        CompanionTransfer.stopPreview(active.id)
+      },
+    })
+  }, 30_000)
 
   test("rejects an upload before reading a body with a mismatched length", async () => {
     await using tmp = await tmpdir({ git: true })
@@ -326,6 +395,105 @@ describe("companion transfer", () => {
           }),
         ).rejects.toThrow("checksum did not match")
         expect(CompanionTransfer.uploadStatus(upload.id, token)).toBeUndefined()
+      },
+    })
+  })
+
+  test("keeps completed uploads with the same filename distinct", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const paths: string[] = []
+        for (const value of [1, 2]) {
+          const upload = await CompanionTransfer.createUpload({
+            filename: "same.txt",
+            mime: "text/plain",
+            size: 1,
+            sessionID: "session_same_name",
+            directory: tmp.path,
+            deviceName: "Android test",
+          })
+          const token = new URL(upload.uploadPath, "http://localhost").searchParams.get("token")!
+          const result = await CompanionTransfer.acceptUpload({
+            id: upload.id,
+            token,
+            contentLength: 1,
+            body: new Blob([new Uint8Array([value])]).stream(),
+          })
+          paths.push(result.filePath)
+        }
+        expect(paths[0]).not.toBe(paths[1])
+        expect(new Uint8Array(await Bun.file(paths[0]).arrayBuffer())).toEqual(new Uint8Array([1]))
+        expect(new Uint8Array(await Bun.file(paths[1]).arrayBuffer())).toEqual(new Uint8Array([2]))
+      },
+    })
+  })
+
+  test("rejects oversized streamed chunks before buffering them", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const upload = await CompanionTransfer.createUpload({
+          filename: "oversized.bin",
+          mime: "application/octet-stream",
+          size: 1,
+          sessionID: "session_oversized",
+          directory: tmp.path,
+          deviceName: "Android test",
+        })
+        const token = new URL(upload.uploadPath, "http://localhost").searchParams.get("token")!
+        await expect(
+          CompanionTransfer.acceptUploadChunk({
+            id: upload.id,
+            token,
+            offset: 0,
+            contentLength: 1,
+            body: new Blob([new Uint8Array(1024)]).stream(),
+          }),
+        ).rejects.toThrow("Upload chunk length did not match Content-Length")
+        expect(CompanionTransfer.uploadStatus(upload.id, token)?.offset).toBe(0)
+      },
+    })
+  })
+
+  test("does not evict a chunk while its upload is active", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const input = {
+          filename: "active.bin",
+          mime: "application/octet-stream",
+          size: 1,
+          sessionID: "session_active",
+          directory: tmp.path,
+          deviceName: "Android test",
+        }
+        const active = await CompanionTransfer.createUpload(input)
+        const token = new URL(active.uploadPath, "http://localhost").searchParams.get("token")!
+        let controller: ReadableStreamDefaultController<Uint8Array>
+        const body = new ReadableStream<Uint8Array>({
+          start(value) {
+            controller = value
+            value.enqueue(new Uint8Array([7]))
+          },
+        })
+        const writing = CompanionTransfer.acceptUploadChunk({
+          id: active.id,
+          token,
+          offset: 0,
+          contentLength: 1,
+          body,
+        })
+        try {
+          for (let i = 0; i < 20; i++) await CompanionTransfer.createUpload(input)
+          expect(CompanionTransfer.uploadStatus(active.id, token)?.offset).toBe(0)
+        } finally {
+          controller!.close()
+        }
+        expect((await writing).status).toBe("complete")
       },
     })
   })

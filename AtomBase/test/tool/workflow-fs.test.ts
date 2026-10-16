@@ -63,6 +63,13 @@ describe("WorkflowFS", () => {
       expect(content).toContain("Task: task1 (@coder)")
       expect(content).toContain("Completed At:")
     })
+
+    test("bounds oversized output archives without breaking UTF-8", async () => {
+      const filePath = await WorkflowFS.writeSuccess(TEST_WF_ID, "large", "coder", "é".repeat(100_000))
+      const content = await Bun.file(filePath).text()
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(100 * 1024)
+      expect(content).toContain("output archive truncated")
+    })
   })
 
   describe("writeFailed", () => {
@@ -99,6 +106,25 @@ describe("WorkflowFS", () => {
       expect(content).toContain("## Error")
       expect(content).toContain("QA_FAILED: Eksik kaynakça")
       expect(content).toContain("**Attempts:** 2")
+    })
+
+    test("bounds oversized failure and artifact content", async () => {
+      const failure = await WorkflowFS.writeFailed(
+        TEST_WF_ID,
+        "large-failure",
+        "coder",
+        "x".repeat(200_000),
+        1,
+        "y".repeat(200_000),
+      )
+      const artifact = await WorkflowFS.writeArtifact(
+        TEST_WF_ID,
+        "large-artifact",
+        "patch.txt",
+        "z".repeat(6 * 1024 * 1024),
+      )
+      expect(Buffer.byteLength(await Bun.file(failure).text())).toBeLessThanOrEqual(100 * 1024)
+      expect(Buffer.byteLength(await Bun.file(artifact).text())).toBeLessThanOrEqual(5 * 1024 * 1024)
     })
   })
 

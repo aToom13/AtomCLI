@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
@@ -6,6 +7,24 @@ import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
 describe("SemanticProjectMap", () => {
+  test.each([
+    ["py", "async def rotateToken(value):\n    return value"],
+    ["go", "func (s *Service) rotateToken(value string) string { return value }"],
+    ["rs", "pub async fn rotateToken(value: String) -> String { value }"],
+    ["kt", "fun rotateToken(value: String): String = value"],
+    ["swift", "func rotateToken(value: String) -> String { value }"],
+  ])("finds %s functions by symbol when the filename does not match", async (extension, source) => {
+    await using tmp = await tmpdir({ git: true })
+    const relative = `src/worker.${extension}`
+    await Bun.write(path.join(tmp.path, relative), source)
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        expect(await SemanticProjectMap.get("rotateToken", [relative])).toContain(`${relative} (symbols=rotateToken)`)
+      },
+    })
+  })
+
   test("indexes symbols, imports, and test role", () => {
     const entry = SemanticProjectMap.parse(
       "test/auth/session.test.ts",

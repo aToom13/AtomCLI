@@ -1,5 +1,8 @@
+// IMPORTANT: preload before any src/ import (xdg-basedir reads env at import time).
+import "./preload"
+
 import { describe, expect, test } from "bun:test"
-import { escapeXmlText, HarnessState } from "@/core/session/harness-state"
+import { escapeXmlText, HarnessState, truncateUtf8 } from "@/core/session/harness-state"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "./fixture/fixture"
 
@@ -329,7 +332,7 @@ describe("HarnessState - ReviewVerdictRegistry", () => {
     })
   })
 
-  test("reset clears review verdict and reviewer session mapping", async () => {
+  test("reset clears process-local review ceiling and reviewer session mapping", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
       directory: tmp.path,
@@ -339,8 +342,11 @@ describe("HarnessState - ReviewVerdictRegistry", () => {
         HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason: "issue" })
         HarnessState.setReviewerSession(sessionID, "reviewer-sess-1")
 
+        expect(HarnessState.getReviewVerdict(sessionID)?.attempts).toBe(1)
+        expect(HarnessState.getReviewVerdict(sessionID)?.totalFailAttempts).toBe(1)
         expect(HarnessState.getReviewerSession(sessionID)).toBe("reviewer-sess-1")
 
+        // Restart recovery has no durable HarnessState snapshot to restore here.
         HarnessState.reset(sessionID)
         expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
         expect(HarnessState.getReviewerSession(sessionID)).toBeUndefined()
@@ -736,6 +742,157 @@ describe("HarnessState - bounded registries evict by oldest timestamp", () => {
   })
 })
 
+describe("HarnessState - verification command equivalence", () => {
+  test("Bun reporter changes do not retain an older failed verification", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "verification-reporter-equivalence"
+        const workdir = "/repo"
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter=verbose",
+          workdir,
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter dots",
+          workdir,
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, { command: "bun test", workdir, output: "passed", exitCode: 0 })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([])
+      },
+    })
+  })
+
+  test("a bun run script containing bun test does not retire the direct test failure", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "verification-wrapper-boundary"
+        const workdir = "/repo"
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun run test bun test --reporter=dots",
+          workdir,
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun run test bun test",
+          workdir,
+          output: "passed",
+          exitCode: 0,
+        })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(["bun run test bun test --reporter=dots"])
+      },
+    })
+  })
+
+  test("quoted filenames containing different whitespace stay distinct", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "verification-quoted-whitespace-boundary"
+        const workdir = "/repo"
+        HarnessState.pushExecutionLog(sessionID, {
+          command: 'bun test test"with\tspace".test.ts --reporter=dots',
+          workdir,
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: 'bun test test"with space".test.ts',
+          workdir,
+          output: "passed",
+          exitCode: 0,
+        })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([
+          'bun test test"with\tspace".test.ts --reporter=dots',
+        ])
+      },
+    })
+  })
+
+  test("only equivalent full-suite reruns retire failures", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "verification-equivalence-boundaries"
+        const workdir = "/repo"
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter=verbose",
+          workdir,
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test test/a.test.ts --reporter=dots",
+          workdir,
+          output: "focused pass",
+          exitCode: 0,
+        })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(["bun test --reporter=verbose"])
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter dots",
+          workdir: "/other",
+          output: "other workdir",
+          exitCode: 0,
+        })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(["bun test --reporter=verbose"])
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter=dots",
+          workdir,
+          output: "failed again",
+          exitCode: 1,
+        })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(["bun test --reporter=dots"])
+      },
+    })
+  })
+
+  test("quoted filenames, substitutions, and arguments after -- stay distinct", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "verification-equivalence-conservative"
+
+        HarnessState.pushExecutionLog(sessionID, {
+          command: 'bun test --reporter=verbose "test --reporter=dots.test.ts"',
+          workdir: "/repo",
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: 'bun test --reporter=dots "test --reporter=dots.test.ts"',
+          workdir: "/repo",
+          output: "passed",
+          exitCode: 0,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter=verbose -- --reporter=dots",
+          workdir: "/repo",
+          output: "failed",
+          exitCode: 1,
+        })
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "bun test --reporter=dots -- --reporter=verbose",
+          workdir: "/repo",
+          output: "passed",
+          exitCode: 0,
+        })
+        expect(HarnessState.failedVerificationCommands(sessionID)).toHaveLength(2)
+      },
+    })
+  })
+})
+
 describe("HarnessState - restored edit evidence", () => {
   test("does not invalidate an unchanged PASS when the same evidence is restored", async () => {
     await using tmp = await tmpdir()
@@ -755,5 +912,40 @@ describe("HarnessState - restored edit evidence", () => {
         expect(HarnessState.needsReview(sessionID)).toBe(true)
       },
     })
+  })
+
+  test("bounds execution log output and command by UTF-8 bytes", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = "session-log-byte-limit"
+        HarnessState.pushExecutionLog(sessionID, {
+          command: "é".repeat(2_000),
+          output: "é".repeat(10_000),
+          exitCode: 0,
+        })
+        const [entry] = HarnessState.getLastLogs(sessionID)
+        expect(Buffer.byteLength(entry.command)).toBeLessThanOrEqual(2_000)
+        expect(Buffer.byteLength(entry.output)).toBeLessThanOrEqual(10_000)
+      },
+    })
+  })
+
+  test("never emits a replacement character at any UTF-8 boundary", () => {
+    const payload = "ğüşıöçĞÜŞİÖÇ😀🚀"
+    for (let maxBytes = 0; maxBytes <= 40; maxBytes++) {
+      const out = truncateUtf8(payload, maxBytes, "[...truncated]")
+      expect(Buffer.byteLength(out)).toBeLessThanOrEqual(maxBytes)
+      expect(out).not.toContain("\uFFFD")
+    }
+  })
+
+  test("stays safe when the marker itself exceeds the byte budget", () => {
+    const out = truncateUtf8("ğüşıöçĞÜŞİÖÇ", 3, "[...truncated]")
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(3)
+    expect(out).not.toContain("\uFFFD")
+    expect(truncateUtf8("any", 0, "m")).toBe("")
+    expect(truncateUtf8("ab", -5, "m")).toBe("")
   })
 })
