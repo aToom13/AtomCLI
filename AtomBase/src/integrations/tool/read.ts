@@ -10,7 +10,6 @@ import { Identifier } from "@/core/id/id"
 import { assertExternalDirectory } from "./external-directory"
 
 const DEFAULT_READ_LIMIT = 2000
-const MAX_LINE_LENGTH = 2000
 const MAX_BYTES = 50 * 1024
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 const MAX_EDIT_ANCHOR_BYTES = 10 * 1024 * 1024
@@ -128,8 +127,8 @@ export const ReadTool = Tool.define("read", {
     const { raw, totalLines, truncated, truncatedByBytes } = await readTextLines(file, offset, limit, ctx.abort)
     // Files larger than Edit's own limit cannot be modified through the stale-safe
     // protocol, so avoid a full extra scan for arbitrarily large read-only files.
-    const contentHash =
-      statBeforeRead.size <= MAX_EDIT_ANCHOR_BYTES ? EditAnchor.contentHash(await file.text()) : undefined
+    const fullContent = statBeforeRead.size <= MAX_EDIT_ANCHOR_BYTES ? await file.text() : undefined
+    const contentHash = fullContent === undefined ? undefined : EditAnchor.contentHash(fullContent)
     const statAfterRead = await file.stat()
     if (
       statBeforeRead.size !== statAfterRead.size ||
@@ -138,7 +137,21 @@ export const ReadTool = Tool.define("read", {
       throw new Error(`File changed while it was being read: ${filepath}. Read it again before editing`)
     }
 
-    const { startAnchor, endAnchor } = EditAnchor.range(offset + 1, raw)
+    const { startAnchor, endAnchor } = EditAnchor.range(
+      offset + 1,
+      fullContent === undefined ? raw : fullContent.split("\n").slice(offset, offset + raw.length),
+    )
+    const executionID = ctx.extra?.execution?.executionID as string | undefined
+    if (executionID && contentHash && fullContent !== undefined && raw.length > 0) {
+      EditAnchor.trackRead({
+        executionID,
+        filePath: filepath,
+        content: fullContent,
+        contentHash,
+        startAnchor,
+        endAnchor,
+      })
+    }
 
     const content = raw.map((line, index) => {
       return `${(index + offset + 1).toString().padStart(5, "0")}| ${line}`
@@ -253,7 +266,7 @@ async function readTextLines(file: Bun.BunFile, offset: number, limit: number, s
   let lastWasNewline = false
 
   const append = (fragment: string) => {
-    const remaining = MAX_LINE_LENGTH + 1 - pending.length
+    const remaining = MAX_BYTES + 1 - pending.length
     if (remaining > 0) pending += fragment.slice(0, remaining)
     if (fragment.length > Math.max(remaining, 0)) pendingTruncated = true
   }
@@ -271,8 +284,16 @@ async function readTextLines(file: Bun.BunFile, offset: number, limit: number, s
     }
 
     if (pending.endsWith("\r")) pending = pending.slice(0, -1)
-    const line =
-      pendingTruncated || pending.length > MAX_LINE_LENGTH ? `${pending.slice(0, MAX_LINE_LENGTH)}...` : pending
+    const remaining = MAX_BYTES - bytes - (raw.length > 0 ? 1 : 0)
+    const clipped = pendingTruncated || Buffer.byteLength(pending, "utf-8") > remaining
+    if (clipped && remaining <= 3) {
+      truncated = true
+      truncatedByBytes = true
+      return true
+    }
+    const line = clipped
+      ? new TextDecoder().decode(Buffer.from(pending).subarray(0, remaining - 3), { stream: true }) + "..."
+      : pending
     const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
     if (bytes + size > MAX_BYTES) {
       truncated = true
@@ -284,7 +305,11 @@ async function readTextLines(file: Bun.BunFile, offset: number, limit: number, s
     bytes += size
     pending = ""
     pendingTruncated = false
-    return false
+    if (clipped) {
+      truncated = true
+      truncatedByBytes = true
+    }
+    return clipped
   }
 
   try {

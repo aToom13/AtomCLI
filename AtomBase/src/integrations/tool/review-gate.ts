@@ -10,6 +10,7 @@ import { ReviewV2 } from "@/core/verification/review-v2"
 import { Instance } from "@/services/project/instance"
 import { SessionExecutionProfile } from "@/core/session/execution-profile"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
+import type { MessageV2 } from "@/core/session/message-v2"
 
 const log = Log.create({ service: "review-gate" })
 
@@ -40,6 +41,7 @@ export interface ReviewResult {
   error?: boolean
   /** Validated structured review report when a review ran. */
   report?: ReviewV2.Report
+  status?: "not_requested" | "passed" | "rejected" | "inconclusive"
 }
 
 type ReviewAssessment = {
@@ -63,8 +65,14 @@ const MAX_EDITED_FILES = 200
  * and the session's harness execution logs so the reviewer can cross-reference
  * real test output instead of relying on agent-provided summaries.
  */
-export async function buildReviewPrompt(sessionID: string, impact?: ChangeImpact.Report): Promise<string> {
-  const originalRequest = escapeXmlText((await findOriginalUserRequest(sessionID)).slice(0, MAX_USER_REQUEST_CHARS))
+export async function buildReviewPrompt(
+  sessionID: string,
+  impact?: ChangeImpact.Report,
+  request?: string,
+): Promise<string> {
+  const originalRequest = escapeXmlText(
+    (request ?? (await findOriginalUserRequest(sessionID))).slice(0, MAX_USER_REQUEST_CHARS),
+  )
   const allFiles = HarnessState.getEditedFiles(sessionID)
   const editedFiles = allFiles.slice(0, MAX_EDITED_FILES)
   const harnessLogs = HarnessState.formatLogsForPrompt(sessionID)
@@ -101,7 +109,11 @@ export async function buildReviewPrompt(sessionID: string, impact?: ChangeImpact
     `Independently verify by inspecting the code and running the narrowest relevant tests first, including any suggested tests above when they exist.`,
     `Then run the project's required typecheck/test commands (use bash) when their cost is proportionate to the impact.`,
     `Specifically check:`,
-    `  1. Does the implementation satisfy the original request?`,
+    `  1. Map each requested acceptance criterion to setup, action, expected observable result, and actual evidence.`,
+    `     Names, text matches, source presence, screenshots alone, and successful builds do not prove interactive behavior.`,
+    `     Exercise each requested game/control and verify state changes, scoring/progression, and reset.`,
+    `     For 3D, inspect coordinates, projection, depth/occlusion, camera, and spatial interaction. Canvas 2D alone neither proves nor disproves 3D; preserve explicit WebGL/engine constraints.`,
+    `     Missing behavioral evidence is inconclusive; a demonstrated unmet criterion requires a concrete finding.`,
     `  2. Do the project's tests/typecheck/build pass with raw output?`,
     `  3. Are there out-of-scope or side-effect changes (compare with git diff/status)?`,
     `  4. Security scan: secrets committed, auth/access-control regressions, injection risks?`,
@@ -116,9 +128,28 @@ export async function buildReviewPrompt(sessionID: string, impact?: ChangeImpact
 /**
  * Find the current non-synthetic user request in a session.
  */
-async function findOriginalUserRequest(sessionID: string): Promise<string> {
+async function findOriginalUserRequest(sessionID: string, executionID?: string): Promise<string> {
   try {
     const messages = await Session.messages({ sessionID, excludePatches: true })
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    const context = executionID ? ExecutionRuntime.view(executionID) : undefined
+    const objective =
+      executionID && context?.rootSessionID === sessionID ? ExecutionRuntime.objective(executionID) : undefined
+    if (objective)
+      return [
+        ...new Set([
+          objective.objective,
+          ...messages
+            .filter((message) => message.info.role === "user" && message.info.id >= objective.message_id)
+            .flatMap((message) =>
+              message.parts
+                .filter((part) => part.type === "text" && !part.synthetic && !part.ignored)
+                .map((part) => (part as MessageV2.TextPart).text.trim()),
+            ),
+        ]),
+      ]
+        .filter(Boolean)
+        .join("\n")
     const realUser = messages.findLast(
       (m) => m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic),
     )
@@ -198,19 +229,19 @@ export async function aggregateDescendantEdits(sessionID: string): Promise<numbe
   return total
 }
 
-export async function evaluateReviewDecision(sessionID: string, executionID?: string): Promise<ReviewAssessment> {
+export async function evaluateReviewDecision(
+  sessionID: string,
+  executionID?: string,
+  independentReviewStep = false,
+): Promise<ReviewAssessment> {
   const config = await Config.get()
-  const snapshot = ReviewPolicy.snapshot({
-    enabled: config.review?.enabled !== false,
-    configuredPolicy: config.review?.policy ?? "adaptive",
+  const snapshot = ReviewPolicy.snapshotFromConfig({
+    review: config.review,
     executionProfile: SessionExecutionProfile.get(sessionID),
-    reviewerCount: config.review?.reviewer_count ?? 2,
-    attemptLimit: config.review?.max_attempts ?? 3,
-    highRiskPatterns: config.review?.high_risk_patterns ?? [],
   })
   await aggregateDescendantEdits(sessionID)
   const editedFiles = HarnessState.getEditedFiles(sessionID)
-  const originalPrompt = await findOriginalUserRequest(sessionID)
+  const originalPrompt = await findOriginalUserRequest(sessionID, executionID)
   const diff = await ChangeImpact.diff(editedFiles).catch(() => "")
   const impact = ChangeImpact.analyze({ files: editedFiles, diff, prompt: originalPrompt })
   const executionPolicy = executionID
@@ -225,19 +256,57 @@ export async function evaluateReviewDecision(sessionID: string, executionID?: st
     risk: executionPolicy?.risk,
     extraHighRiskPatterns: snapshot.highRiskPatterns,
   })
+  const policy = snapshot.effectivePolicy
+  if (!snapshot.auto && !independentReviewStep) {
+    return {
+      decision: {
+        policyVersion: snapshot.policyVersion,
+        policyDigest: snapshot.policyDigest,
+        requirement: "not_required",
+        reasonCode: config.review?.enabled === false ? "review_disabled" : "automatic_review_disabled",
+        requiredReviewers: 0,
+        attemptLimit: snapshot.attemptLimit,
+      },
+      impact,
+      diff,
+      originalPrompt,
+      editedFiles,
+      policy,
+    }
+  }
   return {
     decision: {
       policyVersion: snapshot.policyVersion,
       policyDigest: snapshot.policyDigest,
-      requirement: required ? "required" : "not_required",
-      reasonCode: !snapshot.enabled
-        ? "review_disabled"
-        : editedFiles.length === 0
-          ? "no_mutations"
+      requirement:
+        independentReviewStep && snapshot.enabled && policy !== "off"
+          ? "required"
           : required
-            ? "risk_requires_independent_review"
-            : "risk_below_review_threshold",
-      requiredReviewers: required ? snapshot.reviewerCount : 0,
+            ? "required"
+            : "not_required",
+      reasonCode:
+        !snapshot.enabled || policy === "off"
+          ? "review_disabled"
+          : independentReviewStep
+            ? "runtime_review_required"
+            : editedFiles.length === 0
+              ? "no_mutations"
+              : required
+                ? "risk_requires_independent_review"
+                : policy === "advisory" &&
+                    ReviewPolicy.assess({
+                      editedFiles,
+                      prompt: originalPrompt,
+                      diff,
+                      impact,
+                      scope: executionPolicy?.scope,
+                      risk: executionPolicy?.risk,
+                      extraHighRiskPatterns: snapshot.highRiskPatterns,
+                    }) === "high"
+                  ? "review_advised"
+                  : "risk_below_review_threshold",
+      requiredReviewers:
+        (independentReviewStep && snapshot.enabled && policy !== "off") || required ? snapshot.reviewerCount : 0,
       attemptLimit: snapshot.attemptLimit,
     },
     impact,
@@ -267,14 +336,34 @@ export async function runBlockingReview(
     authorizeSession?: (sessionID: string) => void | Promise<void>
     decision?: ExecutionRuntime.ReviewDecision
     executionID?: string
+    independentReviewStep?: boolean
   } = {},
 ): Promise<ReviewResult> {
   options.signal?.throwIfAborted()
-  const assessment = await evaluateReviewDecision(sessionID, options.executionID)
+  const assessment = await evaluateReviewDecision(sessionID, options.executionID, options.independentReviewStep)
   const { decision, editedFiles, originalPrompt, impact, policy, diff } = assessment
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  const requiresAcceptance = ReviewV2.requiresAcceptance(
+    editedFiles,
+    options.executionID ? ExecutionRuntime.getExecutionContract(options.executionID)?.expectedSurfaces : [],
+  )
+  const acceptance = options.executionID
+    ? ExecutionRuntime.getExecutionContract(options.executionID)?.acceptance
+    : undefined
+  const acceptanceRequestHash = requiresAcceptance
+    ? ReviewV2.acceptanceRequestHash(originalPrompt, acceptance)
+    : undefined
   if (editedFiles.length === 0) {
     log.info("review gate not required without mutations", { sessionID, policy, impact })
-    return { passed: true, exhausted: false, skipped: true }
+    if (options.independentReviewStep)
+      return {
+        passed: false,
+        reason: "Independent review needs edited files to inspect.",
+        exhausted: false,
+        skipped: true,
+        status: "not_requested",
+      }
+    return { passed: true, exhausted: false, skipped: true, status: "not_requested" }
   }
   if (
     options.decision &&
@@ -287,6 +376,7 @@ export async function runBlockingReview(
       reason: "Review policy changed after the completion candidate was staged.",
       exhausted: false,
       skipped: true,
+      status: "inconclusive",
       error: true,
     }
   }
@@ -295,16 +385,54 @@ export async function runBlockingReview(
 
   if (decision.requirement !== "required") {
     log.info("review gate not required by policy", { sessionID, policy, reasonCode: decision.reasonCode, impact })
-    return { passed: true, exhausted: false, skipped: true }
+    if (options.independentReviewStep)
+      return {
+        passed: false,
+        reason: "Independent review is disabled by review configuration.",
+        exhausted: false,
+        skipped: true,
+        status: "not_requested",
+      }
+    return { passed: true, exhausted: false, skipped: true, status: "not_requested" }
   }
 
-  if (!HarnessState.needsReview(sessionID)) {
+  if (
+    !HarnessState.needsReview(sessionID) &&
+    (!requiresAcceptance ||
+      (HarnessState.getReviewVerdict(sessionID)?.acceptanceVerified &&
+        HarnessState.getReviewVerdict(sessionID)?.acceptanceRequestHash === acceptanceRequestHash))
+  ) {
     const reviewerSessions = Array.from({ length: reviewerCount }, (_, index) =>
       HarnessState.getReviewerSession(sessionID, index),
     ).filter((value): value is string => !!value)
     if (!options.authorizeSession || reviewerSessions.length === reviewerCount) {
       await Promise.all(reviewerSessions.map((reviewerSessionID) => options.authorizeSession?.(reviewerSessionID)))
-      return { passed: true, exhausted: false, skipped: true }
+      return { passed: true, exhausted: false, skipped: true, status: "passed" }
+    }
+  }
+
+  // REV-03: an orchestrator QA PASS recorded for the current workspace revision
+  // is the single durable review decision for that revision. Reuse it instead
+  // of spawning a second reviewer set; a later mutation bumps the revision and
+  // therefore requires a fresh decision.
+  if (options.executionID && !options.independentReviewStep) {
+    const { ExecutionRuntime } = await import("@/core/execution/runtime")
+    const revision = ExecutionRuntime.mutationRevision(options.executionID)
+    if (
+      revision !== undefined &&
+      ExecutionRuntime.qaReviewPassed(options.executionID, revision, requiresAcceptance, acceptanceRequestHash)
+    ) {
+      log.info("review gate: reusing durable QA PASS for the current revision", {
+        sessionID,
+        executionID: options.executionID,
+        revision,
+      })
+      HarnessState.recordReviewVerdict(sessionID, {
+        status: "pass",
+        acceptanceVerified: requiresAcceptance,
+        acceptanceRequestHash,
+      })
+      return { passed: true, exhausted: false, skipped: true, status: "passed" }
     }
   }
 
@@ -357,6 +485,7 @@ export async function runBlockingReview(
         reason: "Reviewer agent is unavailable, so the required review could not run.",
         exhausted,
         skipped: true,
+        status: "inconclusive",
         error: true,
       }
     }
@@ -384,13 +513,17 @@ export async function runBlockingReview(
       return { providerID: parentModel.providerID, modelID: parentModel.id }
     })()
 
-    const reviewPrompt = await buildReviewPrompt(sessionID, impact)
+    const reviewPrompt = [
+      await buildReviewPrompt(sessionID, impact, originalPrompt),
+      ...(requiresAcceptance ? [ReviewV2.acceptanceInstructions(originalPrompt, acceptance)] : []),
+    ].join("\n\n")
     const focuses = [
       "correctness, regressions, edge cases, and request conformance",
       "security, permissions, concurrency, and data integrity",
       "tests, API compatibility, performance, and operational safety",
       "cross-file integration, error handling, and release risk",
     ]
+    const reviewStartedAt = Date.now()
     const settled = await Promise.allSettled(
       Array.from({ length: reviewerCount }, (_, index) => {
         const existingReviewerSession = HarnessState.getReviewerSession(sessionID, index)
@@ -422,13 +555,21 @@ export async function runBlockingReview(
         })
       }),
     )
-    const reviewerResults: ReviewV2.ReviewerResult[] = settled.map((result, index) =>
-      result.status === "fulfilled"
-        ? { reviewer: `reviewer-${index + 1}`, output: result.value.structuredOutput }
-        : {
-            reviewer: `reviewer-${index + 1}`,
-            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-          },
+    const reviewerResults: ReviewV2.ReviewerResult[] = await Promise.all(
+      settled.map(async (result, index) =>
+        result.status === "fulfilled"
+          ? {
+              reviewer: `reviewer-${index + 1}`,
+              output: result.value.structuredOutput,
+              ...(requiresAcceptance
+                ? { messages: await Session.messages({ sessionID: result.value.sessionId, excludePatches: true }) }
+                : {}),
+            }
+          : {
+              reviewer: `reviewer-${index + 1}`,
+              error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+            },
+      ),
     )
     options.signal?.throwIfAborted()
     await aggregateDescendantEdits(sessionID)
@@ -449,10 +590,17 @@ export async function runBlockingReview(
       results: reviewerResults,
       sources: ReviewV2.mergeSources(workspaceSources, diffSources),
       allowedFiles: editedFiles,
+      ...(requiresAcceptance
+        ? { acceptance: { request: originalPrompt, startedAt: reviewStartedAt, criteria: acceptance } }
+        : {}),
     })
 
     if (report.verdict === "passed") {
-      HarnessState.recordReviewVerdict(sessionID, { status: "pass" })
+      HarnessState.recordReviewVerdict(sessionID, {
+        status: "pass",
+        acceptanceVerified: requiresAcceptance,
+        acceptanceRequestHash,
+      })
       if (HarnessState.needsReview(sessionID)) {
         log.warn("review gate: PASS became stale before commit", { sessionID })
         return {
@@ -464,7 +612,7 @@ export async function runBlockingReview(
         }
       }
       log.info("review gate: PASS", { sessionID })
-      return { passed: true, exhausted: false, skipped: false, report }
+      return { passed: true, exhausted: false, skipped: false, status: "passed", report }
     }
 
     const reason = formatReviewReason(report)
@@ -472,7 +620,15 @@ export async function runBlockingReview(
     const attempts = HarnessState.getReviewVerdict(sessionID)?.attempts ?? 1
     const exhausted = attempts >= maxAttempts
     log.info("review gate: FAIL", { sessionID, attempts, exhausted, verdict: report.verdict })
-    return { passed: false, reason, exhausted, skipped: false, error: report.verdict === "inconclusive", report }
+    return {
+      passed: false,
+      reason,
+      exhausted,
+      skipped: false,
+      status: report.verdict === "inconclusive" ? "inconclusive" : "rejected",
+      error: report.verdict === "inconclusive",
+      report,
+    }
   } catch (error) {
     // Reviewer infrastructure failure — do not silently pass the gate. Surface
     // the error so the clear output can report "review skipped due to error"
@@ -495,6 +651,7 @@ export async function runBlockingReview(
       error: true,
       exhausted,
       skipped: true,
+      status: "inconclusive",
     }
   }
 }
@@ -507,5 +664,11 @@ function formatReviewReason(report: ReviewV2.Report) {
         `${finding.severity} ${finding.file}:${finding.startLine}-${finding.endLine} ` +
         `${finding.title} (confidence ${finding.confidence.toFixed(2)})`,
     )
-  return [report.summary, ...findings].join("\n").slice(0, 4_000)
+  return [
+    report.summary,
+    ...findings,
+    ...(report.rejectedChecks ?? []).map((check) => `${check.criterion ?? "Acceptance evidence"}: ${check.reason}`),
+  ]
+    .join("\n")
+    .slice(0, 4_000)
 }

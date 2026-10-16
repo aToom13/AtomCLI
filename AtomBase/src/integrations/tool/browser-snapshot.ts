@@ -134,6 +134,7 @@ export namespace BrowserSnapshot {
                 node.getAttribute("aria-label") ||
                   labelledText ||
                   node.labels?.[0]?.textContent ||
+                  node.innerText ||
                   node.textContent ||
                   node.getAttribute("placeholder") ||
                   node.getAttribute("alt") ||

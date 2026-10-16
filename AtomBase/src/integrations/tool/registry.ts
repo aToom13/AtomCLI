@@ -1,5 +1,6 @@
 import { QuestionTool } from "./question"
 import { ModelControl } from "./model-control"
+import { ScopeControl } from "./scope-control"
 import { BashTool } from "./bash"
 import { SshTool } from "./ssh"
 import { EditTool } from "./edit"
@@ -26,8 +27,12 @@ import { Log } from "@/util/util/log"
 import { Truncate } from "./truncation"
 import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
+import { StaticCheckTool } from "./static-check"
+import { TaskTool } from "./task"
 import { AgentTool } from "./agent-tool"
+import { OrchestrateTool } from "./orchestrate"
 import { TaskFlowTool } from "./taskflow"
+import { TodoTool } from "./todo-tool"
 import { CompanionSendTool } from "./companion-send"
 import { CompanionPreviewTool } from "./companion-preview"
 
@@ -104,6 +109,7 @@ export namespace ToolRegistry {
       ...(Flag.ATOMCLI_CLIENT === "cli" ? [QuestionTool] : []),
       InvalidTool,
       ModelControl.Info,
+      ScopeControl.Info,
       BashTool,
       SshTool,
       ReadTool,
@@ -112,13 +118,16 @@ export namespace ToolRegistry {
       EditTool,
       WriteTool,
       AgentTool,
+      OrchestrateTool,
       TaskFlowTool,
+      TodoTool,
       WebFetchTool,
       WebSearchTool,
       SkillTool,
       MemoryTool,
       BrowserTool,
       SystemHealthTool,
+      StaticCheckTool,
       CompanionSendTool,
       CompanionPreviewTool,
       LazyLspTool,
@@ -129,20 +138,36 @@ export namespace ToolRegistry {
   }
 
   export const AGENT_TOOL_ALLOW_LISTS: Record<string, string[]> = {
-    explore: ["read", "find", "grep", "bash", "lsp", "browser", "webfetch", "websearch", "skill", "memory", "taskflow"],
+    explore: [
+      "read",
+      "find",
+      "grep",
+      "bash",
+      "lsp",
+      "static_check",
+      "browser",
+      "webfetch",
+      "websearch",
+      "skill",
+      "memory",
+
+      "scope_control",
+    ],
     checker: [
       "read",
       "grep",
       "find",
       "bash",
       "lsp",
+      "static_check",
       "browser",
       "webfetch",
       "websearch",
       "skill",
       "memory",
       "system_health",
-      "taskflow",
+
+      "scope_control",
     ],
     reviewer: [
       "read",
@@ -150,14 +175,29 @@ export namespace ToolRegistry {
       "grep",
       "bash",
       "lsp",
+      "static_check",
       "browser",
       "webfetch",
       "websearch",
       "skill",
       "memory",
-      "taskflow",
+
+      "scope_control",
     ],
-    analyst: ["read", "find", "grep", "bash", "lsp", "webfetch", "websearch", "skill", "memory", "taskflow"],
+    analyst: [
+      "read",
+      "find",
+      "grep",
+      "bash",
+      "lsp",
+      "static_check",
+      "webfetch",
+      "websearch",
+      "skill",
+      "memory",
+
+      "scope_control",
+    ],
     documenter: [
       "read",
       "write",
@@ -166,11 +206,13 @@ export namespace ToolRegistry {
       "grep",
       "bash",
       "lsp",
+      "static_check",
       "webfetch",
       "websearch",
       "skill",
       "memory",
-      "taskflow",
+
+      "scope_control",
     ],
   }
 
@@ -178,15 +220,19 @@ export namespace ToolRegistry {
     return all().then((x) => x.map((t) => t.id))
   }
 
-  export async function tools(providerID: string, agent?: Agent.Info, requested?: ReadonlySet<string>) {
+  export async function tools(
+    _providerID: string,
+    agent?: Agent.Info,
+    requested?: ReadonlySet<string>,
+    atomicWork = false,
+  ) {
     const allTools = await all()
+    if (atomicWork) allTools.push(TaskTool)
     const allowList = agent?.name ? AGENT_TOOL_ALLOW_LISTS[agent.name] : undefined
 
     let filteredTools = allTools.filter((t) => {
       if (requested && !requested.has(t.id)) return false
-      if (allowList) {
-        return allowList.includes(t.id)
-      }
+      if (allowList) return t.id === "invalid" || allowList.includes(t.id)
       return true
     })
 
@@ -200,7 +246,15 @@ export namespace ToolRegistry {
     }
 
     if (filteredTools.length === 0) {
-      log.debug("Agent tool allow list produced no permitted tools", { agent: agent?.name })
+      // An empty result is a silent capability loss. Name the actual cause:
+      // the requester filtered everything out (execution policy / requested
+      // set), or the agent allowlist did.
+      log.warn("no tools advertised for this turn", {
+        agent: agent?.name,
+        allowList: allowList ?? "(none)",
+        requested: requested ? [...requested] : "(all)",
+        available: allTools.map((t) => t.id),
+      })
     }
 
     const result = await Promise.all(

@@ -65,7 +65,7 @@ export const LspTool = Tool.define("lsp", {
   mutating: (args) =>
     args.operation === "renameSymbol" ||
     args.operation === "renameFile" ||
-    args.operation === "formatting" ||
+    (args.operation === "formatting" && args.apply) ||
     (args.operation === "codeActions" && args.apply),
   parameters: z.object({
     operation: z.enum(operations).describe("The LSP operation to perform"),
@@ -83,7 +83,7 @@ export const LspTool = Tool.define("lsp", {
     endLine: z.number().int().min(1).optional().describe("Optional 1-based code action range end line"),
     endCharacter: z.number().int().min(1).optional().describe("Optional 1-based code action range end character"),
     codeActionKinds: z.array(z.string().min(1).max(100)).max(20).optional().describe("Optional code action kinds"),
-    apply: z.boolean().default(false).describe("Apply the selected code action; listing is the default"),
+    apply: z.boolean().default(false).describe("Apply formatting edits or the selected code action; preview is the default"),
     actionIndex: z.number().int().min(0).optional().describe("Zero-based code action index to apply"),
     tabSize: z.number().int().min(1).max(16).default(2).describe("Formatting tab size"),
     insertSpaces: z.boolean().default(true).describe("Use spaces for formatting indentation"),
@@ -216,6 +216,13 @@ export const LspTool = Tool.define("lsp", {
         options: { tabSize: args.tabSize, insertSpaces: args.insertSpaces },
       })
       if (response.value.length === 0) throw new Error("LSP server returned no formatting edits")
+      if (!args.apply) {
+        return {
+          title: "Formatting preview",
+          output: JSON.stringify(response.value),
+          metadata: resultMetadata({ serverID: response.serverID, textEdits: response.value.length }),
+        }
+      }
       return applyWorkspaceEdit({ changes: { [uri]: response.value } }, response.serverID)
     }
 

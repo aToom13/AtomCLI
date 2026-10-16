@@ -6,11 +6,11 @@
 import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
+import { ReadTool } from "./read"
 import { EditAnchor } from "./edit-anchor"
 import { LSP } from "../lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./edit.txt"
-import { File } from "@/services/file"
 import { FileEvent } from "@/services/file/event"
 import { Bus } from "@/core/bus"
 import { FileTime } from "@/services/file/time"
@@ -32,8 +32,18 @@ const CONTENT_HASH_PATTERN = /^sha256:[a-f0-9]{64}$/
 const LINE_ANCHOR_PATTERN = /^L[1-9]\d*:sha256:[a-f0-9]{64}$/
 
 const AnchorFields = {
-  startAnchor: z.string().regex(LINE_ANCHOR_PATTERN).optional().describe("Start anchor returned by the read tool"),
-  endAnchor: z.string().regex(LINE_ANCHOR_PATTERN).optional().describe("End anchor returned by the read tool"),
+  startAnchor: z
+    .string()
+    .regex(LINE_ANCHOR_PATTERN)
+    .optional()
+    .describe(
+      "Optional Read range start; omit for unique oldString. Copy the returned pair, never synthesize per-line hashes",
+    ),
+  endAnchor: z
+    .string()
+    .regex(LINE_ANCHOR_PATTERN)
+    .optional()
+    .describe("Optional Read range end; use with its returned startAnchor only when scoping is needed"),
 }
 
 function normalizeLineEndings(text: string): string {
@@ -42,8 +52,12 @@ function normalizeLineEndings(text: string): string {
 
 function limitDiff(diff: string): string {
   if (Buffer.byteLength(diff) <= MAX_DIFF_BYTES) return diff
-  const head = Buffer.from(diff).subarray(0, MAX_DIFF_BYTES).toString("utf8")
-  return `${head}\n\n... diff metadata truncated at ${MAX_DIFF_BYTES} bytes ...`
+  const marker = Buffer.from(`\n\n... diff metadata truncated at ${MAX_DIFF_BYTES} bytes ...`)
+  const suffix = marker.byteLength > MAX_DIFF_BYTES ? marker.subarray(0, MAX_DIFF_BYTES) : marker
+  const head = Buffer.from(diff)
+    .subarray(0, MAX_DIFF_BYTES - suffix.byteLength)
+    .toString("utf8")
+  return `${head}${suffix.toString("utf8")}`
 }
 
 function lineCount(text: string) {
@@ -123,7 +137,7 @@ export const EditTool = Tool.define("edit", {
       .string()
       .regex(CONTENT_HASH_PATTERN)
       .optional()
-      .describe("Full content hash returned by the read tool; rejects the edit if the file changed"),
+      .describe("Optional explicit Read hash; otherwise native execution uses its remembered source hash"),
     ...AnchorFields,
     operations: z
       .array(
@@ -146,6 +160,10 @@ export const EditTool = Tool.define("edit", {
     try {
       if (!params.filePath) {
         throw new Error("filePath is required")
+      }
+
+      if (params.operations?.length && (params.oldString || params.newString)) {
+        throw new Error("Use either oldString/newString or operations; mixed edits are not applied")
       }
 
       // Build operations list from either batch or legacy single-operation fields.
@@ -224,30 +242,88 @@ async function executeEdits(
       if (!stats && operations[0].oldString !== "") throw new Error(`File ${filePath} not found`)
 
       contentOld = stats ? await file.text() : ""
+      const currentHash = EditAnchor.contentHash(contentOld)
+      const executionID = ctx.extra?.execution?.executionID as string | undefined
+      expectedHash ??= executionID ? EditAnchor.knownHash(executionID, filePath) : undefined
       if (expectedHash) {
-        if (!stats || EditAnchor.contentHash(contentOld) !== expectedHash) {
+        if (
+          !stats ||
+          (currentHash !== expectedHash &&
+            !(executionID && EditAnchor.matchesOwnRevision(executionID, filePath, expectedHash, currentHash)))
+        ) {
           throw new Error(`Stale edit: content changed for ${filePath}. Read the file again before editing`)
         }
       }
       if (stats && operations[0].oldString !== "") {
         if (!FileTime.get(ctx.sessionID, filePath)) {
-          throw new Error(`You must read the file ${filePath} before overwriting it. Use the Read tool first`)
+          const index = Math.max(0, contentOld.indexOf(operations[0].oldString))
+          const offset = Math.max(0, lineCount(contentOld.slice(0, index)) - 4)
+          const snapshot = await (await ReadTool.init()).execute({ filePath, offset, limit: 12 }, ctx)
+          throw new Error(
+            `File was not edited. Read snapshot supplied below; retry using its exact content. Native execution remembers the hash.\n${snapshot.output.slice(0, 8000)}\ncontentHash: ${snapshot.metadata.contentHash ?? "unavailable"}`,
+          )
         }
         if (!expectedHash) await FileTime.assert(ctx.sessionID, filePath)
       }
       contentNew = contentOld
+      const batchRanges = new Map<string, EditAnchor.Range>()
       // Apply every operation in memory before requesting permission or writing.
       // A failed match therefore leaves the original file untouched.
       for (const operation of operations) {
+        const before = contentNew
         if (operation.oldString === "") {
           contentNew = operation.newString
         } else if (operation.startAnchor && operation.endAnchor) {
-          const range = EditAnchor.resolveRange(contentNew, operation.startAnchor, operation.endAnchor)
+          let range: EditAnchor.Range
+          const key = `${operation.startAnchor}\0${operation.endAnchor}`
+          const cached = batchRanges.get(key)
+          if (cached) range = cached
+          else {
+            try {
+              range = EditAnchor.resolveRange(contentNew, operation.startAnchor, operation.endAnchor)
+            } catch (error) {
+              const tracked =
+                executionID &&
+                contentNew === contentOld &&
+                error instanceof Error &&
+                error.message.startsWith("Stale edit: anchored content changed")
+                  ? EditAnchor.trackedRange(
+                      executionID,
+                      filePath,
+                      currentHash,
+                      operation.startAnchor,
+                      operation.endAnchor,
+                    )
+                  : undefined
+              if (!tracked) throw error
+              range = tracked
+            }
+            batchRanges.set(key, range)
+          }
           const scoped = contentNew.slice(range.start, range.end)
           const replaced = replace(scoped, operation.oldString, operation.newString, operation.replaceAll)
           contentNew = contentNew.slice(0, range.start) + replaced + contentNew.slice(range.end)
         } else {
           contentNew = replace(contentNew, operation.oldString, operation.newString, operation.replaceAll)
+        }
+        if (contentNew !== before) {
+          let start = 0
+          while (start < before.length && start < contentNew.length && before[start] === contentNew[start]) start++
+          let oldEnd = before.length
+          let newEnd = contentNew.length
+          while (oldEnd > start && newEnd > start && before[oldEnd - 1] === contentNew[newEnd - 1]) {
+            oldEnd--
+            newEnd--
+          }
+          const delta = contentNew.length - before.length
+          for (const [key, range] of batchRanges) {
+            if (oldEnd <= range.start)
+              batchRanges.set(key, { ...range, start: range.start + delta, end: range.end + delta })
+            else if (start >= range.end) continue
+            else if (start >= range.start && oldEnd <= range.end)
+              batchRanges.set(key, { ...range, end: range.end + delta })
+            else batchRanges.delete(key)
+          }
         }
         if (Buffer.byteLength(contentNew) > MAX_EDIT_FILE_BYTES) {
           throw new Error(`Edited content exceeds the ${MAX_EDIT_FILE_BYTES} byte limit`)
@@ -290,7 +366,10 @@ async function executeEdits(
       await Bus.publish(FileEvent.Edited, {
         file: filePath,
       })
+      contentNew = await Bun.file(filePath).text()
+      summary = EditDiff.create(filePath, contentOld, contentNew)
       FileTime.read(ctx.sessionID, filePath)
+      if (executionID) EditAnchor.trackWrite(executionID, filePath, contentOld, contentNew)
     })
   } catch (error) {
     if (error instanceof ToolRuntime.NotAppliedError || error instanceof ToolRuntime.AppliedError) throw error
@@ -317,7 +396,7 @@ async function executeEdits(
       },
     })
 
-    let output = ""
+    let output = "Edit applied."
     const diagnostics = await withTimeout(
       LSP.touchFile(filePath, true).then(() => LSP.diagnostics()),
       LSP_DIAGNOSTICS_TIMEOUT_MS,
@@ -572,7 +651,7 @@ export const BlockAnchorReplacer: Replacer = function* ({
   }
 }
 
-export const WhitespaceNormalizedReplacer: Replacer = function* ({ content, contentLines: lines, find }) {
+export const WhitespaceNormalizedReplacer: Replacer = function* ({ contentLines: lines, find }) {
   const normalizeWhitespace = (text: string) => text.replace(/\s+/g, " ").trim()
   const normalizedFind = normalizeWhitespace(find)
 
@@ -732,11 +811,7 @@ export const TrimmedBoundaryReplacer: Replacer = function* ({ content, find }) {
   }
 }
 
-export const ContextAwareReplacer: Replacer = function* ({
-  content,
-  contentLines: originalLines,
-  findLines: searchLines,
-}) {
+export const ContextAwareReplacer: Replacer = function* ({ contentLines: originalLines, findLines: searchLines }) {
   if (searchLines.length < 3) {
     // Need at least 3 lines to have meaningful context
     return

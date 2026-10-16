@@ -119,6 +119,39 @@ export namespace Tool {
                 new Error(`The ${id} tool encountered an unexpected error: ${error}`, { cause: error }),
               )
             }
+            const effects = typeof toolInfo.effects === "function" ? toolInfo.effects(parsed) : toolInfo.effects
+            if (effects?.workspace === "write" || id === "read") {
+              const { WorkflowOwnership } = await import("./orchestrate/ownership")
+              const owned =
+                id === "read"
+                  ? await WorkflowOwnership.scope(ctx.sessionID)
+                  : await WorkflowOwnership.guard(id, parsed, ctx, true)
+              if (owned) {
+                const context = ctx
+                ctx = {
+                  ...context,
+                  async ask(request) {
+                    const target = ["edit", "read"].includes(request.permission)
+                      ? WorkflowOwnership.permissionTarget((parsed as any).filePath, request.permission)
+                      : undefined
+                    await context.ask(
+                      target
+                        ? {
+                            ...request,
+                            patterns: [...new Set([...request.patterns, target])],
+                          }
+                        : request,
+                    )
+                    const after = target
+                      ? WorkflowOwnership.permissionTarget((parsed as any).filePath, request.permission)
+                      : undefined
+                    if (target && target !== after)
+                      throw new ToolNotAppliedError(new Error("File target changed while awaiting permission"))
+                    await WorkflowOwnership.guard(id, parsed, context, id !== "read")
+                  },
+                }
+              }
+            }
             const result = await execute(parsed, ctx)
             // skip truncation for tools that handle it themselves
             if (result.metadata.truncated !== undefined) {

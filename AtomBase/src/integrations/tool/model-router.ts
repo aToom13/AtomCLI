@@ -66,13 +66,6 @@ function runtimeState(id: string, providerID?: string) {
 /**
  * A model candidate with its score for a given category.
  */
-interface ScoredModel {
-  providerID: string
-  modelID: string
-  model: Provider.Model
-  score: number
-}
-
 /**
  * Score a model for a specific task category.
  *
@@ -592,7 +585,7 @@ export async function selectModel(
           ([id]) => id !== "atomcli-auto" && id !== "atomcli-free",
         )
       } else {
-        for (const [pID, p] of Object.entries(providers)) {
+        for (const p of Object.values(providers)) {
           for (const [mID, m] of Object.entries(p.models)) {
             if (m.cost?.input === 0 && m.cost?.output === 0 && mID !== "atomcli-auto" && mID !== "atomcli-free") {
               freeModels.push([mID, m])

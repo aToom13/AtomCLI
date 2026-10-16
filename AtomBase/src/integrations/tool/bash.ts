@@ -21,6 +21,8 @@ import { HarnessState } from "@/core/session/harness-state"
 import { EnvPolicy } from "@/core/env/policy"
 import { ExecutionWorld } from "@/core/execution/world"
 import { Config } from "@/core/config/config"
+import { WorkflowOwnership } from "./orchestrate/ownership"
+import { TaskVerification } from "@/core/execution/task-verification"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -117,7 +119,13 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
     },
     parameters: z.object({
       command: z.string().min(1).max(100_000).describe("The command to execute"),
-      timeout: z.number().int().min(1).max(MAX_TIMEOUT).describe("Optional timeout in milliseconds").optional(),
+      timeout: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_TIMEOUT)
+        .describe("Hard deadline in milliseconds; expiry terminates the command, never backgrounds it")
+        .optional(),
       workdir: z
         .string()
         .max(4096)
@@ -152,6 +160,21 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       if (!Filesystem.contains(Instance.directory, cwd)) directories.add(cwd)
       const patterns = new Set<string>()
       const always = new Set<string>()
+      const staticPath = (value: string) => {
+        const unquoted = value.replace(/^(["'])(.*)\1$/s, "$2")
+        if (!unquoted || /[$`]/.test(unquoted)) return
+        return path.resolve(cwd, unquoted)
+      }
+
+      for (const redirect of tree.rootNode.descendantsOfType("file_redirect")) {
+        const destination = redirect.childForFieldName("destination")
+        const resolved = destination && staticPath(destination.text)
+        // `/dev/null` is a sink used by normal read-only probes. It does not
+        // grant access to an external workspace; other redirects remain gated.
+        if (resolved && resolved !== "/dev/null" && !Filesystem.contains(Instance.directory, resolved)) {
+          directories.add(path.join(path.dirname(resolved), "*"))
+        }
+      }
 
       for (const node of tree.rootNode.descendantsOfType("command")) {
         if (!node) continue
@@ -172,10 +195,26 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
         }
 
         // not an exhaustive list, but covers most common cases
-        if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown"].includes(command[0])) {
+        const executable = path.basename(command[0] ?? "")
+        const readsPaths = [
+          "ls",
+          "find",
+          "cat",
+          "head",
+          "tail",
+          "rg",
+          "grep",
+          "stat",
+          "file",
+          "du",
+          "wc",
+          "readlink",
+          "realpath",
+        ].includes(executable)
+        if (readsPaths || ["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown"].includes(executable)) {
           for (const arg of command.slice(1)) {
-            if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
-            const resolved = path.resolve(cwd, arg)
+            if (arg.startsWith("-") || (executable === "chmod" && arg.startsWith("+"))) continue
+            const resolved = staticPath(arg)
             log.info("resolved path", { arg, resolved })
             if (resolved) {
               // Git Bash on Windows returns Unix-style paths like /c/Users/...
@@ -183,7 +222,17 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
                 process.platform === "win32" && resolved.match(/^\/[a-z]\//)
                   ? resolved.replace(/^\/([a-z])\//, (_, drive) => `${drive.toUpperCase()}:\\`).replace(/\//g, "\\")
                   : resolved
-              if (!Filesystem.contains(Instance.directory, normalized)) directories.add(normalized)
+              if (!Filesystem.contains(Instance.directory, normalized)) {
+                const directory = readsPaths
+                  ? await fs
+                      .stat(normalized)
+                      .then((entry) => entry.isDirectory())
+                      .catch(() => false)
+                  : undefined
+                directories.add(
+                  readsPaths ? path.join(directory ? normalized : path.dirname(normalized), "*") : normalized,
+                )
+              }
             }
           }
         }
@@ -221,6 +270,7 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       })
 
       const execution = (await Config.get()).execution
+      const owned = await WorkflowOwnership.scope(ctx.sessionID)
       const envMode = execution?.environment ?? "minimal"
       const env = EnvPolicy.build({
         mode: envMode,
@@ -234,13 +284,18 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
         { executable: shell, args: ExecutionWorld.shellArguments(shell, params.command), cwd, env },
         {
           workspaceRoot: Instance.directory,
-          sandbox: execution?.sandbox ?? "off",
-          filesystem: execution?.filesystem ?? "workspace-write",
+          // Shared owned tasks use native file tools for writes. Shell code is
+          // arbitrary, so require OS read-only enforcement rather than guessing its paths.
+          sandbox: owned ? "require" : (execution?.sandbox ?? "off"),
+          filesystem: owned ? "read-only" : (execution?.filesystem ?? "workspace-write"),
           network: execution?.network ?? "allow",
           environment: envMode,
           processVisibility: execution?.processVisibility ?? "restricted",
         },
       )
+      const sourceSnapshot = TaskVerification.isBuildCommand(params.command)
+        ? await TaskVerification.buildSnapshot(HarnessState.getEditedFiles(ctx.sessionID), cwd, Instance.directory)
+        : undefined
       const proc = spawn(prepared.executable, prepared.args, {
         shell: false,
         cwd: prepared.cwd,
@@ -255,6 +310,7 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       let totalBytes = 0
       let totalLines = 1
       let lastMetadataUpdate = 0
+      const outputHasher = new Bun.CryptoHasher("sha256")
 
       const previewText = () => Buffer.concat(preview, previewBytes).toString("utf8")
 
@@ -286,6 +342,7 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       })
 
       const append = (chunk: Buffer) => {
+        outputHasher.update(chunk)
         totalBytes += chunk.length
         for (const byte of chunk) {
           if (byte === 10) totalLines++
@@ -393,20 +450,27 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
           )
         : ({ content: rawPreview, truncated: false } as const)
       if (!wasTruncated) await fs.unlink(outputPath).catch(() => {})
-      const output = truncated.content
+      const exitCode = timedOut ? 124 : aborted ? 130 : proc.exitCode
+      const output = truncated.content + (exitCode ? `\nCommand exited with status ${exitCode}.` : "")
 
       // Push to harness ring buffer so reviewer agent can access raw output
       HarnessState.pushExecutionLog(ctx.sessionID, {
         command: params.command,
+        workdir: cwd,
         output,
-        exitCode: proc.exitCode,
+        exitCode,
       })
 
       return {
         title: params.description,
         metadata: {
           output: output.length > MAX_METADATA_LENGTH ? output.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : output,
-          exit: proc.exitCode,
+          exit: exitCode,
+          timedOut,
+          aborted,
+          workdir: cwd,
+          outputFingerprint: outputHasher.digest("hex"),
+          ...(sourceSnapshot && { sourceSnapshot }),
           description: params.description,
           truncated: truncated.truncated,
           ...(truncated.truncated && { outputPath: truncated.outputPath }),

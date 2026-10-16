@@ -14,6 +14,10 @@ type CommandResult = {
 }
 
 export namespace SubAgentIsolation {
+  const availableState = Instance.state(
+    async () => (await runGit(Instance.directory, ["rev-parse", "--is-inside-work-tree"])).stdout.trim() === "true",
+  )
+  export const available = () => availableState()
   export type Preview = {
     baseCommit: string
     resultTree: string

@@ -52,7 +52,9 @@ export namespace ModelControl {
         }
       }
       if (!args.providerID || !args.modelID || !args.reason?.trim())
-        throw new Error("request requires providerID, modelID and a reason; use list to find exact IDs")
+        throw new Error(
+          "Invalid arguments: request requires providerID, modelID and a reason; use list to find exact IDs",
+        )
       const execution = ctx.extra?.execution as ExecutionRuntime.Context | undefined
       if (!execution) throw new Error("Model switching requires an active execution")
       const view = ExecutionRuntime.view(execution.executionID)

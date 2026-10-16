@@ -1,4 +1,3 @@
-import path from "path"
 import z from "zod"
 import { Tool } from "./tool"
 import { Bus } from "@/core/bus"
@@ -111,38 +110,23 @@ async function restoreDurablePlan(sessionID: string, executionID: string) {
 
 export namespace TaskFlow {
   export async function restore(sessionID: string, executionID: string) {
-    using lock = await Lock.write(`taskflow:${sessionID}`)
+    using _lock = await Lock.write(`taskflow:${sessionID}`)
     await restoreDurablePlan(sessionID, executionID)
   }
 
-  export async function activateForWork(ctx: Tool.Context, work?: { tool: string; args: any }) {
-    using lock = await Lock.write(`taskflow:${ctx.sessionID}`)
+  export async function activateForWork(ctx: Tool.Context, _work?: { tool: string; args: unknown }) {
+    const execution = executionContext(ctx)
+    if (execution) {
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      if (ExecutionRuntime.atomicRoot(execution.executionID)) return
+    }
+    using _lock = await Lock.write(`taskflow:${ctx.sessionID}`)
     const steps = HarnessState.getSteps(ctx.sessionID)
     if (!steps.length || steps.some((step) => step.status === "running")) return
     const pendingSteps = steps.filter((step) => step.status === "pending")
     if (!pendingSteps.length) return
 
-    let matched: (typeof pendingSteps)[0] | undefined
-    if (work) {
-      const tool = work.tool
-      const args = work.args
-      const targetPath =
-        typeof args?.filePath === "string" ? args.filePath : typeof args?.path === "string" ? args.path : ""
-      const command = typeof args?.command === "string" ? args.command : ""
-      if (tool === "bash" && /test|vitest|jest|check|tsc|lint|verify/i.test(command)) {
-        matched = pendingSteps.find((step) => /test|check|lint|verif|qa/i.test(step.name))
-      }
-      if (!matched && targetPath) {
-        const base = path.basename(targetPath, path.extname(targetPath)).toLowerCase()
-        const segments = targetPath.toLowerCase().split(/[/\\]/).filter(Boolean)
-        matched = pendingSteps.find((step) => {
-          const lower = step.name.toLowerCase()
-          return (base.length > 2 && lower.includes(base)) || segments.some((s) => s.length > 3 && lower.includes(s))
-        })
-      }
-    }
-
-    const next = matched ?? pendingSteps[0]
+    const next = pendingSteps[0]
     await transitionTaskflowStep(ctx, next.id, "running")
     const stepIndex = steps.findIndex((step) => step.id === next.id)
     await Bus.publish(TuiEvent.ChainParallelUpdate, { stepIndex, status: "running", sessionID: ctx.sessionID })
@@ -263,8 +247,28 @@ async function transitionDurablePlanItem(
 }
 
 async function transitionTaskflowStep(ctx: Tool.Context, stepID: string, state: "running" | "completed" | "failed") {
-  if (state === "completed") HarnessState.assertRuntimeOwnedStepCompletion(ctx.sessionID, stepID)
+  if (
+    HarnessState.getSteps(ctx.sessionID).length &&
+    !HarnessState.getSteps(ctx.sessionID).some((step) => step.id === stepID)
+  )
+    throw new Error(`Taskflow step "${stepID}" does not exist`)
   HarnessState.assertStepTransition(ctx.sessionID, stepID, state)
+  if (state === "completed") {
+    if (HarnessState.isIndependentReviewStep(ctx.sessionID, stepID)) {
+      const { runBlockingReview } = await import("./review-gate")
+      const review = await runBlockingReview(ctx.sessionID, {
+        signal: ctx.abort,
+        executionID: executionContext(ctx)?.executionID,
+        independentReviewStep: true,
+      })
+      if (!review.passed || (review.skipped && !HarnessState.getReviewerSession(ctx.sessionID))) {
+        throw new Error(
+          review.reason ?? "Independent review requires edited files, enabled review, and a reviewer PASS",
+        )
+      }
+    }
+    HarnessState.assertRuntimeOwnedStepCompletion(ctx.sessionID, stepID)
+  }
   await transitionDurablePlanItem(
     ctx,
     stepID,
@@ -290,16 +294,23 @@ export const TaskFlowTool = Tool.define("taskflow", {
     "Use action='clear' when done.",
     "",
     "IMPORTANT: Steps follow pending → running → completed/blocked/failed; blocked work may resume and completed work may reopen with evidence.",
-    "You CANNOT complete or fail a step that has not been explicitly set to running first.",
+    "A step must be running before complete/fail. Set it running in start/update; the first pending step also activates on work tool calls. Do not re-activate a running step.",
     "Only one step can be in 'running' state at a time.",
   ].join("\n"),
   parameters,
   async execute(params, ctx) {
     // Parallel model tool calls may depend on an earlier step transition. Keep
     // the ledger, memory projection and TUI event in one ordered session lane.
-    using lock = await Lock.write(`taskflow:${ctx.sessionID}`)
+    using _lock = await Lock.write(`taskflow:${ctx.sessionID}`)
     ctx.abort.throwIfAborted()
     const activeExecution = executionContext(ctx)
+    if (activeExecution && params.action !== "checkpoint") {
+      const { ExecutionRuntime } = await import("@/core/execution/runtime")
+      if (ExecutionRuntime.atomicRoot(activeExecution.executionID))
+        throw new Error(
+          "ATOMIC_PLAN_REQUIRED: Atomic Work uses task(action='plan'); taskflow only supports checkpoint here",
+        )
+    }
     if (activeExecution) await restoreDurablePlan(ctx.sessionID, activeExecution.executionID)
     await ctx.ask({
       permission: "taskflow",
@@ -429,7 +440,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
 
         return {
           title: `Taskflow started with ${params.plan?.length ?? 0} steps`,
-          output: `Taskflow initialized with ${params.plan?.length ?? 0} steps. Update step/todo progress as work proceeds.\n\nSTATE MACHINE RULES:\n- You MUST call update(status="running") before complete/fail\n- Only one step can run at a time`,
+          output: `Taskflow initialized with ${params.plan?.length ?? 0} steps. Update step/todo progress as work proceeds.\n\nSTATE MACHINE RULES:\n- Complete/fail only a running step. A step marked running in start is ready; otherwise update it or begin work with a tool.\n- Only one step can run at a time`,
           metadata: { steps: params.plan?.length ?? 0, step_id: undefined, status: undefined },
         }
       }
@@ -510,6 +521,17 @@ export const TaskFlowTool = Tool.define("taskflow", {
           // status="completed" only changed the UI and falsely reported
           // success while HarnessState still considered the step running.
           const transitionStepId = params.step_id ?? HarnessState.getRunningStep(ctx.sessionID)
+          if (
+            transitionStepId === undefined &&
+            HarnessState.getSteps(ctx.sessionID).length &&
+            ["completed", "failed"].includes(params.status)
+          ) {
+            return {
+              title: "Taskflow state machine violation",
+              output: "No running taskflow step to complete or fail",
+              metadata: { steps: undefined, step_id: "", status: "error" },
+            }
+          }
           if (params.status !== "pending" && transitionStepId !== undefined) {
             try {
               await transitionTaskflowStep(
@@ -571,6 +593,13 @@ export const TaskFlowTool = Tool.define("taskflow", {
         } else {
           // No step_id — completing "current" running step
           const runningId = HarnessState.getRunningStep(ctx.sessionID)
+          if (runningId === undefined && HarnessState.getSteps(ctx.sessionID).length) {
+            return {
+              title: "Taskflow state machine violation",
+              output: "No running taskflow step to complete",
+              metadata: { steps: undefined, step_id: undefined, status: "error" },
+            }
+          }
           if (runningId !== undefined) {
             try {
               await transitionTaskflowStep(ctx, runningId, "completed")
@@ -692,13 +721,19 @@ export const TaskFlowTool = Tool.define("taskflow", {
         }
         const isSubAgent = sessionInfo?.parentID != null
         let reviewBypassed = false
+        let reviewWarning = ""
 
         if (!isSubAgent) {
           const { runBlockingReview } = await import("./review-gate")
           const execution = ctx.extra?.execution as ExecutionRuntime.Context | undefined
           const review = await runBlockingReview(ctx.sessionID, { executionID: execution?.executionID })
 
-          if (!review.passed && !params.force) {
+          if (review.error) {
+            ctx.abort.throwIfAborted()
+            reviewWarning = `\n\nIndependent review incomplete: ${review.reason ?? "Reviewer unavailable"}. This is not a reviewer approval.`
+          }
+
+          if (!review.passed && !review.error && !params.force) {
             const verdict = HarnessState.getReviewVerdict(ctx.sessionID)
             const attempts = verdict?.attempts ?? 1
 
@@ -725,7 +760,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
             }
           }
 
-          if (!review.passed && params.force) {
+          if (!review.passed && !review.error && params.force) {
             // Forcing a clear past a blocked review is a privileged action —
             // require a distinct explicit approval ("taskflow.force") instead
             // of reusing the generic taskflow ask, so the bypass cannot happen
@@ -767,7 +802,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
         const warningText = warnings.length > 0 ? `\n\n${warnings.join("\n")}` : ""
         return {
           title: "Taskflow cleared",
-          output: `Taskflow cleared${reviewBypassNote}${warningText}`,
+          output: `Taskflow cleared${reviewBypassNote}${reviewWarning}${warningText}`,
           metadata: { steps: undefined, step_id: undefined, status: "cleared" },
         }
       }

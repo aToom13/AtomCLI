@@ -15,7 +15,7 @@ Supported operations:
 - renameSymbol: Rename a symbol with an LSP-provided, validated workspace edit (`newName` required)
 - renameFile: Rename a file and update references through `workspace/willRenameFiles` (`newFilePath` required)
 - codeActions: List code actions for a range, or apply one with `apply: true` and `actionIndex`
-- formatting: Apply document formatting edits (`tabSize` and `insertSpaces` are optional)
+- formatting: Preview document formatting edits; set `apply: true` to apply (`tabSize` and `insertSpaces` are optional)
 - workspaceDiagnostics: Request workspace diagnostics when the server supports LSP 3.17 diagnostic pull
 
 All operations require `filePath`, which selects the workspace and language server.

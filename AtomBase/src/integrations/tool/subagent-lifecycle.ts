@@ -9,16 +9,22 @@ export namespace SubAgentLifecycle {
   export type Status = {
     sessionId: string
     runtime: string
-    status: "running" | "waiting" | "failed" | "cancelled"
+    status: "running" | "waiting" | "completed" | "failed" | "cancelled" | "timed_out"
     startedAt: number
     updatedAt: number
     error?: string
   }
 
-  const lifecycle = Instance.state(() => new Map<string, Status>())
+  const lifecycle = Instance.sessionState(() => new Map<string, Status>())
 
   export function update(value: Status) {
     const entries = lifecycle()
+    const previous = entries.get(value.sessionId)
+    if (
+      previous?.startedAt === value.startedAt &&
+      ["completed", "failed", "cancelled", "timed_out"].includes(previous.status)
+    )
+      return
     entries.delete(value.sessionId)
     entries.set(value.sessionId, value)
     while (entries.size > MAX_LIFECYCLE_ENTRIES) entries.delete(entries.keys().next().value!)

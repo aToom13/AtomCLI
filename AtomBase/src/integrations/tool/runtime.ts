@@ -11,12 +11,13 @@ const READ_ONLY_TOOLS = new Set([
   "question",
   "model_control",
   "read",
+  "scope_control",
   "skill",
   "webfetch",
   "websearch",
 ])
 
-const TASKFLOW_CONTROL_TOOLS = new Set(["model_control", "question", "taskflow"])
+const TASKFLOW_CONTROL_TOOLS = new Set(["model_control", "question", "scope_control", "taskflow"])
 
 export namespace ToolRuntime {
   const log = Log.create({ service: "tool.runtime" })
@@ -130,6 +131,21 @@ export namespace ToolRuntime {
     }
   }
 
+  export function browserRuntimeEvidence(tool: string, args: unknown) {
+    if (tool !== "browser" || !args || typeof args !== "object") return {}
+    const input = args as { action?: unknown; steps?: Array<{ action?: unknown }> }
+    const actions =
+      input.action === "flow" && Array.isArray(input.steps) ? input.steps.map((step) => step?.action) : [input.action]
+    const browserNavigations = actions.filter((action) => action === "navigate" || action === "reload").length
+    const browserVerificationCalls = actions.filter((action) =>
+      ["assert", "screenshot", "input_sequence", "evaluate"].includes(String(action)),
+    ).length
+    return {
+      ...(browserNavigations ? { browserNavigations } : {}),
+      ...(browserVerificationCalls ? { browserVerificationCalls } : {}),
+    }
+  }
+
   export async function execute<Args, Output extends Result>(input: ExecuteInput<Args, Output>): Promise<Output> {
     const started = Date.now()
     const context = {
@@ -137,6 +153,8 @@ export namespace ToolRuntime {
       abort: combinedSignal(input.context.abort, input.timeoutMs),
     }
     const execution = context.extra?.execution
+    const { ExecutionRuntime: Runtime } = await import("@/core/execution/runtime")
+    const reviewer = Boolean(execution && Runtime.isReviewer(execution))
     const assertExecutionActive = async () => {
       if (!execution) return
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
@@ -195,6 +213,9 @@ export namespace ToolRuntime {
             destructive: false,
             privileged: false,
           })
+    // Browser file saves are verification assets, not source edits. Ownership
+    // and work admission still use the full effects/mutating classification.
+    const workspaceMutation = effects.workspace === "write" && input.tool !== "browser"
     let workVersion: number | undefined
     const actionSignature = semanticSignature(input.tool, args)
     const checkpointControl =
@@ -203,7 +224,7 @@ export namespace ToolRuntime {
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
       // Checkpoint controls must remain usable even at a completely consumed
       // work slice. They still use work lifecycle tracking and model/step limits.
-      if (!checkpointControl) ExecutionRuntime.reserveToolCall(execution.executionID)
+      if (!checkpointControl && !reviewer) ExecutionRuntime.reserveToolCall(execution.executionID)
       const targetPath = ["filePath", "path", "directory"]
         .map((key) => (args as any)?.[key])
         .find((value) => typeof value === "string")
@@ -218,15 +239,16 @@ export namespace ToolRuntime {
         kind: `tool:${input.tool}`,
         mutating,
       }).catch((error) => {
-        if (!checkpointControl) ExecutionRuntime.releaseToolCall(execution.executionID)
+        if (!checkpointControl && !reviewer) ExecutionRuntime.releaseToolCall(execution.executionID)
         throw error
       })
       workVersion = registered.version
-      ExecutionRuntime.recordToolCall(execution.executionID, undefined, {
-        signature: actionSignature,
-        family: input.tool,
-        target,
-      })
+      if (!reviewer)
+        ExecutionRuntime.recordToolCall(execution.executionID, undefined, {
+          signature: actionSignature,
+          family: input.tool,
+          target,
+        })
     }
 
     let bodyClaimed = false
@@ -236,9 +258,24 @@ export namespace ToolRuntime {
       bodyClaimed = true
       if (nextContext.abort.aborted) throw nextContext.abort.reason ?? new Error(`Tool ${input.tool} was aborted`)
       await assertExecutionActive()
-      if (execution && !TASKFLOW_CONTROL_TOOLS.has(input.tool)) {
-        const { TaskFlow } = await import("./taskflow")
-        await TaskFlow.activateForWork(nextContext, { tool: input.tool, args: nextArgs })
+      const { WorkflowOwnership } = await import("./orchestrate/ownership")
+      await WorkflowOwnership.guard(input.tool, nextArgs, nextContext, effects.workspace === "write")
+      if (execution && effects.workspace === "write" && ["write", "edit", "bash"].includes(input.tool)) {
+        const { Skill } = await import("@/integrations/skill")
+        const pending = await Skill.pendingSessionReads(context.sessionID, execution)
+        if (pending.length)
+          throw new NotAppliedError(
+            new Error(
+              `Read required skill instructions before changing files. Use the skill tool:\n${pending.join("\n")}`,
+            ),
+          )
+      }
+      if (execution && !reviewer && !TASKFLOW_CONTROL_TOOLS.has(input.tool)) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (!ExecutionRuntime.atomicRoot(execution.executionID)) {
+          const { TaskFlow } = await import("./taskflow")
+          await TaskFlow.activateForWork(nextContext, { tool: input.tool, args: nextArgs })
+        }
       }
       if (execution && operationID && workVersion !== undefined) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
@@ -302,18 +339,19 @@ export namespace ToolRuntime {
         const errorFingerprint = fingerprint(
           `${input.tool}:${error instanceof Error ? `${error.name}:${error.message}` : String(error)}`,
         )
-        if (applied) {
+        if (applied && !reviewer) {
           const filePath = typeof (args as any)?.filePath === "string" ? (args as any).filePath : undefined
           ExecutionRuntime.recordRuntimeEvidence(execution.executionID, {
             filesRead: filePath && effects.workspace === "read" ? [filePath] : [],
             filesChanged: filePath && effects.workspace === "write" ? [filePath] : [],
-            mutatingCalls: effects.workspace === "write" ? 1 : 0,
+            fileWriteCounts: filePath && effects.workspace === "write" ? { [filePath]: 1 } : {},
+            mutatingCalls: workspaceMutation ? 1 : 0,
             externalCalls: effects.external !== "none" ? 1 : 0,
             hasDestructiveAction: effects.destructive,
             failureCount: 1,
             recentErrorFingerprints: [errorFingerprint],
           })
-        } else {
+        } else if (!reviewer) {
           ExecutionRuntime.recordRuntimeEvidence(execution.executionID, {
             failureCount: 1,
             recentErrorFingerprints: [errorFingerprint],
@@ -349,19 +387,28 @@ export namespace ToolRuntime {
 
     const semanticStatus = typeof result.metadata.status === "string" ? result.metadata.status : undefined
     const semanticExit = typeof result.metadata.exit === "number" ? result.metadata.exit : undefined
+    const interrupted =
+      context.abort.aborted ||
+      (input.tool === "bash" && (result.metadata.timedOut === true || result.metadata.aborted === true))
     const semanticFailure =
+      interrupted ||
       (semanticStatus !== undefined && ["error", "blocked", "failed"].includes(semanticStatus)) ||
       (semanticExit !== undefined && semanticExit !== 0)
-    if (execution) {
+    // ponytail: known empty page only; artifact acceptance still validates actual behavior.
+    const emptyBrowserPage = input.tool === "browser" && result.metadata.url === "about:blank"
+    if (execution && !reviewer) {
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
       const filePath = typeof (args as any)?.filePath === "string" ? (args as any).filePath : undefined
       ExecutionRuntime.recordRuntimeEvidence(execution.executionID, {
         filesRead: filePath && effects.workspace === "read" ? [filePath] : [],
         filesChanged: filePath && effects.workspace === "write" ? [filePath] : [],
-        mutatingCalls: effects.workspace === "write" ? 1 : 0,
+        fileWriteCounts: filePath && effects.workspace === "write" ? { [filePath]: 1 } : {},
+        mutatingCalls: workspaceMutation ? 1 : 0,
         externalCalls: effects.external !== "none" ? 1 : 0,
         hasDestructiveAction: effects.destructive,
+        ...(interrupted && mutating ? { uncertainOutcome: true } : {}),
         ...changeRiskEvidence(input.tool, args),
+        ...(!semanticFailure && !emptyBrowserPage ? browserRuntimeEvidence(input.tool, args) : {}),
         successfulToolCalls: semanticFailure ? 0 : 1,
         ...(semanticFailure
           ? {
@@ -372,11 +419,20 @@ export namespace ToolRuntime {
             }
           : {}),
       })
-      if (!semanticFailure && effects.workspace !== "write") {
+      if (!semanticFailure && !emptyBrowserPage && input.tool !== "todo") {
         ExecutionRuntime.recordSemanticActionResult(
           execution.executionID,
           actionSignature,
-          fingerprint(result.output.trim().replace(/\s+/g, " ")),
+          fingerprint(
+            JSON.stringify({
+              output:
+                input.tool === "bash" && typeof result.metadata.outputFingerprint === "string"
+                  ? result.metadata.outputFingerprint
+                  : result.output,
+              exit: semanticExit,
+              status: semanticStatus,
+            }),
+          ),
         )
       }
     }
@@ -410,7 +466,7 @@ export namespace ToolRuntime {
           execution,
           operationID,
           expectedVersion: workVersion!,
-          state: "completed",
+          state: interrupted ? (mutating ? "unknown" : "cancelled") : semanticFailure ? "failed" : "completed",
         }).catch((workError) => log.warn("failed to close applied tool work", { workError, operationID }))
       }
       const appliedError = new AppliedError(input.tool, error)
@@ -439,7 +495,7 @@ export namespace ToolRuntime {
         execution,
         operationID,
         expectedVersion: workVersion!,
-        state: semanticFailure ? "failed" : "completed",
+        state: interrupted ? (mutating ? "unknown" : "cancelled") : semanticFailure ? "failed" : "completed",
       })
     }
     log.info("executed", { tool: input.tool, sessionID: context.sessionID, duration: Date.now() - started })

@@ -6,9 +6,10 @@ import { Bus } from "@/core/bus"
 import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { MessageV2 } from "@/core/session/message-v2"
 import { Agent } from "../agent/agent"
-import { SessionPrompt } from "@/core/session/prompt"
+import { resolvePromptParts } from "@/core/session/prompt/parts"
 import { iife } from "@/util/util/iife"
 import { SubAgent } from "./subagent"
+import { SessionReuse } from "./session-reuse"
 import { WorkflowFS } from "./workflow-fs"
 import { SubAgentIsolation } from "./subagent-isolation"
 import { HarnessState } from "@/core/session/harness-state"
@@ -16,9 +17,19 @@ import { HarnessState } from "@/core/session/harness-state"
 import { Config } from "@/core/config/config"
 import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
+import { runAutomaticTaskChecks } from "@/core/execution/task-verification"
+import { AtomicWork } from "./atomic-work"
+import { TaskDispatch } from "./task-dispatch"
+import { Lock } from "@/util/util/lock"
+import type { ExecutionLedger } from "@/core/execution/ledger"
+import { ReviewV2 } from "@/core/verification/review-v2"
+import { AtomicPlan } from "@/core/execution/atomic-plan"
 
-const parameters = z.object({
-  action: z.enum(["run", "abort"]).optional().describe("Defaults to run. Set to abort to kill a session_id"),
+const fields = z.object({
+  action: z
+    .enum(["run", "abort", "verify", "revise", "plan", "execute", "status"])
+    .optional()
+    .describe("Defaults to run. Set to abort, verify, or revise a tracked task"),
   description: z
     .string()
     .min(1)
@@ -34,7 +45,89 @@ const parameters = z.object({
     .describe("The type of specialized agent to use for this task. Required for run."),
   session_id: z.string().max(200).describe("Existing Task session to continue, or to abort").optional(),
   command: z.string().max(10_000).describe("The command that triggered this task").optional(),
+  task_id: z.string().min(1).max(200).optional().describe("Stable task ID for durable execution tracking"),
+  tasks: AtomicWork.Tasks.optional(),
+  expectedVersion: z.number().int().positive().optional().describe("Expected ledger version for revision"),
+  amendment: AtomicWork.Amendment.optional(),
+  definition: AtomicWork.DefinitionChange.optional(),
+  skill: z.string().min(1).max(200).optional().describe("Skill assigned to this task"),
+  depends_on: z.array(z.string().min(1).max(200)).max(100).optional().describe("Task IDs that must finish first"),
+  acceptance: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(100),
+        description: z.string().min(1).max(2_000),
+        verification: z.enum(["automatic", "reviewer", "parent"]).optional(),
+        command: z.string().min(1).max(10_000).optional(),
+      }),
+    )
+    .max(100)
+    .optional()
+    .describe("Acceptance criteria checked after the agent submits"),
+  checks: z
+    .array(
+      z.object({
+        criterionID: z.string().min(1).max(100),
+        verifier: z.enum(["automatic", "reviewer", "parent"]),
+        passed: z.boolean(),
+        evidence: z.string().min(1).max(10_000),
+        runtime: ReviewV2.AcceptanceCheck.optional().describe(
+          "For Atomic Work parent checks: exact criterion, setup/action/expected/observed, and successful tool calls from this revision",
+        ),
+      }),
+    )
+    .max(100)
+    .optional()
+    .describe("Verification results for action='verify'"),
 })
+
+// Each action exposes only its own fields; planning cannot carry revision placeholders.
+const parameters = z.discriminatedUnion("action", [
+  fields
+    .pick({
+      description: true,
+      prompt: true,
+      subagent_type: true,
+      session_id: true,
+      command: true,
+      task_id: true,
+      skill: true,
+      depends_on: true,
+      acceptance: true,
+    })
+    .extend({ action: z.literal("run").optional().default("run") })
+    .strict(),
+  z
+    .object({
+      action: z.literal("plan"),
+      tasks: AtomicWork.Tasks.min(1),
+      acceptance: z.array(AtomicPlan.Acceptance).min(1).max(100),
+    })
+    .strict(),
+  z.object({ action: z.literal("execute") }).strict(),
+  z.object({ action: z.literal("status") }).strict(),
+  fields
+    .pick({ task_id: true, checks: true, expectedVersion: true })
+    .extend({ action: z.literal("verify"), task_id: fields.shape.task_id.unwrap() })
+    .strict(),
+  fields
+    .pick({
+      task_id: true,
+      tasks: true,
+      expectedVersion: true,
+      amendment: true,
+      definition: true,
+      acceptance: true,
+      prompt: true,
+      description: true,
+    })
+    .extend({ action: z.literal("revise") })
+    .strict(),
+  fields
+    .pick({ task_id: true })
+    .extend({ action: z.literal("abort"), session_id: fields.shape.session_id })
+    .strict(),
+])
 
 export const TaskTool = Tool.define("task", async (ctx) => {
   const agents = await Agent.list().then((x) => x.filter((a) => a.mode !== "primary"))
@@ -54,10 +147,51 @@ export const TaskTool = Tool.define("task", async (ctx) => {
   return {
     description,
     parameters,
+    mutating: (params: z.output<typeof parameters>) => params.action !== "status",
     async execute(params: z.infer<typeof parameters>, ctx) {
+      if (params.action === "plan" || params.action === "execute" || params.action === "status")
+        return AtomicWork.action(params, ctx)
+      if (params.action === "revise" && ctx.extra?.execution) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const target = params.task_id
+          ? await ExecutionRuntime.getTask({
+              sessionID: ctx.sessionID,
+              execution: ctx.extra.execution,
+              taskID: params.task_id,
+            })
+          : undefined
+        if (
+          (target && AtomicWork.isTask(target, ctx.extra.execution.executionID)) ||
+          (!params.task_id && ExecutionRuntime.atomicRoot(ctx.extra.execution.executionID))
+        )
+          return AtomicWork.action(params, ctx)
+      }
       if (params.action === "abort") {
         if (!params.session_id) throw new Error("session_id is required to abort a task")
+        const child = await Session.get(params.session_id).catch(() => undefined)
+        if (!SessionReuse.isAllowed(child, ctx.sessionID))
+          throw new Error(`Session "${params.session_id}" is not a child of the current session`)
         await SubAgent.cancel(params.session_id)
+        const execution = ctx.extra?.execution
+        if (execution) {
+          try {
+            const { ExecutionRuntime } = await import("@/core/execution/runtime")
+            const taskID = params.task_id ?? `task_${params.session_id}`
+            const task = await ExecutionRuntime.getTask({ sessionID: ctx.sessionID, execution, taskID })
+            if (task && !["accepted", "failed", "cancelled"].includes(task.status)) {
+              await ExecutionRuntime.transitionTask({
+                sessionID: ctx.sessionID,
+                execution,
+                taskID,
+                expectedVersion: task.version,
+                status: "cancelled",
+                evidence: "Task aborted by parent",
+              })
+            }
+          } catch {
+            /* preserve abort behavior when no active execution is available */
+          }
+        }
         try {
           await Bus.publish(TuiEvent.SubAgentRemove, { sessionId: params.session_id })
         } catch {
@@ -70,11 +204,163 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         }
       }
 
+      if (params.action === "verify") {
+        if (!params.task_id) throw new Error("task_id is required to verify a task")
+        const execution = ctx.extra?.execution
+        if (!execution) throw new Error("Task verification requires an active execution")
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const task = await ExecutionRuntime.getTask({ sessionID: ctx.sessionID, execution, taskID: params.task_id })
+        if (!task) throw new Error(`Task "${params.task_id}" was not found`)
+        const atomic = AtomicWork.isTask(task, execution.executionID)
+        if (atomic && params.expectedVersion !== undefined && params.expectedVersion !== task.version)
+          throw new Error("STALE_TASK: stale_version")
+        const automatic = task.acceptance.filter((criterion) => criterion.verification === "automatic")
+        const suppliedChecks = params.checks ?? []
+        if (automatic.some((criterion) => !criterion.command)) {
+          throw new Error("Automatic acceptance criterion is missing a command")
+        }
+        for (const criterion of automatic) {
+          await ctx.ask({
+            permission: "bash",
+            patterns: [criterion.command ?? ""],
+            always: ["*"],
+            metadata: { description: `Verify task ${params.task_id}`, command: criterion.command },
+          })
+        }
+        if (suppliedChecks.some((check) => automatic.some((criterion) => criterion.id === check.criterionID))) {
+          throw new Error("Automatic acceptance checks are produced by the harness")
+        }
+        if (suppliedChecks.some((check) => !task.acceptance.some((criterion) => criterion.id === check.criterionID))) {
+          throw new Error("Verification references an unknown acceptance criterion")
+        }
+        if (atomic && suppliedChecks.some((check) => check.verifier !== "parent"))
+          throw new Error("Atomic Work reviewer and automatic checks are produced by the harness")
+        const supplied = suppliedChecks.filter(
+          (check): check is ExecutionLedger.TaskCheckInput => check.verifier !== "automatic",
+        )
+        if (atomic && supplied.length) {
+          const messages = await Session.messages({ sessionID: ctx.sessionID, excludePatches: true })
+          for (const check of suppliedChecks) {
+            const criterion = task.acceptance.find((item) => item.id === check.criterionID)!
+            if (check.passed) {
+              if (!check.runtime || check.runtime.criterion !== criterion.description)
+                throw new Error("Atomic Work parent acceptance requires runtime evidence for the exact criterion")
+              const error = ReviewV2.validateAcceptanceCheck(
+                check.runtime,
+                messages,
+                task.submittedAt ?? task.updatedAt,
+              )
+              if (error) throw new Error(`Atomic Work parent acceptance: ${error}`)
+              check.evidence = JSON.stringify(check.runtime)
+            }
+          }
+        }
+        const automaticChecks = await runAutomaticTaskChecks(
+          task.acceptance,
+          atomic ? Instance.directory : Instance.worktree,
+          atomic ? { sessionID: ctx.sessionID, execution, taskID: task.id, expectedVersion: task.version } : undefined,
+        )
+        const parentMessage = atomic
+          ? await MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID })
+          : undefined
+        const reviewed =
+          atomic && parentMessage?.info.role === "assistant"
+            ? await AtomicWork.reviewerChecks(task, ctx, {
+                providerID: parentMessage.info.providerID,
+                modelID: parentMessage.info.modelID,
+              })
+            : { checks: [] as ExecutionLedger.TaskCheckInput[], reviewerID: undefined }
+        if (!supplied.length && !automaticChecks.length && !reviewed.checks.length)
+          throw new Error("checks are required to verify a task")
+        using _verificationLock = atomic ? await Lock.write(`execution-tasks:${execution.executionID}`) : undefined
+        if (atomic)
+          await ExecutionRuntime.assertAtomicReady({
+            sessionID: ctx.sessionID,
+            execution,
+            taskID: task.id,
+            expectedVersion: task.version,
+          })
+        let current = task
+        if (current.status === "submitted") {
+          current = await ExecutionRuntime.transitionTask({
+            sessionID: ctx.sessionID,
+            execution,
+            taskID: params.task_id,
+            expectedVersion: current.version,
+            status: "verifying",
+          })
+        }
+        const verified = await ExecutionRuntime.recordTaskVerification({
+          sessionID: ctx.sessionID,
+          execution,
+          taskID: params.task_id,
+          expectedVersion: current.version,
+          checks: [...supplied, ...reviewed.checks],
+          automaticChecks,
+          reviewerID: reviewed.reviewerID,
+        })
+        return {
+          title: `Task ${verified.status}`,
+          output: `Task "${params.task_id}" verification result: ${verified.status}.`,
+          metadata: {
+            summary: [],
+            sessionId: ctx.sessionID,
+            error: verified.status === "needs_revision",
+            aborted: 0,
+          },
+        }
+      }
+
+      if (params.action === "revise") {
+        if (!params.task_id) throw new Error("task_id is required to revise a task")
+        const execution = ctx.extra?.execution
+        if (!execution) throw new Error("Task revision requires an active execution")
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const affected = await ExecutionRuntime.invalidateTaskDependents({
+          sessionID: ctx.sessionID,
+          execution,
+          taskID: params.task_id,
+          evidence: params.prompt ?? params.description ?? "Task revised by user",
+        })
+        return {
+          title: "Task revision recorded",
+          output: `Task "${params.task_id}" and ${affected} dependent task(s) reopened for revision.`,
+          metadata: { summary: [], sessionId: ctx.sessionID, error: false, aborted: 0 },
+        }
+      }
+
       if (!params.description || !params.prompt || !params.subagent_type) {
         throw new Error("description, prompt, and subagent_type are required when starting a task")
       }
 
       const config = await Config.get()
+      const execution = ctx.extra?.execution
+      if (execution) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (ExecutionRuntime.atomicRoot(execution.executionID))
+          throw new Error(
+            "ATOMIC_PLAN_REQUIRED: use task(action='plan'), then task(action='execute'); generic run is unavailable during Atomic Work",
+          )
+      }
+      if (execution && params.task_id) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        const target = await ExecutionRuntime.getTask({ sessionID: ctx.sessionID, execution, taskID: params.task_id })
+        if (target && AtomicWork.isTask(target, execution.executionID))
+          throw new Error("Atomic Work tasks run through task(action='execute')")
+      }
+      if (execution && params.depends_on?.length) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        for (const dependencyID of params.depends_on) {
+          const dependency = await ExecutionRuntime.getTask({
+            sessionID: ctx.sessionID,
+            execution,
+            taskID: dependencyID,
+          })
+          if (!dependency || dependency.status !== "accepted") {
+            throw new Error(`Task dependency "${dependencyID}" is not accepted`)
+          }
+        }
+      }
 
       // Skip permission check when user explicitly invoked via @ or command subtask
       if (!ctx.extra?.bypassAgentCheck) {
@@ -107,18 +393,18 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       // Create/reuse session (done before background detach for part tracking)
       const session = await iife(async () => {
         if (params.session_id) {
-          const found = await Session.get(params.session_id).catch(() => {})
-          if (found) {
-            try {
-              await Bus.publish(TuiEvent.SubAgentReactivate, {
-                sessionId: found.id,
-                description: params.description,
-              })
-            } catch {
-              /* TUI may not be available */
-            }
-            return found
+          const found = await Session.get(params.session_id).catch(() => undefined)
+          if (!SessionReuse.isAllowed(found, ctx.sessionID))
+            throw new Error(`Session "${params.session_id}" is not a child of the current session`)
+          try {
+            await Bus.publish(TuiEvent.SubAgentReactivate, {
+              sessionId: found.id,
+              description: params.description,
+            })
+          } catch {
+            /* TUI may not be available */
           }
+          return found
         }
         return await Session.create({
           parentID: ctx.sessionID,
@@ -128,6 +414,38 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       })
       const msg = await MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID })
       if (msg.info.role !== "assistant") throw new Error("Not an assistant message")
+
+      const durableTaskID = params.task_id ?? `task_${session.id}`
+      let durableTask: { version: number; status: string } | undefined
+      if (execution) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        durableTask = await ExecutionRuntime.registerTask({
+          sessionID: ctx.sessionID,
+          execution,
+          taskID: durableTaskID,
+          goal: params.prompt,
+          owner: ctx.sessionID,
+          agent: agent.name,
+          skill: params.skill,
+          dependsOn: params.depends_on,
+          acceptance: params.acceptance?.map((criterion) => ({
+            ...criterion,
+            verification: criterion.verification ?? "parent",
+          })),
+        })
+        try {
+          durableTask = await ExecutionRuntime.transitionTask({
+            sessionID: ctx.sessionID,
+            execution,
+            taskID: durableTaskID,
+            expectedVersion: durableTask.version,
+            status: "running",
+          })
+        } catch (error) {
+          if (!params.session_id) await SubAgent.cancel(session.id).catch(() => {})
+          throw error
+        }
+      }
 
       ctx.metadata({
         title: params.description,
@@ -174,7 +492,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         providerID: msg.info.providerID,
       }
 
-      const promptParts = await SessionPrompt.resolvePromptParts(params.prompt)
+      const promptParts = await resolvePromptParts(params.prompt, Instance.worktree)
 
       // ─── NON-BLOCKING: Start sub-agent in background, return immediately ───
       const runInBackground = async () => {
@@ -182,17 +500,20 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         const taskRunId = `task_${session.id}`
         try {
           if (Instance.project.vcs === "git") isolation = await SubAgentIsolation.create(params.description!)
-          const result = await SubAgent.spawn({
-            parentSessionID: ctx.sessionID,
-            agent,
-            model,
-            parts: promptParts,
-            permissions,
-            description: params.description!,
-            sessionId: session.id, // Reuse the session we already created
-            deniedTools: Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
-            workingDirectory: isolation?.directory,
-          })
+          const result = await TaskDispatch.spawn(
+            {
+              parentSessionID: ctx.sessionID,
+              agent,
+              model,
+              parts: promptParts,
+              permissions,
+              description: params.description!,
+              sessionId: session.id, // Reuse the session we already created
+              deniedTools: Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
+              workingDirectory: isolation?.directory,
+            },
+            params.skill ? [params.skill] : [],
+          )
 
           unsub()
 
@@ -209,9 +530,36 @@ export const TaskTool = Tool.define("task", async (ctx) => {
             for (const file of applied.changedFiles) HarnessState.addEditedFile(ctx.sessionID, file)
           }
 
+          if (execution && durableTask) {
+            const { ExecutionRuntime } = await import("@/core/execution/runtime")
+            durableTask = await ExecutionRuntime.transitionTask({
+              sessionID: ctx.sessionID,
+              execution,
+              taskID: durableTaskID,
+              expectedVersion: durableTask.version,
+              status: "submitted",
+              evidence: result.output.slice(0, 16_000),
+            })
+          }
+
           // Write results to file — no system_notification, parent LLM stays asleep
           await WorkflowFS.writeSuccess(taskRunId, params.subagent_type!, params.subagent_type!, result.output)
         } catch (e) {
+          if (execution && durableTask) {
+            try {
+              const { ExecutionRuntime } = await import("@/core/execution/runtime")
+              durableTask = await ExecutionRuntime.transitionTask({
+                sessionID: ctx.sessionID,
+                execution,
+                taskID: durableTaskID,
+                expectedVersion: durableTask.version,
+                status: "failed",
+                evidence: (e as Error).message,
+              })
+            } catch {
+              /* preserve original task failure */
+            }
+          }
           unsub()
           // Write failure file — no system_notification
           try {

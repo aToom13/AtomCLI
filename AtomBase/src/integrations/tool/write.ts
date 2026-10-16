@@ -1,15 +1,16 @@
 import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
+import { EditAnchor } from "./edit-anchor"
 import { LSP } from "../lsp"
 import DESCRIPTION from "./write.txt"
 import { Bus } from "@/core/bus"
-import { File } from "@/services/file"
 import { FileEvent } from "@/services/file/event"
 import { FileTime } from "@/services/file/time"
 import { Filesystem } from "@/util/util/filesystem"
 import { Instance } from "@/services/project/instance"
 import { EditDiff } from "./edit"
+import { ReadTool } from "./read"
 import { assertExternalDirectory } from "./external-directory"
 import { ToolRuntime } from "./runtime"
 import { withTimeout } from "@/util/util/timeout"
@@ -18,6 +19,7 @@ const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 const MAX_WRITE_BYTES = 10 * 1024 * 1024
 const LSP_DIAGNOSTICS_TIMEOUT_MS = 2_000
+const MAX_WRITE_SNAPSHOT_BYTES = 8 * 1024
 
 export const WriteTool = Tool.define("write", {
   description: DESCRIPTION,
@@ -56,10 +58,24 @@ export const WriteTool = Tool.define("write", {
           throw new Error(`Existing file exceeds the ${MAX_WRITE_BYTES} byte write limit`)
         }
 
-        // Fail fast if file exists but hasn't been read
-        if (exists) await FileTime.assert(ctx.sessionID, filepath)
+        if (exists) {
+          try {
+            await FileTime.assert(ctx.sessionID, filepath)
+          } catch (error) {
+            // ponytail: Auto-read only small files; require explicit full inspection for larger overwrites.
+            if (stats.size > MAX_WRITE_SNAPSHOT_BYTES) throw error
+            const snapshot = await (await ReadTool.init()).execute({ filePath: filepath }, ctx)
+            throw new Error(
+              `File was not written. Read snapshot supplied below; review it before retrying.\n${snapshot.output}\ncontentHash: ${snapshot.metadata.contentHash ?? "unavailable"}`,
+            )
+          }
+        }
 
         const contentOld = exists ? await file.text() : ""
+        const executionID = ctx.extra?.execution?.executionID as string | undefined
+        const knownHash = executionID ? EditAnchor.knownHash(executionID, filepath) : undefined
+        if (exists && knownHash && knownHash !== EditAnchor.contentHash(contentOld))
+          throw new Error(`Stale write: content changed for ${filepath}. Read it again before writing`)
 
         const diff = EditDiff.create(filepath, contentOld, params.content).diff
         await ctx.ask({
@@ -72,10 +88,22 @@ export const WriteTool = Tool.define("write", {
           },
         })
 
+        // The permission prompt blocks on a human, so the file can change while
+        // it is open. Re-validate before writing; otherwise the approved diff is
+        // not the diff that lands and the concurrent edit is silently lost.
+        const currentStats = await file.stat().catch((): undefined => undefined)
+        const currentContent = currentStats ? await file.text() : ""
+        if (!!currentStats !== exists || currentContent !== contentOld) {
+          throw new Error(
+            `Stale write: content changed for ${filepath} while awaiting permission. No changes were written`,
+          )
+        }
+
         try {
           writeAttempted = true
           await Bun.write(filepath, params.content)
           writeApplied = true
+          if (executionID) EditAnchor.trackWrite(executionID, filepath, contentOld, params.content)
         } catch (error) {
           const code = (error as NodeJS.ErrnoException)?.code
           if (["EACCES", "EPERM", "EROFS", "ENOENT"].includes(code ?? "")) {

@@ -8,7 +8,6 @@ import { assertExternalDirectory } from "./external-directory"
 import { EnvPolicy } from "@/core/env/policy"
 
 const MAX_RESULTS = 100
-const MAX_LINE_LENGTH = 2_000
 const MAX_PATTERN_LENGTH = 1_000
 const MAX_CAPTURE_BYTES = 256 * 1024
 const SEARCH_TIMEOUT_MS = 30_000
@@ -216,8 +215,7 @@ export const GrepTool = Tool.define("grep", {
         currentFile = match.path
         output.push(`${match.path}:`)
       }
-      const text = match.text.length > MAX_LINE_LENGTH ? `${match.text.slice(0, MAX_LINE_LENGTH)}...` : match.text
-      output.push(`  Line ${match.lineNumber}: ${text}`)
+      output.push(`  Line ${match.lineNumber}: ${match.text}`)
     }
     if (result.truncated) output.push("", "(Results are truncated; use a narrower path, pattern, or include.)")
 

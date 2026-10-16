@@ -1,0 +1,7 @@
+- Deterministic static quality gate for JavaScript, TypeScript and HTML artifacts
+- Catches scope/symbol defects that `node --check` and syntax-only checks miss:
+  `no-undef` (undefined identifier), `no-redeclare` (block-scoped redeclaration)
+- Use `file` for an existing file or `content` to validate source BEFORE writing it
+- Run this after editing a JS/HTML artifact and before declaring work complete
+- Prefer this over hand-written probes: it costs no reasoning tokens and never lies
+- Report findings verbatim; do not claim a build is verified while the gate fails

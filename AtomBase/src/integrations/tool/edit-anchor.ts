@@ -1,6 +1,21 @@
+import { Instance } from "@/services/project/instance"
+
 const HASH_PREFIX = "sha256:"
 const LINE_ANCHOR_PATTERN = /^L([1-9]\d*):sha256:([a-f0-9]{64})$/
 const MAX_ANCHORED_LINE_LENGTH = 2000
+const MAX_OWN_REVISIONS = 1000
+const MAX_ANCHORS_PER_REVISION = 32
+
+type Revision = { readHash: string; latestHash: string; anchors: Map<string, EditAnchor.Range> }
+const revisions = Instance.state(() => new Map<string, Revision>())
+
+function revisionKey(executionID: string, filePath: string) {
+  return `${executionID}\0${filePath}`
+}
+
+function anchorKey(startAnchor: string, endAnchor: string) {
+  return `${startAnchor}\0${endAnchor}`
+}
 
 function digest(value: string | Uint8Array) {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex")
@@ -23,6 +38,85 @@ export namespace EditAnchor {
 
   export function contentHash(content: string | Uint8Array) {
     return `${HASH_PREFIX}${digest(content)}`
+  }
+
+  export function knownHash(executionID: string, filePath: string) {
+    return revisions().get(revisionKey(executionID, filePath))?.latestHash
+  }
+
+  export function matchesOwnRevision(executionID: string, filePath: string, readHash: string, latestHash: string) {
+    const revision = revisions().get(revisionKey(executionID, filePath))
+    return revision?.readHash === readHash && revision.latestHash === latestHash
+  }
+
+  export function trackRead(input: {
+    executionID: string
+    filePath: string
+    content: string
+    contentHash: string
+    startAnchor: string
+    endAnchor: string
+  }) {
+    const range = resolveRange(input.content, input.startAnchor, input.endAnchor)
+    const all = revisions()
+    const key = revisionKey(input.executionID, input.filePath)
+    const previous = all.get(key)
+    const revision: Revision =
+      previous?.readHash === input.contentHash && previous.latestHash === input.contentHash
+        ? previous
+        : { readHash: input.contentHash, latestHash: input.contentHash, anchors: new Map() }
+    const anchor = anchorKey(input.startAnchor, input.endAnchor)
+    revision.anchors.delete(anchor)
+    revision.anchors.set(anchor, range)
+    if (revision.anchors.size > MAX_ANCHORS_PER_REVISION) revision.anchors.delete(revision.anchors.keys().next().value!)
+    all.delete(key)
+    all.set(key, revision)
+    if (all.size > MAX_OWN_REVISIONS) all.delete(all.keys().next().value!)
+  }
+
+  export function trackedRange(
+    executionID: string,
+    filePath: string,
+    contentHash: string,
+    startAnchor: string,
+    endAnchor: string,
+  ) {
+    const revision = revisions().get(revisionKey(executionID, filePath))
+    if (revision?.latestHash !== contentHash) return
+    return revision.anchors.get(anchorKey(startAnchor, endAnchor))
+  }
+
+  export function trackWrite(executionID: string, filePath: string, before: string, after: string) {
+    const all = revisions()
+    const key = revisionKey(executionID, filePath)
+    const previous = all.get(key)
+    const beforeHash = contentHash(before)
+    const current: Revision =
+      previous?.latestHash === beforeHash
+        ? previous
+        : { readHash: beforeHash, latestHash: beforeHash, anchors: new Map() }
+    let start = 0
+    while (start < before.length && start < after.length && before[start] === after[start]) start++
+    let oldEnd = before.length
+    let newEnd = after.length
+    while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) {
+      oldEnd--
+      newEnd--
+    }
+    const delta = after.length - before.length
+    for (const [anchor, range] of current.anchors) {
+      if (oldEnd <= range.start)
+        current.anchors.set(anchor, { ...range, start: range.start + delta, end: range.end + delta })
+      else if (start >= range.end) continue
+      else if (start >= range.start && oldEnd <= range.end)
+        current.anchors.set(anchor, { ...range, end: range.end + delta })
+      else current.anchors.delete(anchor)
+    }
+    current.latestHash = contentHash(after)
+    all.delete(key)
+    all.set(key, current)
+    // ponytail: Evicted revision chains require another Read; persist them only if restart-safe edits become necessary.
+    if (all.size > MAX_OWN_REVISIONS) all.delete(all.keys().next().value!)
   }
 
   export function range(startLine: number, content: string[]) {

@@ -9,6 +9,7 @@ import { ulid } from "ulid"
 // ─── Storage ────────────────────────────────────────────────────────────────
 
 const MEMORY_FILE = () => path.join(Global.Path.root, "memory.jsonl")
+let writeQueue: Promise<void> = Promise.resolve()
 
 interface MemoryEntry {
   id: string
@@ -45,14 +46,36 @@ async function loadAll(): Promise<MemoryEntry[]> {
 }
 
 async function appendEntry(entry: MemoryEntry): Promise<void> {
-  await ensureDir()
-  await fs.appendFile(MEMORY_FILE(), JSON.stringify(entry) + "\n", "utf-8")
+  const operation = writeQueue.then(async () => {
+    await ensureDir()
+    await fs.appendFile(MEMORY_FILE(), JSON.stringify(entry) + "\n", "utf-8")
+  })
+  writeQueue = operation.catch(() => {})
+  await operation
 }
 
 async function saveAll(entries: MemoryEntry[]): Promise<void> {
   await ensureDir()
   const lines = entries.map((e) => JSON.stringify(e)).join("\n")
   await fs.writeFile(MEMORY_FILE(), lines ? lines + "\n" : "", "utf-8")
+}
+
+async function touchAccess(ids: Set<string>): Promise<void> {
+  if (ids.size === 0) return
+  const operation = writeQueue.then(async () => {
+    const entries = await loadAll()
+    const now = new Date().toISOString()
+    let changed = false
+    for (const entry of entries) {
+      if (!ids.has(entry.id)) continue
+      entry.accessCount = (entry.accessCount ?? 0) + 1
+      entry.lastAccessAt = now
+      changed = true
+    }
+    if (changed) await saveAll(entries)
+  })
+  writeQueue = operation.catch(() => {})
+  await operation
 }
 
 // ─── Alias Normalization ────────────────────────────────────────────────────
@@ -380,7 +403,8 @@ export const MemoryTool = Tool.define("memory", {
       const queryTokens = expandQuery(params.query)
       const scored = entries
         .map((e) => ({ entry: e, score: score(e, queryTokens) }))
-        .filter((x) => x.score > 0)
+        // Recency/access bonuses alone must never make an unrelated fact match.
+        .filter((x) => x.score >= 2)
         .sort((a, b) => b.score - a.score)
         .slice(0, params.limit)
 
@@ -391,6 +415,8 @@ export const MemoryTool = Tool.define("memory", {
           metadata: { count: 0, query: params.query },
         }
       }
+
+      await touchAccess(new Set(scored.map((x) => x.entry.id)))
 
       const output = scored
         .map(({ entry, score: s }) => {
@@ -468,11 +494,13 @@ export async function recall(query: string, _context?: { technology?: string; se
   const queryTokens = expandQuery(query)
   const scored = entries
     .map((e) => ({ entry: e, score: score(e, queryTokens) }))
-    .filter((x) => x.score > 0)
+    .filter((x) => x.score >= 2)
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)
 
   if (scored.length === 0) return ""
+
+  await touchAccess(new Set(scored.map((x) => x.entry.id)))
 
   let memory = `\n<memory>\nI found some relevant past experiences that might help:\n`
   for (const { entry } of scored) {

@@ -1,13 +1,14 @@
 import z from "zod"
 import { Tool } from "./tool"
+import { ToolNotAppliedError } from "./runtime-error"
 import { Agent } from "../agent/agent"
 import { PermissionNext } from "@/util/permission/next"
 import { Session } from "@/core/session"
 import { SessionReuse } from "./session-reuse"
 import { SubAgent } from "./subagent"
-import { SessionExecutionProfile } from "@/core/session/execution-profile"
-import { ReviewPolicy } from "@/core/verification/review-policy"
-import { Config } from "@/core/config/config"
+import { TaskSchema, RecoverySchema } from "./orchestrate/schema"
+import { Instance } from "@/services/project/instance"
+import { activeOwnershipRoot } from "./orchestrate/ownership"
 
 const parameters = z.object({
   action: z
@@ -46,40 +47,39 @@ const parameters = z.object({
     .optional()
     .describe("Optional supported JSON Schema for a validated machine-readable sub-agent result"),
   validationMode: z.enum(["strict", "permissive"]).optional().default("strict"),
-  owns: z.array(z.string().max(4096)).max(200).optional().describe("Owned file/path prefixes for isolated writes"),
-  isolation: z.enum(["auto", "required"]).optional().default("auto"),
+  owns: z
+    .array(z.string().max(4096))
+    .max(200)
+    .optional()
+    .describe("Exclusive literal file/directory paths within the active ownership root; no globs"),
+  isolation: z
+    .enum(["auto", "required"])
+    .optional()
+    .default("auto")
+    .describe(
+      "auto uses Git worktrees when available, otherwise shared workspace with ownership/permission guards; required rejects non-Git plans without downgrade",
+    ),
 
   // Parameters for action='workflow' (multi-step DAG)
   workflow_action: z
-    .enum(["plan", "execute", "status", "abort"])
+    .enum(["plan", "execute", "status", "abort", "recover"])
     .optional()
-    .describe("Sub-action for workflow: 'plan', 'execute', 'status', or 'abort'"),
+    .describe("Sub-action for workflow: 'plan', 'execute', 'status', 'abort', or evidence-backed 'recover'"),
   workflowId: z
     .string()
     .max(200)
     .optional()
     .describe("Workflow ID returned from action='workflow' with workflow_action='plan'"),
   tasks: z
-    .array(
-      z.object({
-        id: z.string().min(1).max(100),
-        prompt: z.string().min(1).max(100_000),
-        category: z.enum(["coding", "documentation", "analysis", "general"]).optional(),
-        dependsOn: z.array(z.string().max(100)).max(50).optional(),
-        agent: z.string().max(100).optional(),
-        model: z.string().max(200).optional(),
-        owns: z.array(z.string().max(4096)).max(200).optional(),
-        outputSchema: z.record(z.string(), z.unknown()).optional(),
-        validationMode: z.enum(["strict", "permissive"]).optional(),
-        isolation: z.enum(["auto", "required"]).optional(),
-      }),
-    )
+    .array(TaskSchema)
     .max(50)
     .optional()
-    .describe("Task list for action='workflow' plan"),
+    .describe("Task DAG for workflow plan; independent tasks run concurrently"),
+  recovery: RecoverySchema.optional(),
 
   session_id: z.string().max(200).optional().describe("Session ID to continue (spawn) or abort"),
   timeoutSeconds: z.number().int().min(1).max(600).optional().default(30).describe("Maximum wait duration"),
+  executionTimeoutSeconds: z.number().int().min(1).max(3_600).optional().describe("Maximum child execution duration"),
 })
 
 /**
@@ -113,23 +113,32 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
 
   const description = [
     "Unified Agent tool — the single tool for running sub-agents and multi-step workflows.",
+    `Active session workspace: ${Instance.directory}. Workflow ownership root: ${activeOwnershipRoot()}.`,
+    "owns accepts absolute paths within that root or paths relative to it. Ownership does not grant file permissions.",
+    "owns uses literal paths, not globs. List implementation and test files explicitly (wordCount.ts, wordCount.test.ts); preserve those names in the child prompt.",
+    "Without Git isolation, owned children write with edit/write; shell commands require an OS read-only sandbox. The parent runs acceptance checks.",
+    "isolation=auto uses Git worktrees when available, otherwise the guarded shared workspace. isolation=required needs a Git worktree and is rejected during planning outside Git; never downgrade a user requirement.",
+    "Keep delegation within the user's target. A denied path must not be retried through another tool or child agent.",
     "",
     "⚠️ **BLOCKING TOOL**: action='spawn' BLOCKS until the sub-agent finishes. Tasks that",
-    "change files or write code receive independent reviewer QA; read-only investigation does not",
-    "spawn a redundant reviewer. Rejected reviewed work follows the configured review attempt limit. You CANNOT do other",
+    "change files or write code need tests and validation; independent reviewer QA is optional.",
+    "When review is requested, use one reviewer; multiple reviewers require an explicit request. You CANNOT do other",
     'work while a spawn is running. Do not say "I\'ll also do X while sub-agents work".',
-    "Companion fast sessions reject manually spawned reviewer/checker agents for low-risk work; use one focused direct verification instead.",
     "",
     "ACTIONS:",
     "1. action='spawn': Run a single sub-agent task (specify subagent_type, prompt, description).",
-    "   Blocking with adaptive QA verification. This is the DEFAULT action.",
+    "   Blocking with optional QA verification. This is the DEFAULT action.",
+    "   Preserve the user's acceptance criteria in the child prompt; do not weaken functional or technical requirements.",
     "2. action='workflow': Execute a multi-task DAG workflow (workflow_action='plan'|'execute').",
-    "   'plan' first, then 'execute' with the returned workflowId.",
+    "   'plan' first, then 'execute' with the returned workflowId. Independent tasks share a parallel layer (up to 4).",
+    "   Use 'status' to inspect unresolved tasks; 'recover' verifies root-created artifacts without replaying a failed child.",
+    "   executionTimeoutSeconds limits each child attempt; timeoutSeconds only limits wait.",
     "3. action='cancel' (or legacy 'abort'): Cancel a running session or workflow.",
     "4. action='wait': Wait up to timeoutSeconds for a child lifecycle transition.",
     "5. action='steer': Continue an idle child with new guidance; active in-process turns must be cancelled or awaited first.",
     "6. action='revive': Continue a completed/failed child session with a new prompt.",
     "7. action='status': Return runtime status, timestamps, and elapsed time.",
+    "One independent task: blocking spawn. Multiple independent tasks: workflow plan+execute; put dependencies in the DAG.",
     "",
     "AVAILABLE SUB-AGENT TYPES:",
     agentList,
@@ -140,22 +149,17 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     parameters,
     mutating: (params: z.infer<typeof parameters>) => params.action !== "status" && params.action !== "wait",
     async execute(params: z.infer<typeof parameters>, ctx) {
-      const rejectRedundantFastReviewer = async (agent: string, prompt: string, ownedFiles: string[] = []) => {
-        if (SessionExecutionProfile.get(ctx.sessionID) !== "companion-fast") return
-        if (agent !== "reviewer" && agent !== "checker") return
-        const config = await Config.get()
-        if (config.review?.policy === "always") return
-        if (ReviewPolicy.requiresIndependentReview("fast", { editedFiles: ownedFiles, prompt })) return
-        throw new Error(
-          "Companion fast profile blocks redundant reviewer/checker agents for this low-risk task. Run one focused verification directly and return the result.",
-        )
+      if (ctx.extra?.execution && ["spawn", "workflow", "steer", "revive"].includes(params.action)) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (ExecutionRuntime.atomicRoot(ctx.extra.execution.executionID))
+          throw new Error("ATOMIC_PLAN_REQUIRED: use task plan/execute for Atomic Work children")
       }
 
       const ownedChildSession = async (sessionID: string) => {
         const session = await Session.get(sessionID).catch(() => null)
-        if (!session) throw new Error(`Sub-agent session "${sessionID}" not found`)
+        if (!session) throw new ToolNotAppliedError(new Error(`Sub-agent session "${sessionID}" not found`))
         if (!SessionReuse.isAllowed(session, ctx.sessionID)) {
-          throw new Error(`Session "${sessionID}" is not a child of the current session`)
+          throw new ToolNotAppliedError(new Error(`Session "${sessionID}" is not a child of the current session`))
         }
         return session
       }
@@ -164,37 +168,37 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
         const orchestrateToolInstance = await orchestrateTool()
         const wfAction = params.workflow_action || (params.tasks ? "plan" : "execute")
 
-        // Permission gate — the same "task" permission that guards spawn must also
-        // guard the workflow path, otherwise agent(action='workflow', tasks=[...])
-        // would bypass the sub-agent spawn control entirely.
         if (params.tasks) {
           for (const t of params.tasks) {
             // Must mirror OrchestrateTool's default (orchestrate.ts: `agent: t.agent || "coder"`),
             // otherwise tasks without an explicit agent bypass the spawn permission gate.
             const agent = t.agent ?? "coder"
-            await rejectRedundantFastReviewer(agent, t.prompt, t.owns)
-            if (!ctx.extra?.bypassAgentCheck) {
+            if (wfAction === "plan" && !ctx.extra?.bypassAgentCheck) {
               await ctx.ask({
                 permission: "task",
                 patterns: [agent],
                 always: ["*"],
-                metadata: {
-                  description: t.id,
-                  subagent_type: agent,
-                },
+                metadata: { description: t.id, subagent_type: agent },
               })
             }
           }
         }
 
-        return orchestrateToolInstance.execute(
+        const result = await orchestrateToolInstance.execute(
           {
             action: wfAction as any,
             workflowId: params.workflowId,
             tasks: params.tasks as any,
+            recovery: params.recovery,
           },
           ctx,
         )
+        if (wfAction === "plan")
+          result.output = result.output.replace(
+            'orchestrate(action="execute",',
+            'agent(action="workflow", workflow_action="execute",',
+          )
+        return result
       }
 
       if (params.action === "abort" || params.action === "cancel") {
@@ -263,24 +267,10 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
       if (!params.subagent_type || !params.prompt || !params.description) {
         throw new Error("subagent_type, prompt, and description are required when starting a task")
       }
-
-      await rejectRedundantFastReviewer(params.subagent_type, params.prompt, params.owns)
-
-      // Permission gate — same permission id as TaskTool.run so existing rules keep working
-      if (!ctx.extra?.bypassAgentCheck) {
-        await ctx.ask({
-          permission: "task",
-          patterns: [params.subagent_type],
-          always: ["*"],
-          metadata: {
-            description: params.description,
-            subagent_type: params.subagent_type,
-          },
-        })
-      }
+      if (params.session_id) await ownedChildSession(params.session_id)
 
       // Delegate to a single-task blocking workflow: OrchestrateTool plan + execute.
-      // This gives spawn the orchestrator behavior: reviewer QA gate, retries, Chain UI
+      // This gives spawn the orchestrator behavior: optional reviewer QA, retries, Chain UI
       // progress, and results written to .atomcli/runs/<workflowId>/.
       const taskId = safeTaskId(params.description)
       const orchestrateToolInstance = await orchestrateTool()
@@ -298,6 +288,7 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
               outputSchema: params.outputSchema,
               validationMode: params.validationMode,
               isolation: params.isolation,
+              executionTimeoutSeconds: params.executionTimeoutSeconds,
             },
           ],
         },

@@ -14,6 +14,8 @@ import { Instance } from "@/services/project/instance"
 export namespace WorkflowFS {
   const RUNS_DIR = ".atomcli/runs"
   const SAFE_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/
+  const MAX_ARCHIVE_BYTES = 100 * 1024
+  const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
 
   let _rootDirOverride: string | undefined
 
@@ -32,6 +34,22 @@ export namespace WorkflowFS {
 
   function rootDir(): string {
     return _rootDirOverride ?? Instance.worktree
+  }
+
+  function bounded(value: string): string {
+    return boundedTo(value, MAX_ARCHIVE_BYTES, `... output archive truncated at ${MAX_ARCHIVE_BYTES} bytes ...`)
+  }
+
+  function boundedArtifact(value: string): string {
+    return boundedTo(value, MAX_ARTIFACT_BYTES, `... artifact truncated at ${MAX_ARTIFACT_BYTES} bytes ...`)
+  }
+
+  function boundedTo(value: string, maxBytes: number, marker: string): string {
+    const bytes = Buffer.from(value)
+    if (bytes.byteLength <= maxBytes) return value
+    const suffix = Buffer.from(`\n\n${marker}`)
+    const prefixBytes = Math.max(0, maxBytes - suffix.byteLength)
+    return `${bytes.subarray(0, prefixBytes).toString("utf8")}${suffix.toString("utf8")}`
   }
 
   function segment(value: string, label: string): string {
@@ -76,9 +94,9 @@ export namespace WorkflowFS {
       ``,
       `## Output`,
       ``,
-      output,
+      bounded(output),
     ].join("\n")
-    await fs.writeFile(filePath, content, "utf-8")
+    await fs.writeFile(filePath, bounded(content), "utf-8")
     return filePath
   }
 
@@ -109,18 +127,18 @@ export namespace WorkflowFS {
       parts.push(``)
       parts.push(`## Original Output`)
       parts.push(``)
-      parts.push(originalOutput)
+      parts.push(bounded(originalOutput))
     }
 
     parts.push(``)
     parts.push(`## Error`)
     parts.push(``)
     parts.push("```")
-    parts.push(error)
+    parts.push(bounded(error))
     parts.push("```")
 
     const content = parts.join("\n")
-    await fs.writeFile(filePath, content, "utf-8")
+    await fs.writeFile(filePath, bounded(content), "utf-8")
     return filePath
   }
 
@@ -134,7 +152,7 @@ export namespace WorkflowFS {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(name)) throw new Error(`Invalid artifact name: ${name}`)
     const dir = await ensureRunDir(workflowId)
     const filePath = path.join(dir, `${segment(taskId, "task ID")}_${name}`)
-    await fs.writeFile(filePath, content, "utf-8")
+    await fs.writeFile(filePath, boundedArtifact(content), "utf-8")
     return filePath
   }
 
@@ -145,8 +163,9 @@ export namespace WorkflowFS {
     try {
       await fs.access(getRunDir(workflowId))
       return true
-    } catch {
-      return false
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+      throw error
     }
   }
 
@@ -159,8 +178,9 @@ export namespace WorkflowFS {
     try {
       const entries = await fs.readdir(dir)
       return entries.filter((e) => e.endsWith(".md"))
-    } catch {
-      return []
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+      throw error
     }
   }
 }

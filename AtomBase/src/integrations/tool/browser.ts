@@ -1,6 +1,5 @@
 import fs from "fs/promises"
 import path from "path"
-import z from "zod"
 import type { Locator, Page } from "playwright"
 import { Identifier } from "@/core/id/id"
 import { Instance } from "@/services/project/instance"
@@ -10,485 +9,9 @@ import { BrowserTarget } from "./browser-target"
 import { ToolRuntime } from "./runtime"
 import { assertExternalDirectory } from "./external-directory"
 import { Tool } from "./tool"
-
-const MAX_BROWSER_OUTPUT = 100_000
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-const DEFAULT_TIMEOUT = 30_000
-const MAX_FLOW_STEPS = 20
-const MAX_INPUT_SEQUENCE_EVENTS = 200
-const MAX_INPUT_SEQUENCE_DURATION = 120_000
-const MAX_INPUT_SEQUENCE_CAPTURES = 10
-const MAX_INPUT_SEQUENCE_ATTACHMENT_BYTES = 40 * 1024 * 1024
-
-const Action = z.enum([
-  "navigate",
-  "click",
-  "tap",
-  "mouse",
-  "key_down",
-  "key_up",
-  "input_sequence",
-  "box",
-  "clock",
-  "type",
-  "press",
-  "clear",
-  "read",
-  "snapshot",
-  "snapshot_diff",
-  "accessibility",
-  "network",
-  "wait",
-  "screenshot",
-  "scroll",
-  "drag",
-  "hover",
-  "focus",
-  "select_option",
-  "check",
-  "uncheck",
-  "set_files",
-  "assert",
-  "evaluate",
-  "console_logs",
-  "back",
-  "forward",
-  "reload",
-  "tabs",
-  "switch_tab",
-  "new_tab",
-  "close_tab",
-  "dialog",
-  "download",
-  "emulate",
-  "cookies",
-  "storage",
-  "trace_start",
-  "trace_stop",
-  "flow",
-  "close",
-])
-
-const Cookie = z.object({
-  name: z.string().max(1_000),
-  value: z.string().max(100_000),
-  url: z.string().max(8_192).optional(),
-  domain: z.string().max(1_000).optional(),
-  path: z.string().max(4_096).optional(),
-  expires: z.number().optional(),
-  httpOnly: z.boolean().optional(),
-  secure: z.boolean().optional(),
-  sameSite: z.enum(["Strict", "Lax", "None"]).optional(),
-})
-
-const InputSequenceEvent = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("wait"), duration: z.number().int().min(0).max(30_000) }),
-  z.object({ type: z.literal("advance"), duration: z.number().int().min(0).max(30_000) }),
-  z.object({ type: z.literal("key_down"), key: z.string().min(1).max(100) }),
-  z.object({ type: z.literal("key_up"), key: z.string().min(1).max(100) }),
-  z.object({
-    type: z.literal("press"),
-    key: z.string().min(1).max(100),
-    delay: z.number().int().min(0).max(10_000).optional(),
-  }),
-  z.object({
-    type: z.literal("mouse_move"),
-    x: z.number().min(-100_000).max(100_000).optional(),
-    y: z.number().min(-100_000).max(100_000).optional(),
-    steps: z.number().int().min(1).max(1_000).optional(),
-  }),
-  z.object({
-    type: z.literal("mouse_down"),
-    button: z.enum(["left", "right", "middle"]).optional(),
-    clickCount: z.number().int().min(1).max(3).optional(),
-  }),
-  z.object({
-    type: z.literal("mouse_up"),
-    button: z.enum(["left", "right", "middle"]).optional(),
-    clickCount: z.number().int().min(1).max(3).optional(),
-  }),
-  z.object({
-    type: z.literal("mouse_click"),
-    x: z.number().min(-100_000).max(100_000).optional(),
-    y: z.number().min(-100_000).max(100_000).optional(),
-    button: z.enum(["left", "right", "middle"]).optional(),
-    clickCount: z.number().int().min(1).max(3).optional(),
-    delay: z.number().int().min(0).max(10_000).optional(),
-  }),
-  z.object({
-    type: z.literal("tap"),
-    x: z.number().min(-100_000).max(100_000).optional(),
-    y: z.number().min(-100_000).max(100_000).optional(),
-  }),
-  z.object({
-    type: z.literal("wheel"),
-    deltaX: z.number().min(-100_000).max(100_000).optional(),
-    deltaY: z.number().min(-100_000).max(100_000).optional(),
-  }),
-  z.object({ type: z.literal("capture"), name: z.string().max(200).optional() }),
-])
-
-const BrowserParameters = z
-  .object({
-    action: Action.describe("Browser action to perform"),
-    ...BrowserTarget.Fields,
-    url: z.string().max(8_192).optional().describe("Absolute URL for navigation or tab creation"),
-    script: z
-      .string()
-      .max(100_000)
-      .optional()
-      .describe("JavaScript expression for evaluate; invoke function expressions, for example (() => 42)()"),
-    text: z.string().max(100_000).optional().describe("Text to enter or wait for"),
-    key: z.string().max(100).optional().describe("Keyboard key such as Enter, ControlOrMeta+C, or ArrowDown"),
-    mouseAction: z.enum(["move", "click", "down", "up", "wheel", "tap"]).optional(),
-    x: z.number().min(-100_000).max(100_000).optional().describe("Pointer X coordinate"),
-    y: z.number().min(-100_000).max(100_000).optional().describe("Pointer Y coordinate"),
-    coordinateMode: z
-      .enum(["viewport", "element", "normalized"])
-      .optional()
-      .describe("Coordinates are viewport pixels, target-relative pixels, or normalized 0..1 within the target"),
-    deltaX: z.number().min(-100_000).max(100_000).optional(),
-    deltaY: z.number().min(-100_000).max(100_000).optional(),
-    pointerSteps: z.number().int().min(1).max(1_000).optional().describe("Intermediate steps for mouse movement"),
-    delay: z.number().min(0).max(5_000).optional().describe("Delay between input events in milliseconds"),
-    timeout: z.number().int().min(100).max(120_000).optional(),
-    state: z.enum(["attached", "detached", "visible", "hidden"]).optional(),
-    loadState: z.enum(["load", "domcontentloaded", "networkidle"]).optional(),
-    maxElements: z.number().int().min(1).max(500).optional(),
-    scope: z.string().max(4_096).optional().describe("Limit snapshot to this CSS selector in each frame"),
-    tabIndex: z.number().int().min(0).max(1_000).optional(),
-    tabId: z
-      .string()
-      .regex(/^tab-\d+$/)
-      .optional()
-      .describe("Stable tab ID returned by tabs"),
-    button: z.enum(["left", "right", "middle"]).optional(),
-    clickCount: z.number().int().min(1).max(3).optional(),
-    force: z.boolean().optional(),
-    modifiers: z
-      .array(z.enum(["Alt", "Control", "ControlOrMeta", "Meta", "Shift"]))
-      .max(5)
-      .optional(),
-    direction: z.enum(["up", "down", "left", "right", "top", "bottom"]).optional(),
-    amount: z.number().min(1).max(100_000).optional(),
-    destination: BrowserTarget.Info.optional().describe("Semantic destination target for drag"),
-    targetSelector: z.string().max(4_096).optional().describe("Legacy CSS destination for drag"),
-    name: z.string().max(200).optional().describe("Safe output name without extension"),
-    workdir: z.string().max(4_096).optional(),
-    fullPage: z.boolean().optional(),
-    save: z
-      .boolean()
-      .optional()
-      .describe("Save screenshot to .screenshots in addition to attaching it (default: true)"),
-    returnSnapshot: z.boolean().optional().describe("Append a fresh semantic snapshot after the action"),
-    assertion: z
-      .enum([
-        "visible",
-        "hidden",
-        "enabled",
-        "disabled",
-        "checked",
-        "unchecked",
-        "selected",
-        "text",
-        "value",
-        "url",
-        "count",
-      ])
-      .optional(),
-    expected: z.string().max(100_000).optional(),
-    expectedCount: z.number().int().min(0).optional(),
-    optionValues: z.array(z.string().max(10_000)).max(100).optional(),
-    files: z.array(z.string().max(4_096)).max(100).optional(),
-    expectPopup: z.boolean().optional().describe("Wait for and switch to a popup opened by click"),
-    dialogAction: z.enum(["accept", "dismiss"]).optional(),
-    promptText: z.string().max(100_000).optional(),
-    device: z.string().max(200).optional(),
-    width: z.number().int().min(100).max(10_000).optional(),
-    height: z.number().int().min(100).max(10_000).optional(),
-    locale: z.string().max(100).optional(),
-    timezoneId: z.string().max(200).optional(),
-    colorScheme: z.enum(["dark", "light", "no-preference"]).optional(),
-    offline: z.boolean().optional(),
-    latitude: z.number().min(-90).max(90).optional(),
-    longitude: z.number().min(-180).max(180).optional(),
-    accuracy: z.number().min(0).max(100_000).optional(),
-    reset: z.boolean().optional(),
-    cookieOperation: z.enum(["list", "set", "clear"]).optional(),
-    cookies: z.array(Cookie).max(100).optional(),
-    urls: z.array(z.string().max(8_192)).max(100).optional(),
-    storageOperation: z.enum(["list", "clear"]).optional(),
-    includeValues: z
-      .boolean()
-      .optional()
-      .describe("Include sensitive cookie/storage values when listing (default: false, values are redacted)"),
-    since: z.number().int().min(0).optional().describe("Return events with IDs newer than this cursor"),
-    limit: z.number().int().min(1).max(500).optional(),
-    cursorOnly: z.boolean().optional().describe("Return only the current event cursor without listing events"),
-    level: z.string().max(100).optional(),
-    urlPattern: z.string().max(2_000).optional(),
-    status: z.number().int().min(100).max(599).optional(),
-    failedOnly: z.boolean().optional(),
-    resourceType: z.string().max(100).optional(),
-    clearEvents: z.boolean().optional(),
-    steps: z.array(z.record(z.string(), z.unknown())).max(MAX_FLOW_STEPS).optional(),
-    sequence: z
-      .array(InputSequenceEvent)
-      .max(MAX_INPUT_SEQUENCE_EVENTS)
-      .optional()
-      .describe("Timed keyboard/mouse/touch/capture events executed in one low-latency call"),
-    releaseAtEnd: z.boolean().optional().describe("Release held keys/buttons after input_sequence (default: true)"),
-    clockOperation: z
-      .enum(["install", "pause", "run_for", "fast_forward", "resume"])
-      .optional()
-      .describe(
-        "Install before game navigation, pause after load, then run_for to advance timers and animation frames",
-      ),
-    duration: z.number().int().min(0).max(MAX_INPUT_SEQUENCE_DURATION).optional(),
-    clockTime: z.union([z.number(), z.string().max(200)]).optional(),
-  })
-  .superRefine((input, ctx) => {
-    const targets = [
-      input.ref,
-      input.selector,
-      input.role,
-      input.label,
-      input.placeholder,
-      input.testId,
-      input.targetText,
-    ]
-    if (targets.filter((value) => value !== undefined).length > 1) {
-      ctx.addIssue({ code: "custom", message: "Use exactly one element target strategy" })
-    }
-    if (input.accessibleName !== undefined && input.role === undefined) {
-      ctx.addIssue({ code: "custom", path: ["accessibleName"], message: "accessibleName requires role" })
-    }
-  })
-
-type BrowserParameters = z.infer<typeof BrowserParameters>
-type BrowserAttachment = {
-  id: string
-  sessionID: string
-  messageID: string
-  type: "file"
-  mime: string
-  filename?: string
-  url: string
-}
-type ActionResult = {
-  output: string
-  metadata?: Record<string, unknown>
-  attachments?: BrowserAttachment[]
-}
-
-function timeout(params: BrowserParameters) {
-  return params.timeout ?? DEFAULT_TIMEOUT
-}
-
-function targetRequired(params: BrowserParameters) {
-  if (!BrowserTarget.has(params)) throw new Error(`An element target is required for ${params.action}`)
-}
-
-function validateURL(value: string | undefined) {
-  if (!value) throw new Error("URL is required")
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    throw new Error("A valid absolute URL is required")
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Browser navigation supports only http:// and https:// URLs")
-  }
-  return url
-}
-
-function safeName(value: string | undefined, fallback: string) {
-  return (value || fallback).replace(/[^a-zA-Z0-9-_]/g, "_")
-}
-
-function redactSensitiveValues(value: unknown, key?: string): unknown {
-  if (key === "value") return "[REDACTED]"
-  if (Array.isArray(value)) return value.map((item) => redactSensitiveValues(item))
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([entryKey, entryValue]) => [entryKey, redactSensitiveValues(entryValue, entryKey)]),
-    )
-  }
-  return value
-}
-
-async function resolvePoint(
-  page: Page,
-  locator: Locator | undefined,
-  input: {
-    x?: number
-    y?: number
-    coordinateMode?: "viewport" | "element" | "normalized"
-  },
-) {
-  const mode = input.coordinateMode ?? (locator ? "element" : "viewport")
-  if (mode === "viewport") {
-    if (input.x === undefined || input.y === undefined) {
-      throw new Error("x and y are required for viewport coordinates")
-    }
-    return { x: input.x, y: input.y, mode }
-  }
-  if (!locator) throw new Error(`${mode} coordinates require an element target`)
-  const box = await locator.boundingBox()
-  if (!box) throw new Error("The coordinate target has no visible bounding box")
-  if (mode === "normalized") {
-    const x = input.x ?? 0.5
-    const y = input.y ?? 0.5
-    if (x < 0 || x > 1 || y < 0 || y > 1) {
-      throw new Error("normalized x and y coordinates must be between 0 and 1")
-    }
-    return { x: box.x + box.width * x, y: box.y + box.height * y, mode, box }
-  }
-  return {
-    x: box.x + (input.x ?? box.width / 2),
-    y: box.y + (input.y ?? box.height / 2),
-    mode,
-    box,
-  }
-}
-
-function screenshotAttachment(buffer: Buffer, name: string | undefined, ctx: Tool.Context): BrowserAttachment {
-  const filename = `${safeName(name, `checkpoint-${Date.now()}`)}.png`
-  return {
-    id: Identifier.ascending("part"),
-    sessionID: ctx.sessionID,
-    messageID: ctx.messageID,
-    type: "file",
-    mime: "image/png",
-    filename,
-    url: `data:image/png;base64,${buffer.toString("base64")}`,
-  }
-}
-
-async function runInputSequence(
-  page: Page,
-  locator: Locator | undefined,
-  params: BrowserParameters,
-  ctx: Tool.Context,
-): Promise<ActionResult> {
-  const sequence = params.sequence
-  if (!sequence?.length) throw new Error("sequence is required for input_sequence")
-  const duration = sequence.reduce((total, event) => {
-    if (event.type === "wait" || event.type === "advance") return total + event.duration
-    if (event.type === "press" || event.type === "mouse_click") return total + (event.delay ?? 0)
-    return total
-  }, 0)
-  if (duration > MAX_INPUT_SEQUENCE_DURATION) {
-    throw new Error(`input_sequence timing exceeds ${MAX_INPUT_SEQUENCE_DURATION}ms`)
-  }
-  const captureCount = sequence.filter((event) => event.type === "capture").length
-  if (captureCount > MAX_INPUT_SEQUENCE_CAPTURES) {
-    throw new Error(`input_sequence supports at most ${MAX_INPUT_SEQUENCE_CAPTURES} capture events`)
-  }
-
-  const heldKeys = new Set<string>()
-  const heldButtons = new Set<"left" | "right" | "middle">()
-  const attachments: BrowserAttachment[] = []
-  const lines: string[] = []
-  let attachmentBytes = 0
-  let completed = false
-  const point = (event: { x?: number; y?: number }) =>
-    resolvePoint(page, locator, {
-      x: event.x,
-      y: event.y,
-      coordinateMode: params.coordinateMode,
-    })
-
-  try {
-    for (const [index, event] of sequence.entries()) {
-      ctx.abort.throwIfAborted()
-      switch (event.type) {
-        case "wait":
-          await withAbort(Bun.sleep(event.duration), ctx.abort)
-          break
-        case "advance":
-          await withAbort(page.clock.runFor(event.duration), ctx.abort)
-          break
-        case "key_down":
-          await page.keyboard.down(event.key)
-          heldKeys.add(event.key)
-          break
-        case "key_up":
-          await page.keyboard.up(event.key)
-          heldKeys.delete(event.key)
-          break
-        case "press":
-          await page.keyboard.press(event.key, { delay: event.delay })
-          break
-        case "mouse_move": {
-          const resolved = await point(event)
-          await page.mouse.move(resolved.x, resolved.y, { steps: event.steps })
-          break
-        }
-        case "mouse_down": {
-          const button = event.button ?? "left"
-          await page.mouse.down({ button, clickCount: event.clickCount })
-          heldButtons.add(button)
-          break
-        }
-        case "mouse_up": {
-          const button = event.button ?? "left"
-          await page.mouse.up({ button, clickCount: event.clickCount })
-          heldButtons.delete(button)
-          break
-        }
-        case "mouse_click": {
-          const resolved = await point(event)
-          await page.mouse.click(resolved.x, resolved.y, {
-            button: event.button ?? "left",
-            clickCount: event.clickCount,
-            delay: event.delay,
-          })
-          break
-        }
-        case "tap": {
-          const resolved = await point(event)
-          await page.touchscreen.tap(resolved.x, resolved.y)
-          break
-        }
-        case "wheel":
-          await page.mouse.wheel(event.deltaX ?? 0, event.deltaY ?? 0)
-          break
-        case "capture": {
-          const buffer = locator ? await locator.screenshot() : await page.screenshot()
-          if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
-            throw new Error(`Checkpoint ${index + 1} exceeds the screenshot attachment limit`)
-          }
-          attachmentBytes += buffer.byteLength
-          if (attachmentBytes > MAX_INPUT_SEQUENCE_ATTACHMENT_BYTES) {
-            throw new Error("input_sequence checkpoint attachments exceed the combined 40 MiB limit")
-          }
-          attachments.push(screenshotAttachment(buffer, event.name ?? `checkpoint-${index + 1}`, ctx))
-          break
-        }
-      }
-      lines.push(`${index + 1}. ${event.type}`)
-    }
-    completed = true
-  } finally {
-    if ((params.releaseAtEnd ?? true) || !completed) {
-      for (const key of [...heldKeys].reverse()) await page.keyboard.up(key).catch(() => {})
-      for (const button of [...heldButtons].reverse()) await page.mouse.up({ button }).catch(() => {})
-    }
-  }
-
-  return {
-    output: `Executed ${sequence.length} timed input event(s).\n${lines.join("\n")}`,
-    metadata: {
-      eventCount: sequence.length,
-      timedDuration: duration,
-      captureCount: attachments.length,
-      releasedAtEnd: params.releaseAtEnd ?? true,
-    },
-    attachments,
-  }
-}
+import { runInputSequence, type ActionResult, type BrowserAttachment, type HeldInputs } from "./browser/input-sequence"
+import { BrowserParameters, MAX_ATTACHMENT_BYTES, MAX_BROWSER_OUTPUT } from "./browser/schema"
+import { redactSensitiveValues, resolvePoint, safeName, timeout, validateURL } from "./browser/validation"
 
 async function withAbort<T>(promise: Promise<T>, signal: AbortSignal) {
   signal.throwIfAborted()
@@ -577,7 +100,11 @@ async function assertAction(page: Page, locator: Locator | undefined, params: Br
   return `Assertion passed: ${assertion} for ${BrowserTarget.description(params)}`
 }
 
-async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<ActionResult> {
+async function perform(
+  params: BrowserParameters,
+  ctx: Tool.Context,
+  flowInputs?: Map<Page, HeldInputs>,
+): Promise<ActionResult> {
   ctx.abort.throwIfAborted()
 
   if (params.action === "close") {
@@ -762,7 +289,13 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
       await page.clock.install(params.clockTime === undefined ? undefined : { time: params.clockTime })
     } else if (operation === "pause") {
       const time = params.clockTime ?? (await page.evaluate(() => Date.now()))
-      await page.clock.pauseAt(time)
+      try {
+        await page.clock.pauseAt(time)
+      } catch (error) {
+        // Playwright pauses before rejecting a sampled time overtaken by the round trip.
+        if (params.clockTime !== undefined || !String(error).includes("Cannot fast-forward to the past")) throw error
+        await page.clock.pauseAt(await page.evaluate(() => Date.now()))
+      }
     } else if (operation === "run_for") {
       if (params.duration === undefined) throw new Error("duration is required for clock run_for")
       await page.clock.runFor(params.duration)
@@ -797,6 +330,10 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
   }
 
   let page = await Browser.getPage()
+  const heldInputs = flowInputs
+    ? (flowInputs.get(page) ?? { keys: new Set<string>(), buttons: new Set<"left" | "right" | "middle">() })
+    : undefined
+  if (heldInputs) flowInputs!.set(page, heldInputs)
   if (params.action === "navigate") {
     const url = validateURL(params.url)
     await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: timeout(params), signal: ctx.abort })
@@ -811,22 +348,6 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
   if (params.action === "snapshot") return snapshotResult(page, params)
   if (params.action === "snapshot_diff") return snapshotResult(page, params, true)
 
-  const needsTarget = [
-    "click",
-    "tap",
-    "type",
-    "clear",
-    "drag",
-    "hover",
-    "focus",
-    "select_option",
-    "check",
-    "uncheck",
-    "set_files",
-    "download",
-    "box",
-  ].includes(params.action)
-  if (needsTarget) targetRequired(params)
   const locator = BrowserTarget.has(params) ? await BrowserTarget.locator(page, params) : undefined
   let result: ActionResult
 
@@ -861,6 +382,13 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
       break
     case "mouse": {
       const action = params.mouseAction ?? "click"
+      if ((action === "down" || action === "up") && !locator && params.x === undefined && params.y === undefined) {
+        await page.mouse[action]({ button: params.button ?? "left", clickCount: params.clickCount })
+        if (action === "down") heldInputs?.buttons.add(params.button ?? "left")
+        else heldInputs?.buttons.delete(params.button ?? "left")
+        result = { output: `Mouse ${action} at the current pointer position` }
+        break
+      }
       if (action === "wheel") {
         if (locator || params.x !== undefined || params.y !== undefined) {
           const resolved = await resolvePoint(page, locator, params)
@@ -885,8 +413,10 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
         await page.mouse.move(resolved.x, resolved.y, { steps: params.pointerSteps })
         if (action === "down") {
           await page.mouse.down({ button: params.button ?? "left", clickCount: params.clickCount })
+          heldInputs?.buttons.add(params.button ?? "left")
         } else {
           await page.mouse.up({ button: params.button ?? "left", clickCount: params.clickCount })
+          heldInputs?.buttons.delete(params.button ?? "left")
         }
       }
       result = {
@@ -895,9 +425,9 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
       }
       break
     }
+    case "fill":
     case "type":
-      if (params.text === undefined) throw new Error("text is required for type")
-      if (params.delay === undefined) {
+      if (params.action === "fill" || params.delay === undefined) {
         await locator!.fill(params.text, { force: params.force, timeout: timeout(params), signal: ctx.abort })
         result = { output: `Filled ${BrowserTarget.description(params)}`, metadata: { inputMode: "fill" } }
       } else {
@@ -919,15 +449,20 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
     case "key_up": {
       if (!params.key) throw new Error(`key is required for ${params.action}`)
       if (locator) await locator.focus({ timeout: timeout(params), signal: ctx.abort })
-      if (params.action === "key_down") await page.keyboard.down(params.key)
-      else await page.keyboard.up(params.key)
+      if (params.action === "key_down") {
+        await page.keyboard.down(params.key)
+        heldInputs?.keys.add(params.key)
+      } else {
+        await page.keyboard.up(params.key)
+        heldInputs?.keys.delete(params.key)
+      }
       result = {
         output: `${params.action === "key_down" ? "Held" : "Released"} ${params.key}${locator ? ` on ${BrowserTarget.description(params)}` : ""}`,
       }
       break
     }
     case "input_sequence":
-      result = await runInputSequence(page, locator, params, ctx)
+      result = await runInputSequence(page, locator, params, ctx, heldInputs)
       break
     case "box": {
       const box = await locator!.boundingBox()
@@ -957,11 +492,25 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
         metadata: { format: "aria-snapshot" },
       }
       break
-    case "wait":
+    case "wait": {
+      if (params.duration !== undefined) {
+        await withAbort(page.waitForTimeout(params.duration), ctx.abort)
+        result = { output: `Waited ${params.duration}ms` }
+      }
       if (locator) {
-        await locator.waitFor({ state: params.state ?? "visible", timeout: timeout(params), signal: ctx.abort })
-        result = { output: `Wait condition met: ${BrowserTarget.description(params)} is ${params.state ?? "visible"}` }
-      } else if (params.text) {
+        const target =
+          params.text === undefined
+            ? locator
+            : locator.filter({
+                hasText: params.exact
+                  ? new RegExp(`^${params.text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`)
+                  : params.text,
+              })
+        await target.waitFor({ state: params.state ?? "visible", timeout: timeout(params), signal: ctx.abort })
+        result = {
+          output: `Wait condition met: ${BrowserTarget.description(params)} is ${params.state ?? "visible"}${params.text === undefined ? "" : ` with text ${JSON.stringify(params.text)}`}`,
+        }
+      } else if (params.text !== undefined) {
         await page
           .getByText(params.text, { exact: params.exact ?? false })
           .first()
@@ -970,11 +519,12 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
       } else if (params.url) {
         await page.waitForURL(params.url, { timeout: timeout(params), signal: ctx.abort })
         result = { output: `Wait condition met for URL ${params.url}` }
-      } else {
+      } else if (params.duration === undefined || params.loadState !== undefined) {
         await page.waitForLoadState(params.loadState ?? "networkidle", { timeout: timeout(params), signal: ctx.abort })
         result = { output: `Page reached ${params.loadState ?? "networkidle"}` }
       }
       break
+    }
     case "scroll": {
       if (!params.direction) throw new Error("direction is required for scroll")
       const amount = params.amount ?? 500
@@ -1007,7 +557,6 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
     case "drag": {
       const destination =
         params.destination ?? (params.targetSelector ? { selector: params.targetSelector } : undefined)
-      if (!destination || !BrowserTarget.has(destination)) throw new Error("destination is required for drag")
       const target = await BrowserTarget.locator(page, destination)
       await locator!.dragTo(target, { force: params.force, timeout: timeout(params), signal: ctx.abort })
       result = { output: `Dragged ${BrowserTarget.description(params)} to ${BrowserTarget.description(destination)}` }
@@ -1169,21 +718,44 @@ async function perform(params: BrowserParameters, ctx: Tool.Context): Promise<Ac
   return result
 }
 
-function failedBeforeBrowserAction(error: unknown) {
+function failedBeforeBrowserAction(error: unknown, action: BrowserParameters["action"]) {
   const message = error instanceof Error ? error.message : String(error)
-  return /Timeout \d+ms exceeded/.test(message) && /waiting for locator\(/.test(message)
+  return (
+    (/Timeout \d+ms exceeded/.test(message) &&
+      /waiting for (?:locator|getBy\w+)\(/.test(message) &&
+      !/performing .* action|action done/.test(message)) ||
+    (action === "navigate" && /\bgoto: net::ERR_CONNECTION_REFUSED\b/.test(message))
+  )
+}
+
+function knownBrowserFailure(error: unknown, action: BrowserParameters["action"]) {
+  const message = error instanceof Error ? error.message : String(error)
+  return (
+    action === "assert" ||
+    (action !== "navigate" && failedBeforeBrowserAction(error, action)) ||
+    (action === "click" &&
+      /Timeout \d+ms exceeded/.test(message) &&
+      message.lastIndexOf("intercepts pointer events") > message.lastIndexOf("performing click action") &&
+      !/action done|waiting for scheduled navigations/.test(message)) ||
+    /strict mode violation/.test(message) ||
+    (action === "evaluate" && /evaluate: (?:Error|TypeError|ReferenceError|SyntaxError|RangeError):/.test(message))
+  )
 }
 
 export const BrowserTool = Tool.define("browser", {
   description: `Control a real Chromium browser with semantic, accessible locators and stable snapshot refs.
 Use ref, role+accessibleName, label, placeholder, testId, targetText, or CSS selector to target elements.
+fill replaces a field value atomically. type also fills by default; supply delay for physical sequential key input.
 Supports navigation, assertions, forms, uploads/downloads, dialogs, popups, stable tabs, screenshots attached for vision,
 snapshot diffs, cursor-based console/network events, traces, cookies/storage, device/viewport/locale/timezone/geolocation/offline emulation,
 canvas-relative mouse/touch coordinates, held keys, deterministic browser clock control, and timed input sequences with visual checkpoints.
-Use input_sequence for real-time games: combine simultaneous key_down/key_up events with wait or clock-driven advance events and capture checkpoints.
-Bounded multi-step flows reduce round trips. Set returnSnapshot=true after an action to inspect the resulting UI without another call.
+Use action=flow for each acceptance domain: at most 20 steps, interaction followed by assert/evaluate. Split larger suites into bounded flows.
+For real-time games, keep reset/start, input_sequence and assert/evaluate in the same flow: simulation continues between calls. input_sequence combines held keys/pointers, timed waits or clock advances, and capture checkpoints.
+Navigation supports HTTP/HTTPS only. Serve local artifacts over HTTP; direct-file behavior remains unverified, so do not repeat file:// navigation.
+Set returnSnapshot=true after an action to inspect the resulting UI without another call.
 The browser stays open between calls. Playwright and Chromium must be installed.`,
   mutating: (params) =>
+    (params.action === "screenshot" && params.save !== false) ||
     ![
       "snapshot",
       "snapshot_diff",
@@ -1196,6 +768,22 @@ The browser stays open between calls. Playwright and Chromium must be installed.
       "network",
       "tabs",
     ].includes(params.action),
+  // Browser interaction preserves source verification. Saving files still
+  // requires filesystem ownership; owned children can use save=false captures.
+  effects: (params) => ({
+    workspace: (params.action === "flow" ? (params.steps ?? []) : [params]).some(
+      (step) =>
+        step.action === "download" ||
+        step.action === "trace_stop" ||
+        (step.action === "screenshot" && step.save !== false),
+    )
+      ? "write"
+      : "none",
+    external: "none",
+    reversible: true,
+    destructive: false,
+    privileged: false,
+  }),
   parameters: BrowserParameters,
   async execute(
     params,
@@ -1206,6 +794,15 @@ The browser stays open between calls. Playwright and Chromium must be installed.
     output: string
     attachments?: BrowserAttachment[]
   }> {
+    let flowSteps: BrowserParameters[] = []
+    if (params.action === "flow") {
+      try {
+        if (!params.steps?.length) throw new Error("steps is required for flow")
+        flowSteps = params.steps.map((step) => BrowserParameters.parse(step))
+      } catch (error) {
+        throw new ToolRuntime.NotAppliedError(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
     const utilityAction = ["close", "console_logs", "network"].includes(params.action)
     if (!utilityAction) {
       const isAvailable = await Browser.isPlaywrightAvailable()
@@ -1235,18 +832,17 @@ The browser stays open between calls. Playwright and Chromium must be installed.
     }
 
     const restoreFocus = await Browser.captureFocusRestorer()
+    const flowInputs = new Map<Page, HeldInputs>()
+    let flowCompleted = false
     try {
       if (params.action === "flow") {
-        if (!params.steps?.length) throw new Error("steps is required for flow")
         const outputs: string[] = []
         const steps: Array<Record<string, unknown>> = []
         const attachments: BrowserAttachment[] = []
-        for (const [index, raw] of params.steps.entries()) {
+        for (const [index, step] of flowSteps.entries()) {
           ctx.abort.throwIfAborted()
-          const step = BrowserParameters.parse(raw)
-          if (step.action === "flow") throw new Error("Nested browser flows are not supported")
           try {
-            const value = await perform(step, ctx)
+            const value = await perform(step, ctx, flowInputs)
             outputs.push(`## Step ${index + 1}: ${step.action}\n${value.output}`)
             steps.push({ index, action: step.action, ok: true, metadata: value.metadata })
             if (value.attachments) attachments.push(...value.attachments)
@@ -1257,18 +853,30 @@ The browser stays open between calls. Playwright and Chromium must be installed.
               ok: false,
               error: error instanceof Error ? error.message : String(error),
             })
-            throw new Error(
-              `Browser flow failed at step ${index + 1} (${step.action}): ${error instanceof Error ? error.message : String(error)}`,
-            )
+            const failure = `Browser flow failed at step ${index + 1} (${step.action}): ${error instanceof Error ? error.message : String(error)}`
+            if (!ctx.abort.aborted && knownBrowserFailure(error, step.action)) {
+              return {
+                title: "Browser: flow failed",
+                output: [...outputs, failure, "Earlier successful steps remain applied; do not replay them blindly."]
+                  .join("\n\n")
+                  .slice(0, MAX_BROWSER_OUTPUT),
+                metadata: { status: "failed", error: failure, steps },
+                attachments,
+              }
+            }
+            throw new Error(failure)
           }
         }
+        ctx.abort.throwIfAborted()
         const page = await Browser.getPage()
+        const title = (await page.title()).slice(0, 2_000)
+        flowCompleted = true
         return {
           output: outputs.join("\n\n").slice(0, MAX_BROWSER_OUTPUT),
           title: "Browser: flow",
           metadata: {
             steps,
-            title: (await page.title()).slice(0, 2_000),
+            title,
             url: page.url().slice(0, 8_192),
             tabId: Browser.getPageId(page),
           },
@@ -1304,11 +912,24 @@ The browser stays open between calls. Playwright and Chromium must be installed.
         `Browser action '${params.action}' failed: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       )
-      if (params.action !== "flow" && failedBeforeBrowserAction(error)) {
+      if (params.action !== "flow" && failedBeforeBrowserAction(error, params.action)) {
         throw new ToolRuntime.NotAppliedError(failure)
+      }
+      if (params.action !== "flow" && knownBrowserFailure(error, params.action)) {
+        return {
+          title: `Browser: ${params.action} failed`,
+          output: failure.message,
+          metadata: { status: "failed", error: failure.message },
+        }
       }
       throw failure
     } finally {
+      if (!flowCompleted) {
+        for (const [page, inputs] of flowInputs) {
+          for (const key of [...inputs.keys].reverse()) await page.keyboard.up(key).catch(() => {})
+          for (const button of [...inputs.buttons].reverse()) await page.mouse.up({ button }).catch(() => {})
+        }
+      }
       await restoreFocus?.()
     }
   },
