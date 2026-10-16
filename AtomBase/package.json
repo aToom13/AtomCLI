@@ -24,6 +24,7 @@
     "./*": "./src/*.ts"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "2.0.0",
     "@atomcli/script": "workspace:*",
     "@babel/core": "7.29.6",
     "@octokit/webhooks-types": "7.6.1",
