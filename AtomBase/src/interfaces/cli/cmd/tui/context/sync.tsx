@@ -26,7 +26,7 @@ import { createSimpleContext } from "./helper"
 import type { Snapshot } from "@/core/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createSignal, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/util/log"
 import type { Path } from "@atomcli/sdk/v2"
 
@@ -39,7 +39,7 @@ export type DeliveryRecord = {
 }
 
 import { handleSessionEvent } from "./handlers/session"
-import { handleMessageEvent } from "./handlers/message"
+import { applyMessageSnapshot, handleMessageEvent } from "./handlers/message"
 import { handlePartEvent } from "./handlers/part"
 import { handlePermissionEvent } from "./handlers/permission"
 
@@ -137,12 +137,34 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const sdk = useSDK()
     const fullSyncedSessions = new Set<string>()
     const inflightSyncs = new Map<string, Promise<void>>()
+    const inflightMessageEvents = new Map<string, Map<string, any>>()
+    const [reconnectEpoch, setReconnectEpoch] = createSignal(0)
     let syncGeneration = 0
 
     const invalidateSessionSync = () => {
       syncGeneration++
       fullSyncedSessions.clear()
       inflightSyncs.clear()
+      inflightMessageEvents.clear()
+    }
+
+    const clearDirectoryState = () => {
+      batch(() => {
+        setStore("status", "loading")
+        setStore("session", [])
+        setStore("session_status", {})
+        setStore("execution_snapshot", {})
+        setStore("route_proposals", {})
+        setStore("session_diff", {})
+        setStore("todo", {})
+        setStore("message", {})
+        setStore("optimistic_message", {})
+        setStore("delivery", {})
+        setStore("part", {})
+        setStore("permission", {})
+        setStore("question", {})
+        setStore("vcs", undefined)
+      })
     }
 
     const actor = createActor(chatMachine, {
@@ -161,6 +183,19 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     sdk.event.listen((e) => {
       const event = e.details
+      if (event.type.startsWith("message.")) {
+        const properties = event.properties as any
+        const messageID = properties.info?.id ?? properties.part?.messageID ?? properties.messageID
+        const sessionID = properties.info?.sessionID ?? properties.part?.sessionID ?? properties.sessionID
+        const key = event.type.startsWith("message.part.")
+          ? `part:${messageID}:${properties.part?.id ?? properties.partID}`
+          : `message:${messageID}`
+        for (const [pendingSessionID, pending] of inflightMessageEvents) {
+          if (sessionID && pendingSessionID !== sessionID) continue
+          pending.delete(key)
+          pending.set(key, event)
+        }
+      }
       if (
         event.type.startsWith("session.") ||
         event.type.startsWith("message.") ||
@@ -179,6 +214,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         case "server.connected":
         case "server.resync_required":
           invalidateSessionSync()
+          clearDirectoryState()
+          setReconnectEpoch((epoch) => epoch + 1)
           bootstrap()
           break
         case "config.updated": {
@@ -288,7 +325,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             sdk.client.mcp.resource.list().then((x) => setStore("mcp_resource", reconcile(x.data ?? {}))),
             sdk.client.formatter.status().then((x) => setStore("formatter", reconcile(x.data!))),
             sdk.client.session.status().then((x) => {
-              setStore("session_status", reconcile(x.data!))
+              setStore("session_status", reconcile(x.data ?? {}))
             }),
             sdk.client.provider.auth().then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
             sdk.client.vcs.get().then((x) => setStore("vcs", reconcile(x.data))),
@@ -342,6 +379,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         return store.status !== "loading"
       },
       session: {
+        reconnectEpoch,
         get(sessionID: string) {
           const match = Binary.search(store.session, sessionID, (s) => s.id)
           if (match.found) return store.session[match.index]
@@ -361,44 +399,46 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (fullSyncedSessions.has(sessionID)) return
           const inflight = inflightSyncs.get(sessionID)
           if (inflight) return inflight
+          const pendingEvents = new Map<string, any>()
+          inflightMessageEvents.set(sessionID, pendingEvents)
 
           const request = (async () => {
             const generation = syncGeneration
             const [session, messages, todo, diff, executionSnapshot] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
-              sdk.client.session.messages({ sessionID, limit: 100 }),
-              sdk.client.session.todo({ sessionID }),
-              sdk.client.session.diff({ sessionID }),
-              sdk.client.session.executions.snapshot({ sessionID }),
+              sdk.client.session.messages({ sessionID }, { throwOnError: true }),
+              sdk.client.session.todo({ sessionID }, { throwOnError: true }),
+              sdk.client.session.diff({ sessionID }, { throwOnError: true }),
+              sdk.client.session.executions.snapshot({ sessionID }, { throwOnError: true }),
             ])
             if (generation !== syncGeneration) return
-            setStore(
-              produce((draft) => {
-                const match = Binary.search(draft.session, sessionID, (s) => s.id)
-                if (match.found) draft.session[match.index] = session.data!
-                if (!match.found) draft.session.splice(match.index, 0, session.data!)
-                draft.todo[sessionID] = todo.data ?? []
-                draft.message[sessionID] = messages.data!.map((x) => x.info)
-                for (const message of messages.data!) {
-                  draft.part[message.info.id] = message.parts
-                }
-                draft.session_diff[sessionID] = diff.data ?? []
-                if (executionSnapshot.data) draft.execution_snapshot[sessionID] = executionSnapshot.data
-                const proposals = (draft.route_proposals[sessionID] ??= [])
-                for (const proposal of executionSnapshot.data?.pendingProposals ?? []) {
-                  const index = proposals.findIndex((item) => item.id === proposal.id)
-                  if (index < 0) proposals.push(proposal)
-                  else if (proposals[index].version < proposal.version) proposals[index] = proposal
-                }
-              }),
-            )
+            batch(() => {
+              setStore(
+                produce((draft) => {
+                  const match = Binary.search(draft.session, sessionID, (s) => s.id)
+                  if (match.found) draft.session[match.index] = session.data!
+                  if (!match.found) draft.session.splice(match.index, 0, session.data!)
+                  draft.todo[sessionID] = todo.data ?? []
+                  draft.session_diff[sessionID] = diff.data ?? []
+                  if (executionSnapshot.data) draft.execution_snapshot[sessionID] = executionSnapshot.data
+                  const proposals = (draft.route_proposals[sessionID] ??= [])
+                  for (const proposal of executionSnapshot.data?.pendingProposals ?? []) {
+                    const index = proposals.findIndex((item) => item.id === proposal.id)
+                    if (index < 0) proposals.push(proposal)
+                    else if (proposals[index].version < proposal.version) proposals[index] = proposal
+                  }
+                }),
+              )
+              applyMessageSnapshot(sessionID, messages.data!, [...pendingEvents.values()], store, setStore)
+            })
             if (generation === syncGeneration) fullSyncedSessions.add(sessionID)
           })()
           inflightSyncs.set(sessionID, request)
           try {
             await request
           } finally {
-            inflightSyncs.delete(sessionID)
+            if (inflightSyncs.get(sessionID) === request) inflightSyncs.delete(sessionID)
+            if (inflightMessageEvents.get(sessionID) === pendingEvents) inflightMessageEvents.delete(sessionID)
           }
         },
         refreshExecutions,

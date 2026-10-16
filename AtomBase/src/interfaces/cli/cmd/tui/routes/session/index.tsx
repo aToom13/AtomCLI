@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js"
 import { useSDK } from "@tui/context/sdk"
 import { useTheme } from "@tui/context/theme"
 import { useKeybind } from "@tui/context/keybind"
@@ -33,7 +33,6 @@ import { useSubAgents } from "@tui/context/subagent"
 import { VirtualList } from "../../component/virtual-list"
 import { useChain } from "@tui/context/chain"
 import { SessionRecovery } from "@tui/context/session-recovery"
-import { ExecutionRecoveryPrompt } from "./recovery"
 
 addDefaultParsers(parsers.parsers)
 
@@ -102,10 +101,22 @@ export function Session() {
   })
 
   // Effects
+  const [syncRetry, setSyncRetry] = createSignal(0)
+  let syncRetryDelay = 1000
   createEffect(async () => {
+    syncRetry()
+    const epoch = sync.session.reconnectEpoch()
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let disposed = false
+    onCleanup(() => {
+      disposed = true
+      clearTimeout(retryTimer)
+    })
     await sync.session
       .sync(route.sessionID)
       .then(async () => {
+        if (disposed || epoch !== sync.session.reconnectEpoch()) return
+        syncRetryDelay = 1000
         const persistedParts = messages().flatMap((message) => sync.data.part[message.id] ?? [])
         chainCtx.hydrateChain(route.sessionID, SessionRecovery.chain(persistedParts))
 
@@ -113,17 +124,24 @@ export function Session() {
           .children({ sessionID: route.sessionID })
           .then((response) => response.data ?? [])
           .catch(() => sync.data.session.filter((child) => child.parentID === route.sessionID))
+        if (disposed || epoch !== sync.session.reconnectEpoch()) return
         const recoverAgents = () =>
           SessionRecovery.agents(route.sessionID, children, (sessionID) => sync.session.status(sessionID))
         const recoveredAgents = recoverAgents()
         subAgentCtx.hydrate(recoveredAgents)
         await Promise.all(recoveredAgents.map((agent) => sync.session.sync(agent.sessionId).catch(() => {})))
+        if (disposed || epoch !== sync.session.reconnectEpoch()) return
         subAgentCtx.hydrate(recoverAgents())
-
-        if (scroll && autoFollow()) scroll.scrollBy(100_000)
       })
       .catch((e) => {
+        if (disposed || epoch !== sync.session.reconnectEpoch()) return
         Log.Default.error("session sync failed", { error: e instanceof Error ? e.message : String(e) })
+        if ((e as { name?: string })?.name !== "NotFoundError") {
+          if (syncRetryDelay === 1000) toast.show({ message: "Session sync failed; retrying", variant: "error" })
+          retryTimer = setTimeout(() => setSyncRetry((value) => value + 1), syncRetryDelay)
+          syncRetryDelay = Math.min(syncRetryDelay * 2, 8000)
+          return
+        }
         toast.show({
           message: `Session not found: ${route.sessionID}`,
           variant: "error",
@@ -314,11 +332,6 @@ export function Session() {
 
   const questions = createMemo(() => state.questions())
 
-  const unknownWork = createMemo(() => {
-    if (session()?.parentID) return []
-    return SessionRecovery.unknownWork(sync.data.execution_snapshot[route.sessionID])
-  })
-
   return (
     <SessionContext.Provider
       value={{
@@ -373,8 +386,7 @@ export function Session() {
               maxHeight="100%"
               minHeight={1}
               viewportCulling={false}
-              stickyScroll={autoFollow()}
-              stickyStart="bottom"
+              stickyScroll={false}
               scrollX={false}
               flexGrow={1}
               scrollAcceleration={scrollAcceleration()}
@@ -533,16 +545,8 @@ export function Session() {
               <Show when={permissions().length === 0 && questions().length > 0}>
                 <QuestionPrompt request={questions()[0]} />
               </Show>
-              <Show when={permissions().length === 0 && questions().length === 0 && unknownWork().length > 0}>
-                <ExecutionRecoveryPrompt work={unknownWork()[0]} sessionID={route.sessionID} />
-              </Show>
               <Prompt
-                visible={
-                  !session()?.parentID &&
-                  permissions().length === 0 &&
-                  questions().length === 0 &&
-                  unknownWork().length === 0
-                }
+                visible={!session()?.parentID && permissions().length === 0 && questions().length === 0}
                 ref={(r) => {
                   prompt = r
                   promptRef.set(r)
@@ -550,7 +554,7 @@ export function Session() {
                     r.set(route.initialPrompt)
                   }
                 }}
-                disabled={permissions().length > 0 || questions().length > 0 || unknownWork().length > 0}
+                disabled={permissions().length > 0 || questions().length > 0}
                 onSubmit={() => {
                   toBottom()
                 }}

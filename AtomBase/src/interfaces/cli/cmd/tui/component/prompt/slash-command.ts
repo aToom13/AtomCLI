@@ -12,6 +12,8 @@ export namespace SlashCommand {
     | "session.toggle.thinking"
     | "session.share"
     | "session.new"
+    | "session.path"
+    | "session.recover"
     | "model.list"
     | "agent.list"
     | "skill.list"
@@ -22,6 +24,7 @@ export namespace SlashCommand {
     | "prompt.editor"
     | "provider.connect"
     | "help.show"
+    | "app.exit"
     | "workflow.prompt"
     | "mode.autonomous"
     | "mode.safe"
@@ -105,6 +108,8 @@ export namespace SlashCommand {
 
   const sessionChildren: Info[] = [
     { name: "list", aliases: ["switch"], description: "switch to another session", action: "session.list" },
+    { name: "path", description: "change working directory", action: "session.path", acceptsArguments: true },
+    { name: "recover", description: "reconcile uncertain mutating work", action: "session.recover", session: true },
     { name: "new", description: "create a new session", action: "session.new" },
     {
       name: "compact",
@@ -205,6 +210,41 @@ export namespace SlashCommand {
   const agentChildren: Info[] = [
     { name: "select", aliases: ["list"], description: "choose an agent", action: "agent.list" },
     { name: "skills", aliases: ["skill"], description: "list installed skills", action: "skill.list" },
+    {
+      name: "brainstorm",
+      description: "generate and refine ideas",
+      action: "workflow.prompt",
+      acceptsArguments: true,
+      workflow: {
+        instruction:
+          "Brainstorm at least 10 ideas, group them by theme, then choose the 3 most promising by feasibility and impact for:",
+        requiresArguments: true,
+        argumentHint: "topic",
+      },
+    },
+    {
+      name: "write-plan",
+      description: "write a step-by-step plan",
+      action: "workflow.prompt",
+      acceptsArguments: true,
+      workflow: {
+        instruction: "Define success, phases, concrete tasks, dependencies, and blockers for:",
+        requiresArguments: true,
+        argumentHint: "goal",
+      },
+    },
+    {
+      name: "execute-plan",
+      description: "execute and verify an authorized plan",
+      action: "workflow.prompt",
+      acceptsArguments: true,
+      workflow: {
+        instruction:
+          "Inspect current state, execute each authorized step, verify each result, and report blockers for:",
+        requiresArguments: true,
+        argumentHint: "plan or goal",
+      },
+    },
   ]
 
   const approvalOptions: Info[] = [
@@ -345,11 +385,14 @@ export namespace SlashCommand {
       children: workflowChildren,
     },
     { name: "help", description: "show keyboard help and command families", action: "help.show" },
+    { name: "exit", description: "close the TUI", action: "app.exit" },
   ]
 
   // Old flat names remain parse-only for compatibility. They never appear in autocomplete.
   const legacy: Info[] = [
     { name: "list", aliases: ["switch"], description: "switch to another session", action: "session.list" },
+    { name: "path", description: "change working directory", action: "session.path", acceptsArguments: true },
+    { name: "recover", description: "reconcile uncertain mutating work", action: "session.recover", session: true },
     { name: "new", description: "create a new session", action: "session.new" },
     sessionUndo,
     sessionRedo,
@@ -400,6 +443,7 @@ export namespace SlashCommand {
       acceptsArguments: true,
     },
     { name: "thinking", description: "toggle thinking visibility", action: "session.toggle.thinking", session: true },
+    ...agentChildren.filter((command) => command.action === "workflow.prompt"),
     ...workflowChildren.map((command) =>
       command.name === "tests" ? { ...command, name: "test-gen", aliases: ["tests"] } : command,
     ),

@@ -1,6 +1,5 @@
 import { BoxRenderable, TextareaRenderable, MouseEvent, PasteEvent, t, dim, fg } from "@opentui/core"
-import { createEffect, createMemo, type JSX, onMount, createSignal, onCleanup, Show, Switch, Match } from "solid-js"
-import "opentui-spinner/solid"
+import { createEffect, createMemo, type JSX, onMount, Show } from "solid-js"
 import { useLocal } from "@tui/context/local"
 import { useTheme } from "@tui/context/theme"
 import { EmptyBorder } from "@tui/component/border"
@@ -23,16 +22,17 @@ import type { FilePart } from "@atomcli/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/util/iife"
 import { Locale } from "@/util/util/locale"
-import { createColors, createFrames } from "../../ui/spinner.ts"
 import { useDialog } from "@tui/ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
-import { DialogAlert } from "../../ui/dialog-alert"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { SessionLayout } from "@tui/routes/session/layout"
 import { SlashCommand } from "./slash-command"
+import { pasteText as pastePromptText, pasteImage as pastePromptImage, handlePromptPaste } from "./paste"
+import { executePromptCommand } from "./commands"
+import { PromptStatus } from "./status"
 
 export type PromptProps = {
   sessionID?: string
@@ -367,44 +367,28 @@ export function Prompt(props: PromptProps) {
   function restoreExtmarksFromParts(parts: PromptInfo["parts"]) {
     input.extmarks.clear()
     setStore("extmarkToPartIndex", new Map())
-
     parts.forEach((part, partIndex) => {
-      let start = 0
-      let end = 0
-      let virtualText = ""
+      let source: { start: number; end: number; value: string } | undefined
       let styleId: number | undefined
-
       if (part.type === "file" && part.source?.text) {
-        start = part.source.text.start
-        end = part.source.text.end
-        virtualText = part.source.text.value
+        source = part.source.text
         styleId = fileStyleId
       } else if (part.type === "agent" && part.source) {
-        start = part.source.start
-        end = part.source.end
-        virtualText = part.source.value
+        source = part.source
         styleId = agentStyleId
-      } else if (part.type === "text" && part.source?.text) {
-        start = part.source.text.start
-        end = part.source.text.end
-        virtualText = part.source.text.value
+      } else if (part.type === "text" && part.source && "text" in part.source) {
+        source = part.source.text
         styleId = pasteStyleId
       }
-
-      if (virtualText) {
-        const extmarkId = input.extmarks.create({
-          start,
-          end,
-          virtual: true,
-          styleId,
-          typeId: promptPartTypeId,
-        })
-        setStore("extmarkToPartIndex", (map: Map<number, number>) => {
-          const newMap = new Map(map)
-          newMap.set(extmarkId, partIndex)
-          return newMap
-        })
-      }
+      if (!source?.value) return
+      const extmarkId = input.extmarks.create({
+        start: source.start,
+        end: source.end,
+        virtual: true,
+        styleId,
+        typeId: promptPartTypeId,
+      })
+      setStore("extmarkToPartIndex", (map) => new Map(map).set(extmarkId, partIndex))
     })
   }
 
@@ -414,28 +398,24 @@ export function Prompt(props: PromptProps) {
       produce((draft) => {
         const newMap = new Map<number, number>()
         const newParts: typeof draft.prompt.parts = []
-
         for (const extmark of allExtmarks) {
           const partIndex = draft.extmarkToPartIndex.get(extmark.id)
-          if (partIndex !== undefined) {
-            const part = draft.prompt.parts[partIndex]
-            if (part) {
-              if (part.type === "agent" && part.source) {
-                part.source.start = extmark.start
-                part.source.end = extmark.end
-              } else if (part.type === "file" && part.source?.text) {
-                part.source.text.start = extmark.start
-                part.source.text.end = extmark.end
-              } else if (part.type === "text" && part.source?.text) {
-                part.source.text.start = extmark.start
-                part.source.text.end = extmark.end
-              }
-              newMap.set(extmark.id, newParts.length)
-              newParts.push(part)
-            }
+          if (partIndex === undefined) continue
+          const part = draft.prompt.parts[partIndex]
+          if (!part) continue
+          if (part.type === "agent" && part.source) {
+            part.source.start = extmark.start
+            part.source.end = extmark.end
+          } else if (part.type === "file" && part.source?.text) {
+            part.source.text.start = extmark.start
+            part.source.text.end = extmark.end
+          } else if (part.type === "text" && part.source && "text" in part.source) {
+            part.source.text.start = extmark.start
+            part.source.text.end = extmark.end
           }
+          newMap.set(extmark.id, newParts.length)
+          newParts.push(part)
         }
-
         draft.extmarkToPartIndex = newMap
         draft.prompt.parts = newParts
       }),
@@ -504,10 +484,17 @@ export function Prompt(props: PromptProps) {
     setStore("extmarkToPartIndex", new Map())
   }
 
+  function applyPrompt(value: PromptInfo) {
+    input.setText(value.input)
+    setStore("prompt", value)
+    restoreExtmarksFromParts(value.parts)
+    input.gotoBufferEnd()
+  }
+
   async function updateMode(mode: "autonomous" | "safe") {
     try {
       await sdk.client.config.update({ agent_mode: mode }, { throwOnError: true })
-      sync.set("config", "agent_mode" as any, mode)
+      sync.set("config", "agent_mode", mode)
       if (mode === "autonomous") process.env.ATOMCLI_AUTONOMOUS = "1"
       else delete process.env.ATOMCLI_AUTONOMOUS
       toast.show({
@@ -524,121 +511,7 @@ export function Prompt(props: PromptProps) {
     }
   }
 
-  async function executeSlashCommand(info: SlashCommand.Info, argumentsText = "") {
-    clearPrompt()
-    switch (info.action) {
-      case "group.help":
-        toast.show({
-          title: `/${info.name}`,
-          message: `Available: ${info.children?.map((command) => command.name).join(", ") ?? "none"}`,
-          variant: "info",
-        })
-        return
-      case "workflow.prompt": {
-        const prompt = SlashCommand.renderWorkflow(info, argumentsText)
-        if (!prompt) {
-          toast.show({
-            title: `/${info.name}`,
-            message: `Required argument: ${info.workflow?.argumentHint ?? "description"}`,
-            variant: "warning",
-          })
-          return
-        }
-        setStore("prompt", { input: prompt, parts: [] })
-        await submit()
-        return
-      }
-      case "mode.autonomous":
-        await updateMode("autonomous")
-        return
-      case "mode.safe":
-        await updateMode("safe")
-        return
-      case "smart-model.toggle": {
-        const current = (sync.data.config as any)?.experimental?.smart_model_routing === true
-        const requested = argumentsText.toLowerCase()
-        const enabled = requested === "on" ? true : requested === "off" ? false : !current
-        try {
-          await sdk.client.config.update({ experimental: { smart_model_routing: enabled } }, { throwOnError: true })
-          sync.set("config", "experimental" as any, {
-            ...((sync.data.config as any).experimental || {}),
-            smart_model_routing: enabled,
-          })
-          toast.show({
-            title: "Smart model routing",
-            message: enabled ? "Enabled" : "Disabled",
-            variant: "info",
-          })
-        } catch (error) {
-          toast.show({
-            title: "Smart model routing",
-            message: error instanceof Error ? error.message : "Could not update model routing",
-            variant: "error",
-          })
-        }
-        return
-      }
-      case "adaptive-routing.set": {
-        const mode = (["off", "ask", "auto"] as const).find((item) => item === argumentsText.toLowerCase())
-        if (!mode) {
-          toast.show({ title: "Adaptive routing", message: "Use off, ask, or auto", variant: "warning" })
-          return
-        }
-        try {
-          const current = (sync.data.config as any).adaptive_routing ?? {}
-          await sdk.client.config.update({ adaptive_routing: { ...current, mode } }, { throwOnError: true })
-          sync.set("config", "adaptive_routing" as any, { ...current, mode })
-          toast.show({ title: "Adaptive routing", message: `Mode: ${mode}`, variant: "info" })
-        } catch (error) {
-          toast.show({
-            title: "Adaptive routing",
-            message: error instanceof Error ? error.message : "Could not update adaptive routing",
-            variant: "error",
-          })
-        }
-        return
-      }
-      case "think.set": {
-        const level = argumentsText.toLowerCase() || undefined
-        const valid = ["none", "minimal", "low", "medium", "high", "max", "xhigh", "default", "off"]
-        if (!level) {
-          const current = local.model.variant.current()
-          toast.show({
-            title: "Thinking level",
-            message: current ? `Current level: ${current.toUpperCase()}` : "Current level: DEFAULT",
-            variant: "info",
-          })
-          return
-        }
-        const supported = local.model.variant.list()
-        if (!valid.includes(level) || (level !== "off" && !supported.includes(level))) {
-          toast.show({
-            title: "Thinking level",
-            message:
-              supported.length === 0
-                ? "The selected model does not expose configurable thinking levels"
-                : `Level '${level}' is not supported. Available: ${[...supported, "off"].join(", ")}`,
-            variant: "warning",
-          })
-          return
-        }
-        local.model.variant.set(level === "off" ? undefined : level, { manual: true })
-        toast.show({
-          title: "Thinking level",
-          message: level === "off" ? "Reset to the model default" : `Set to ${level.toUpperCase()}`,
-          variant: "info",
-        })
-        return
-      }
-      case "prompt.editor":
-        command.trigger(info.action, "prompt")
-        return
-      default:
-        command.trigger(info.action)
-    }
-  }
-
-  async function submit() {
+  async function submit(hiddenInstruction?: string) {
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
@@ -653,12 +526,30 @@ export function Prompt(props: PromptProps) {
       sharing: sync.data.config.share !== "disabled",
       thinkingLevels: local.model.variant.list(),
     })
-    if (builtin) {
-      await executeSlashCommand(builtin.command, builtin.arguments)
+    if (builtin && !hiddenInstruction) {
+      await executePromptCommand(
+        {
+          sessionID: props.sessionID,
+          clearPrompt,
+          setPrompt: applyPrompt,
+          submit,
+          updateMode,
+          toast,
+          sync,
+          sdk,
+          local,
+          command,
+          dialog,
+          exit,
+        },
+        builtin.command,
+        builtin.arguments,
+      )
       return
     }
 
     if (
+      !hiddenInstruction &&
       trimmed.startsWith("/") &&
       !sync.data.command.some((item) => item.name === trimmed.slice(1).split(/\s+/, 1)[0])
     ) {
@@ -676,33 +567,21 @@ export function Prompt(props: PromptProps) {
     }
     const sessionID = props.sessionID
       ? props.sessionID
-      : await (async () => {
-          const sessionID = await sdk.client.session.create({}).then((x) => x.data!.id)
-          return sessionID
-        })()
+      : await sdk.client.session.create({}).then((response) => response.data!.id)
     const messageID = Identifier.ascending("message")
     let inputText = store.prompt.input
 
-    // Expand pasted text inline before submitting
     const allExtmarks = input.extmarks.getAllForTypeId(promptPartTypeId)
     const sortedExtmarks = allExtmarks.sort((a: { start: number }, b: { start: number }) => b.start - a.start)
-
     for (const extmark of sortedExtmarks) {
       const partIndex = store.extmarkToPartIndex.get(extmark.id)
-      if (partIndex !== undefined) {
-        const part = store.prompt.parts[partIndex]
-        if (part?.type === "text" && part.text) {
-          const before = inputText.slice(0, extmark.start)
-          const after = inputText.slice(extmark.end)
-          inputText = before + part.text + after
-        }
-      }
+      if (partIndex === undefined) continue
+      const part = store.prompt.parts[partIndex]
+      if (part?.type !== "text" || !part.text) continue
+      inputText = inputText.slice(0, extmark.start) + part.text + inputText.slice(extmark.end)
     }
 
-    // Filter out text parts (pasted content) since they're now expanded inline
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
-
-    // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
     const deliveryDraft: PromptInfo = {
@@ -719,7 +598,11 @@ export function Prompt(props: PromptProps) {
             sync.optimistic.settle(messageID, "sent")
             return
           }
-          const message = typeof error === "string" ? error : "The server rejected the request"
+          const detail = error as { message?: string; data?: { message?: string } } | undefined
+          const message =
+            typeof error === "string"
+              ? error
+              : (detail?.data?.message ?? detail?.message ?? "The server rejected the request")
           sync.optimistic.settle(messageID, "failed", message)
           void sync.session.refreshExecutions(sessionID).catch(() => {})
           toast.show({ title, message, variant: "error" })
@@ -771,20 +654,17 @@ export function Prompt(props: PromptProps) {
       )
       setStore("mode", "normal")
     } else if (
+      !hiddenInstruction &&
       inputText.startsWith("/") &&
       iife(() => {
         const command = inputText.split(" ")[0].slice(1)
-        return sync.data.command.some((x) => x.name === command)
+        return sync.data.command.some((item) => item.name === command)
       })
     ) {
-      let [command, ...args] = inputText.split(" ")
-
+      const [command, ...args] = inputText.split(" ")
       const partsToSync = nonTextParts
-        .filter((x) => x.type === "file")
-        .map((x) => ({
-          id: Identifier.ascending("part"),
-          ...x,
-        }))
+        .filter((part) => part.type === "file")
+        .map((part) => ({ id: Identifier.ascending("part"), ...part }))
 
       sync.optimistic.push(
         sessionID,
@@ -797,7 +677,6 @@ export function Prompt(props: PromptProps) {
         partsToSync as any,
         deliveryDraft,
       )
-
       trackDelivery(
         sdk.client.session.command({
           sessionID,
@@ -820,10 +699,10 @@ export function Prompt(props: PromptProps) {
           type: "text" as const,
           text: inputText,
         },
-        ...nonTextParts.map((x) => ({
-          id: Identifier.ascending("part"),
-          ...x,
-        })),
+        ...(hiddenInstruction
+          ? [{ id: Identifier.ascending("part"), type: "text" as const, text: hiddenInstruction, synthetic: true }]
+          : []),
+        ...nonTextParts.map((part) => ({ id: Identifier.ascending("part"), ...part })),
       ]
 
       sync.optimistic.push(
@@ -837,7 +716,6 @@ export function Prompt(props: PromptProps) {
         partsToSync as any,
         deliveryDraft,
       )
-
       trackDelivery(
         sdk.client.session.prompt({
           sessionID,
@@ -853,97 +731,22 @@ export function Prompt(props: PromptProps) {
         "Prompt failed",
       )
     }
-    history.append({
-      ...store.prompt,
-      mode: currentMode,
-    })
+    history.append({ ...store.prompt, mode: currentMode })
     input.extmarks.clear()
-    setStore("prompt", {
-      input: "",
-      parts: [],
-    })
+    setStore("prompt", { input: "", parts: [] })
     setStore("extmarkToPartIndex", new Map())
     props.onSubmit?.()
 
-    // temporary hack to make sure the message is sent
     if (!props.sessionID)
       setTimeout(() => {
-        route.navigate({
-          type: "session",
-          sessionID,
-        })
+        route.navigate({ type: "session", sessionID })
       }, 50)
     input.clear()
   }
+
   const exit = useExit()
 
-  function pasteText(text: string, virtualText: string) {
-    const currentOffset = input.visualCursor.offset
-    const extmarkStart = currentOffset
-    const extmarkEnd = extmarkStart + virtualText.length
-
-    input.insertText(virtualText + " ")
-
-    const extmarkId = input.extmarks.create({
-      start: extmarkStart,
-      end: extmarkEnd,
-      virtual: true,
-      styleId: pasteStyleId,
-      typeId: promptPartTypeId,
-    })
-
-    setStore(
-      produce((draft) => {
-        const partIndex = draft.prompt.parts.length
-        draft.prompt.parts.push({
-          type: "text" as const,
-          text,
-          source: {
-            text: {
-              start: extmarkStart,
-              end: extmarkEnd,
-              value: virtualText,
-            },
-          },
-        })
-        draft.extmarkToPartIndex.set(extmarkId, partIndex)
-      }),
-    )
-  }
-
-  async function pasteImage(file: { filename?: string; content: string; mime: string }) {
-    const currentOffset = input.visualCursor.offset
-    const extmarkStart = currentOffset
-    const count = store.prompt.parts.filter((x) => x.type === "file").length
-    const virtualText = `[Image ${count + 1}]`
-    const extmarkEnd = extmarkStart + virtualText.length
-    const textToInsert = virtualText + " "
-
-    input.insertText(textToInsert)
-
-    const extmarkId = input.extmarks.create({
-      start: extmarkStart,
-      end: extmarkEnd,
-      virtual: true,
-      styleId: pasteStyleId,
-      typeId: promptPartTypeId,
-    })
-
-    const part: Omit<FilePart, "id" | "messageID" | "sessionID"> = {
-      type: "file" as const,
-      mime: file.mime,
-      filename: file.filename,
-      url: `data:${file.mime};base64,${file.content}`,
-      source: {
-        type: "file",
-        path: file.filename ?? "",
-        text: {
-          start: extmarkStart,
-          end: extmarkEnd,
-          value: virtualText,
-        },
-      },
-    }
+  function appendPastedPart(part: PromptInfo["parts"][number], extmarkId: number) {
     setStore(
       produce((draft) => {
         const partIndex = draft.prompt.parts.length
@@ -951,7 +754,22 @@ export function Prompt(props: PromptProps) {
         draft.extmarkToPartIndex.set(extmarkId, partIndex)
       }),
     )
-    return
+  }
+
+  const pasteContext = () => ({
+    input,
+    pasteStyleId,
+    promptPartTypeId,
+    appendPart: appendPastedPart,
+    imageCount: () => store.prompt.parts.filter((part) => part.type === "file").length,
+  })
+
+  function pasteText(text: string, virtualText: string) {
+    return pastePromptText(pasteContext(), text, virtualText)
+  }
+
+  async function pasteImage(file: { filename?: string; content: string; mime: string }) {
+    return pastePromptImage(pasteContext(), file)
   }
 
   const highlight = createMemo(() => {
@@ -965,26 +783,6 @@ export function Prompt(props: PromptProps) {
     if (variants.length === 0) return false
     const current = local.model.variant.current()
     return !!current
-  })
-
-  const spinnerDef = createMemo(() => {
-    const color = local.agent.color(local.agent.current().name)
-    return {
-      frames: createFrames({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
-      color: createColors({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
-    }
   })
 
   return (
@@ -1008,7 +806,26 @@ export function Prompt(props: PromptProps) {
         fileStyleId={fileStyleId}
         agentStyleId={agentStyleId}
         promptPartTypeId={() => promptPartTypeId}
-        onSlashCommand={(info, argumentsText) => void executeSlashCommand(info, argumentsText)}
+        onSlashCommand={(info, argumentsText) =>
+          void executePromptCommand(
+            {
+              sessionID: props.sessionID,
+              clearPrompt,
+              setPrompt: applyPrompt,
+              submit,
+              updateMode,
+              toast,
+              sync,
+              sdk,
+              local,
+              command,
+              dialog,
+              exit,
+            },
+            info,
+            argumentsText,
+          )
+        }
         onVisibilityChange={props.onAutocompleteChange}
         thinkingLevels={() => local.model.variant.list()}
       />
@@ -1084,6 +901,7 @@ export function Prompt(props: PromptProps) {
                   // If no image, let the default paste behavior continue
                 }
                 if (keybind.match("input_clear", e) && store.prompt.input !== "") {
+                  e.preventDefault()
                   input.clear()
                   input.extmarks.clear()
                   setStore("prompt", {
@@ -1147,73 +965,17 @@ export function Prompt(props: PromptProps) {
                 }
               }}
               onSubmit={submit}
-              onPaste={async (event: PasteEvent) => {
-                if (props.disabled) {
-                  event.preventDefault()
-                  return
-                }
-
-                // Normalize line endings at the boundary
-                // Windows ConPTY/Terminal often sends CR-only newlines in bracketed paste
-                // Replace CRLF first, then any remaining CR
-                const normalizedText = event.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-                const pastedContent = normalizedText.trim()
-                if (!pastedContent) {
-                  command.trigger("prompt.paste")
-                  return
-                }
-
-                // trim ' from the beginning and end of the pasted content. just
-                // ' and nothing else
-                const filepath = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
-                const isUrl = /^(https?):\/\//.test(filepath)
-                if (!isUrl) {
-                  try {
-                    const file = Bun.file(filepath)
-                    // Handle SVG as raw text content, not as base64 image
-                    if (file.type === "image/svg+xml") {
-                      event.preventDefault()
-                      const content = await file.text().catch(() => {})
-                      if (content) {
-                        pasteText(content, `[SVG: ${file.name ?? "image"}]`)
-                        return
-                      }
-                    }
-                    if (file.type.startsWith("image/")) {
-                      event.preventDefault()
-                      const content = await file
-                        .arrayBuffer()
-                        .then((buffer) => Buffer.from(buffer).toString("base64"))
-                        .catch(() => {})
-                      if (content) {
-                        await pasteImage({
-                          filename: file.name,
-                          mime: file.type,
-                          content,
-                        })
-                        return
-                      }
-                    }
-                  } catch {}
-                }
-
-                const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-                if (
-                  (lineCount > 50 || pastedContent.length > 3000) &&
-                  !sync.data.config.experimental?.disable_paste_summary
-                ) {
-                  event.preventDefault()
-                  pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
-                  return
-                }
-
-                // Force layout update and render for the pasted content
-                setTimeout(() => {
-                  input.getLayoutNode().markDirty()
-                  input.gotoBufferEnd()
-                  renderer.requestRender()
-                }, 0)
-              }}
+              onPaste={(event: PasteEvent) =>
+                handlePromptPaste(event, {
+                  disabled: !!props.disabled,
+                  disablePasteSummary: sync.data.config.experimental?.disable_paste_summary,
+                  input,
+                  renderer,
+                  triggerPaste: () => command.trigger("prompt.paste"),
+                  pasteText,
+                  pasteImage,
+                })
+              }
               ref={(r: TextareaRenderable) => {
                 input = r
                 setTimeout(() => {
@@ -1274,110 +1036,13 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
-        <Show when={status().type !== "idle" || verticalMode() === "normal"}>
-          <box flexDirection="row" justifyContent="space-between">
-            <Show when={status().type !== "idle"} fallback={<text />}>
-              <box
-                flexDirection="row"
-                gap={1}
-                flexGrow={1}
-                justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
-              >
-                <box flexShrink={0} flexDirection="row" gap={1}>
-                  <box marginLeft={1}>
-                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                      <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                    </Show>
-                  </box>
-                  <box flexDirection="row" gap={1} flexShrink={0}>
-                    {(() => {
-                      const retry = createMemo(
-                        (): { type: "retry"; attempt: number; message: string; next: number } | undefined => {
-                          const s = status()
-                          if (s.type !== "retry") return
-                          return s as any
-                        },
-                      )
-                      const message = createMemo(() => {
-                        const r = retry()
-                        if (!r) return
-                        if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
-                          return "gemini is way too hot right now"
-                        if (r.message.length > 80) return r.message.slice(0, 80) + "..."
-                        return r.message
-                      })
-                      const isTruncated = createMemo(() => {
-                        const r = retry()
-                        if (!r) return false
-                        return r.message.length > 120
-                      })
-                      const [seconds, setSeconds] = createSignal(0)
-                      onMount(() => {
-                        const timer = setInterval(() => {
-                          const next = retry()?.next
-                          if (next) setSeconds(Math.round((next - Date.now()) / 1000))
-                        }, 1000)
-
-                        onCleanup(() => {
-                          clearInterval(timer)
-                        })
-                      })
-                      const handleMessageClick = () => {
-                        const r = retry()
-                        if (!r) return
-                        if (isTruncated()) {
-                          DialogAlert.show(dialog, "Retry Error", r.message)
-                        }
-                      }
-
-                      const retryText = () => {
-                        const r = retry()
-                        if (!r) return ""
-                        const baseMessage = message()
-                        const truncatedHint = isTruncated() ? " (click to expand)" : ""
-                        const retryInfo = ` [retrying ${seconds() > 0 ? `in ${seconds()}s ` : ""}attempt #${r.attempt}]`
-                        return baseMessage + truncatedHint + retryInfo
-                      }
-
-                      return (
-                        <Show when={retry()}>
-                          <box onMouseUp={handleMessageClick}>
-                            <text fg={theme.error}>{retryText()}</text>
-                          </box>
-                        </Show>
-                      )
-                    })()}
-                  </box>
-                </box>
-                <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
-                  esc{" "}
-                  <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                    {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                  </span>
-                </text>
-              </box>
-            </Show>
-            <Show when={status().type !== "retry" && promptWidth() >= 64 && verticalMode() === "normal"}>
-              <box gap={2} flexDirection="row">
-                <Switch>
-                  <Match when={store.mode === "normal"}>
-                    <text fg={theme.text}>
-                      {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>switch agent</span>
-                    </text>
-                    <text fg={theme.text}>
-                      {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
-                    </text>
-                  </Match>
-                  <Match when={store.mode === "shell"}>
-                    <text fg={theme.text}>
-                      esc <span style={{ fg: theme.textMuted }}>exit shell mode</span>
-                    </text>
-                  </Match>
-                </Switch>
-              </box>
-            </Show>
-          </box>
-        </Show>
+        <PromptStatus
+          status={status}
+          verticalMode={verticalMode}
+          promptWidth={promptWidth}
+          interrupt={() => store.interrupt}
+          mode={() => store.mode}
+        />
       </box>
     </>
   )

@@ -55,12 +55,24 @@ export namespace Command {
     INIT: "init",
     REVIEW: "review",
     SKILL: "skill",
+    BRAINSTORM: "brainstorm",
+    WRITE_PLAN: "write-plan",
+    EXECUTE_PLAN: "execute-plan",
+    ATOMIC_WORK: "atomic-work",
   } as const
 
   const state = Instance.state(async () => {
     const cfg = await Config.get()
 
     const result: Record<string, Info> = {
+      [Default.ATOMIC_WORK]: {
+        name: Default.ATOMIC_WORK,
+        description: "decompose, execute, and verify a durable Atomic Work goal",
+        subtask: false,
+        template:
+          "Atomic Work goal: $ARGUMENTS\nInspect this workspace first. Use task(action='plan', tasks=[...], acceptance=[...]); do not send revision fields or placeholders. Decompose by bounded deliverables or distinct expertise, not one giant features task or micro-tasks. Put shared foundations before consumers. Declare dependencies, owns paths, real agent/skill names, and nonempty acceptance. Sequential tasks may own the same file. Use isolation='auto' in non-git workspaces; omit model unless choosing a real provider/model. Automatic commands verify structure; interactive behavior requires reviewer/parent runtime evidence. Reviewer/parent criteria have no command. Supply global acceptance; the harness adds independent verification of this original goal. Then task(action='execute'). Child output is submitted until criteria pass. Use task(action='status') for ledger IDs, versions, blockers and pending messages. Classify pending messages with task(action='revise', amendment={messageID, classification, evidence}, expectedVersion=...); amendments require changed definitions. Preserve independent accepted work. Continue until integration root and every task are accepted. Generic taskflow and task(action='run') are unavailable during Atomic Work.",
+        hints: ["$ARGUMENTS"],
+      },
       [Default.INIT]: {
         name: Default.INIT,
         description: "create/update AGENTS.md",
@@ -89,9 +101,31 @@ export namespace Command {
         },
         hints: [],
       },
+      [Default.BRAINSTORM]: {
+        name: Default.BRAINSTORM,
+        description: "generate and refine ideas for a topic",
+        template:
+          "Brainstorm this topic: $ARGUMENTS\nIf no topic was provided, ask for one. Otherwise, list at least 10 ideas, group them by theme, then choose the 3 most promising based on feasibility and impact. Do not start implementation unless requested.",
+        hints: ["$ARGUMENTS"],
+      },
+      [Default.WRITE_PLAN]: {
+        name: Default.WRITE_PLAN,
+        description: "write a step-by-step plan for a goal",
+        template:
+          "Write a plan for this goal: $ARGUMENTS\nIf no goal was provided, ask for one. Otherwise, define success, list phases and concrete tasks, and identify dependencies and blockers. Keep the plan proportional to the goal.",
+        hints: ["$ARGUMENTS"],
+      },
+      [Default.EXECUTE_PLAN]: {
+        name: Default.EXECUTE_PLAN,
+        description: "execute an authorized plan and verify each phase",
+        template:
+          "Execute this plan or goal: $ARGUMENTS\nIf no plan or goal was provided, ask for it. Otherwise, inspect current state, do the next authorized task, verify its result, and continue through the plan. Report completed work and remaining blockers. Ask before irreversible external actions requiring approval.",
+        hints: ["$ARGUMENTS"],
+      },
     }
 
     for (const [name, command] of Object.entries(cfg.command ?? {})) {
+      if (name === Default.ATOMIC_WORK) continue
       result[name] = {
         name,
         agent: command.agent,
@@ -105,6 +139,7 @@ export namespace Command {
       }
     }
     for (const [name, prompt] of Object.entries(await MCP.prompts())) {
+      if (name === Default.ATOMIC_WORK) continue
       result[name] = {
         name,
         mcp: true,

@@ -42,8 +42,8 @@ export const McpAddCommand = cmd({
       })
       if (prompts.isCancel(command)) throw new UI.CancelledError()
 
-      prompts.log.info(`Local MCP server "${name}" configured with command: ${command}`)
-      prompts.outro("MCP server added successfully")
+      prompts.log.info(`Local MCP server "${name}" command: ${command}`)
+      prompts.outro("Add this server to mcp.json to enable it")
       return
     }
 
@@ -86,34 +86,25 @@ export const McpAddCommand = cmd({
           })
           if (prompts.isCancel(hasSecret)) throw new UI.CancelledError()
 
-          let clientSecret: string | undefined
-          if (hasSecret) {
-            const secret = await prompts.password({
-              message: "Enter client secret",
-            })
-            if (prompts.isCancel(secret)) throw new UI.CancelledError()
-            clientSecret = secret
-          }
-
           prompts.log.info(`Remote MCP server "${name}" configured with OAuth (client ID: ${clientId})`)
           prompts.log.info("Add this to your mcp.json (in ~/.atomcli/mcp.json):")
-          prompts.log.info(`
-  "${name}": {
-    "type": "remote",
-    "url": "${url}",
-    "oauth": {
-      "clientId": "${clientId}"${clientSecret ? `,\n        "clientSecret": "${clientSecret}"` : ""}
-    }
-  }`)
+          prompts.log.info(
+            JSON.stringify(
+              {
+                [name]: {
+                  type: "remote",
+                  url,
+                  oauth: { clientId, ...(hasSecret ? { clientSecret: "<insert-locally>" } : {}) },
+                },
+              },
+              null,
+              2,
+            ),
+          )
         } else {
           prompts.log.info(`Remote MCP server "${name}" configured with OAuth (dynamic registration)`)
           prompts.log.info("Add this to your mcp.json (in ~/.atomcli/mcp.json):")
-          prompts.log.info(`
-  "${name}": {
-    "type": "remote",
-    "url": "${url}",
-    "oauth": {}
-  }`)
+          prompts.log.info(JSON.stringify({ [name]: { type: "remote", url, oauth: {} } }, null, 2))
         }
       } else {
         const client = new Client({
@@ -122,10 +113,10 @@ export const McpAddCommand = cmd({
         })
         const transport = new StreamableHTTPClientTransport(new URL(url))
         await client.connect(transport)
-        prompts.log.info(`Remote MCP server "${name}" configured with URL: ${url}`)
+        prompts.log.info(`Remote MCP server "${name}" connection tested`)
       }
     }
 
-    prompts.outro("MCP server added successfully")
+    prompts.outro("Add this server to mcp.json to enable it")
   },
 })

@@ -1,5 +1,5 @@
 import { Bus } from "@/core/bus"
-import { File } from "@/services/file"
+import { FileEvent } from "@/services/file/event"
 import { Log } from "@/util/util/log"
 import path from "path"
 import z from "zod"
@@ -101,42 +101,42 @@ export namespace Format {
     return result
   }
 
+  async function formatFile(file: string) {
+    log.info("formatting", { file })
+    const ext = path.extname(file)
+
+    for (const item of await getFormatter(ext)) {
+      log.info("running", { command: item.command })
+      try {
+        const proc = Bun.spawn({
+          cmd: item.command.map((x) => x.replace("$FILE", file)),
+          cwd: Instance.directory,
+          env: EnvPolicy.build({
+            cwd: Instance.directory,
+            scope: `formatter:${item.name}`,
+            overrides: item.environment,
+          }),
+          stdout: "ignore",
+          stderr: "ignore",
+        })
+        const exit = await proc.exited
+        if (exit !== 0) throw new Error(`Formatter ${item.name} failed for ${file} (exit ${exit})`)
+      } catch (error) {
+        log.error("failed to format file", {
+          error,
+          command: item.command,
+          file,
+        })
+        throw error
+      }
+    }
+  }
+
   export function init() {
     log.info("init")
-    Bus.subscribe(File.Event.Edited, async (payload) => {
-      const file = payload.properties.file
-      log.info("formatting", { file })
-      const ext = path.extname(file)
-
-      for (const item of await getFormatter(ext)) {
-        log.info("running", { command: item.command })
-        try {
-          const proc = Bun.spawn({
-            cmd: item.command.map((x) => x.replace("$FILE", file)),
-            cwd: Instance.directory,
-            env: EnvPolicy.build({
-              cwd: Instance.directory,
-              scope: `formatter:${item.name}`,
-              overrides: item.environment,
-            }),
-            stdout: "ignore",
-            stderr: "ignore",
-          })
-          const exit = await proc.exited
-          if (exit !== 0)
-            log.error("failed", {
-              command: item.command,
-              ...item.environment,
-            })
-        } catch (error) {
-          log.error("failed to format file", {
-            error,
-            command: item.command,
-            ...item.environment,
-            file,
-          })
-        }
-      }
+    Bus.subscribe(FileEvent.Edited, (payload) => formatFile(payload.properties.file))
+    Bus.subscribe(FileEvent.Created, async (payload) => {
+      for (const file of payload.properties.paths) await formatFile(file)
     })
   }
 }

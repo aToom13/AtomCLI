@@ -1,7 +1,7 @@
 import { createAtomcliClient, type Event } from "@atomcli/sdk/v2"
 import { createSimpleContext } from "./helper"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createSignal, onCleanup, onMount } from "solid-js"
 import { TuiEvent } from "../event"
 
 export type EventSource = {
@@ -27,13 +27,27 @@ type AllEventTypes = {
 
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
-  init: (props: { url: string; directory?: string; fetch?: typeof fetch; events?: EventSource }) => {
+  init: (props: {
+    url: string
+    directory?: string
+    fetch?: typeof fetch
+    events?: EventSource
+    onDirectoryChange?: (directory: string) => Promise<void>
+  }) => {
     const abort = new AbortController()
+    const [directory, setDirectory] = createSignal(props.directory ?? "")
+    const baseFetch = props.fetch ?? fetch
+    const routedFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      const current = directory()
+      if (current)
+        request.headers.set("x-atomcli-directory", /[^\x00-\x7F]/.test(current) ? encodeURIComponent(current) : current)
+      return baseFetch(request)
+    }) as typeof fetch
     const sdk = createAtomcliClient({
       baseUrl: props.url,
       signal: abort.signal,
-      directory: props.directory,
-      fetch: props.fetch,
+      fetch: routedFetch,
     })
 
     const emitter = createGlobalEmitter<AllEventTypes>()
@@ -105,6 +119,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       if (timer) clearTimeout(timer)
     })
 
-    return { client: sdk, event: emitter, url: props.url }
+    const changeDirectory = async (next: string) => {
+      setDirectory(next)
+      await props.onDirectoryChange?.(next)
+    }
+    return { client: sdk, event: emitter, url: props.url, directory, setDirectory: changeDirectory }
   },
 })

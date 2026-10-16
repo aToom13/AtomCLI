@@ -7,7 +7,7 @@ import { pathToFileURL } from "url"
 import z from "zod"
 import { Bus } from "@/core/bus"
 import { BusEvent } from "@/core/bus/bus-event"
-import { SessionPrompt } from "@/core/session/prompt"
+import type { SessionPrompt } from "@/core/session/prompt"
 import { EnvPolicy } from "@/core/env/policy"
 import { ExecutionWorld } from "@/core/execution/world"
 import { Provider } from "@/integrations/provider/provider"
@@ -194,6 +194,7 @@ export namespace CompanionTransfer {
       artifacts: new Map<string, ArtifactRecord>(),
       uploads: new Map<string, UploadTicket>(),
       previews: new Map<string, PreviewRecord>(),
+      startingPorts: new Set<number>(),
     }),
     async (current) => {
       for (const preview of current.previews.values()) {
@@ -234,7 +235,7 @@ export namespace CompanionTransfer {
       }
     }
     for (const [id, ticket] of current.uploads) {
-      if (ticket.expiresAt <= now) {
+      if (ticket.expiresAt <= now && !ticket.busy) {
         current.uploads.delete(id)
         void fs.unlink(ticket.partialPath).catch(() => {})
       }
@@ -264,8 +265,7 @@ export namespace CompanionTransfer {
   }
 
   function publishPreview(record: PreviewRecord) {
-    const { process: _process, ...preview } = record
-    Bus.publish(Event.PreviewUpdated, preview)
+    Bus.publish(Event.PreviewUpdated, previewPublic(record))
   }
 
   export async function shareFile(input: {
@@ -296,13 +296,28 @@ export namespace CompanionTransfer {
         throw new Error("Companion transfer directory resolves outside the selected workspace")
       }
       storedPath = path.join(safeDirectory, `${id}-${name}`)
-      await fs.copyFile(resolved, storedPath)
       managedFile = true
+      try {
+        await fs.copyFile(resolved, storedPath)
+      } catch (error) {
+        await fs.unlink(storedPath).catch(() => {})
+        throw error
+      }
     }
-    const stat = await fs.stat(storedPath)
-    const file = Bun.file(storedPath)
-    const mime = file.type || "application/octet-stream"
-    const sha256 = await hashFile(storedPath)
+    let stat: Awaited<ReturnType<typeof fs.stat>>
+    let mime: string
+    let sha256: string
+    try {
+      stat = await fs.stat(storedPath)
+      if (stat.size > MAX_DOWNLOAD_BYTES) {
+        throw new Error(`File exceeds the ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MB companion limit`)
+      }
+      mime = Bun.file(storedPath).type || "application/octet-stream"
+      sha256 = await hashFile(storedPath)
+    } catch (error) {
+      if (managedFile) await fs.unlink(storedPath).catch(() => {})
+      throw error
+    }
     const expiresAt = Date.now() + ARTIFACT_TTL_MS
     const record: ArtifactRecord = {
       id,
@@ -322,14 +337,17 @@ export namespace CompanionTransfer {
       managedFile,
       downloadPath: downloadPath(id, token),
     }
-    while (state().artifacts.size >= MAX_ARTIFACTS) {
-      const oldest = state().artifacts.keys().next().value
+    const artifacts = state().artifacts
+    const evictedFiles: string[] = []
+    while (artifacts.size >= MAX_ARTIFACTS) {
+      const oldest = artifacts.keys().next().value
       if (oldest === undefined) break
-      const evicted = state().artifacts.get(oldest)
-      state().artifacts.delete(oldest)
-      if (evicted?.managedFile) await fs.unlink(evicted.filePath).catch(() => {})
+      const evicted = artifacts.get(oldest)
+      artifacts.delete(oldest)
+      if (evicted?.managedFile) evictedFiles.push(evicted.filePath)
     }
-    boundedSet(state().artifacts, id, record, MAX_ARTIFACTS)
+    artifacts.set(id, record)
+    await Promise.all(evictedFiles.map((file) => fs.unlink(file).catch(() => {})))
     publishArtifact(record)
     return artifactPublic(record)
   }
@@ -364,7 +382,7 @@ export namespace CompanionTransfer {
     sha256?: string
   }) {
     prune()
-    if (input.size < 0 || input.size > MAX_UPLOAD_BYTES) {
+    if (!Number.isInteger(input.size) || input.size < 0 || input.size > MAX_UPLOAD_BYTES) {
       throw new Error(`Upload exceeds the ${MAX_UPLOAD_BYTES / 1024 / 1024} MB companion limit`)
     }
     if (input.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(input.sha256)) {
@@ -390,14 +408,19 @@ export namespace CompanionTransfer {
       busy: false,
     }
     await Bun.write(ticket.partialPath, new Uint8Array())
-    while (state().uploads.size >= MAX_UPLOAD_TICKETS) {
-      const oldest = state().uploads.keys().next().value
-      if (oldest === undefined) break
-      const evicted = state().uploads.get(oldest)
-      state().uploads.delete(oldest)
-      if (evicted) await fs.unlink(evicted.partialPath).catch(() => {})
+    const uploads = state().uploads
+    const evictedPaths: string[] = []
+    while (uploads.size >= MAX_UPLOAD_TICKETS) {
+      const evicted = Array.from(uploads.values()).find((entry) => !entry.busy)
+      if (!evicted) {
+        await fs.unlink(ticket.partialPath).catch(() => {})
+        throw new Error("Too many companion uploads are active")
+      }
+      uploads.delete(evicted.id)
+      evictedPaths.push(evicted.partialPath)
     }
-    boundedSet(state().uploads, id, ticket, MAX_UPLOAD_TICKETS)
+    uploads.set(id, ticket)
+    await Promise.all(evictedPaths.map((file) => fs.unlink(file).catch(() => {})))
     const query = new URLSearchParams({ token, directory: input.directory })
     return {
       id,
@@ -437,7 +460,7 @@ export namespace CompanionTransfer {
       throw new Error(`Upload offset mismatch; expected ${ticket.receivedBytes}`)
     }
     if (
-      input.contentLength === undefined ||
+      !Number.isInteger(input.contentLength) ||
       input.contentLength < 0 ||
       (input.contentLength === 0 && ticket.receivedBytes < ticket.size) ||
       input.contentLength > MAX_UPLOAD_CHUNK_BYTES ||
@@ -450,15 +473,38 @@ export namespace CompanionTransfer {
     }
     ticket.busy = true
     try {
-      const bytes = input.body ? new Uint8Array(await new Response(input.body).arrayBuffer()) : new Uint8Array()
-      if (bytes.byteLength !== input.contentLength) throw new Error("Upload chunk length did not match Content-Length")
+      const bytes = new Uint8Array(input.contentLength)
+      if (input.body) {
+        const reader = input.body.getReader()
+        let received = 0
+        try {
+          while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            if (value.byteLength > bytes.byteLength - received) {
+              void reader.cancel().catch(() => {})
+              throw new Error("Upload chunk length did not match Content-Length")
+            }
+            bytes.set(value, received)
+            received += value.byteLength
+          }
+        } finally {
+          reader.releaseLock()
+        }
+        if (received !== bytes.byteLength) throw new Error("Upload chunk length did not match Content-Length")
+      }
       const chunkSha256 = createHash("sha256").update(bytes).digest("hex")
       if (input.chunkSha256 && chunkSha256 !== input.chunkSha256) {
         throw new Error("Upload chunk checksum did not match")
       }
       const file = await fs.open(ticket.partialPath, "r+")
       try {
-        await file.write(bytes, 0, bytes.byteLength, ticket.receivedBytes)
+        let written = 0
+        while (written < bytes.byteLength) {
+          const result = await file.write(bytes, written, bytes.byteLength - written, ticket.receivedBytes + written)
+          if (result.bytesWritten === 0) throw new Error("Upload chunk could not be written")
+          written += result.bytesWritten
+        }
         await file.sync()
       } finally {
         await file.close()
@@ -474,7 +520,8 @@ export namespace CompanionTransfer {
         throw new Error("Uploaded file checksum did not match the transfer request")
       }
       const uploadDirectory = path.dirname(path.dirname(ticket.partialPath))
-      const target = path.join(uploadDirectory, `${Date.now()}-${ticket.filename}`)
+      // Ticket ID keeps simultaneous uploads with the same filename distinct.
+      const target = path.join(uploadDirectory, `${ticket.id}-${ticket.filename}`)
       await fs.rename(ticket.partialPath, target)
       state().uploads.delete(ticket.id)
       const artifact = await shareFile({
@@ -720,9 +767,11 @@ export namespace CompanionTransfer {
 
   async function issuePreviewAccess(record: PreviewRecord) {
     if (!record.gateway) throw new Error("Preview gateway is unavailable")
-    record.accessToken = crypto.randomUUID()
+    const token = crypto.randomUUID()
+    const endpoints = await previewEndpoints(record.gateway.port, token)
+    record.accessToken = token
     record.accessExpiresAt = Date.now() + PREVIEW_BOOTSTRAP_TTL_MS
-    record.endpoints = await previewEndpoints(record.gateway.port, record.accessToken)
+    record.endpoints = endpoints
     return previewPublic(record)
   }
 
@@ -768,10 +817,21 @@ export namespace CompanionTransfer {
     const running = Array.from(current.previews.values()).filter(
       (preview) => preview.status === "running" || preview.status === "starting",
     )
-    if (running.length >= MAX_PREVIEWS) throw new Error("Too many companion previews are running")
-    if (running.some((preview) => preview.port === input.port)) {
+    if (running.length + current.startingPorts.size >= MAX_PREVIEWS) {
+      throw new Error("Too many companion previews are running")
+    }
+    if (current.startingPorts.has(input.port) || running.some((preview) => preview.port === input.port)) {
       throw new Error(`A companion preview is already using port ${input.port}`)
     }
+    current.startingPorts.add(input.port)
+    try {
+      return await startPreviewReserved(input, current)
+    } finally {
+      current.startingPorts.delete(input.port)
+    }
+  }
+
+  async function startPreviewReserved(input: Parameters<typeof startPreview>[0], current: ReturnType<typeof state>) {
     const requestedDirectory = input.directory ? path.resolve(Instance.directory, input.directory) : Instance.directory
     const directory = await fs.realpath(requestedDirectory)
     const stat = await fs.stat(directory)
@@ -810,19 +870,24 @@ export namespace CompanionTransfer {
       await startGateway(record)
     } catch (error) {
       stopProcess(child)
+      stopGateway(record)
       throw error
     }
     while (current.previews.size >= MAX_PREVIEWS) {
-      const oldestID = current.previews.keys().next().value
-      if (!oldestID) break
-      const oldest = current.previews.get(oldestID)
-      if (oldest) {
-        stopProcess(oldest.process)
-        stopGateway(oldest)
+      const inactive = Array.from(current.previews.entries()).find(
+        ([, preview]) => preview.status === "stopped" || preview.status === "failed",
+      )
+      if (!inactive) {
+        stopProcess(child)
+        stopGateway(record)
+        throw new Error("Too many companion previews are running")
       }
-      current.previews.delete(oldestID)
+      stopProcess(inactive[1].process)
+      stopGateway(inactive[1])
+      current.previews.delete(inactive[0])
     }
     boundedSet(current.previews, id, record, MAX_PREVIEWS)
+    current.startingPorts.delete(input.port)
     publishPreview(record)
     capture(child.stdout, record)
     capture(child.stderr, record)

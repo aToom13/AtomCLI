@@ -83,17 +83,9 @@ export function Home() {
     </Show>
   )
 
-  let prompt: PromptRef
   const args = useArgs()
   onMount(() => {
     randomizeTip()
-    if (route.initialPrompt) {
-      prompt.set(route.initialPrompt)
-    } else if (args.prompt && !cliPromptSubmitted) {
-      prompt.set({ input: args.prompt, parts: [] })
-      cliPromptSubmitted = true
-      prompt.submit()
-    }
   })
   const directory = useDirectory()
 
@@ -108,8 +100,14 @@ export function Home() {
         <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1}>
           <Prompt
             ref={(r) => {
-              prompt = r
               promptRef.set(r)
+              if (route.initialPrompt) {
+                r.set(route.initialPrompt)
+              } else if (args.prompt && !cliPromptSubmitted) {
+                r.set({ input: args.prompt, parts: [] })
+                cliPromptSubmitted = true
+                r.submit()
+              }
             }}
             hint={Hint}
             onAutocompleteChange={(visible) => setAutocompleteVisible(!!visible)}

@@ -14,13 +14,15 @@ export function Task(props: ToolProps<typeof TaskTool>) {
   const local = useLocal()
 
   const current = createMemo(() => props.metadata.summary?.findLast((x) => x.state.status !== "pending"))
-  const color = createMemo(() => local.agent.color(props.input.subagent_type ?? "unknown"))
+  const agent = createMemo(() => ("subagent_type" in props.input ? props.input.subagent_type : undefined))
+  const description = createMemo(() => ("description" in props.input ? props.input.description : props.input.action))
+  const color = createMemo(() => local.agent.color(agent() ?? "unknown"))
 
   return (
     <Switch>
       <Match when={props.metadata.summary?.length}>
         <BlockTool
-          title={"# " + Locale.titlecase(props.input.subagent_type ?? "unknown") + " Task"}
+          title={"# " + Locale.titlecase(agent() ?? props.input.action ?? "unknown") + " Task"}
           onClick={
             props.metadata.sessionId
               ? () => navigate({ type: "session", sessionID: props.metadata.sessionId! })
@@ -30,7 +32,7 @@ export function Task(props: ToolProps<typeof TaskTool>) {
         >
           <box>
             <text style={{ fg: theme.textMuted }}>
-              {props.input.description} ({props.metadata.summary?.length} toolcalls)
+              {description()} ({props.metadata.summary?.length} toolcalls)
             </text>
             <Show when={current()}>
               <text style={{ fg: current()!.state.status === "error" ? theme.error : theme.textMuted }}>
@@ -50,11 +52,11 @@ export function Task(props: ToolProps<typeof TaskTool>) {
           icon="◉"
           iconColor={color()}
           pending="Delegating..."
-          complete={props.input.subagent_type ?? props.input.description}
+          complete={agent() ?? description()}
           part={props.part}
         >
-          <span style={{ fg: theme.text }}>{Locale.titlecase(props.input.subagent_type ?? "unknown")}</span> Task "
-          {props.input.description}"
+          <span style={{ fg: theme.text }}>{Locale.titlecase(agent() ?? props.input.action ?? "unknown")}</span> Task "
+          {description()}"
         </InlineTool>
       </Match>
     </Switch>

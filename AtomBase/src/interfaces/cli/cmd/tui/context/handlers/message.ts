@@ -1,12 +1,11 @@
 import { produce, type SetStoreFunction } from "solid-js/store"
-
-const MAX_CACHED_MESSAGES = 100
+import { handlePartEvent } from "./part"
 
 function compareMessages(a: any, b: any) {
   return a.time.created - b.time.created || a.id.localeCompare(b.id)
 }
 
-export function handleMessageEvent(event: any, store: any, setStore: SetStoreFunction<any>) {
+export function handleMessageEvent(event: any, _store: any, setStore: SetStoreFunction<any>) {
   switch (event.type) {
     case "message.updated": {
       const info = event.properties.info
@@ -33,29 +32,50 @@ export function handleMessageEvent(event: any, store: any, setStore: SetStoreFun
           if (index >= 0) messages[index] = info
           else messages.push(info)
           messages.sort(compareMessages)
-          while (messages.length > MAX_CACHED_MESSAGES) {
-            const evicted = messages.shift()
-            if (evicted) delete draft.part[evicted.id]
-            if (evicted && draft.delivery) delete draft.delivery[evicted.id]
-          }
         }),
       )
       break
     }
     case "message.removed": {
       const { sessionID, messageID } = event.properties
-      const messages = store.message[sessionID]
-      if (!messages) break
-      const index = messages.findIndex((message: any) => message.id === messageID)
-      if (index < 0) break
       setStore(
         produce((draft: any) => {
-          draft.message[sessionID].splice(index, 1)
+          const messages = draft.message[sessionID]
+          const index = messages?.findIndex((message: any) => message.id === messageID) ?? -1
+          if (index >= 0) messages.splice(index, 1)
+          const optimistic = draft.optimistic_message?.[sessionID]
+          const optimisticIndex = optimistic?.findIndex((message: any) => message.id === messageID) ?? -1
+          if (optimisticIndex >= 0) optimistic.splice(optimisticIndex, 1)
           delete draft.part[messageID]
           if (draft.delivery) delete draft.delivery[messageID]
         }),
       )
       break
     }
+  }
+}
+
+export function applyMessageSnapshot(
+  sessionID: string,
+  snapshot: { info: any; parts: any[] }[],
+  events: any[],
+  store: any,
+  setStore: SetStoreFunction<any>,
+) {
+  setStore(
+    produce((draft: any) => {
+      const currentIDs = new Set(snapshot.map((item) => item.info.id))
+      for (const message of draft.message[sessionID] ?? []) {
+        if (currentIDs.has(message.id)) continue
+        delete draft.part[message.id]
+        if (draft.delivery) delete draft.delivery[message.id]
+      }
+      draft.message[sessionID] = snapshot.map((item) => item.info)
+      for (const item of snapshot) draft.part[item.info.id] = item.parts
+    }),
+  )
+  for (const event of events) {
+    if (event.type.startsWith("message.part.")) handlePartEvent(event, store, setStore)
+    else handleMessageEvent(event, store, setStore)
   }
 }

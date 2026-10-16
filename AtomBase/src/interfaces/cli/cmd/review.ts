@@ -8,7 +8,7 @@ import { Instance } from "@/services/project/instance"
 import { Log } from "@/util/util/log"
 import { cmd } from "./cmd"
 
-const DEFAULT_REVIEWERS = 2
+const DEFAULT_REVIEWERS = 1
 const MAX_PARALLEL_REVIEWERS = 4
 
 export namespace CodeReview {

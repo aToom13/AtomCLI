@@ -12,6 +12,7 @@ import { useSubAgents } from "@tui/context/subagent"
 import { Focusable } from "@tui/context/spatial"
 import { useSession } from "./context"
 import { Locale } from "@/util/util/locale"
+import { SessionRecovery } from "@tui/context/session-recovery"
 
 const Title = (props: { session: Accessor<Session>; width: number }) => {
   const { theme } = useTheme()
@@ -70,6 +71,17 @@ export function Header() {
   const sessionContext = useSession()
   const session = createMemo(() => sync.session.get(route.sessionID)!)
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  const execution = createMemo(() => {
+    let current: Session | undefined = session()
+    const visited = new Set<string>()
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id)
+      const snapshot = sync.data.execution_snapshot[current.id]
+      if (snapshot?.executions.length)
+        return snapshot.executions.find((item) => item.id === snapshot.activeExecutionID) ?? snapshot.executions[0]
+      current = current.parentID ? sync.session.get(current.parentID) : undefined
+    }
+  })
 
   const cost = createMemo(() => {
     const total = pipe(
@@ -154,7 +166,7 @@ export function Header() {
       </box>
 
       {/* Chain Progress Bar - Below Title */}
-      <ChainProgressBar chain={chainCtx.getChain(session().id)} />
+      <ChainProgressBar chain={SessionRecovery.executionChain(chainCtx.getChain(session().id), execution())} />
     </box>
   )
 }

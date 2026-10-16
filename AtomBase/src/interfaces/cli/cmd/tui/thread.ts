@@ -39,7 +39,7 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
   return fn as typeof fetch
 }
 
-function createEventSource(client: RpcClient, directory: string): EventSource {
+function createEventSource(client: RpcClient, getDirectory: () => string): EventSource {
   return {
     on: (handler) => {
       // Deduplication: Track events already delivered via the instance "event" channel
@@ -68,7 +68,7 @@ function createEventSource(client: RpcClient, directory: string): EventSource {
       const unsub1 = client.on<Event>("event", (event) => {
         trackAndHandle(event)
         if (event.type === "server.instance.disposed") {
-          client.call("subscribe", { directory }).catch(() => {})
+          client.call("subscribe", { directory: getDirectory() }).catch(() => {})
         }
       })
       // Listen for global events (e.g., installation updates)
@@ -128,7 +128,7 @@ export const TuiThreadCommand = cmd({
   handler: async (args) => {
     // Resolve relative paths against PWD to preserve behavior when using --cwd flag
     const baseCwd = process.env.PWD ?? process.cwd()
-    const cwd = args.project ? path.resolve(baseCwd, args.project) : baseCwd
+    let cwd = args.project ? path.resolve(baseCwd, args.project) : baseCwd
     const localWorker = new URL("./worker.ts", import.meta.url)
     const distWorker = new URL("./cli/cmd/tui/worker.js", import.meta.url)
     const workerPath = await iife(async () => {
@@ -203,13 +203,13 @@ export const TuiThreadCommand = cmd({
       } else {
         url = "http://atomcli.internal"
         customFetch = createWorkerFetch(client)
-        events = createEventSource(client, cwd)
+        events = createEventSource(client, () => cwd)
       }
     } else {
       // Use direct RPC communication (no HTTP)
       url = "http://atomcli.internal"
       customFetch = createWorkerFetch(client)
-      events = createEventSource(client, cwd)
+      events = createEventSource(client, () => cwd)
     }
 
     if (services.companion?.pairingToken) {
@@ -222,6 +222,10 @@ export const TuiThreadCommand = cmd({
       fetch: customFetch,
       events,
       directory: cwd,
+      onDirectoryChange: async (directory) => {
+        cwd = directory
+        await client.call("switchDirectory", { directory })
+      },
       args: {
         continue: args.continue,
         sessionID: args.session,

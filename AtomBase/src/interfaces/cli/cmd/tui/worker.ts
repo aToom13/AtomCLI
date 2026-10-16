@@ -11,6 +11,7 @@ import { GlobalBus } from "@/core/bus/global"
 import { initConsoleEncoding } from "@/util/util/unicode"
 import type { BunWebSocketData } from "hono/bun"
 import { CompanionAuth, MobileBridge } from "@atomcli/companion"
+import { ExecutionRuntime } from "@/core/execution/runtime"
 
 // Set Windows console to UTF-8 codepage before any rendering
 initConsoleEncoding()
@@ -44,6 +45,7 @@ GlobalBus.on("event", (event) => {
 
 let server: Bun.Server<BunWebSocketData> | undefined
 let companionServer: Bun.Server<BunWebSocketData> | undefined
+let activeSubscriptionDirectory: string | undefined
 
 async function stopServers() {
   await server?.stop(true)
@@ -123,11 +125,13 @@ export const rpc = {
     return result
   },
   async subscribe(input: { directory: string }) {
+    activeSubscriptionDirectory = input.directory
     return Instance.provide({
       directory: input.directory,
       init: InstanceBootstrap,
       fn: async () => {
         Bus.subscribeAll((event) => {
+          if (activeSubscriptionDirectory !== input.directory) return
           Rpc.emit("event", event)
         })
         // Emit connected event
@@ -135,6 +139,15 @@ export const rpc = {
         return { subscribed: true }
       },
     })
+  },
+  async switchDirectory(input: { directory: string }) {
+    const result = await Instance.provide({
+      directory: input.directory,
+      init: InstanceBootstrap,
+      fn: async () => ({ directory: input.directory }),
+    })
+    await rpc.subscribe({ directory: input.directory })
+    return result
   },
   async checkUpgrade(input: { directory: string }) {
     await Instance.provide({
@@ -151,6 +164,7 @@ export const rpc = {
   },
   async shutdown() {
     Log.Default.info("worker shutting down")
+    ExecutionRuntime.cancelOwnedExecutions()
     await Instance.disposeAll()
     await stopServers()
   },

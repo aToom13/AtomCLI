@@ -33,7 +33,11 @@ export function handleSessionEvent(event: any, store: any, setStore: SetStoreFun
       setStore("session_diff", event.properties.sessionID, event.properties.diff)
       break
     case "session.status":
-      setStore("session_status", event.properties.sessionID, event.properties.status)
+      if (!event.properties?.sessionID || !event.properties?.status) break
+      setStore("session_status", (current: Record<string, unknown> | undefined) => ({
+        ...(current ?? {}),
+        [event.properties.sessionID]: event.properties.status,
+      }))
       break
   }
 }

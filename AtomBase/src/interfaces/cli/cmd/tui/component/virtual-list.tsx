@@ -128,9 +128,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   let previousMeasurementKey: string | number | undefined
   let previousPrefix: number[] = []
   let previousKeys: string[] = []
-  let previousViewportHeight = 40
-  let previousFollowTail = props.followTail !== false
-  let followingTail = previousFollowTail
+  let followingTail = props.followTail !== false
   let lastScrollTop = 0
 
   const stableKey = (item: T, index: number) => props.itemKey?.(item, index) ?? String(index)
@@ -176,22 +174,16 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       const currentKeys = data.map((item, index) => stableKey(item, index))
       const layoutChanged = currentPrefix !== previousPrefix
       const followEnabled = props.followTail !== false
-      const prefixTotal = currentPrefix[data.length] ?? 0
-      const totalHeight = Math.max(prefixTotal, scroll.scrollHeight)
-      const maxScroll = Math.max(0, totalHeight - height)
-      const atBottom = actualTop >= maxScroll - 2
+      const atBottom = VirtualWindow.isAtTail(actualTop, height, scroll.scrollHeight, 0)
+      let nextScrollTop = actualTop
 
+      if (!followEnabled) followingTail = false
       if (followEnabled) {
-        if (!followingTail && atBottom) {
+        if (!followingTail && atBottom && (actualTop > lastScrollTop || (scroll as any)._hasManualScroll === false)) {
           followingTail = true
           ;(scroll as any)._hasManualScroll = false
-        } else if (followingTail && actualTop < lastScrollTop - 2 && !atBottom) {
+        } else if (followingTail && actualTop < lastScrollTop && !atBottom) {
           followingTail = false
-        }
-
-        if (followingTail && actualTop < maxScroll) {
-          scroll.scrollTo(scroll.scrollHeight)
-          scroll.requestRender()
         }
       }
 
@@ -208,13 +200,19 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
         if (Math.abs(nextTop - actualTop) > 1) {
           scroll.scrollTo(nextTop)
           scroll.requestRender()
+          nextScrollTop = Math.max(0, scroll.scrollTop)
+        }
+      } else if (followingTail) {
+        const nextTop = Math.max(0, scroll.scrollHeight - height)
+        if (Math.abs(nextTop - actualTop) > 1) {
+          scroll.scrollTo(nextTop)
+          scroll.requestRender()
+          nextScrollTop = Math.max(0, scroll.scrollTop)
         }
       }
       previousPrefix = currentPrefix
       previousKeys = currentKeys
-      previousViewportHeight = height
-      previousFollowTail = followEnabled
-      lastScrollTop = actualTop
+      lastScrollTop = nextScrollTop
     }, 16)
     onCleanup(() => clearInterval(timer))
   })

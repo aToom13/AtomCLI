@@ -68,6 +68,12 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
   )
   const currentTaskState = createMemo(() => {
     switch (currentStepData()?.status) {
+      case "stopped":
+        return "durduruldu"
+      case "blocked":
+        return "engellendi"
+      case "waiting_user":
+        return compact() ? "bekliyor" : "devam bekliyor"
       case "running":
         return compact() ? "aktif" : "çalışıyor"
       case "coding":

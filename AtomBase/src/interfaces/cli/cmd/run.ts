@@ -11,6 +11,7 @@ import { createAtomcliClient, type AtomcliClient } from "@atomcli/sdk/v2"
 import { Server } from "@/server/server"
 import { Provider } from "@/integrations/provider/provider"
 import { Agent } from "@/integrations/agent/agent"
+import { Identifier } from "@/core/id/id"
 
 const TOOL: Record<string, [string, string]> = {
   todowrite: ["Todo", UI.Style.TEXT_WARNING_BOLD],
@@ -158,6 +159,8 @@ export const RunCommand = cmd({
 
       const events = await sdk.event.subscribe()
       let errorMsg: string | undefined
+      let reachedIdle = false
+      const messageID = args.command ? undefined : Identifier.ascending("message")
 
       const eventProcessor = (async () => {
         for await (const event of events.stream) {
@@ -212,6 +215,7 @@ export const RunCommand = cmd({
             event.properties.sessionID === sessionID &&
             event.properties.status.type === "idle"
           ) {
+            reachedIdle = true
             break
           }
 
@@ -301,6 +305,7 @@ export const RunCommand = cmd({
         // The event stream handles the actual output
         await sdk.session.promptAsync({
           sessionID,
+          messageID,
           agent: resolvedAgent,
           model: modelParam,
           variant: args.variant,
@@ -309,6 +314,31 @@ export const RunCommand = cmd({
       }
 
       await eventProcessor
+      if (!reachedIdle) {
+        if (messageID) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const snapshot = await sdk.session.executions.snapshot(
+              { sessionID },
+              { throwOnError: true, signal: AbortSignal.timeout(5_000) },
+            )
+            const execution = snapshot.data.executions.find((item) => item.userMessageID === messageID)
+            if (!execution || execution.lifecycle === "terminal") break
+            const cancelled = await sdk.session.executions.cancel(
+              {
+                sessionID,
+                executionID: execution.id,
+                expectedVersion: execution.version,
+                requestID: crypto.randomUUID(),
+              },
+              { signal: AbortSignal.timeout(5_000) },
+            )
+            if (!cancelled.error) break
+            if (cancelled.response.status !== 409)
+              throw new Error("Could not persist interrupted CLI execution cancellation")
+          }
+        }
+        throw new Error("Session event stream ended before completion")
+      }
       if (errorMsg) process.exit(1)
     }
 

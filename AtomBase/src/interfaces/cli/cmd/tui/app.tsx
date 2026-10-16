@@ -43,6 +43,7 @@ export function tui(input: {
   directory?: string
   fetch?: typeof fetch
   events?: EventSource
+  onDirectoryChange?: (directory: string) => Promise<void>
   onExit?: () => Promise<void>
 }) {
   // promise to prevent immediate exit
@@ -69,6 +70,7 @@ export function tui(input: {
                         directory={input.directory}
                         fetch={input.fetch}
                         events={input.events}
+                        onDirectoryChange={input.onDirectoryChange}
                       >
                         <SyncProvider>
                           <ThemeProvider mode={mode}>

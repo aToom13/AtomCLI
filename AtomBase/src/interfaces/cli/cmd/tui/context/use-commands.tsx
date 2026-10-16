@@ -19,6 +19,9 @@ import { DialogHelp } from "../ui/dialog-help"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogAutoConf } from "@tui/component/dialog-autoconf"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
+import { DialogDirectoryPicker } from "@tui/component/dialog-directory-picker"
+import { DialogSkillList } from "@tui/component/dialog-skill-list"
+import { validateDirectory } from "@tui/component/directory-picker"
 import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { createSignal } from "solid-js"
@@ -42,6 +45,7 @@ export function useCommands() {
   const fileTreeCtx = useFileTree()
   const renderer = useRenderer()
   const connected = useConnected()
+  const sdk = useSDK()
 
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
 
@@ -71,6 +75,30 @@ export function useCommands() {
           initialPrompt: currentPrompt,
         })
         dialog.clear()
+      },
+    },
+    {
+      title: "Change working directory",
+      value: "session.path",
+      category: "Session",
+      onSelect: (d) => {
+        dialog.replace(() => (
+          <DialogDirectoryPicker
+            initial={sync.data.path.directory || process.cwd()}
+            onSelect={async (directory) => {
+              try {
+                await sdk.setDirectory(validateDirectory(directory))
+                toast.show({ title: "Working directory", message: directory, variant: "success" })
+              } catch (error) {
+                toast.show({
+                  title: "Working directory",
+                  message: error instanceof Error ? error.message : String(error),
+                  variant: "error",
+                })
+              }
+            }}
+          />
+        ))
       },
     },
     {
@@ -308,16 +336,30 @@ export function useCommands() {
       title: "List skills",
       value: "skill.list",
       category: "Agent",
-      onSelect: (dialog) => {
-        const current = promptRef.current
-        if (current) {
-          current.set({
-            input: "List all installed skills and their descriptions.",
-            parts: [],
+      onSelect: async (dialog) => {
+        try {
+          const response = await sdk.client.skill.list({}, { throwOnError: true })
+          dialog.replace(() => (
+            <DialogSkillList
+              skills={response.data.skills}
+              onLoad={(name) => {
+                const current = promptRef.current
+                if (!current) throw new Error("Prompt is not available")
+                const input = current.current.input
+                current.set({
+                  ...current.current,
+                  input: `${input}${input && !/\s$/.test(input) ? " " : ""}@${name} `,
+                })
+              }}
+            />
+          ))
+        } catch (error) {
+          toast.show({
+            title: "Load skills",
+            message: error instanceof Error ? error.message : String(error),
+            variant: "error",
           })
-          current.submit()
         }
-        dialog.clear()
       },
     },
     {

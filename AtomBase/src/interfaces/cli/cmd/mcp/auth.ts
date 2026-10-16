@@ -169,9 +169,9 @@ export const McpAuthListCommand = cmd({
           const authStatus = await MCP.getAuthStatus(name)
           const icon = getAuthStatusIcon(authStatus)
           const statusText = getAuthStatusText(authStatus)
-          const url = serverConfig.url
+          const origin = URL.canParse(serverConfig.url) ? new URL(serverConfig.url).origin : "invalid URL"
 
-          prompts.log.info(`${icon} ${name} ${UI.Style.TEXT_DIM}${statusText}\n    ${UI.Style.TEXT_DIM}${url}`)
+          prompts.log.info(`${icon} ${name} ${UI.Style.TEXT_DIM}${statusText}\n    ${UI.Style.TEXT_DIM}${origin}`)
         }
 
         prompts.outro(`${oauthServers.length} OAuth-capable server(s)`)

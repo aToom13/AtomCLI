@@ -12,7 +12,6 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "@/util/util/locale"
 import type { PromptInfo } from "./history"
 import { useFrecency } from "./frecency"
-import { Skill } from "@/integrations/skill"
 import { SlashCommand } from "./slash-command"
 
 function removeLineRange(input: string) {
@@ -321,7 +320,8 @@ export function Autocomplete(props: {
     () => store.visible === "@",
     async (shouldFetch) => {
       if (!shouldFetch) return []
-      return await Skill.all()
+      const response = await sdk.client.skill.list({}, { throwOnError: true })
+      return response.data.skills
     },
     { initialValue: [] },
   )

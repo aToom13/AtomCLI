@@ -27,9 +27,14 @@ export function AssistantMessage(props: { message: AssistantMessageType; parts: 
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
 
   // Whether the message is done (finished, aborted, or errored)
+  const isAborted = createMemo(() => {
+    const status = sync.data.session_status[props.message.sessionID]
+    return props.last && status?.type === "idle" && !props.message.finish
+  })
+
   const isDone = createMemo(() => {
     if (props.message.error) return true
-    return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
+    return isAborted() || (props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish))
   })
 
   const userMessage = createMemo(() => messages().find((x) => x.role === "user" && x.id === props.message.parentID))
