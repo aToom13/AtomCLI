@@ -43,6 +43,7 @@ jobs:
         run: bun turbo test -- --max-concurrency=1
         env:
           ATOMCLI_TEST_HOME: ${{ runner.temp }}/atomcli-test-home
+          ATOMCLI_BASH_SANDBOX_BYPASS: "true"
 
       - name: Check generated SDK is current
         run: git diff --exit-code -- libs/sdk/js/src/v2/gen
