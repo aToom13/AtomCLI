@@ -383,9 +383,9 @@ export function Autocomplete(props: {
     const reserved = SlashCommand.reserved()
     if (!query.includes(" ")) {
       for (const command of sync.data.command) {
-        if (reserved.has(command.name)) continue
+        if (command.mcp || reserved.has(command.name)) continue
         results.push({
-          display: "/" + command.name + (command.mcp ? " (MCP)" : ""),
+          display: "/" + command.name,
           description: command.description,
           onSelect: () => insertSlash(command.name, false),
         })
@@ -410,6 +410,20 @@ export function Autocomplete(props: {
         }),
       ),
     )
+    if (/^agent\s+/i.test(query)) {
+      results.push(
+        ...sync.data.command
+          .filter((command) => command.mcp)
+          .map(
+            (command): AutocompleteOption => ({
+              display: `/agent ${command.name} (MCP)`,
+              value: `agent ${command.name}`,
+              description: command.description,
+              onSelect: () => insertSlash(command.name, false),
+            }),
+          ),
+      )
+    }
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length
     if (!max) return results
     return results.map((item) => ({
