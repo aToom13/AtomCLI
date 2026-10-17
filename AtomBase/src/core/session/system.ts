@@ -126,10 +126,9 @@ export namespace SystemPrompt {
     const userContext = includeUserMemory ? await SessionMemoryIntegration.getUserContext() : ""
     const userContextBlock = userContext ? `\n\n## 🧠 User Memory\n\n${userContext}` : ""
 
-    // MCP servers initialize in the background and may legitimately take tens of
-    // seconds (for example an npx-backed local server on first launch). Prompt
-    // construction must not wait for that initialization; resolveTools() has its
-    // own bounded wait and later turns will see the connected servers.
+    // MCP servers may take several seconds to initialize (for example an
+    // npx-backed local server on first launch). Do not replace a connected
+    // server with a false empty list while its startup is still in progress.
     const skills = await Skill.state()
     const skillList = Object.values(skills)
       .map(
@@ -138,13 +137,10 @@ export namespace SystemPrompt {
       )
       .join("\n")
     let connectedMcps: string[]
-    if (availableMcpNames) {
+    if (availableMcpNames && [...availableMcpNames].length > 0) {
       connectedMcps = [...availableMcpNames]
     } else {
-      const mcpAbort = new AbortController()
-      const mcpTimer = setTimeout(() => mcpAbort.abort(), 250)
-      const mcpStatus = await MCP.status(mcpAbort.signal).catch(() => ({}) as Record<string, MCP.Status>)
-      clearTimeout(mcpTimer)
+      const mcpStatus = await MCP.status().catch(() => ({}) as Record<string, MCP.Status>)
       connectedMcps = Object.entries(mcpStatus)
         .filter(([_, status]) => status.status === "connected")
         .map(([name, _]) => name)
