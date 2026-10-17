@@ -153,16 +153,13 @@ export async function resolveTools(input: {
   }
 
   if (reviewer || !loadAll || allowedTools) return tools
-  const mcpAbort = new AbortController()
-  const mcpTimer = setTimeout(() => {
-    mcpAbort.abort()
-    log.debug("MCP tools are still initializing; skipping them for this turn")
-  }, 250)
-  const mcpTools = await MCP.tools(mcpAbort.signal, input.loadedMcpNames).catch(() => {
+  // Local MCP transports can take several seconds to start (for example, an
+  // npx-backed stdio server). Let MCP's configured connection timeout govern
+  // startup; a short prompt-side timer made every first turn lose its tools.
+  const mcpTools = await MCP.tools(undefined, input.loadedMcpNames).catch(() => {
     input.loadedMcpNames.clear()
     return {}
   })
-  clearTimeout(mcpTimer)
   for (const [key, item] of Object.entries(mcpTools)) {
     const execute = item.execute
     if (!execute) continue
