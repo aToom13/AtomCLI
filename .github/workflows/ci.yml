@@ -40,9 +40,10 @@ jobs:
         run: bun turbo typecheck
 
       - name: Test monorepo
-        run: bun turbo test -- --max-concurrency=1
+        run: bun turbo test
         env:
           ATOMCLI_TEST_HOME: ${{ runner.temp }}/atomcli-test-home
+          ATOMCLI_TEST: "true"
           ATOMCLI_BASH_SANDBOX_BYPASS: "true"
 
       - name: Check generated SDK is current
