@@ -40,10 +40,9 @@ jobs:
         run: bun turbo typecheck
 
       - name: Test monorepo
-        run: bun turbo test
+        run: bun turbo test -- --max-concurrency=1
         env:
           ATOMCLI_TEST_HOME: ${{ runner.temp }}/atomcli-test-home
-          ATOMCLI_TEST: "true"
 
       - name: Check generated SDK is current
         run: git diff --exit-code -- libs/sdk/js/src/v2/gen

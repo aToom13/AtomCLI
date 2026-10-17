@@ -286,8 +286,8 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
           workspaceRoot: Instance.directory,
           // Shared owned tasks use native file tools for writes. Shell code is
           // arbitrary, so require OS read-only enforcement rather than guessing its paths.
-          sandbox: owned && process.env.ATOMCLI_TEST !== "true" ? "require" : (execution?.sandbox ?? "off"),
-          filesystem: owned && process.env.ATOMCLI_TEST !== "true" ? "read-only" : (execution?.filesystem ?? "workspace-write"),
+          sandbox: owned ? "require" : (execution?.sandbox ?? "off"),
+          filesystem: owned ? "read-only" : (execution?.filesystem ?? "workspace-write"),
           network: execution?.network ?? "allow",
           environment: envMode,
           processVisibility: execution?.processVisibility ?? "restricted",
