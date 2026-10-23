@@ -342,8 +342,9 @@ export namespace LLM {
       throw error
     }
 
-    if (result && result.text) {
-      result.text.then(
+    const text = result?.text
+    if (text) {
+      text.then(
         () => {
           const latency = Date.now() - startTime
           import("@/integrations/tool/model-router")
