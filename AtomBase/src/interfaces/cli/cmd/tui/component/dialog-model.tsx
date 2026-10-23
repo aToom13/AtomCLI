@@ -250,7 +250,7 @@ export function DialogModel(props: { providerID?: string }) {
   const models = createMemo(() =>
     sync.data.provider.flatMap((provider) =>
       Object.values(provider.models)
-        .filter((model) => model.status !== "deprecated")
+        .filter((model) => model.status !== "deprecated" && !ModelAvailability.active(model.availability))
         .filter((model) => !props.providerID || provider.id === props.providerID)
         .map((model) => ({ provider, model })),
     ),

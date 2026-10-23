@@ -5,6 +5,7 @@ import { ModelsDev } from "@/integrations/provider/models"
 import { cmd } from "./cmd"
 import { UI } from "../ui"
 import { EOL } from "os"
+import { ModelAvailability } from "@/integrations/provider/availability"
 
 export const ModelsCommand = cmd({
   command: "models [provider]",
@@ -40,6 +41,7 @@ export const ModelsCommand = cmd({
           const provider = providers[providerID]
           const sortedModels = Object.entries(provider.models).sort(([a], [b]) => a.localeCompare(b))
           for (const [modelID, model] of sortedModels) {
+            if (!verbose && ModelAvailability.active(model.availability)) continue
             process.stdout.write(`${providerID}/${modelID}`)
             process.stdout.write(EOL)
             if (verbose) {

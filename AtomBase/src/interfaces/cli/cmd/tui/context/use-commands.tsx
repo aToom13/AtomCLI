@@ -363,7 +363,7 @@ export function useCommands() {
       },
     },
     {
-      title: "Auto / Free Model Settings",
+      title: "Routing settings (Auto / Free / Adaptive)",
       value: "autoconf.open",
       category: "Model",
       suggested: (sync.data.config as any)?.experimental?.smart_model_routing === true,
