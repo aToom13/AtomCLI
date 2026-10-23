@@ -13,6 +13,7 @@ export namespace AgentBenchmark {
     expectsTests: z.boolean().default(false),
     // Threshold on retries observed in the trajectory, not an execution retry
     // budget — benchmark sessions always run with executionPolicy maxRetries 0.
+    // Under outcome-v2 these thresholds are penalty-free allowances, not failure gates.
     maxToolErrors: z.number().int().nonnegative().default(0),
     maxRetries: z.number().int().nonnegative().default(1),
     maxDurationMs: z.number().positive().optional(),
@@ -30,6 +31,7 @@ export namespace AgentBenchmark {
     .object({
       name: z.string().min(1),
       version: z.string().min(1),
+      grading: z.enum(["strict-v1", "outcome-v2"]).default("strict-v1"),
       cases: z.array(Case).min(1),
     })
     .superRefine((suite, context) => {
@@ -121,7 +123,49 @@ export namespace AgentBenchmark {
 
   function verifierStashRoot(casesRoot: string) {
     const digest = new Bun.CryptoHasher("sha1").update(casesRoot).digest("hex").slice(0, 12)
-    return path.join(Global.Path.data, "eval-verifier-stash", digest)
+    return path.join(Global.Path.home, ".atomcli-eval-verifier-stash", digest)
+  }
+
+  /** A worktree-only move cannot remove answers from Git's object database. */
+  export async function assertPrivateWorkspace(workspace: string) {
+    const run = async (args: string[]) => {
+      const proc = Bun.spawn(["git", ...args], { cwd: workspace, stdout: "pipe", stderr: "pipe" })
+      const [output, error, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      if (code !== 0) throw new Error(`Cannot audit benchmark Git workspace: ${error.trim()}`)
+      return output.trim()
+    }
+    const alternate = await run(["rev-parse", "--git-path", "objects/info/alternates"])
+    if (process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES || (await Bun.file(path.resolve(workspace, alternate)).exists()))
+      throw new Error("Benchmark requires a fresh Git object database without alternates")
+    const history = await run(["log", "--all", "--reflog", "-1", "--format=%H", "--", ":(top,glob)**/verify/**"])
+    if (history)
+      throw new Error("Benchmark verifier sources remain in Git history; use a sanitized disposable workspace")
+    const unreachable = await run(["fsck", "--unreachable", "--no-reflogs", "--no-progress"])
+    if (unreachable)
+      throw new Error("Benchmark Git contains unreachable objects; use a fresh sanitized object database")
+    const root = await run(["rev-parse", "--show-toplevel"])
+    for (const privateRoot of [verifierStashRoot(workspace), path.join(Global.Path.data, "eval-verifier-stash")]) {
+      const relative = path.relative(root, privateRoot)
+      if (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+        throw new Error("Benchmark verifier stash must be outside the Git workspace")
+    }
+  }
+
+  async function checkVerifierParents(root: string, location: string) {
+    for (let parent = path.dirname(location); ; parent = path.dirname(parent)) {
+      const stat = await fs.lstat(parent).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+        throw error
+      })
+      if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
+        throw new Error(`Verifier case path must be a directory: ${parent}`)
+      }
+      if (parent === path.resolve(root)) break
+    }
   }
 
   async function restoreVerifier(stash: string, original: string) {
@@ -162,6 +206,12 @@ export namespace AgentBenchmark {
    * worktree. Returns true when a stash existed and was restored.
    */
   export async function restoreStashedVerifiers(casesRoot: string, stashRoot?: string): Promise<boolean> {
+    if (!stashRoot) {
+      const digest = new Bun.CryptoHasher("sha1").update(casesRoot).digest("hex").slice(0, 12)
+      const legacy = path.join(Global.Path.data, "eval-verifier-stash", digest)
+      const recovered = await restoreStashedVerifiers(casesRoot, legacy)
+      return (await restoreStashedVerifiers(casesRoot, verifierStashRoot(casesRoot))) || recovered
+    }
     const root = stashRoot ?? verifierStashRoot(casesRoot)
     const file = Bun.file(path.join(root, VERIFIER_STASH_MANIFEST))
     if (!(await file.exists())) return false
@@ -170,13 +220,21 @@ export namespace AgentBenchmark {
       throw new Error(`Verifier stash belongs to another cases root: ${manifest.casesRoot}`)
     }
     for (const entry of manifest.entries) {
-      const caseID = path.basename(path.dirname(entry.original))
+      const relative = path.relative(casesRoot, entry.original)
+      const parts = relative.split(path.sep)
       if (
-        entry.original !== path.join(casesRoot, caseID, "verify") ||
-        entry.stash !== path.join(root, caseID, "verify")
+        parts.length < 2 ||
+        parts.includes("..") ||
+        path.isAbsolute(relative) ||
+        parts.at(-1) !== "verify" ||
+        parts.slice(0, -1).includes("verify") ||
+        entry.original !== path.join(casesRoot, relative) ||
+        entry.stash !== path.join(root, relative)
       ) {
         throw new Error(`Invalid verifier stash entry: ${entry.original}`)
       }
+      await checkVerifierParents(casesRoot, path.resolve(entry.original))
+      await checkVerifierParents(root, path.resolve(entry.stash))
     }
     for (const entry of manifest.entries) {
       if (!(await verifierDirectoryExists(entry.stash))) {
@@ -193,9 +251,10 @@ export namespace AgentBenchmark {
 
   /**
    * Hides verifier sources from the agent under test. While a run is active,
-   * every case's verify/ directory is moved out of the worktree into a stash —
-   * an agent browsing the repository must never be able to read expected
-   * answers. The stash lives under the AtomCLI data directory (not tmpfs) and
+   * every verify/ directory beneath the cases root, including nested copies,
+   * is moved out of the worktree into a stash —
+   * Git history must be audited separately by assertPrivateWorkspace.
+   * The stash lives outside the auto-trusted AtomCLI data directory and
    * carries a manifest, so even a hard kill is recoverable: the next call to
    * relocateVerifierSources self-heals, and signal handlers restore on exit.
    */
@@ -205,20 +264,29 @@ export namespace AgentBenchmark {
   ): Promise<VerifierRelocation> {
     const stashRoot = explicitStashRoot ?? verifierStashRoot(casesRoot)
     // A crashed predecessor may have left its stash behind — heal before moving.
-    await restoreStashedVerifiers(casesRoot, stashRoot)
+    await restoreStashedVerifiers(casesRoot, explicitStashRoot)
 
-    const entries = await fs.readdir(casesRoot)
+    const verifiers: string[] = []
+    async function discover(directory: string) {
+      for (const entry of await fs.readdir(directory)) {
+        const location = path.join(directory, entry)
+        if (entry === "verify" && directory !== casesRoot) {
+          if (await verifierDirectoryExists(location)) verifiers.push(location)
+          continue
+        }
+        const stat = await fs.lstat(location)
+        if (stat.isSymbolicLink()) throw new Error(`Verifier case path must not be a symbolic link: ${location}`)
+        if (stat.isDirectory()) await discover(location)
+      }
+    }
+    await discover(casesRoot)
     const moved: Array<{ original: string; stash: string }> = []
-    for (const entry of entries) {
-      const casePath = path.join(casesRoot, entry)
-      const caseStat = await fs.lstat(casePath)
-      if (caseStat.isSymbolicLink()) throw new Error(`Verifier case path must not be a symbolic link: ${casePath}`)
-      if (!caseStat.isDirectory()) continue
-      const verify = path.join(casesRoot, entry, "verify")
-      if (!(await verifierDirectoryExists(verify))) continue
+    for (const verify of verifiers) {
       // Keep the "verify" level in the stash so staging copies stay uniform.
-      const stash = path.join(stashRoot, entry, "verify")
-      await fs.mkdir(path.dirname(stash), { recursive: true })
+      const stash = path.join(stashRoot, path.relative(casesRoot, verify))
+      await fs.mkdir(stashRoot, { recursive: true, mode: 0o700 })
+      await fs.chmod(stashRoot, 0o700)
+      await fs.mkdir(path.dirname(stash), { recursive: true, mode: 0o700 })
       moved.push({ original: verify, stash })
       // Persist recovery intent before moving the verifier. A hard kill
       // between rename and the old end-of-loop manifest left hidden sources
@@ -246,16 +314,7 @@ export namespace AgentBenchmark {
       stashRoot,
       async restore() {
         if (restored) return
-        for (const { stash, original } of moved) {
-          if (!(await verifierDirectoryExists(stash))) {
-            if (!(await verifierDirectoryExists(original))) {
-              throw new Error(`Verifier is missing from both source and stash: ${original}`)
-            }
-            continue
-          }
-          await restoreVerifier(stash, original)
-        }
-        await fs.rm(stashRoot, { recursive: true, force: true })
+        await restoreStashedVerifiers(casesRoot, stashRoot)
         restored = true
       },
     }
@@ -290,7 +349,7 @@ ${stdout}`.trim()
     const digest = new Bun.CryptoHasher("sha1")
       .update(
         `${suite.name}
-${suite.version}`,
+${suite.version}${suite.grading === "outcome-v2" ? "\noutcome-v2" : ""}`,
       )
       .digest("hex")
       .slice(0, 12)
@@ -369,28 +428,46 @@ ${suite.version}`,
         if (rateLimited) break
       }
     }
-    return { executions, ...evaluate(suite, await collect(), verifiers) }
+    return { executions, ...evaluate(suite, await collect(), verifiers, executions) }
   }
 
   export function evaluate(
     suite: Suite,
     results: AgentEval.Result[],
     verifiers?: Map<string, { passed?: boolean; detail?: string }>,
+    executions: Execution[] = [],
   ) {
     const cases = suite.cases.map((testCase) => {
       const matches = results.filter((result) => result.id === testCase.id)
       const latest = matches.sort((a, b) => b.timestamp - a.timestamp)[0]
       const failures: string[] = []
+      const penalties: { reason: string; points: number }[] = []
+      const penalize = (reason: string, points: number) => {
+        if (suite.grading === "outcome-v2") penalties.push({ reason, points })
+        else failures.push(reason)
+      }
+      const execution = executions.find((item) => item.id === testCase.id)
+      if (execution?.ok === false) failures.push(`execution failed${execution.error ? `: ${execution.error}` : ""}`)
       if (!latest) failures.push("missing observation")
       else {
         if (!latest.success) failures.push("task was not successful")
         if (testCase.requiresTools && latest.toolCalls === 0) failures.push("expected tool usage")
         if (testCase.expectsTests && latest.testsPassed !== true) failures.push("tests did not pass")
         if (latest.toolErrors > testCase.maxToolErrors)
-          failures.push(`tool errors ${latest.toolErrors} > ${testCase.maxToolErrors}`)
-        if (latest.retries > testCase.maxRetries) failures.push(`retries ${latest.retries} > ${testCase.maxRetries}`)
+          penalize(
+            `tool errors ${latest.toolErrors} > ${testCase.maxToolErrors}`,
+            Math.min(10, (latest.toolErrors - testCase.maxToolErrors) * 2),
+          )
+        if (latest.retries > testCase.maxRetries)
+          penalize(
+            `retries ${latest.retries} > ${testCase.maxRetries}`,
+            Math.min(5, latest.retries - testCase.maxRetries),
+          )
         if (testCase.maxDurationMs && latest.durationMs > testCase.maxDurationMs)
-          failures.push(`duration ${latest.durationMs}ms > ${testCase.maxDurationMs}ms`)
+          penalize(
+            `duration ${latest.durationMs}ms > ${testCase.maxDurationMs}ms`,
+            Math.min(5, Math.ceil((latest.durationMs / testCase.maxDurationMs - 1) * 5)),
+          )
       }
       // Hidden-verifier ground truth outranks trajectory signals. A case with a
       // verifier can only pass when that verifier actually ran and exited 0.
@@ -399,18 +476,31 @@ ${suite.version}`,
         if (!verdict || verdict.passed === undefined) failures.push("hidden verifier was not run")
         else if (verdict.passed === false)
           failures.push(`hidden verifier failed${verdict.detail ? `: ${verdict.detail}` : ""}`)
+      } else if (suite.grading === "outcome-v2") failures.push("independent verifier is required")
+      const passed = failures.length === 0
+      return {
+        id: testCase.id,
+        passed,
+        failures,
+        penalties,
+        score: passed ? 100 - penalties.reduce((sum, item) => sum + item.points, 0) : 0,
+        observation: latest,
       }
-      return { id: testCase.id, passed: failures.length === 0, failures, observation: latest }
     })
     const observed = cases.filter((item) => !!item.observation).length
     const passed = cases.filter((item) => item.passed).length
     return {
       suite: suite.name,
       version: suite.version,
+      grading: suite.grading,
       total: cases.length,
       observed,
       passed,
       passRate: cases.length ? passed / cases.length : 0,
+      score: cases.length
+        ? Math.round((cases.reduce((sum, item) => sum + item.score, 0) / cases.length) * 100) / 100
+        : 0,
+      accepted: passed === cases.length,
       ready: observed === cases.length,
       cases,
     }

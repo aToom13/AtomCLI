@@ -1,6 +1,7 @@
 {
   "name": "atomcli-core",
-  "version": "2",
+  "version": "5",
+  "grading": "outcome-v2",
   "cases": [
     {
       "id": "small-bug-fix",
@@ -113,7 +114,7 @@
     {
       "id": "agent-coordination",
       "category": "analysis",
-      "prompt": "Two analyses disagree about gateway latency: eval-fixtures/agent-coordination/evidence/metrics-a.json claims 842ms while evidence/metrics-b.json claims 118ms. Investigate using the raw log under logs/, resolve the conflict, and write your adjudicated conclusion with supporting numbers to eval-fixtures/agent-coordination/VERDICT.md. Preserve references to both evidence sources.",
+      "prompt": "Two analyses disagree about gateway latency: eval-fixtures/agent-coordination/evidence/metrics-a.json claims 842ms while evidence/metrics-b.json claims 118ms. Investigate using the raw log under logs/, resolve the conflict, and write your adjudicated conclusion with supporting numbers to eval-fixtures/agent-coordination/VERDICT.md. Preserve references to both evidence sources. Include a short explanation and exactly one authoritative fenced json block with these fields: metric (latency_p99_ms), population (full_log), numeric value/sample_size/rank (use nearest-rank p99 over the full raw log), accepted_source/rejected_source (relative evidence paths), rejected_value/rejected_sample_size (the other source's stated claim), and boolean rejected_claim_applies_to_full_log. Keep both evidence files and the raw log byte-identical. Prose has no required keywords; the JSON block is the authoritative adjudication.",
       "setupCommand": "bash \"$ATOMCLI_EVAL_SUITE_DIR/cases/agent-coordination/setup.sh\"",
       "verifyCommand": "bash \"$ATOMCLI_EVAL_VERIFY_DIR/run.sh\"",
       "requiresTools": true,

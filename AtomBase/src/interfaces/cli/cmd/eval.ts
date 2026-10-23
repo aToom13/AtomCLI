@@ -4,6 +4,8 @@ import { AgentEval } from "@/core/eval/harness"
 import { AgentBenchmark } from "@/core/eval/benchmark"
 import { EvalProgress } from "./eval-progress"
 import { EvalPicker } from "./eval-picker"
+import { Bus } from "@/core/bus"
+import { PermissionNext } from "@/util/permission/next"
 import path from "path"
 import os from "os"
 import fs from "fs/promises"
@@ -64,6 +66,7 @@ export const EvalCommand = cmd({
             )
             return
           }
+          await AgentBenchmark.assertPrivateWorkspace(process.cwd())
           const [{ Session }, { SessionPrompt }, { SessionSummary }, { Provider }] = await Promise.all([
             import("@/core/session"),
             import("@/core/session/prompt"),
@@ -100,8 +103,8 @@ export const EvalCommand = cmd({
             total: suite.cases.length,
           })
           // Hidden verifier sources are relocated out of the worktree into a
-          // stashed, manifest-backed location for the whole run so the agent
-          // under test cannot read expected answers from the repository.
+          // stashed, manifest-backed location. Git history is audited above;
+          // model tools also deny access to private evaluator paths.
           const workspace = process.cwd()
           const suiteDir = path.dirname(suitePath)
           const sandboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), "atomcli-eval-"))
@@ -113,12 +116,37 @@ export const EvalCommand = cmd({
           }
           for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, restoreOnSignal)
           let report: Awaited<ReturnType<typeof AgentBenchmark.run>>
+          const caseSessions = new Map<string, string>()
           let progressFailed = true
+          const unsubscribePermissions = Bus.subscribe(PermissionNext.Event.Asked, async ({ properties }) => {
+            await PermissionNext.reply({
+              requestID: properties.id,
+              reply: "reject",
+              message:
+                "Headless benchmark cannot answer interactive permission requests. Configure explicit permissions for the authorized workspace before execution; no permission was granted.",
+            })
+          })
           try {
+            if (relocation.stashRoot) {
+              const { ExecutionWorld } = await import("@/core/execution/world")
+              const probe = ExecutionWorld.prepare(
+                { executable: process.execPath, args: ["-e", ""], cwd: workspace, env: process.env },
+                { workspaceRoot: workspace, sandbox: "require", hiddenPaths: [sandboxRoot, relocation.stashRoot] },
+              )
+              const probeProcess = Bun.spawn([probe.executable, ...probe.args], {
+                cwd: probe.cwd,
+                env: probe.env,
+                stdout: "ignore",
+                stderr: "pipe",
+              })
+              const [code, detail] = await Promise.all([probeProcess.exited, new Response(probeProcess.stderr).text()])
+              if (code !== 0) throw new Error(`Benchmark privacy sandbox unavailable: ${detail.trim()}`)
+            }
             report = await AgentBenchmark.run(
               suite,
               async (testCase) => {
                 const session = await Session.create({ title: `Benchmark: ${testCase.id}` })
+                caseSessions.set(testCase.id, session.id)
                 const baseline = await Snapshot.track()
                 if (!baseline) throw new Error("could not create the benchmark case snapshot")
                 const sharedEnv = {
@@ -126,30 +154,30 @@ export const EvalCommand = cmd({
                   ATOMCLI_EVAL_SANDBOX: sandboxRoot,
                   ATOMCLI_EVAL_SUITE_DIR: suiteDir,
                 }
-                // Fixture setup runs after the snapshot so per-case revert also
-                // removes everything the setup materialized.
-                if (testCase.setupCommand) {
-                  const setup = await AgentBenchmark.shell(testCase.setupCommand, {
-                    cwd: workspace,
-                    timeoutMs: AgentBenchmark.SETUP_TIMEOUT_MS,
-                    env: sharedEnv,
-                  })
-                  if (setup.exitCode !== 0)
-                    throw new Error(
-                      `setup failed for case ${testCase.id}: ${setup.output.slice(-400) || `exit code ${setup.exitCode}`}`,
-                    )
-                }
                 AgentEval.registerBenchmark(session.id, {
                   suite: suiteName,
                   caseID: testCase.id,
                   runID,
                   routingMode: args.routing,
                   expertModel: args.expertModel,
+                  privatePaths: [sandboxRoot, ...(relocation.stashRoot ? [relocation.stashRoot] : [])],
                 })
                 let primaryError: unknown
                 let timedOutAt = 0
                 let poll: ReturnType<typeof setInterval> | undefined
                 try {
+                  // Failed setup must revert its partial fixture before the next case.
+                  if (testCase.setupCommand) {
+                    const setup = await AgentBenchmark.shell(testCase.setupCommand, {
+                      cwd: workspace,
+                      timeoutMs: AgentBenchmark.SETUP_TIMEOUT_MS,
+                      env: sharedEnv,
+                    })
+                    if (setup.exitCode !== 0)
+                      throw new Error(
+                        `setup failed for case ${testCase.id}: ${setup.output.slice(-400) || `exit code ${setup.exitCode}`}`,
+                      )
+                  }
                   // Watchdog: cancel the session when the case exceeds its budget,
                   // then abandon the await after a grace period so a stuck tool call
                   // can never freeze the whole benchmark again.
@@ -272,6 +300,7 @@ export const EvalCommand = cmd({
             )
             progressFailed = false
           } finally {
+            unsubscribePermissions()
             progress.finish(progressFailed)
             for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.off(signal, restoreOnSignal)
             // Put verifier sources back into the worktree no matter how the run ended.
@@ -287,11 +316,16 @@ export const EvalCommand = cmd({
                 bucket: suiteName,
                 model: `${model.providerID}/${model.modelID}`,
                 ...report,
+                executions: report.executions.map((execution) => ({
+                  ...execution,
+                  sessionID: execution.sessionID ?? caseSessions.get(execution.id),
+                })),
               },
               null,
               2,
             ),
           )
+          if (!report.accepted || report.executions.some((item) => !item.ok)) process.exitCode = 1
           return
         }
         const results = await AgentEval.list(args.suite)

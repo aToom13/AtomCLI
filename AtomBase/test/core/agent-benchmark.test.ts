@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test, spyOn } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
@@ -5,8 +6,66 @@ import { AgentBenchmark } from "@/core/eval/benchmark"
 import { AgentEval } from "@/core/eval/harness"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
+import { Global } from "@/core/global"
 
 describe("AgentBenchmark", () => {
+  test("rejects verifier history after deletion, reflog-only history, alternates and unreachable Git objects", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const git = async (...args: string[]) => {
+      const proc = Bun.spawn(["git", ...args], { cwd: tmp.path, stdout: "pipe", stderr: "pipe" })
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      expect(code, err).toBe(0)
+      return out.trim()
+    }
+    await AgentBenchmark.assertPrivateWorkspace(tmp.path)
+    const clean = await git("rev-parse", "HEAD")
+    const verifier = "cases/example/verify/run.sh"
+    await Bun.write(path.join(tmp.path, verifier), "echo private-test-marker")
+    await git("add", verifier)
+    await git("commit", "-qm", "private fixture")
+    await git("rm", verifier)
+    await git("commit", "-qm", "removed fixture")
+    await expect(AgentBenchmark.assertPrivateWorkspace(tmp.path)).rejects.toThrow(
+      "verifier sources remain in Git history",
+    )
+    await git("reset", "--hard", clean)
+    await expect(AgentBenchmark.assertPrivateWorkspace(tmp.path)).rejects.toThrow(
+      "verifier sources remain in Git history",
+    )
+    await git("reflog", "expire", "--expire=now", "--all")
+    await expect(AgentBenchmark.assertPrivateWorkspace(tmp.path)).rejects.toThrow("unreachable objects")
+    await git("gc", "--prune=now")
+    await AgentBenchmark.assertPrivateWorkspace(tmp.path)
+    const alternates = path.join(tmp.path, ".git/objects/info/alternates")
+    await Bun.write(alternates, "/fake-objects\n")
+    await expect(AgentBenchmark.assertPrivateWorkspace(tmp.path)).rejects.toThrow("without alternates")
+    await fs.rm(alternates)
+    await AgentBenchmark.assertPrivateWorkspace(tmp.path)
+  })
+
+  test("recovers legacy data-directory stashes before using the untrusted home sibling", async () => {
+    await using tmp = await tmpdir()
+    const cases = path.join(tmp.path, "cases")
+    const source = path.join(cases, "example/verify/run.sh")
+    await Bun.write(source, "echo legacy-marker")
+    const digest = new Bun.CryptoHasher("sha1").update(cases).digest("hex").slice(0, 12)
+    const legacy = path.join(Global.Path.data, "eval-verifier-stash", digest)
+    await AgentBenchmark.relocateVerifierSources(cases, legacy)
+    const current = await AgentBenchmark.relocateVerifierSources(cases)
+    try {
+      expect(current.stashRoot).toBe(path.join(Global.Path.home, ".atomcli-eval-verifier-stash", digest))
+      expect((await fs.stat(current.stashRoot!)).mode & 0o777).toBe(0o700)
+      expect(await Bun.file(path.join(legacy, "manifest.json")).exists()).toBe(false)
+    } finally {
+      await current.restore()
+    }
+    expect(await Bun.file(source).text()).toBe("echo legacy-marker")
+  })
+
   test("rejects duplicate case IDs that would alias observations", () => {
     expect(() =>
       AgentBenchmark.Suite.parse({
@@ -268,6 +327,129 @@ describe("AgentBenchmark", () => {
     expect(missingCase.failures).toContain("missing observation")
   })
 
+  describe("outcome-v2 grading", () => {
+    const suite = AgentBenchmark.Suite.parse({
+      name: "outcomes",
+      version: "1",
+      grading: "outcome-v2",
+      cases: [
+        {
+          id: "task",
+          category: "coding",
+          prompt: "fix",
+          requiresTools: true,
+          expectsTests: true,
+          verifyCommand: "check-output",
+          maxRetries: 0,
+          maxDurationMs: 1000,
+        },
+      ],
+    })
+    const observation = (overrides: Partial<AgentEval.Observation> = {}) =>
+      AgentEval.score(
+        AgentEval.Observation.parse({
+          id: "task",
+          category: "coding",
+          providerID: "p",
+          modelID: "m",
+          completed: true,
+          toolCalls: 4,
+          testsPassed: true,
+          durationMs: 1000,
+          ...overrides,
+        }),
+      )
+    const verified = new Map([["task", { passed: true }]])
+
+    test("verified recovery passes with small deductions and bounded total penalties", () => {
+      for (const [metrics, score, points] of [
+        [{}, 100, []],
+        [{ toolErrors: 2 }, 96, [4]],
+        [{ toolErrors: 2, retries: 2, durationMs: 1500 }, 91, [4, 2, 3]],
+        [{ toolErrors: 100, retries: 100, durationMs: 100000 }, 80, [10, 5, 5]],
+      ] as const) {
+        const report = AgentBenchmark.evaluate(suite, [observation(metrics)], verified)
+        expect(report).toMatchObject({ accepted: true, passed: 1, score })
+        expect(report.cases[0].failures).toEqual([])
+        expect(report.cases[0].penalties.map((item) => item.points)).toEqual([...points])
+      }
+    })
+
+    test("allowances stay penalty-free; grading changes cannot mix observation buckets", () => {
+      const allowed = AgentBenchmark.Suite.parse({
+        ...suite,
+        cases: [{ ...suite.cases[0], maxToolErrors: 2, maxRetries: 2 }],
+      })
+      expect(AgentBenchmark.evaluate(allowed, [observation({ toolErrors: 2, retries: 2 })], verified).score).toBe(100)
+      const legacy = AgentBenchmark.Suite.parse({ ...suite, grading: undefined })
+      expect(legacy.grading).toBe("strict-v1")
+      const digest = new Bun.CryptoHasher("sha1").update("outcomes\n1").digest("hex").slice(0, 12)
+      expect(AgentBenchmark.bucket(legacy)).toBe(`benchmark-outcomes-1-${digest}`)
+      expect(AgentBenchmark.bucket(suite)).not.toBe(AgentBenchmark.bucket(legacy))
+      expect(AgentBenchmark.evaluate(legacy, [observation({ toolErrors: 2 })], verified)).toMatchObject({
+        accepted: false,
+        score: 0,
+      })
+    })
+
+    test("correctness, completion and independent evidence remain hard requirements", () => {
+      for (const metrics of [
+        { completed: false },
+        { responseEmpty: true },
+        { testsPassed: false },
+        { reviewerVerdict: "failed" as const },
+        { toolCalls: 0 },
+      ]) {
+        expect(AgentBenchmark.evaluate(suite, [observation(metrics)], verified)).toMatchObject({
+          accepted: false,
+          score: 0,
+        })
+      }
+      for (const verdict of [undefined, new Map([["task", { passed: false }]]), new Map([["task", {}]])]) {
+        expect(AgentBenchmark.evaluate(suite, [observation()], verdict)).toMatchObject({ accepted: false, score: 0 })
+      }
+      const unverified = AgentBenchmark.Suite.parse({
+        ...suite,
+        cases: [{ ...suite.cases[0], verifyCommand: undefined }],
+      })
+      expect(AgentBenchmark.evaluate(unverified, [observation()], verified).cases[0].failures).toContain(
+        "independent verifier is required",
+      )
+    })
+
+    test("execution errors and watchdog failures cannot reuse a successful observation", async () => {
+      for (const error of ["executor failed", "case timed out after 1000ms"]) {
+        const report = await AgentBenchmark.run(
+          suite,
+          async () => {
+            throw new Error(error)
+          },
+          async () => [observation()],
+        )
+        expect(report).toMatchObject({ ready: true, accepted: false, score: 0 })
+        expect(report.cases[0].failures).toContain(`execution failed: ${error}`)
+      }
+    })
+
+    test("aggregate score includes failed and unobserved cases; coverage does not mean acceptance", () => {
+      const multiple = AgentBenchmark.Suite.parse({
+        ...suite,
+        cases: [suite.cases[0], { ...suite.cases[0], id: "wrong" }, { ...suite.cases[0], id: "missing" }],
+      })
+      const report = AgentBenchmark.evaluate(
+        multiple,
+        [observation({ toolErrors: 2 }), observation({ id: "wrong" })],
+        new Map([
+          ["task", { passed: true }],
+          ["wrong", { passed: false }],
+        ]),
+      )
+      expect(report).toMatchObject({ ready: false, accepted: false, observed: 2, total: 3, passed: 1, score: 32 })
+      expect(report.cases.map((item) => item.score)).toEqual([96, 0, 0])
+      expect(report.cases[2].failures).toContain("missing observation")
+    })
+  })
+
   test("recognizes all standard quota and rate limit exception patterns", () => {
     expect(AgentBenchmark.isRateLimitError(new Error("FreeUsageLimitError: free tier limit exceeded"))).toBe(true)
     expect(AgentBenchmark.isRateLimitError("Error: 429 Too Many Requests")).toBe(true)
@@ -360,6 +542,52 @@ describe("AgentBenchmark", () => {
     expect(await Bun.file(path.join(casesRoot, "case-b", "verify", "run.sh")).exists()).toBe(true)
   })
 
+  test("hides nested verifier copies and restores them through the recovery manifest", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const verifiers = ["case-a/verify/run.sh", "case-a/case-a/verify/run.sh", "case-b/copy/deep/verify/run.sh"]
+    for (const verifier of verifiers) await Bun.write(path.join(casesRoot, verifier), `private fixture: ${verifier}\n`)
+    await Bun.write(path.join(casesRoot, "case-a", "setup.sh"), "true\n")
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    try {
+      for (const verifier of verifiers) {
+        expect(await Bun.file(path.join(casesRoot, verifier)).exists()).toBe(false)
+        expect(await Bun.file(path.join(stashRoot, verifier)).text()).toBe(`private fixture: ${verifier}\n`)
+      }
+      expect(await Bun.file(path.join(casesRoot, "case-a", "setup.sh")).text()).toBe("true\n")
+      expect(await AgentBenchmark.restoreStashedVerifiers(casesRoot, stashRoot)).toBe(true)
+      for (const verifier of verifiers)
+        expect(await Bun.file(path.join(casesRoot, verifier)).text()).toBe(`private fixture: ${verifier}\n`)
+    } finally {
+      await relocation.restore()
+    }
+  })
+
+  test("hides all shipped verifier copies and restores every suite file unchanged", async () => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    await fs.cp(path.join(import.meta.dir, "../../evals/cases"), casesRoot, { recursive: true })
+    const files = Array.from(new Bun.Glob("**/*").scanSync({ cwd: casesRoot, onlyFiles: true }))
+    const before = new Map(
+      await Promise.all(files.map(async (file) => [file, await Bun.file(path.join(casesRoot, file)).text()] as const)),
+    )
+    const hidden = files.filter((file) => file.split(path.sep).includes("verify"))
+    expect(hidden.length).toBeGreaterThanOrEqual(20)
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    try {
+      expect(Array.from(new Bun.Glob("**/verify/**/*").scanSync({ cwd: casesRoot, onlyFiles: true }))).toEqual([])
+      for (const file of hidden) expect(await Bun.file(path.join(stashRoot, file)).text()).toBe(before.get(file)!)
+      for (const file of files.filter((file) => !hidden.includes(file)))
+        expect(await Bun.file(path.join(casesRoot, file)).text()).toBe(before.get(file)!)
+      await AgentBenchmark.restoreStashedVerifiers(casesRoot, stashRoot)
+      for (const file of files) expect(await Bun.file(path.join(casesRoot, file)).text()).toBe(before.get(file)!)
+    } finally {
+      await relocation.restore()
+    }
+  })
+
   test("restore is idempotent and tolerates a missing stash entry", async () => {
     await using tmp = await tmpdir({ git: false })
     const casesRoot = path.join(tmp.path, "cases")
@@ -370,6 +598,36 @@ describe("AgentBenchmark", () => {
     // Second restore must be a harmless no-op even though the stash is gone.
     await relocation.restore()
     expect(await Bun.file(path.join(casesRoot, "solo", "verify", "run.sh")).exists()).toBe(true)
+  })
+
+  test.each(["source", "stash"])("rejects nested %s ancestor symlinks during recovery", async (target) => {
+    await using tmp = await tmpdir({ git: false })
+    const casesRoot = path.join(tmp.path, "cases")
+    const stashRoot = path.join(tmp.path, "stash")
+    const relative = path.join("solo", "copy", "deep", "verify", "run.sh")
+    await Bun.write(path.join(casesRoot, relative), "expected\n")
+    const relocation = await AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)
+    const ancestor = path.join(target === "source" ? casesRoot : stashRoot, "solo", "copy")
+    const saved = `${ancestor}.saved`
+    const outside = path.join(tmp.path, "outside")
+    await Bun.write(path.join(outside, "deep", "verify", "run.sh"), "outside\n")
+    await fs.rename(ancestor, saved)
+    await fs.symlink(outside, ancestor)
+    try {
+      await expect(relocation.restore()).rejects.toThrow("Verifier case path must be a directory")
+      expect(await Bun.file(path.join(stashRoot, "manifest.json")).exists()).toBe(true)
+      expect(await Bun.file(path.join(outside, "deep", "verify", "run.sh")).text()).toBe("outside\n")
+      expect(
+        await Bun.file(
+          path.join(target === "stash" ? saved : stashRoot, target === "stash" ? "deep/verify/run.sh" : relative),
+        ).text(),
+      ).toBe("expected\n")
+    } finally {
+      await fs.unlink(ancestor)
+      await fs.rename(saved, ancestor)
+      await relocation.restore()
+    }
+    expect(await Bun.file(path.join(casesRoot, relative)).text()).toBe("expected\n")
   })
 
   test("a new run self-heals a stash left behind by an interrupted run", async () => {
@@ -473,12 +731,13 @@ describe("AgentBenchmark", () => {
     await Bun.write(path.join(casesRoot, "solo", "verify", "run.sh"), "true\n")
     const verify = path.join(casesRoot, "solo", "verify")
     const original = fs.lstat
-    const lstat = spyOn(fs, "lstat").mockImplementation(
-      (async (location: string, options?: Parameters<typeof fs.lstat>[1]) => {
-        if (location === verify) throw Object.assign(new Error("permission denied"), { code: "EACCES" })
-        return original(location, options as never)
-      }) as typeof fs.lstat,
-    )
+    const lstat = spyOn(fs, "lstat").mockImplementation((async (
+      location: string,
+      options?: Parameters<typeof fs.lstat>[1],
+    ) => {
+      if (location === verify) throw Object.assign(new Error("permission denied"), { code: "EACCES" })
+      return original(location, options as never)
+    }) as typeof fs.lstat)
     try {
       await expect(AgentBenchmark.relocateVerifierSources(casesRoot, stashRoot)).rejects.toThrow("permission denied")
     } finally {
@@ -623,7 +882,8 @@ describe("AgentBenchmark", () => {
     const evalsDir = path.join(import.meta.dir, "../../evals")
     const suite = AgentBenchmark.Suite.parse(await Bun.file(path.join(evalsDir, "atomcli.json")).json())
     expect(suite.name).toBe("atomcli-core")
-    expect(suite.version).toBe("2")
+    expect(suite.version).toBe("5")
+    expect(suite.grading).toBe("outcome-v2")
     expect(suite.cases.length).toBeGreaterThanOrEqual(10)
     for (const testCase of suite.cases) {
       expect(testCase.setupCommand, `${testCase.id} setupCommand`).toBeTruthy()
