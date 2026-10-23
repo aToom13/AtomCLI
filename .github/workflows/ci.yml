@@ -49,6 +49,19 @@ jobs:
       - name: Check generated SDK is current
         run: git diff --exit-code -- libs/sdk/js/src/v2/gen
 
+      - name: Install Chromium runtime
+        working-directory: AtomBase
+        run: bunx --no-install playwright install --with-deps chromium
+
+      - name: Test browser with real Chromium
+        working-directory: AtomBase
+        run: bun test test/tool/browser.test.ts
+        env:
+          ATOMCLI_BROWSER_E2E: "1"
+          MODELS_DEV_API_JSON: test/tool/fixtures/models-api.json
+          ATOMCLI_TEST: "true"
+          ATOMCLI_BASH_SANDBOX_BYPASS: "true"
+
       - name: Check installer syntax
         run: bash -n install.sh
 

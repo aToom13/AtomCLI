@@ -353,8 +353,11 @@ describe("tool.browser real Chromium", () => {
             document.body.append(surface)
           })
           try {
+            // Pointer lock requires a focused document; tool calls restore desktop focus.
+            await clickPage.bringToFront()
+            await clickPage.waitForFunction(() => document.hasFocus(), undefined, { timeout: 2000 })
             await clickPage.locator("#pointer-surface").click()
-            await clickPage.waitForFunction(() => document.pointerLockElement !== null)
+            await clickPage.waitForFunction(() => document.pointerLockElement !== null, undefined, { timeout: 2000 })
             const blocked = await tool.execute({ action: "click", selector: "#save", timeout: 1200 }, baseCtx)
             expect(blocked.metadata.status).toBe("failed")
             expect(blocked.output).toContain("intercepts pointer events")
@@ -362,7 +365,7 @@ describe("tool.browser real Chromium", () => {
             expect(await clickPage.locator("#status").textContent()).toBe("Idle")
           } finally {
             await clickPage.evaluate(() => document.exitPointerLock())
-            await clickPage.waitForFunction(() => document.pointerLockElement === null)
+            await clickPage.waitForFunction(() => document.pointerLockElement === null, undefined, { timeout: 2000 })
             await clickPage.locator("#pointer-surface").evaluate((element) => element.remove())
           }
           await tool.execute(
