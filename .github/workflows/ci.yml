@@ -136,7 +136,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: cd companion && python3 tool/test_android_integration.py --device emulator-5554 --output "$RUNNER_TEMP/companion-integration"
 
       - name: Preserve Android integration evidence
@@ -148,6 +148,8 @@ jobs:
           path: |
             ${{ runner.temp }}/companion-integration/android-integration.log
             ${{ runner.temp }}/companion-integration/android-integration.exit
+            ${{ runner.temp }}/companion-integration/android-crash.log
+            ${{ runner.temp }}/companion-integration/android-runtime.log
             ${{ runner.temp }}/companion-integration/a/server.log
             ${{ runner.temp }}/companion-integration/a/evidence.json
             ${{ runner.temp }}/companion-integration/b/server.log

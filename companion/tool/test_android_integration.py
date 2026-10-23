@@ -25,6 +25,7 @@ if any(output.iterdir()):
 children = []
 ports = []
 logs = []
+RUN_TIMEOUT_SECONDS = 20 * 60
 finished = threading.Event()
 
 def adb(*command, check=True):
@@ -73,10 +74,17 @@ try:
         controls.append(f"http://127.0.0.1:{info['controlPort']}")
     threading.Thread(target=grant_permissions, daemon=True).start()
     command = ["flutter", "test", "integration_test/companion_e2e_test.dart", "-d", args.device,
-               "--reporter", "expanded", "--no-uninstall", f"--dart-define=ATOMCLI_E2E_CONTROL_A={controls[0]}",
+               "--reporter", "expanded", "--verbose", "--no-uninstall", f"--dart-define=ATOMCLI_E2E_CONTROL_A={controls[0]}",
                f"--dart-define=ATOMCLI_E2E_CONTROL_B={controls[1]}"]
     with (output / "android-integration.log").open("w") as log:
-        code = subprocess.call(command, cwd=root / "companion", env={**os.environ, "ATOMCLI_ANDROID_E2E": "1"}, stdout=log, stderr=log)
+        proc = subprocess.Popen(command, cwd=root / "companion", env={**os.environ, "ATOMCLI_ANDROID_E2E": "1"},
+                                stdout=log, stderr=log, start_new_session=True)
+        children.append(proc)
+        try:
+            code = proc.wait(timeout=RUN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            code = 124
+            print("Android integration exceeded its 20-minute build/start/test ceiling", flush=True)
     for name, control in zip(["a", "b"], controls):
         try:
             with urllib.request.urlopen(control + "/state", timeout=10) as response:
@@ -89,6 +97,13 @@ try:
     raise SystemExit(code)
 finally:
     finished.set()
+    for name, command in [("android-crash.log", ["logcat", "-b", "crash", "-d", "-v", "threadtime"]),
+                          ("android-runtime.log", ["logcat", "-d", "-v", "threadtime", "-s", "flutter", "AndroidRuntime", "DEBUG", "libc"])]:
+        try:
+            result = subprocess.run(["adb", "-s", args.device, *command], capture_output=True, text=True, timeout=10)
+            (output / name).write_text(result.stdout + result.stderr)
+        except subprocess.TimeoutExpired:
+            (output / name).write_text("adb diagnostics timed out\n")
     adb("shell", "am", "force-stop", "io.atomcli.companion.e2e", check=False)
     for proc in children:
         if proc.poll() is None:
