@@ -109,6 +109,37 @@ jobs:
         working-directory: companion
         run: flutter test
 
+      - name: Test Companion bridge and protocol
+        working-directory: libs/companion
+        run: bun run test
+
+      - name: Enable emulator acceleration
+        run: sudo chmod a+rw /dev/kvm
+
+      - name: Test real Android integration with concurrent AtomCLI processes
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: cd companion && python3 tool/test_android_integration.py --device emulator-5554 --output "$RUNNER_TEMP/companion-integration"
+
+      - name: Preserve Android integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-android-integration
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/companion-integration/android-integration.log
+            ${{ runner.temp }}/companion-integration/android-integration.exit
+            ${{ runner.temp }}/companion-integration/a/server.log
+            ${{ runner.temp }}/companion-integration/a/evidence.json
+            ${{ runner.temp }}/companion-integration/b/server.log
+            ${{ runner.temp }}/companion-integration/b/evidence.json
+
       - name: Build release APK
         working-directory: companion
         run: flutter build apk --release
