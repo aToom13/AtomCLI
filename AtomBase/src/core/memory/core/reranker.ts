@@ -1,11 +1,4 @@
-/**
- * LLM-based Reranker
- *
- * Uses atomcli free models to rerank BM25 search results for better semantic relevance.
- * Fallback chain: minimax → glm → trinity → gpt-5-nano → big-pickle
- *
- * If all models fail or timeout, falls back to original BM25 ordering.
- */
+/** LLM reranking for explicit memory searches; failures retain BM25 ordering. */
 
 import { Log } from "@/util/util/log"
 import { ModelPurpose } from "@/core/routing/model-purpose"
@@ -85,7 +78,6 @@ ${candidateList}
 
 Return ONLY the JSON array, no explanation.`
 
-    // Race between LLM call and timeout
     const executionAttempt = sessionID
       ? await ExecutionRuntime.admitModelCall({
           sessionID,
@@ -95,27 +87,17 @@ Return ONLY the JSON array, no explanation.`
       : undefined
     let result
     try {
-      result = await Promise.race([
-        generateText({
-          model: language,
-          messages: [{ role: "user", content: prompt }],
-        }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), RERANK_TIMEOUT_MS)),
-      ])
-      if (result) executionAttempt?.settle(ExecutionRuntime.usageCostUsd(execution.model, result.usage))
-      else executionAttempt?.uncertain()
+      const timeout = AbortSignal.timeout(RERANK_TIMEOUT_MS)
+      result = await generateText({
+        model: language,
+        messages: [{ role: "user", content: prompt }],
+        maxRetries: 0,
+        abortSignal: executionAttempt ? AbortSignal.any([timeout, executionAttempt.signal]) : timeout,
+      })
+      executionAttempt?.settle(ExecutionRuntime.usageCostUsd(execution.model, result.usage))
     } catch (error) {
       executionAttempt?.uncertain()
       throw error
-    }
-
-    if (!result || !("text" in result)) {
-      log.warn("Reranker timed out, using BM25 order")
-      return candidates.slice(0, limit).map((c, i) => ({
-        id: c.id,
-        score: c.score || 0,
-        rerankScore: candidates.length - i,
-      }))
     }
 
     // Parse LLM response

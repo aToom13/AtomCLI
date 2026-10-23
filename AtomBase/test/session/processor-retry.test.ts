@@ -7,6 +7,7 @@ import { LLM } from "@/core/session/llm"
 import { Session } from "@/core/session"
 import { SessionProcessor } from "@/core/session/processor"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { ExecutionPolicy } from "@/core/routing/execution-policy"
 import { Provider } from "@/integrations/provider/provider"
 import { ModelVerification } from "@/integrations/provider/verification"
 import { ModelAvailability } from "@/integrations/provider/availability"
@@ -52,29 +53,39 @@ describe("session processor retry budget", () => {
     } as MessageV2.Assistant
     const updates: any[] = []
     const parts: any[] = []
-    spies.push(spyOn(LLM, "stream").mockImplementation(async () => {
-      AmendmentQueue.addAmendment(assistantMessage.sessionID, "Focus on failing test")
-      return {
-        fullStream: (async function* () {
-          yield { type: "text-start", id: "text-1" }
-          yield { type: "text-delta", id: "text-1", text: "Working" }
-          yield { type: "text-end", id: "text-1" }
-          yield { type: "finish-step", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
-          yield { type: "finish" }
-        })(),
-      } as any
-    }))
+    spies.push(
+      spyOn(LLM, "stream").mockImplementation(async () => {
+        AmendmentQueue.addAmendment(assistantMessage.sessionID, "Focus on failing test")
+        return {
+          fullStream: (async function* () {
+            yield { type: "text-start", id: "text-1" }
+            yield { type: "text-delta", id: "text-1", text: "Working" }
+            yield { type: "text-end", id: "text-1" }
+            yield {
+              type: "finish-step",
+              finishReason: "stop",
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            }
+            yield { type: "finish" }
+          })(),
+        } as any
+      }),
+    )
     spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 0 } } as any))
     spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
     spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
-    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => {
-      updates.push(message)
-      return message
-    }) as any))
-    spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => {
-      parts.push(part)
-      return part
-    }) as any))
+    spies.push(
+      spyOn(Session, "updateMessage").mockImplementation((async (message: any) => {
+        updates.push(message)
+        return message
+      }) as any),
+    )
+    spies.push(
+      spyOn(Session, "updatePart").mockImplementation((async (part: any) => {
+        parts.push(part)
+        return part
+      }) as any),
+    )
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
@@ -106,107 +117,156 @@ describe("session processor retry budget", () => {
         )
         const amendment = updates.find((message) => message.role === "user" && message.id !== "msg_user")
         expect(amendment).toMatchObject({ role: "user", sessionID: assistantMessage.sessionID })
-        expect(parts).toContainEqual(expect.objectContaining({ messageID: amendment.id, text: "Focus on failing test" }))
-      },
-    })
-  })
-
-  test("retries the primary once before switching to a fallback", async () => {
-    await using tmp = await tmpdir({ git: true })
-    const model = {
-      id: "primary",
-      providerID: "test-provider",
-      limit: { context: 100_000, output: 4_000 },
-      cost: { input: 0, output: 0 },
-    } as Provider.Model
-    const fallback = { ...model, id: "fallback", providerID: "fallback-provider" }
-    const assistantMessage = {
-      id: "msg_fallback_retry",
-      sessionID: "ses_fallback_retry",
-      parentID: "msg_user",
-      role: "assistant",
-      agent: "build",
-      path: { cwd: "/tmp", root: "/tmp" },
-      cost: 0,
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      modelID: model.id,
-      providerID: model.providerID,
-      time: { created: Date.now() },
-    } as MessageV2.Assistant
-    const fullStream = (async function* () {
-      yield { type: "text-start", id: "text-1" }
-      yield { type: "text-delta", id: "text-1", text: "OK" }
-      yield { type: "text-end", id: "text-1" }
-      yield {
-        type: "finish-step",
-        finishReason: "stop",
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      }
-      yield { type: "finish" }
-    })()
-    const stream = spyOn(LLM, "stream")
-      .mockRejectedValueOnce(new Error("temporary rate limit"))
-      .mockRejectedValueOnce(new Error("temporary rate limit"))
-      .mockResolvedValueOnce({ fullStream } as any)
-    spies.push(stream)
-    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 2 } } as any))
-    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
-    spies.push(spyOn(AgentEval, "allowsModelFallback").mockReturnValue(true))
-    spies.push(spyOn(SessionRetry, "sleep").mockResolvedValue(undefined))
-    spies.push(
-      spyOn(MessageV2, "fromError").mockResolvedValue(
-        new MessageV2.APIError({ message: "temporary rate limit", statusCode: 429, isRetryable: true }).toObject(),
-      ),
-    )
-    spies.push(spyOn(ModelFallback, "getDynamicFallbackModels").mockResolvedValue(["fallback-provider/fallback"]))
-    spies.push(spyOn(Provider, "getModel").mockResolvedValue(fallback))
-    spies.push(spyOn(Provider, "isRouteEligible").mockResolvedValue(true))
-    spies.push(spyOn(ModelAvailability, "active").mockReturnValue(undefined))
-    spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
-    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
-    spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => part) as any))
-    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
-
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const processor = SessionProcessor.create({
-          assistantMessage,
-          sessionID: assistantMessage.sessionID,
-          model,
-          abort: new AbortController().signal,
-        })
-        const result = await processor.process(
-          {
-            user: {} as MessageV2.User,
-            agent: {} as any,
-            abort: new AbortController().signal,
-            sessionID: assistantMessage.sessionID,
-            system: [],
-            messages: [
-              {
-                role: "assistant",
-                content: [
-                  {
-                    type: "reasoning",
-                    text: "thinking",
-                    providerOptions: { openai: { itemId: "rs_foreign" } },
-                  },
-                ],
-              },
-            ],
-            tools: {},
-            model,
-          },
-          { enableAmendments: false },
+        expect(parts).toContainEqual(
+          expect.objectContaining({ messageID: amendment.id, text: "Focus on failing test" }),
         )
-
-        expect(result.fallbackModel?.id).toBe("fallback")
-        expect(stream).toHaveBeenCalledTimes(3)
-        expect(JSON.stringify(stream.mock.calls[2][0].messages)).not.toContain("providerOptions")
       },
     })
   })
+
+  for (const [free, scope] of [
+    [false, undefined],
+    [true, undefined],
+    [false, "direct"],
+    [true, "direct"],
+  ] as const) {
+    test(`uses the remaining retry for verified fallback (${free ? "Free" : "explicit"}, ${scope ?? "configured"})`, async () => {
+      await using tmp = await tmpdir({ git: true })
+      const maxRetries = scope ? ExecutionPolicy.BUDGETS[scope].maxRetries : 2
+      let model = {
+        id: "primary",
+        providerID: free ? "atomcli" : "test-provider",
+        limit: { context: 100_000, output: 4_000 },
+        cost: { input: 0, output: 0 },
+      } as Provider.Model
+      const fallback = { ...model, id: "fallback", providerID: free ? "atomcli" : "fallback-provider" }
+      if (free)
+        model = Provider.applyRoutePolicy(model, {
+          requested: "atomcli/atomcli-free",
+          mode: "free",
+          allowedProviders: ["atomcli"],
+          excluded: [],
+          freeOnly: true,
+          requireVerification: true,
+          requiredCapabilities: ["text"],
+        })
+      const assistantMessage = {
+        id: "msg_fallback_retry",
+        sessionID: "ses_fallback_retry",
+        parentID: "msg_user",
+        role: "assistant",
+        agent: "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: model.id,
+        providerID: model.providerID,
+        time: { created: Date.now() },
+      } as MessageV2.Assistant
+      const fullStream = (async function* () {
+        yield { type: "text-start", id: "text-1" }
+        yield { type: "text-delta", id: "text-1", text: "OK" }
+        yield { type: "text-end", id: "text-1" }
+        yield {
+          type: "finish-step",
+          finishReason: "stop",
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        }
+        yield { type: "finish" }
+      })()
+      const stream = spyOn(LLM, "stream").mockRejectedValueOnce(new Error("temporary rate limit"))
+      if (maxRetries > 1) stream.mockRejectedValueOnce(new Error("temporary rate limit"))
+      stream.mockResolvedValueOnce({ fullStream } as any)
+      spies.push(stream)
+      spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 2 } } as any))
+      spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({} as any))
+      spies.push(
+        spyOn(ExecutionRuntime, "getExecutionPolicy").mockReturnValue(
+          scope ? ({ budget: ExecutionPolicy.BUDGETS[scope] } as any) : undefined,
+        ),
+      )
+      spies.push(spyOn(AgentEval, "allowsModelFallback").mockReturnValue(true))
+      spies.push(spyOn(SessionRetry, "sleep").mockResolvedValue(undefined))
+      spies.push(
+        spyOn(MessageV2, "fromError").mockResolvedValue(
+          new MessageV2.APIError(
+            free
+              ? {
+                  message: "Forbidden",
+                  statusCode: 403,
+                  isRetryable: false,
+                  responseBody: "OpenCode's free tier can only be used from within OpenCode.",
+                }
+              : { message: "temporary rate limit", statusCode: 429, isRetryable: true },
+          ).toObject(),
+        ),
+      )
+      spies.push(
+        spyOn(ModelFallback, "getDynamicFallbackModels").mockResolvedValue([
+          "outside/paid",
+          `${fallback.providerID}/fallback`,
+        ]),
+      )
+      const getModel = spyOn(Provider, "getModel").mockResolvedValue(fallback)
+      spies.push(getModel)
+      const verify = spyOn(LLM, "verifyDispatch").mockResolvedValue(undefined)
+      spies.push(verify)
+      spies.push(spyOn(LLM, "prepareRouteParams").mockResolvedValue({ params: { options: {} } } as any))
+      spies.push(spyOn(Provider, "isRouteEligible").mockResolvedValue(true))
+      spies.push(spyOn(ModelAvailability, "active").mockReturnValue(undefined))
+      spies.push(spyOn(Provider, "getProvider").mockResolvedValue(undefined))
+      spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+      spies.push(spyOn(Session, "updatePart").mockImplementation((async (part: any) => part) as any))
+      spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const processor = SessionProcessor.create({
+            assistantMessage,
+            sessionID: assistantMessage.sessionID,
+            model,
+            abort: new AbortController().signal,
+          })
+          const result = await processor.process(
+            {
+              user: {} as MessageV2.User,
+              agent: {} as any,
+              abort: new AbortController().signal,
+              sessionID: assistantMessage.sessionID,
+              system: [],
+              messages: [
+                {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "reasoning",
+                      text: "thinking",
+                      providerOptions: { openai: { itemId: "rs_foreign" } },
+                    },
+                  ],
+                },
+              ],
+              tools: {},
+              model,
+              ...(scope ? { execution: { executionID: "exec_direct_retry" } as ExecutionRuntime.Context } : {}),
+            },
+            { enableAmendments: false },
+          )
+
+          expect(result.fallbackModel?.id).toBe("fallback")
+          expect(stream).toHaveBeenCalledTimes(maxRetries + 1)
+          expect(JSON.stringify(stream.mock.calls[maxRetries][0].messages)).not.toContain("providerOptions")
+          if (free) {
+            expect(getModel.mock.calls.every(([provider]) => provider === "atomcli")).toBe(true)
+            expect(verify).toHaveBeenCalledTimes(1)
+            expect(Provider.routePolicy(verify.mock.calls[0][0].model).mode).toBe("free")
+            expect(Provider.routePolicy(result.fallbackModel!).allowedProviders).toEqual(["atomcli"])
+          }
+        },
+      })
+    })
+  }
 
   test("does not poison model verification with a local execution-budget rejection", async () => {
     await using tmp = await tmpdir({ git: true })

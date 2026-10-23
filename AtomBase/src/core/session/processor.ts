@@ -731,9 +731,9 @@ export namespace SessionProcessor {
               if (!exhausted) {
                 const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
 
-                // Give a transient failure one same-model retry before switching.
+                // Use the last permitted retry for fallback when the budget is small.
                 if (
-                  attempt >= SessionRetry.FALLBACK_AFTER_RETRIES &&
+                  attempt >= Math.min(SessionRetry.FALLBACK_AFTER_RETRIES, maxRetries) &&
                   !fallbackAttempted &&
                   AgentEval.allowsModelFallback(input.sessionID)
                 ) {

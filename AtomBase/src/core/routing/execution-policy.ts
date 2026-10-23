@@ -16,7 +16,7 @@ export namespace ExecutionPolicy {
     direct: {
       maxSteps: 2,
       maxToolCalls: 3,
-      maxRetries: 0,
+      maxRetries: 1,
       allowTaskflow: false,
       allowSubagents: false,
       allowExpertRouting: false,
@@ -71,6 +71,9 @@ export namespace ExecutionPolicy {
     successfulToolCalls?: number
     browserNavigations?: number
     browserVerificationCalls?: number
+    browserAccessibilityCalls?: number
+    browserNetworkCalls?: number
+    browserSourceMutations?: number
     recentToolCallSignatures?: string[]
     recentToolFamilies?: string[]
     recentToolTargets?: string[]
@@ -138,9 +141,9 @@ export namespace ExecutionPolicy {
     if (expectedSurfaces.includes("browser") || intent === "design") surfaceTools.add("skill")
     let baseTools: string[] = []
     if (scope === "direct") {
-      // Empty means no task tools; model/scope controls stay available for promotion.
+      // Keep a bounded read capability in the coding-agent request context.
       if (intent === "answer") {
-        baseTools = [...surfaceTools]
+        baseTools = ["read", ...surfaceTools]
       } else if (intent === "inspect") {
         baseTools = ["read", "grep", "find", ...surfaceTools]
       } else if (!needsMutation) {
@@ -149,26 +152,30 @@ export namespace ExecutionPolicy {
         baseTools = ["read", "edit", "write", ...surfaceTools]
       }
     } else if (scope === "focused") {
-      const common = intent === "answer" || intent === "inspect" || !needsMutation
-        ? ["read", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
-        : ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch"];
-      baseTools = [...common];
+      const common =
+        intent === "answer" || intent === "inspect" || !needsMutation
+          ? ["read", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
+          : ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
+      baseTools = [...common]
     } else {
       // scope === coordinated
-      const common = intent === "answer" || intent === "inspect" || !needsMutation
-        ? ["read", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
-        : ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch"];
-      baseTools = [...common];
+      const common =
+        intent === "answer" || intent === "inspect" || !needsMutation
+          ? ["read", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
+          : ["read", "edit", "write", "grep", "find", "bash", "lsp", "websearch", "webfetch"]
+      baseTools = [...common]
       // Coordinated is the only scope where the model-facing coordination
       // surface is offered: a visible checklist (todo) plus delegation (agent).
       // taskflow/orchestrate/normal-task stay out of the advertised set; they
       // remain internal execution/state mechanisms reachable via compatibility.
-      baseTools.push("todo");
-      baseTools.push("agent");
+      baseTools.push("todo")
+      baseTools.push("agent")
     }
     if (scope !== "direct") baseTools.push("static_check")
     // Add surface tools (browser, skill) if not already present
-    surfaceTools.forEach(t => { if (!baseTools.includes(t)) baseTools.push(t); })
+    surfaceTools.forEach((t) => {
+      if (!baseTools.includes(t)) baseTools.push(t)
+    })
     return baseTools
   }
   export function resolvePolicy(

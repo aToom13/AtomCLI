@@ -256,7 +256,8 @@ export async function prepareTurnExecution(input: TurnExecutionInput) {
     SystemPrompt.custom(),
     userText && allowMemoryRecall ? recall(userText, { sessionID, technology: "general" }) : Promise.resolve(""),
     userText && allowMemoryRecall
-      ? recallCoreMemories(userText, 3, { skipRerank: fastProfile, routeModel: lastUser?.model, sessionID })
+      ? // Automatic context uses BM25; an extra model call on every tool step delays the actual task.
+        recallCoreMemories(userText, 3, { skipRerank: true, routeModel: lastUser?.model, sessionID })
       : Promise.resolve(""),
     userText &&
     !lastUserWithParts?.parts.some(

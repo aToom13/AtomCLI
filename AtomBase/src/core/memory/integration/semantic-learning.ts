@@ -67,10 +67,7 @@ export type AssistantResponseAnalysis = z.infer<typeof AssistantResponseAnalysis
 
 export class SemanticLearningService {
   private static async language(prompt: string, model?: { providerID: string; modelID: string }, sessionID?: string) {
-    if (!model) return ModelPurpose.resolve("analysis", prompt, undefined, sessionID)
-    const session = sessionID ? await import("@/core/session").then(({ Session }) => Session.get(sessionID)) : undefined
-    const selected = await Provider.getModel(model.providerID, model.modelID, { prompt, verify: true, session })
-    return { model: selected, language: await Provider.getLanguage(selected) }
+    return ModelPurpose.resolve("analysis", prompt, model, sessionID)
   }
 
   private static async observe(model: Provider.Model, text: string) {

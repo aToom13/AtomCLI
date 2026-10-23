@@ -84,9 +84,10 @@ describe("ExecutionPolicy", () => {
     const policy = ExecutionPolicy.resolvePolicy(contract)
     expect(policy.budget.maxSteps).toBe(2)
     expect(policy.budget.maxToolCalls).toBe(3)
+    expect(policy.budget.maxRetries).toBe(1)
     expect(policy.budget.allowTaskflow).toBe(false)
     expect(policy.budget.allowSubagents).toBe(false)
-    expect(policy.allowedTools).toEqual([])
+    expect(policy.allowedTools).toEqual(["read"])
     expect(policy.diagnostics).toEqual([])
   })
 
@@ -224,7 +225,7 @@ describe("ExecutionPolicy", () => {
     expect(ExecutionPolicy.selectAllowedTools("direct", "inspect")).not.toContain("taskflow")
     expect(ExecutionPolicy.selectAllowedTools("direct", "inspect")).not.toContain("agent")
     expect(ExecutionPolicy.selectAllowedTools("direct", "change")).not.toContain("agent")
-    expect(ExecutionPolicy.selectAllowedTools("direct", "answer")).toEqual([])
+    expect(ExecutionPolicy.selectAllowedTools("direct", "answer")).toEqual(["read"])
   })
 
   test("focused browser work keeps browser and skill tools available", () => {
