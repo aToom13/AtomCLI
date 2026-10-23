@@ -466,7 +466,7 @@ Releases are triggered only by `v*` Git tags. Do not push commits or tags, publi
 - never substitute `git push --tags`;
 - do not manually push `AtomBase/dist/` or `release_assets/`.
 
-The tag workflow also analyzes and tests the Flutter Companion, then attaches a signed `atomcli-companion-android.apk` to the checksum-covered release assets. Published APKs require the persistent repository secrets `ATOMCLI_ANDROID_KEYSTORE_BASE64`, `ATOMCLI_ANDROID_KEYSTORE_PASSWORD`, `ATOMCLI_ANDROID_KEY_ALIAS`, and `ATOMCLI_ANDROID_KEY_PASSWORD`; the workflow must fail rather than publish a debug-signed APK when they are absent. Local debug-key release builds are for device testing only. Never commit an Android keystore or its passwords.
+The tag workflow also analyzes and tests the Flutter Companion, then attaches a signed `atomcli-companion-android.apk` to the checksum-covered release assets. Published APKs require the persistent repository secrets `ATOMCLI_ANDROID_KEYSTORE_BASE64`, `ATOMCLI_ANDROID_KEYSTORE_PASSWORD`, `ATOMCLI_ANDROID_KEY_ALIAS`, and `ATOMCLI_ANDROID_KEY_PASSWORD`; the workflow must fail rather than publish a debug-signed APK when they are absent. Local debug-key release builds are for device testing only. Never commit an Android keystore or its passwords. Every tag builds a fresh APK and verifies that its manifest version matches the release version; an older release APK is never substituted.
 
 ## Definition of done
 
