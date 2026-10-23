@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
@@ -46,6 +47,7 @@ describe("active tool audit", () => {
             "invalid",
             "lsp",
             "memory",
+            "mcp_tools",
             "model_control",
             "orchestrate",
             "question",

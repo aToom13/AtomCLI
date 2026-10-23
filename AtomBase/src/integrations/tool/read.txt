@@ -1,8 +1,8 @@
-Reads a file from the local filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+Reads a file from the local filesystem, subject to read and external-directory permissions. A supplied path may be missing or inaccessible; errors do not authorize access to another target.
 
 Usage:
-- The filePath parameter must be an absolute path, not a relative path
+- filePath accepts an absolute path or a path relative to the current workspace. Prefer workspace-relative paths for files there; otherwise copy an exact observed absolute path instead of reconstructing it.
+- After a missing-file error, locate the target with find in the current workspace before retrying. A denial for an external path does not imply that discovery inside the workspace is denied; do not retry the denied target through another tool.
 - By default, it reads up to 2000 lines starting from the beginning of the file
 - You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
 - Text is bounded to 50 KiB per read; long lines within that budget remain complete. Line offsets cannot resume inside a line larger than the byte budget.

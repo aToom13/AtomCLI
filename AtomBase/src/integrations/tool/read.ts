@@ -45,7 +45,7 @@ export const ReadTool = Tool.define("read", {
     privileged: false,
   },
   parameters: z.object({
-    filePath: z.string().min(1).max(4096).describe("The path to the file to read"),
+    filePath: z.string().min(1).max(4096).describe("File path, absolute or relative to the current workspace"),
     offset: z.coerce.number().int().min(0).describe("The line number to start reading from (0-based)").optional(),
     limit: z.coerce
       .number()
@@ -70,6 +70,7 @@ export const ReadTool = Tool.define("read", {
 
     const file = Bun.file(filepath)
     if (!(await file.exists())) {
+      const missing = `File not found: ${filepath}\nCurrent workspace: ${Instance.directory}\nUse find with path="." to locate the target; workspace-relative file paths are accepted. Do not guess another absolute workspace root.`
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
 
@@ -83,10 +84,10 @@ export const ReadTool = Tool.define("read", {
         .slice(0, 3)
 
       if (suggestions.length > 0) {
-        throw new Error(`File not found: ${filepath}\n\nDid you mean one of these?\n${suggestions.join("\n")}`)
+        throw new Error(`${missing}\n\nDid you mean one of these?\n${suggestions.join("\n")}`)
       }
 
-      throw new Error(`File not found: ${filepath}`)
+      throw new Error(missing)
     }
 
     const isImage = file.type.startsWith("image/") && file.type !== "image/svg+xml"

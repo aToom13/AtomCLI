@@ -2,4 +2,4 @@ Replace text in an existing file. Read the target first; native execution rememb
 
 Use exact `oldString` text without Read's line-number prefix. Add surrounding context when a match repeats. Use `replaceAll` only when every match should change.
 
-Use `operations` for several replacements in the same file. Put every replacement in that array; nonempty top-level `oldString/newString` alongside it rejects the entire request. They run in order and commit together; a failed match writes nothing. On stale content, read again before retrying.
+Always use a nonempty `operations` array, including for one replacement: `{filePath, operations: [{oldString, newString}]}`. Put `replaceAll` inside its operation when needed. Never add top-level replacement fields. Operations run in order and commit together; a failed match writes nothing. On stale content, read again before retrying.

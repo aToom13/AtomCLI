@@ -103,6 +103,7 @@ export namespace PermissionNext {
   }
 
   const state = Instance.sessionState(async () => {
+    const config = await Config.get()
     const projectID = Instance.project.id
     let stored: Ruleset = []
     try {
@@ -145,6 +146,7 @@ export namespace PermissionNext {
     return {
       pending,
       approved: stored,
+      autonomous: config.agent_mode === "autonomous",
     }
   })
 
@@ -153,9 +155,10 @@ export namespace PermissionNext {
       ruleset: Ruleset,
     }),
     async (input) => {
+      const s = await state()
       // YOLO mode: auto-allow everything except exempt permissions (e.g., window_control)
       // Activated by: --yolo/--autonomous CLI flag, ATOMCLI_YOLO/ATOMCLI_AUTONOMOUS env, or config agent_mode
-      if (Flag.ATOMCLI_YOLO && !YOLO_EXEMPT_PERMISSIONS.includes(input.permission)) {
+      if (!YOLO_EXEMPT_PERMISSIONS.includes(input.permission) && (Flag.ATOMCLI_YOLO || s.autonomous)) {
         // Deny rules stay effective even in YOLO: a YOLO parent must not
         // auto-allow a sub-agent call that its own merged ruleset explicitly
         // denies (e.g. the reviewer's read-only bash overlay). Evaluate the
@@ -175,7 +178,6 @@ export namespace PermissionNext {
         log.info("YOLO mode: auto-allowing", { permission: input.permission })
         return
       }
-      const s = await state()
       const { ruleset, ...request } = input
       // Hard denies from the passed ruleset (agent overlays / config) must win
       // over stored user approvals, otherwise a reviewer's read-only bash

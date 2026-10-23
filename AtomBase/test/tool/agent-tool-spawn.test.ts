@@ -1,7 +1,8 @@
-import { describe, expect, test, mock, beforeEach, spyOn } from "bun:test"
+import { describe, expect, test, mock, beforeEach, afterAll, spyOn } from "bun:test"
 import "../preload"
 import fs from "fs/promises"
 import path from "path"
+import { SubAgent } from "@/integrations/tool/subagent"
 
 const completedTaskOutput = (text: string) =>
   `${text}\n<agent_result>{"status":"complete","summary":"${text}","failures":[]}</agent_result>`
@@ -36,27 +37,35 @@ const statusMock = mock(
 const waitMock = mock(async (sessionId: string) => statusMock(sessionId))
 const cancelMock = mock(async () => {})
 
-mock.module("../../src/integrations/tool/subagent", () => ({
-  SubAgent: {
-    spawn: spawnMock,
-    status: statusMock,
-    wait: waitMock,
-    cancel: cancelMock,
-    capabilities: () => ({ wait: true, status: true, revive: true, steer: false }),
-    buildFromAgent: (agent: any) => [
-      ...(agent.permission ?? []),
-      { permission: "todowrite", pattern: "*", action: "deny" },
-      { permission: "todoread", pattern: "*", action: "deny" },
-      { permission: "task", pattern: "*", action: "deny" },
-    ],
-    buildPermissions: (parent: any[]) => [
-      ...parent,
-      { permission: "todowrite", pattern: "*", action: "deny" },
-      { permission: "todoread", pattern: "*", action: "deny" },
-      { permission: "task", pattern: "*", action: "deny" },
-    ],
-  },
-}))
+const capabilities = SubAgent.capabilities
+const subagentSpies = [
+  spyOn(SubAgent, "spawn").mockImplementation(spawnMock),
+  spyOn(SubAgent, "status").mockImplementation(statusMock),
+  spyOn(SubAgent, "wait").mockImplementation(waitMock),
+  spyOn(SubAgent, "cancel").mockImplementation(cancelMock),
+  spyOn(SubAgent, "capabilities").mockImplementation((runtime) => ({
+    ...capabilities(runtime),
+    wait: true,
+    status: true,
+    revive: true,
+    steer: false,
+  })),
+  spyOn(SubAgent, "buildFromAgent").mockImplementation((agent: any) => [
+    ...(agent.permission ?? []),
+    { permission: "todowrite", pattern: "*", action: "deny" },
+    { permission: "todoread", pattern: "*", action: "deny" },
+    { permission: "task", pattern: "*", action: "deny" },
+  ]),
+  spyOn(SubAgent, "buildPermissions").mockImplementation((parent: any[]) => [
+    ...parent,
+    { permission: "todowrite", pattern: "*", action: "deny" },
+    { permission: "todoread", pattern: "*", action: "deny" },
+    { permission: "task", pattern: "*", action: "deny" },
+  ]),
+]
+afterAll(() => {
+  for (const spy of subagentSpies) spy.mockRestore()
+})
 
 const { AgentTool } = await import("@/integrations/tool/agent-tool")
 const { OrchestrateTool } = await import("@/integrations/tool/orchestrate")

@@ -113,6 +113,7 @@ export namespace SystemPrompt {
       `  Current datetime: ${dateStr} (${timezone})`,
       `  ISO timestamp: ${now.toISOString()}`,
       `</env>`,
+      `For filesystem tools that accept them, prefer paths relative to the working directory above. Otherwise copy exact paths from current tool results; do not reconstruct long absolute roots. After a missing target, discover it within this workspace. A denial for a different external path does not deny workspace discovery; never bypass the denied target's permissions.`,
       ...(projectCommandsBlock ? [projectCommandsBlock] : []),
       `<files>`,
       `  ${manifest.tree}`,

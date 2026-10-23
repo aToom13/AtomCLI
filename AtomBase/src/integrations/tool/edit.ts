@@ -126,12 +126,12 @@ export const EditTool = Tool.define("edit", {
       .string()
       .max(MAX_EDIT_CONTENT_BYTES)
       .optional()
-      .describe("The text to replace (required unless using operations)"),
+      .describe("Single-edit mode only: text to replace. Omit entirely when using operations."),
     newString: z
       .string()
       .max(MAX_EDIT_CONTENT_BYTES)
       .optional()
-      .describe("The text to replace it with (required unless using operations)"),
+      .describe("Single-edit mode only: replacement text. Omit entirely when using operations."),
     replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
     contentHash: z
       .string()
@@ -151,7 +151,7 @@ export const EditTool = Tool.define("edit", {
       .max(MAX_EDIT_OPERATIONS)
       .optional()
       .describe(
-        "Array of edit operations to apply sequentially on the same file. Use instead of oldString/newString for multiple edits.",
+        "Ordered edits on the same file; use one operation for a single replacement. Supply oldString/newString only inside each operation.",
       ),
   }),
   async execute(params, ctx) {

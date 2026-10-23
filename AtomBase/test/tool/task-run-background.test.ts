@@ -1,7 +1,8 @@
 import "../preload"
-import { describe, expect, test, mock, spyOn } from "bun:test"
+import { describe, expect, test, afterAll, spyOn } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
+import { SubAgent } from "@/integrations/tool/subagent"
 
 // Controllable child: spawn returns a promise we resolve later, so we can prove
 // the tool call resolves BEFORE the background child completes.
@@ -17,20 +18,28 @@ const childPromise = new Promise<any>((resolve) => {
 
 // Mock SubAgent.spawn BEFORE the task tool is imported so the background spawn
 // is fully under test control (no real model, no real event loop child).
-mock.module("../../src/integrations/tool/subagent", () => ({
-  SubAgent: {
-    spawn: () => {
-      spawnCalled = true
-      return childPromise
-    },
-    status: () => ({ status: "running" }),
-    wait: async () => ({}),
-    cancel: async () => {},
-    capabilities: () => ({ wait: true, status: true, revive: true, steer: false }),
-    buildFromAgent: (agent: any) => [...(agent?.permission ?? [])],
-    buildPermissions: (parent: any[]) => parent,
-  },
-}))
+const capabilities = SubAgent.capabilities
+const subagentSpies = [
+  spyOn(SubAgent, "spawn").mockImplementation(() => {
+    spawnCalled = true
+    return childPromise
+  }),
+  spyOn(SubAgent, "status").mockReturnValue({ status: "running" } as never),
+  spyOn(SubAgent, "wait").mockResolvedValue({} as never),
+  spyOn(SubAgent, "cancel").mockResolvedValue(undefined),
+  spyOn(SubAgent, "capabilities").mockImplementation((runtime) => ({
+    ...capabilities(runtime),
+    wait: true,
+    status: true,
+    revive: true,
+    steer: false,
+  })),
+  spyOn(SubAgent, "buildFromAgent").mockImplementation((agent: any) => [...(agent?.permission ?? [])]),
+  spyOn(SubAgent, "buildPermissions").mockImplementation((parent: any[]) => parent),
+]
+afterAll(() => {
+  for (const spy of subagentSpies) spy.mockRestore()
+})
 
 const { TaskTool } = await import("@/integrations/tool/task")
 const { Session } = await import("@/core/session")

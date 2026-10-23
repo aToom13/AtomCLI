@@ -3,5 +3,8 @@
 - `mode: "tree"` — directory structure view with indented tree format
 - Use `pattern` mode when you need to find files by name patterns (e.g. "**/*.ts")
 - Use `tree` mode to understand directory structure and see what files exist
+- `path` must name an existing directory. For `/project/src/file.ts`, search `/project/src`, never `/project/src/file.ts/..`.
+- Git and default ignore rules filter contents even with `ignore: []`. Tree mode shows omitted immediate directories; use `mode: "pattern"`, `path: <that exact directory>`, `pattern: "*"` to inspect one, or read its known exact file path. An absent search result does not prove a file is absent.
+- Read the local README and use paths relative to that directory before guessing another root or a test filename.
 - When doing open-ended search that may require multiple rounds, use the Task tool instead
 - You have the capability to call multiple tools in a single response. Speculatively batch searches when useful.

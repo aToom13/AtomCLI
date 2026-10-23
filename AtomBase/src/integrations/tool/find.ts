@@ -1,5 +1,6 @@
 import z from "zod"
 import * as path from "path"
+import fs from "fs/promises"
 import { Tool } from "./tool"
 import DESCRIPTION from "./find.txt"
 import { Ripgrep } from "@/services/file/ripgrep"
@@ -52,10 +53,10 @@ export const FindTool = Tool.define("find", {
       .max(4096)
       .optional()
       .describe(
-        "The directory to search in. If not specified, the current working directory will be used. Must be absolute path if provided.",
+        'An existing directory, not a file or a file followed by "/..". Defaults to the current working directory. Read local README instructions before guessing another root.',
       ),
     ignore: parseJsonIfString(z.array(z.string().max(1000)).max(100))
-      .describe("List of glob patterns to ignore (for tree mode)")
+      .describe("Additional glob patterns to ignore in tree mode; [] does not disable default or Git ignore rules")
       .optional(),
   }),
   async execute(params, ctx) {
@@ -143,7 +144,7 @@ async function executeTree(searchPath: string, ignore: string[] | undefined, ctx
     files.push(file)
     if (files.length > LIMIT) break
   }
-  const truncated = files.length > LIMIT
+  let truncated = files.length > LIMIT
   if (truncated) files.length = LIMIT
 
   // Build directory structure
@@ -192,7 +193,23 @@ async function executeTree(searchPath: string, ignore: string[] | undefined, ctx
     return output
   }
 
-  const output = `${searchPath}/\n` + renderDir(".", 0)
+  const omitted: string[] = []
+  // ponytail: show immediate directory names only; explicitly scoped searches reveal their contents.
+  const entries = await fs.opendir(searchPath)
+  let scanned = 0
+  for await (const entry of entries) {
+    if (++scanned > LIMIT || files.length + omitted.length >= LIMIT) {
+      truncated = true
+      break
+    }
+    if (entry.isDirectory() && entry.name !== ".git" && !dirs.has(entry.name)) omitted.push(entry.name)
+  }
+  const output = [
+    `${searchPath}/\n` + renderDir(".", 0),
+    ...omitted.sort().map((name) => `  ${name}/ (contents omitted)`),
+    'Git and default ignore rules apply. For an omitted directory use mode="pattern", path=<that exact directory>, pattern="*", or read a known exact file path. Omitted does not mean missing.',
+    ...(truncated ? ["(Results are truncated. Use a more specific directory.)"] : []),
+  ].join("\n")
 
   return {
     title: path.relative(Instance.worktree, searchPath),

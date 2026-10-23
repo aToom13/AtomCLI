@@ -483,3 +483,5 @@ Browser flows preserve earlier step observations on known failure. Completed ass
 For configuration/auth troubleshooting, use `scope_control status`: it reports actual runtime paths and safe provider-source diagnostics. Missing legacy paths or environment variables do not establish missing credentials. Access stays unverified until a real provider operation supplies evidence; never print config/auth contents.
 
 Coverage stays enabled with the native LCOV reporter at `AtomBase/coverage/lcov.info` (ignored), avoiding Bun 1.3.14 text coverage `WriteFailed` under Turbo. Assertions, skips and timeouts are unchanged.
+
+Filesystem tools accept workspace-relative paths where documented; prefer them for local targets instead of rebuilding long absolute roots. Read reports its current workspace after a missing target; use `find` there to discover the exact file. A denied external path does not deny permitted discovery inside the workspace. Paths are never silently redirected, and permission checks remain binding.
