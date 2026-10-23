@@ -153,7 +153,11 @@ An interrupted cutover does not rescan and hash the entire legacy tree during ev
 
 Use `test/core/storage-manifest.test.ts`, `test/core/storage-backup.test.ts`, and `test/core/storage-migration.test.ts` when changing this boundary. The manifest format check intentionally rejects a database written by a newer AtomCLI binary.
 
+### Automatic data retention
+
 Snapshot capture has a **global 1024 MiB object budget**, shared across projects and processes. At the budget, new captures stop with a warning; existing rollback trees are preserved. Files over 2 MiB and local runtime/dependency directories are excluded. Project Git ignore rules select the remaining files; no media-extension blacklist is used. A capture also stops before staging a tree over 64 MiB or 10,000 files. Excluded files have no snapshot rollback. Original project files and the project's Git index are never changed by capture.
+
+Full model-request and duplicate tool-event replay payloads are **off by default** (`retention.replay: false`). Chat messages, normal tool results, execution accounting and checkpoints still persist. Explicit replay APIs remain available; maintenance discards old full request copies while replay is disabled; opt-in replay diagnostics expire after seven days. This does not provide indefinite forensic replay.
 
 Live record writes have a fixed **2 GiB admission ceiling**, conservatively counting payload bytes plus 4 KiB per pointer. SQLite tracks usage atomically across processes. A write that grows beyond the ceiling fails before preparing its payload; existing data, deletes and shrinking writes remain available. The error directs users to delete unused conversations or run cleanup; history is never silently evicted. Existing legacy imports can exceed the ceiling to preserve recovery data, but new growth is refused until reduced. Orphans, backup copies and binaries are outside this live-record accounting; this is not a hard cap on the entire application directory.
 
@@ -163,15 +167,36 @@ Maintenance starts 30 seconds after bootstrap, checks hourly, and normally runs 
 
 From `AtomBase/`, preview before applying (the preview does not start background maintenance):
 
+```sh
+bun run --conditions=browser ./src/index.ts debug storage --all-projects
+bun run --conditions=browser ./src/index.ts debug storage --all-projects --apply
+```
+
 Without `--all-projects`, snapshot maintenance targets the current project; storage blobs are global. Reports include legacy compaction, diagnostic expiry, orphan counts/bytes, budget limits, and blocked snapshot repositories. A partial block returns exit 1 even if eligible storage blobs were already removed. Previews report candidates, not a guaranteed future deletion count.
 
 Optional configuration (all existing configurations remain valid):
+
+```json
+{
+  "retention": {
+    "enabled": true,
+    "orphan_hours": 24,
+    "interval_hours": 24,
+    "max_delete_mib": 1024,
+    "snapshot_mib": 1024,
+    "snapshot_file_mib": 2,
+    "replay": false
+  }
+}
+```
 
 `enabled: false` disables automatic maintenance; the explicit command still works. The grace and interval cannot be below one hour. Restart all AtomCLI processes onto the updated version before applying cleanup: older binaries do not participate in the new coordination protocol.
 
 Storage GC rechecks references and unlinks under the same SQLite writer lock as pointer publication; publishers republish a collected blob before committing a reference. Readers acquire a file descriptor under that lock and can finish reading a retired version. Shared live blobs, tombstones and the verified cutover backup remain. Legacy originals are removed only by verified compaction. Unknown files and symlinks are not deletion candidates.
 
 Snapshot tracking pins newly created trees. Maintenance discovers snapshot, patch-before/after, and session-revert trees from all retained sessions in the project, including interrupted legacy imports, validates every object, then publishes the retained roots before expiring unused pins and running Git GC. An unreadable record, missing tree, unsafe directory, or unfinished/uncertain execution postpones that repository's cleanup. Cross-process SQLite locks serialize snapshot readers/writers and maintenance and release automatically on crash. Grace protects new and not-yet-persisted roots; unfinished executions prevent age-based eviction of their pins.
+
+Run `test/core/data-retention.test.ts`, the storage manifest/backup/migration tests, and `test/snapshot/snapshot.test.ts` when changing this policy. Do not replace root discovery with file-age deletion or raw `git prune`.
 
 When the bundled AtomCLI guide changes, validate its frontmatter, reference paths, development coverage, and runtime discovery:
 

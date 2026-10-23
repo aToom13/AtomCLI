@@ -12,6 +12,7 @@ import { Vcs } from "./vcs"
 import { Log } from "@/util/util/log"
 import { ShareNext } from "@/util/share/share-next"
 import { SessionSummary } from "@/core/session/summary"
+import { DataMaintenance } from "@/core/storage/maintenance"
 
 export async function InstanceBootstrap() {
   Log.Default.info("bootstrapping", { directory: Instance.directory })
@@ -29,6 +30,7 @@ export async function InstanceBootstrap() {
   await FileWatcher.init()
   await File.init()
   await Vcs.init()
+  DataMaintenance.init()
 
   Bus.subscribe(Command.Event.Executed, async (payload) => {
     if (payload.properties.name === Command.Default.INIT) {
