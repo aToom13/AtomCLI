@@ -59,6 +59,9 @@ jobs:
             }
           '
 
+      - name: Prepare and verify execution sandbox
+        run: bash .github/scripts/setup-linux-sandbox.sh
+
       - name: Validate source and protocol
         env:
           ATOMCLI_TEST_HOME: ${{ runner.temp }}/atomcli-test-home
