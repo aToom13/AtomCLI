@@ -426,7 +426,7 @@ export namespace MCP {
       const [cmd, ...args] = mcp.command
       const cwd = Instance.directory
       const transport = new StdioClientTransport({
-        stderr: "ignore",
+        stderr: "pipe",
         command: cmd,
         args,
         cwd,
@@ -438,6 +438,10 @@ export namespace MCP {
             ...mcp.environment,
           },
         }),
+      })
+      transport.stderr?.on("data", (chunk: Buffer) => {
+        const message = chunk.toString().trim()
+        if (message) log.warn("local mcp stderr", { key, message: message.slice(0, 2000) })
       })
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
@@ -593,7 +597,7 @@ export namespace MCP {
     return `${sanitizedClientName}_${sanitizedToolName}`
   }
 
-  export async function tools(signal?: AbortSignal, loadedClients?: Set<string>) {
+  export async function tools(signal?: AbortSignal, loadedClients?: Set<string>, owners?: Record<string, string>) {
     const s = await abortable(state(), signal)
     const result: Record<string, Tool> = {}
 
@@ -608,6 +612,7 @@ export namespace MCP {
       // Use cache if available
       const cached = toolsCache.get(clientName)
       if (cached) {
+        if (owners) for (const key of Object.keys(cached)) owners[key] = clientName
         if (Object.keys(cached).length > 0) loadedClients?.add(clientName)
         Object.assign(result, cached)
         continue
@@ -633,6 +638,7 @@ export namespace MCP {
         clientTools[mcpToolKey(clientName, mcpTool.name)] = await convertMcpTool(mcpTool, client)
       }
       toolsCache.set(clientName, clientTools)
+      if (owners) for (const key of Object.keys(clientTools)) owners[key] = clientName
       if (Object.keys(clientTools).length > 0) loadedClients?.add(clientName)
       Object.assign(result, clientTools)
     }

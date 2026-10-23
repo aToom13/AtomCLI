@@ -1,6 +1,7 @@
 import { QuestionTool } from "./question"
 import { ModelControl } from "./model-control"
 import { ScopeControl } from "./scope-control"
+import { McpTools } from "./mcp-tools"
 import { BashTool } from "./bash"
 import { SshTool } from "./ssh"
 import { EditTool } from "./edit"
@@ -110,6 +111,7 @@ export namespace ToolRegistry {
       InvalidTool,
       ModelControl.Info,
       ScopeControl.Info,
+      McpTools.Info,
       BashTool,
       SshTool,
       ReadTool,
@@ -152,6 +154,7 @@ export namespace ToolRegistry {
       "memory",
 
       "scope_control",
+      "mcp_tools",
     ],
     checker: [
       "read",
@@ -168,6 +171,7 @@ export namespace ToolRegistry {
       "system_health",
 
       "scope_control",
+      "mcp_tools",
     ],
     reviewer: [
       "read",
@@ -197,6 +201,7 @@ export namespace ToolRegistry {
       "memory",
 
       "scope_control",
+      "mcp_tools",
     ],
     documenter: [
       "read",
@@ -213,6 +218,7 @@ export namespace ToolRegistry {
       "memory",
 
       "scope_control",
+      "mcp_tools",
     ],
   }
 

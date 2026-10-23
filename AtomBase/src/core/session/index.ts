@@ -375,6 +375,7 @@ export namespace Session {
     ])
     await Promise.all([
       removeSemaphore(() => Storage.remove(["todo", sessionID])),
+      removeSemaphore(() => Storage.remove(["session_mcp_tools", sessionID])),
       removeSemaphore(() => Storage.remove(["session_diff", sessionID])),
       removeSemaphore(() => Storage.remove(["session", projectID, sessionID])),
     ])

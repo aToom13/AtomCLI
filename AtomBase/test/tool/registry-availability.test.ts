@@ -5,7 +5,7 @@ import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { SessionPrompt } from "@/core/session/prompt"
 import { ExecutionPolicy } from "@/core/routing/execution-policy"
-import { requestedToolIDs } from "@/core/session/prompt/tools"
+import { requestedToolIDs, shouldLoadMcpTools } from "@/core/session/prompt/tools"
 
 describe("tool availability", () => {
   test("scope and agent capability intersect without exposing internal delegation tools", async () => {
@@ -18,8 +18,8 @@ describe("tool availability", () => {
             scope: "direct",
             intent: "answer",
             agent: "build",
-            present: ["scope_control"],
-            absent: ["read", "edit", "agent", "taskflow"],
+            present: ["read", "scope_control"],
+            absent: ["edit", "write", "bash", "agent", "taskflow"],
           },
           {
             scope: "direct",
@@ -95,21 +95,27 @@ describe("tool availability", () => {
     })
   })
 
-  test("a direct answer advertises only execution controls", async () => {
+  test("a direct answer advertises read and execution controls", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        // direct + answer is the only contract that yields an empty allowlist.
         const allowedTools = ExecutionPolicy.selectAllowedTools("direct", "answer")
-        expect(allowedTools).toEqual([])
+        expect(allowedTools).toEqual(["read"])
 
         const requested = requestedToolIDs(allowedTools, true)
-        expect([...requested!]).toEqual(["model_control", "scope_control", "skill", "invalid"])
+        expect([...requested!]).toEqual(["read", "model_control", "scope_control", "mcp_tools", "skill", "invalid"])
 
         const tools = await ToolRegistry.tools("test", undefined, requested)
         const ids = tools.map((t) => t.id)
-        expect(ids).toEqual(["invalid", "model_control", "scope_control", "skill"])
+        expect(ids).toEqual(["invalid", "model_control", "scope_control", "mcp_tools", "read", "skill"])
+        expect([...requestedToolIDs([], true)]).toEqual([
+          "model_control",
+          "scope_control",
+          "mcp_tools",
+          "skill",
+          "invalid",
+        ])
       },
     })
   })
@@ -149,7 +155,7 @@ describe("tool availability", () => {
         ).toBe(false)
 
         const requested = requestedToolIDs(undefined, false)
-        expect([...requested]).toEqual(["model_control", "scope_control", "skill", "invalid"])
+        expect([...requested]).toEqual(["model_control", "scope_control", "mcp_tools", "skill", "invalid"])
       },
     })
   })
@@ -198,5 +204,11 @@ describe("tool availability", () => {
         expect(tools.map((tool) => tool.id)).toEqual(["invalid"])
       },
     })
+  })
+
+  test("MCP catalog discovery never depends on prompt keywords", () => {
+    expect(shouldLoadMcpTools({ prompt: "MCP durumunu kontrol et", loadAll: false, reviewer: false })).toBe(true)
+    expect(shouldLoadMcpTools({ prompt: "selam", loadAll: false, reviewer: false })).toBe(true)
+    expect(shouldLoadMcpTools({ prompt: "MCP durumunu kontrol et", loadAll: true, reviewer: true })).toBe(false)
   })
 })

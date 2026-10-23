@@ -11,6 +11,8 @@ import { SessionProcessor } from "../processor"
 import { ToolRegistry } from "@/integrations/tool/registry"
 import { ToolRuntime } from "@/integrations/tool/runtime"
 import { Tool } from "@/integrations/tool/tool"
+import { McpTools } from "@/integrations/tool/mcp-tools"
+import { ToolNotAppliedError } from "@/integrations/tool/runtime-error"
 import { Identifier } from "@/core/id/id"
 import { PromptContext } from "./context"
 import { getJsonSchema, getTool } from "@/util/util/ai-compat"
@@ -25,10 +27,14 @@ function needsTodoPrompt(prompt: string): boolean {
   return /\b(?:todo|to[- ]?do|checklist|liste|g\u00f6rev|yap\u0131lacak|g\u00f6revler|task)\b/i.test(lower)
 }
 
+export function shouldLoadMcpTools(input: { prompt: string; loadAll: boolean; reviewer: boolean }) {
+  return !input.reviewer
+}
+
 export function requestedToolIDs(allowedTools: string[] | undefined, loadAll: boolean) {
   if (allowedTools !== undefined)
-    return new Set([...allowedTools, "model_control", "scope_control", "skill", "invalid"])
-  return loadAll ? undefined : new Set(["model_control", "scope_control", "skill", "invalid"])
+    return new Set([...allowedTools, "model_control", "scope_control", "mcp_tools", "skill", "invalid"])
+  return loadAll ? undefined : new Set(["model_control", "scope_control", "mcp_tools", "skill", "invalid"])
 }
 
 export async function resolveTools(input: {
@@ -66,8 +72,8 @@ export async function resolveTools(input: {
   if (atomicWork) requestedTools?.add("task")
 
   // The visible `todo` checklist is only advertised for non-direct scopes and
-  // only when the prompt actually asks for one. Direct turns stay tool-free and
-  // must never gain a coordination/checklist surface.
+  // only when the prompt actually asks for one. Direct turns must never gain a
+  // coordination/checklist surface.
   const scope = input.execution ? ExecutionRuntime.getExecutionContract(input.execution.executionID)?.scope : undefined
   if (scope && scope !== "direct" && needsTodoPrompt(input.prompt)) {
     requestedTools?.add("todo")
@@ -84,6 +90,7 @@ export async function resolveTools(input: {
       execution: input.execution,
       checkpointRequired: input.checkpointRequired,
       userPrompt: input.prompt,
+      userTools: input.tools,
     },
     agent: input.agent.name,
     metadata: async (val: { title?: string; metadata?: any }) => {
@@ -122,6 +129,7 @@ export async function resolveTools(input: {
   const tool = await getTool()
   const jsonSchema = await getJsonSchema()
   for (const item of await ToolRegistry.tools(input.model.providerID, input.agent, requestedTools, atomicWork)) {
+    if (item.id === "mcp_tools" && (reviewer || input.agent.name === "reviewer")) continue
     if (atomicExecution && item.id === "taskflow" && !input.checkpointRequired) continue
     if (atomicExecution && ["agent", "orchestrate"].includes(item.id)) continue
     if (item.id === "model_control" && input.session.parentID) continue
@@ -130,6 +138,10 @@ export async function resolveTools(input: {
       // Native revisions own freshness; legacy direct callers retain explicit hashes and range anchors.
       for (const shape of [schema, (schema.properties?.operations as typeof schema)?.items as typeof schema])
         for (const field of ["contentHash", "startAnchor", "endAnchor"]) delete shape?.properties?.[field]
+      // Advertise one edit mode; native callers and persisted legacy calls still accept single-edit fields.
+      for (const field of ["oldString", "newString", "replaceAll"]) delete schema.properties?.[field]
+      schema.required = [...new Set([...(schema.required ?? []), "operations"])]
+      schema.properties.operations = { ...(schema.properties.operations as typeof schema), minItems: 1 }
     }
     tools[item.id] = tool({
       id: item.id as any,
@@ -152,54 +164,97 @@ export async function resolveTools(input: {
     })
   }
 
-  if (reviewer || !loadAll || allowedTools) return tools
+  // MCP tools are discovered outside ToolRegistry. A policy allowlist only
+  // narrows native tools; treating its presence as a veto silently removes
+  // every connected MCP from focused/coordinated turns.
+  if (reviewer || input.agent.name === "reviewer") return tools
   // Local MCP transports can take several seconds to start (for example, an
   // npx-backed stdio server). Let MCP's configured connection timeout govern
   // startup; a short prompt-side timer made every first turn lose its tools.
-  const mcpTools = await MCP.tools(undefined, input.loadedMcpNames).catch(() => {
+  const mcpTools = await MCP.tools(undefined, input.loadedMcpNames).catch((error) => {
     input.loadedMcpNames.clear()
+    log.warn("MCP tools unavailable for turn", { error: error instanceof Error ? error.message : String(error) })
     return {}
   })
-  for (const [key, item] of Object.entries(mcpTools)) {
+  const available = await McpTools.permitted({
+    sessionID: input.session.id,
+    agent: input.agent,
+    tools: input.tools,
+    available: mcpTools,
+  })
+  if (!Object.keys(available).length) delete tools.mcp_tools
+  const selected = await McpTools.selected(input.session.id, available)
+  const schemaBudget = Math.min(McpTools.MAX_SCHEMA_TOKENS, Math.floor(input.model.limit.context / 4))
+  const overBudget = (await McpTools.schemaTokens(selected.tools)) > schemaBudget
+  if (overBudget && tools.mcp_tools)
+    tools.mcp_tools.description += ` BLOCKED: loaded schemas exceed this model's ${schemaBudget} estimated-token budget. Selections retained; unload tools explicitly to resume dispatch.`
+  if (tools.mcp_tools)
+    tools.mcp_tools.description += ` Available: ${Object.keys(available).length}. Stale selections requiring reload: ${selected.stale.join(", ") || "none"}.`
+  for (const [key, item] of Object.entries(overBudget ? {} : selected.tools)) {
     const execute = item.execute
     if (!execute) continue
-    item.execute = async (args, opts) => {
-      const ctx = context(args, opts)
-      return ToolRuntime.execute({
-        tool: key,
-        args,
-        context: ctx,
-        permission: async (_nextArgs, nextContext) =>
-          nextContext.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] }),
-        execute: async (nextArgs, nextContext) => {
-          const result = await execute(nextArgs, { ...opts, abortSignal: nextContext.abort })
-          const textParts: string[] = []
-          const attachments: MessageV2.FilePart[] = []
-          for (const contentItem of result.content) {
-            if (contentItem.type === "text") textParts.push(contentItem.text)
-            else if (contentItem.type === "image") {
-              attachments.push({
-                id: Identifier.ascending("part"),
-                sessionID: input.session.id,
-                messageID: input.processor.message.id,
-                type: "file",
-                mime: contentItem.mimeType,
-                url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-              })
+    // MCP.tools caches tool objects; wrapping a copy keeps repeated turns from nesting runtime middleware.
+    const wrapped = {
+      ...item,
+      execute: async (args: any, opts: ToolCallOptions) => {
+        const ctx = context(args, opts)
+        return ToolRuntime.execute({
+          tool: key,
+          args,
+          context: ctx,
+          permission: async (_nextArgs, nextContext) =>
+            nextContext.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] }),
+          // MCP tools can affect an external service, but they do not own the
+          // AtomCLI workspace. Keep them in execution recovery without sending
+          // them through file ownership guards.
+          mutating: true,
+          effects: {
+            workspace: "none",
+            external: "write",
+            reversible: false,
+            destructive: false,
+            privileged: false,
+          },
+          execute: async (nextArgs, nextContext) => {
+            const latest = await McpTools.permitted({
+              sessionID: input.session.id,
+              agent: input.agent,
+              tools: input.tools,
+              available: await MCP.tools(nextContext.abort),
+            })
+            if (!latest[key] || (await McpTools.digest(latest[key])) !== (await McpTools.digest(item)))
+              throw new ToolNotAppliedError(
+                new Error(`MCP tool changed or is no longer permitted: ${key}; refresh catalog and load again`),
+              )
+            const result = await latest[key].execute!(nextArgs, { ...opts, abortSignal: nextContext.abort })
+            const textParts: string[] = []
+            const attachments: MessageV2.FilePart[] = []
+            for (const contentItem of result.content) {
+              if (contentItem.type === "text") textParts.push(contentItem.text)
+              else if (contentItem.type === "image") {
+                attachments.push({
+                  id: Identifier.ascending("part"),
+                  sessionID: input.session.id,
+                  messageID: input.processor.message.id,
+                  type: "file",
+                  mime: contentItem.mimeType,
+                  url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+                })
+              }
             }
-          }
-          return {
-            title: "",
-            metadata: result.metadata ?? {},
-            output: textParts.join("\n\n"),
-            attachments,
-            content: result.content,
-          }
-        },
-      })
-    }
-    item.toModelOutput = (result) => ({ type: "text", value: result.output })
-    tools[key] = item
+            return {
+              title: "",
+              metadata: result.metadata ?? {},
+              output: textParts.join("\n\n"),
+              attachments,
+              content: result.content,
+            }
+          },
+        })
+      },
+      toModelOutput: (result: ToolRuntime.Result) => ({ type: "text", value: result.output }),
+    } as AITool
+    tools[key] = wrapped
   }
   return tools
 }

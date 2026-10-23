@@ -574,6 +574,7 @@ const EXPLORE_ALLOWED_TOOLS = [
   "skill",
   "memory",
   "scope_control",
+  "mcp_tools",
 ]
 const EXPLORE_DENIED_TOOLS = ["edit", "write", "todowrite", "todoread", "batch", "agent", "system_health"]
 

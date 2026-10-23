@@ -70,8 +70,13 @@ For a remote server that requires OAuth, use the interactive `atomcli mcp add` f
 
 An MCP server is an external program or network service with the permissions you grant it. Review its command, arguments, environment, and access scope before enabling it. Prefer a narrowly scoped directory argument for filesystem servers.
 
+Connected MCP tools are added after native execution-policy tools resolve, so direct, focused, and coordinated work turns can use configured MCP servers even when the native allowlist is present. `scope_control` reports MCP connection state separately from the native allowlist. Local MCP calls are tracked as external operations without claiming workspace ownership. Local server stderr is captured in AtomCLI logs; use `atomcli --print-logs` when startup or handshake fails.
+
 OAuth client information and tokens retain their authorization-server issuer across restarts. Credentials bound to
 one issuer are not sent to another; dynamic registration cannot replace explicitly configured client credentials.
 Older refresh tokens without an issuer may require signing in again with `atomcli mcp auth <name>`.
 
 Use `atomcli mcp debug <name>` for OAuth connection diagnostics and `atomcli --print-logs` for broader runtime logs. Debug output shows the remote origin and token presence, never token bytes or URL credentials/query parameters. The OAuth callback listens only on `127.0.0.1`; a busy callback port fails explicitly. Authorization URLs, callback codes, and state values are omitted from logs.
+Connected servers no longer inject every tool schema into each model request. The `mcp_tools` tool lists every permitted tool in stable, 50-item pages, including its exact ID, server and a short description. Optional search only narrows the displayed page; it never determines which tools are available. Use `load` with exact IDs; their full schemas appear on the next model turn. Use `unload` explicitly to release schema budget.
+
+Selections belong to one session and survive checkpoints, compaction and resume. Child sessions start with their own selections. Permissions apply during discovery, loading and execution, including parent-session denials. Reviewers cannot access MCP discovery. Native execution-policy allowlists do not hide MCP tools. Server startup uses its configured timeout; there is no short discovery deadline.

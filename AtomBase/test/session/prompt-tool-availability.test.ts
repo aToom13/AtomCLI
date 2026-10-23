@@ -195,7 +195,7 @@ test.each([
   })
 })
 
-test("a direct greeting advertises only controls in the real prompt turn", async () => {
+test("a direct greeting advertises read and controls in the real prompt turn", async () => {
   await using tmp = await tmpdir({ git: true })
   await Instance.provide({
     directory: tmp.path,
@@ -227,7 +227,13 @@ test("a direct greeting advertises only controls in the real prompt turn", async
             message: input.assistantMessage,
             partFromToolCall: () => undefined,
             async process(stream) {
-              expect(Object.keys(stream.tools).sort()).toEqual(["invalid", "model_control", "scope_control", "skill"])
+              expect(Object.keys(stream.tools).sort()).toEqual([
+                "invalid",
+                "model_control",
+                "read",
+                "scope_control",
+                "skill",
+              ])
               input.assistantMessage.finish = "stop"
               return { status: "stop" }
             },
@@ -390,6 +396,12 @@ test("a focused file-edit turn without a checklist keeps taskflow and orchestrat
               expect(contract?.scope).toBe("focused")
               expect(ids).toContain("edit")
               const editSchema = stream.tools.edit.inputSchema.jsonSchema
+              for (const field of ["oldString", "newString", "replaceAll"])
+                expect(editSchema.properties).not.toHaveProperty(field)
+              expect(editSchema.required).toContain("operations")
+              expect(editSchema.properties.operations.minItems).toBe(1)
+              expect(editSchema.properties.operations.items.properties).toHaveProperty("oldString")
+              expect(editSchema.properties.operations.items.properties).toHaveProperty("newString")
               for (const shape of [editSchema, editSchema.properties.operations.items]) {
                 for (const field of ["contentHash", "startAnchor", "endAnchor"])
                   expect(shape.properties).not.toHaveProperty(field)

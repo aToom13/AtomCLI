@@ -1,5 +1,5 @@
 import "../preload"
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { ScopeControl } from "@/integrations/tool/scope-control"
 import { ExecutionRuntime } from "@/core/execution/runtime"
 import { SessionScopeFloor } from "@/core/session/scope-floor"
@@ -75,9 +75,13 @@ test("child session cannot reset or escalate parent execution scope", async () =
     directory: tmp.path,
     fn: async () => {
       const tool = await ScopeControl.Info.init()
-      const child = context("child", async () => {
-        throw new Error("child must not request permission")
-      }, "root")
+      const child = context(
+        "child",
+        async () => {
+          throw new Error("child must not request permission")
+        },
+        "root",
+      )
       await expect(tool.execute({ action: "reset" }, child)).rejects.toThrow("Only the main conversation")
       await expect(
         tool.execute({ action: "escalate", target: "coordinated", reason: "cross-package work" }, child),
@@ -119,5 +123,56 @@ test("scope reset asks in ask mode and rejects in off mode", async () => {
         }
       },
     })
+  }
+})
+
+test("diagnostics expose actual paths and credential types without secrets or access claims", async () => {
+  const { Auth } = await import("@/services/auth")
+  const { Provider } = await import("@/integrations/provider/provider")
+  const { Global } = await import("@/core/global")
+  await using tmp = await tmpdir({
+    git: true,
+    config: { provider: { diagnostic: { options: { apiKey: "fake-config-secret-for-test-only" } } } },
+  })
+  const auth = spyOn(Auth, "get").mockResolvedValue({
+    type: "oauth",
+    access: "fake-access-token-for-test-only",
+    refresh: "fake-refresh-token-for-test-only",
+    expires: 0,
+  })
+  const provider = spyOn(Provider, "getProvider").mockResolvedValue({
+    source: "custom",
+    env: [],
+    options: { apiKey: "fake-provider-secret-for-test-only" },
+  } as never)
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const result = await ScopeControl.diagnostics({ providerID: "diagnostic", id: "model" })
+        expect(result.paths.root).toBe(Global.Path.root)
+        expect(result.paths.auth).toBe(path.join(Global.Path.data, "auth.json"))
+        expect(result).toMatchObject({
+          availability: "unverified",
+          provider: {
+            resolved: true,
+            configured: true,
+            storedEntry: "present",
+            storedType: "oauth",
+            environmentCredentialPresent: false,
+          },
+        })
+        const output = JSON.stringify(result)
+        for (const secret of ["fake-config-secret", "fake-access-token", "fake-refresh-token", "fake-provider-secret"])
+          expect(output).not.toContain(secret)
+        auth.mockResolvedValue(undefined)
+        expect((await ScopeControl.diagnostics({ providerID: "diagnostic", id: "model" })).provider.storedEntry).toBe(
+          "not_observed",
+        )
+      },
+    })
+  } finally {
+    auth.mockRestore()
+    provider.mockRestore()
   }
 })

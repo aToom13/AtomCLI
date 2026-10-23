@@ -163,6 +163,8 @@ Typing `@` in the TUI prompt lists available skills and agents. The skill list c
 
 ## MCP servers
 
+Connected MCP tools are added after native execution-policy tools resolve, so direct, focused, and coordinated work turns can use configured MCP servers. `scope_control` reports MCP connection state separately from the native allowlist. Local server stderr is captured in AtomCLI logs; use `atomcli --print-logs` for startup or handshake failures.
+
 Inspect and manage MCP connections:
 
 ```sh
@@ -223,3 +225,4 @@ Domain skills use short `SKILL.md` routers with focused `references/` files. `fr
 When a task crosses domains, load the linked companion skill before the relevant implementation phase. Do not load every reference by default.
 
 ROS 2 work uses the bundled `ros2` tree for workspace, graph, QoS, launch, TF2, simulation, testing, deployment, and safety guidance.
+Use `mcp_tools` with `action="list"` to browse the complete permitted catalog (50 entries per page; follow `nextOffset`). Optional search is for navigation, not relevance filtering. Load exact IDs with `action="load"`; full schemas appear on the next turn. `action="unload"` releases them explicitly. Selections survive checkpoints, compaction and resume within the same session; children do not inherit them. Changed schemas need reload; disconnected or denied tools cannot execute. Reviewers have no MCP discovery access. Loading never silently evicts tools; the schema ceiling is one quarter of model context, at most 16,000 estimated tokens. See `docs/MCP-GUIDE.md` for budget and recovery details.

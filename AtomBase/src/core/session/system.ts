@@ -199,6 +199,7 @@ This helps you think through problems systematically before acting.
       `<mcp_servers>`,
       mcpList || "  (No MCP servers connected)",
       `</mcp_servers>`,
+      `Use mcp_tools list for the complete permitted catalog, then load exact IDs. Full schemas appear on the next turn. Do not infer availability from prompt keywords or an initially empty schema list.`,
       ...(mcpInstructions.length > 0 ? [``, `<!-- MCP USAGE GUIDE -->`, ...mcpInstructions] : []),
     ].join("\n")
 

@@ -4,12 +4,49 @@ import { ExecutionRuntime } from "@/core/execution/runtime"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { ExecutionPolicy } from "@/core/routing/execution-policy"
 import { SessionScopeFloor } from "@/core/session/scope-floor"
+import { MCP } from "@/integrations/mcp"
+import { Global } from "@/core/global"
+import { Auth } from "@/services/auth"
+import { Provider } from "@/integrations/provider/provider"
+import path from "node:path"
 import { Tool } from "./tool"
 
 export namespace ScopeControl {
+  export async function diagnostics(model?: { providerID: string; id?: string; modelID?: string }) {
+    const config = await Config.get()
+    const provider = model ? await Provider.getProvider(model.providerID) : undefined
+    const stored = model ? await Auth.get(model.providerID) : undefined
+    return {
+      paths: {
+        root: Global.Path.root,
+        config: Global.Path.config,
+        data: Global.Path.data,
+        auth: path.join(Global.Path.data, "auth.json"),
+      },
+      testHomeOverride: Boolean(process.env.ATOMCLI_TEST_HOME),
+      configOverrides: {
+        content: Boolean(process.env.ATOMCLI_CONFIG_CONTENT),
+        file: Boolean(process.env.ATOMCLI_CONFIG),
+      },
+      currentModel: model ? { providerID: model.providerID, modelID: model.id ?? model.modelID } : null,
+      provider: model
+        ? {
+            resolved: Boolean(provider),
+            source: provider?.source ?? null,
+            configured: Boolean(config.provider?.[model.providerID]),
+            environmentCredentialPresent: Boolean(provider?.env.some((key) => Boolean(process.env[key]))),
+            storedEntry: stored ? "present" : "not_observed",
+            storedType: stored?.type ?? null,
+          }
+        : null,
+      availability: "unverified",
+      note: "No network probe. Missing stored or environment credentials do not prove access unavailable; config, OAuth, custom loaders and public providers may supply access. Provider errors must retain their actual reason.",
+    }
+  }
+
   export const Info = Tool.define("scope_control", {
     description:
-      "Inspect or increase this execution scope. Only the main conversation may escalate or reset. Use status first when a task may need cross-module work, sub-agents, or a durable workflow. Escalation is monotonic and requires a concrete reason; never claim it succeeded until runtime confirms it.",
+      "Inspect execution scope, actual runtime/config/auth paths and secret-safe provider source diagnostics. Use status before diagnosing missing credentials; never infer absence from legacy paths. Only the main conversation may escalate or reset. Escalation requires a concrete reason; never claim it succeeded until runtime confirms it.",
     parameters: z.object({
       action: z.enum(["status", "escalate", "reset"]),
       target: ExecutionContract.Scope.optional(),
@@ -28,6 +65,10 @@ export namespace ScopeControl {
         const cooldownMs = settings?.cooldown_ms ?? 0
         const scope = policy?.scope ?? "focused"
         const nextScope = scope === "direct" ? "focused" : scope === "focused" ? "coordinated" : null
+        const mcpStatus = await MCP.status().catch(() => ({}) as Record<string, MCP.Status>)
+        const mcpServers = Object.fromEntries(
+          Object.entries(mcpStatus).map(([name, status]) => [name, { status: status.status }]),
+        )
         return {
           title: "Execution scope",
           output: JSON.stringify({
@@ -45,6 +86,9 @@ export namespace ScopeControl {
                 ) ?? "all registered tools")
               : null,
             nextAllowsSubagents: nextScope ? ExecutionPolicy.BUDGETS[nextScope].allowSubagents : false,
+            mcpServers,
+            diagnostics: await diagnostics(ctx.extra?.model),
+            mcpToolsAreSeparateFromPolicy: true,
             escalation: {
               mode: settings?.mode ?? "ask",
               used: escalation.count,
