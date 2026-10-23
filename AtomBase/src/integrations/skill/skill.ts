@@ -471,6 +471,7 @@ export namespace Skill {
   export async function loadReferences(input: {
     skill: Info
     maxChars?: number
+    maxLines?: number
     prompt?: string
     names?: string[]
     relevantOnly?: boolean
@@ -478,6 +479,7 @@ export namespace Skill {
     alreadyRead?: LoadedChunk[]
   }) {
     const maxChars = input.maxChars ?? 12_000
+    const maxLines = input.maxLines ?? 500
     const ignored = new Set([
       "references",
       "reference",
@@ -485,6 +487,7 @@ export namespace Skill {
       "read",
       "load",
       "use",
+      "only",
       "please",
       "the",
       "for",
@@ -530,11 +533,11 @@ export namespace Skill {
           entries.push(`### ${name}: already loaded from current source; reuse the earlier instructions.`)
           continue
         }
-        if (used >= maxChars || usedLines >= 500) {
+        if (used >= maxChars || usedLines >= maxLines) {
           remaining.push({ name, offset, reason: "context limit" })
           continue
         }
-        const chunkText = chunk(content, offset, maxChars - used, 500 - usedLines)
+        const chunkText = chunk(content, offset, maxChars - used, maxLines - usedLines)
         const length = chunkText.length
         const record = loadedChunk(name, location, content, offset, length)
         let displayed = chunkText

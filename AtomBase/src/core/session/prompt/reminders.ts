@@ -63,6 +63,7 @@ export function insertReminders(input: {
         "DELTA REPORTING (required):",
         "- Report ONLY what is new in THIS slice. The harness accumulates history for you.",
         "- completedWork: only items finished in this slice, each tied to concrete evidence",
+        "- checks (optional): [{name, callID}] referencing separate Bash verification calls. Runtime derives PASS/FAIL/BLOCKED from real exit/output/source evidence; do not supply statuses. A compound shell call cannot prove independent subchecks. Unreferenced completedWork is self-reported, not a verified check.",
         "  (a tool result, file diff, test/grep result, browser assertion, or artifact hash).",
         "  Never list something you only believe you changed; if it is unverified, prefix it UNVERIFIED.",
         "- failures: only failures discovered in this slice.",

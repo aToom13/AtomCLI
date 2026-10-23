@@ -83,9 +83,9 @@ describe("session prompt turn context", () => {
     expect(SessionPrompt._internals.isDirectAnswer("Merhaba? ".repeat(60), "agent")).toBe(false)
   })
 
-  test("direct answer excludes task tools but retains promotion controls", () => {
+  test("direct answer retains read access without mutation or delegation tools", () => {
     const allowed = ExecutionPolicy.selectAllowedTools("direct", "answer")
-    expect(allowed).toEqual([])
+    expect(allowed).toEqual(["read"])
 
     expect(ExecutionPolicy.selectAllowedTools("focused", "change")).toContain("bash")
     expect(ExecutionPolicy.selectAllowedTools("coordinated", "change")).toEqual([

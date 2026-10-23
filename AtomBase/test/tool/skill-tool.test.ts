@@ -188,6 +188,63 @@ describe("SkillTool", () => {
         expect(reference.output).toContain("# Detailed instructions")
         const relative = await instance.execute({ action: "load", name: "references/details.md" }, dummyCtx)
         expect(relative.output).toContain("# Detailed instructions")
+        const selected = await instance.execute(
+          {
+            action: "load",
+            name: "reference-skill",
+            references: ["reference-skill/references/details.md"],
+            reason: "The task needs the detailed instructions",
+          },
+          dummyCtx,
+        )
+        expect(selected.output).toContain("# Detailed instructions")
+        expect(selected.metadata.selectedReferences).toEqual(["references/details.md"])
+      },
+    })
+  })
+
+  test("records an automatic empty reference selection in the same parent call", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const skillDir = path.join(tmp.path, ".atomcli", "skills", "automatic-selection")
+        await fs.mkdir(path.join(skillDir, "references"), { recursive: true })
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          "---\nname: automatic-selection\ndescription: Reference routing test\n---\n# Parent\n[Network](references/network.md)",
+        )
+        await fs.writeFile(path.join(skillDir, "references", "network.md"), "Network-only guidance")
+        const result = await (
+          await SkillTool.init()
+        ).execute({ name: "automatic-selection", task: "Explain local formatting" }, dummyCtx)
+        expect(result.metadata.selectedReferences).toEqual([])
+        expect(result.metadata.selectionReason).toContain("No task-relevant")
+        expect(result.output).not.toContain("Network-only guidance")
+      },
+    })
+  })
+
+  test("loads task-relevant references in the parent call", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const skillDir = path.join(tmp.path, ".atomcli", "skills", "automatic-selection")
+        await fs.mkdir(path.join(skillDir, "references"), { recursive: true })
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          "---\nname: automatic-selection\ndescription: Reference routing test\n---\n# Parent\n[MCP](references/mcp.md)\n[UI](references/ui.md)",
+        )
+        await fs.writeFile(path.join(skillDir, "references", "mcp.md"), "MCP connection and recovery guidance")
+        await fs.writeFile(path.join(skillDir, "references", "ui.md"), "Unrelated UI guidance")
+        const result = await (
+          await SkillTool.init()
+        ).execute({ name: "automatic-selection", task: "Diagnose the MCP connection" }, dummyCtx)
+        expect(result.output).toContain("MCP connection and recovery guidance")
+        expect(result.output).not.toContain("Unrelated UI guidance")
+        expect(result.metadata.selectedReferences).toEqual(["references/mcp.md"])
+        expect(result.output).toContain("Do not call the parent skill again")
       },
     })
   })

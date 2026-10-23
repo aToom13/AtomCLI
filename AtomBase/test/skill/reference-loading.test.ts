@@ -388,8 +388,8 @@ test("semantic reference selection covers synonyms, shared instructions, chunk l
         { name: "route-semantic", task: "Build player movement; read only necessary references" },
         ctx,
       )
-      expect(parentOnly.metadata.loadedReferences).toEqual([])
-      expect(parentOnly.output).not.toContain("Control instructions")
+      expect(parentOnly.metadata.loadedReferences?.length).toBe(2)
+      expect(parentOnly.output).toContain("Control instructions")
       expect(parentOnly.output).not.toContain("Unrelated notes")
       await expect(tool.execute({ name: "route-semantic", references: [] }, ctx)).rejects.toThrow("requires a reason")
       await expect(

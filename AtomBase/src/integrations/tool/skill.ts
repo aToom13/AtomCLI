@@ -32,7 +32,7 @@ const parameters = z.object({
     .nonnegative()
     .default(0)
     .describe("Character offset for the next chunk of a skill or reference"),
-  limit: z.number().int().min(1).max(12_000).default(12_000).describe("Maximum characters per loaded file chunk"),
+  limit: z.number().int().min(1).max(48_000).default(24_000).describe("Maximum characters per loaded file chunk"),
   task: z.string().max(20_000).optional().describe("Task context for dependencies and selected references"),
   references: z
     .array(z.string().min(1).max(1_000))
@@ -64,6 +64,16 @@ type Metadata = {
   selectionReason?: string
   loadedReferences?: Skill.LoadedChunk[]
   remainingReferences?: { name: string; offset: number; reason: string }[]
+}
+
+const TOOL_REFERENCE_MAX_CHARS = 40_000
+const TOOL_REFERENCE_MAX_LINES = 1_800
+const EXPLICIT_REFERENCE_MAX_CHARS = 12_000
+const EXPLICIT_REFERENCE_MAX_LINES = 500
+
+function relativeReference(skillName: string, value: string) {
+  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "")
+  return normalized.startsWith(`${skillName}/`) ? normalized.slice(skillName.length + 1) : normalized
 }
 
 export const SkillTool = Tool.define<typeof parameters, Metadata>("skill", async (ctx) => {
@@ -188,15 +198,16 @@ export const SkillTool = Tool.define<typeof parameters, Metadata>("skill", async
       const parsed = await ConfigMarkdown.parse(safeLocation)
       if (!parsed) throw new Error(`Skill reference not found: ${name}`)
       const content = parsed.content.trim()
-      let loadedText = Skill.chunk(content, params.offset, params.limit)
+      let loadedText = Skill.chunk(content, params.offset, params.limit, TOOL_REFERENCE_MAX_LINES)
       const nextOffset = params.offset + loadedText.length
       const references = subpath.length === 0 ? await Skill.referenceCatalog(skill) : []
       if ((subpath.length || params.offset !== 0) && params.references?.length === 0) params.references = undefined
+      const selectedReferences = params.references?.map((reference) => relativeReference(skill.name, reference))
       if (params.references !== undefined) {
         if (subpath.length || params.offset !== 0) throw new Error("Select references on the parent skill at offset=0")
         if (!params.reason?.trim())
           throw new Error("Reference selection requires a reason based on the parent instructions")
-        for (const relative of params.references)
+        for (const relative of selectedReferences ?? [])
           if (!references.some((file) => file.relative === relative))
             throw new Error(`Unknown skill reference: ${relative}`)
       }
@@ -223,16 +234,30 @@ export const SkillTool = Tool.define<typeof parameters, Metadata>("skill", async
       const routed =
         subpath.length === 0 &&
         params.offset === 0 &&
-        (params.references !== undefined || explicit.references.has(skill.name))
+        (params.references !== undefined || explicit.references.has(skill.name) || references.length > 0)
           ? await Skill.loadReferences({
               skill,
               prompt: task,
-              names: params.references ?? explicit.references.get(skill.name),
-              relevantOnly: !Skill.requestsReferences(task),
+              names: selectedReferences ?? explicit.references.get(skill.name),
+              maxChars: params.references === undefined ? TOOL_REFERENCE_MAX_CHARS : EXPLICIT_REFERENCE_MAX_CHARS,
+              maxLines: params.references === undefined ? TOOL_REFERENCE_MAX_LINES : EXPLICIT_REFERENCE_MAX_LINES,
+              relevantOnly: params.references === undefined && !Skill.requestsReferences(task),
               permission: agent?.permission,
               alreadyRead,
             })
           : { entries: [], loaded: [], remaining: [] }
+      const automaticSelection =
+        subpath.length === 0 && params.references === undefined
+          ? routed.loaded
+              .filter((record) => record.offset + record.length === record.totalChars)
+              .map((record) => record.name.slice(skill.name.length + 1))
+          : undefined
+      const automaticSelectionNotice =
+        automaticSelection !== undefined
+          ? automaticSelection.length > 0
+            ? `Automatic selection complete in this call: ${automaticSelection.join(", ")}. Do not call the parent skill again for this selection.`
+            : "No task-relevant references were selected automatically in this call. Do not call the parent skill again unless the task changes."
+          : undefined
 
       const output = [
         `## Skill: ${skill.name}`,
@@ -252,7 +277,8 @@ export const SkillTool = Tool.define<typeof parameters, Metadata>("skill", async
         ...(references.length
           ? [
               "",
-              "Read the parent routing instructions, then reload this parent with references=[relative paths] and reason to confirm the complete task selection. Keyword suggestions are advisory. Load any remaining selected chunks before editing or completing.",
+              automaticSelectionNotice ??
+                "Read the parent routing instructions, then select required references with references=[relative paths] and reason. Load any omitted selected chunks before editing or completing.",
               "**References (load with skill tool):**",
               ...references.map((ref) => `- ${skill.name}/${ref.relative}: ${ref.route}`),
             ]
@@ -283,8 +309,16 @@ export const SkillTool = Tool.define<typeof parameters, Metadata>("skill", async
           totalChars: content.length,
           contentHash: Skill.loadedChunk(name, safeLocation, content, params.offset, loadedText.length).contentHash,
           ...(params.references !== undefined
-            ? { selectedReferences: [...new Set(params.references)], selectionReason: params.reason!.trim() }
-            : {}),
+            ? { selectedReferences: [...new Set(selectedReferences)], selectionReason: params.reason!.trim() }
+            : automaticSelection !== undefined && references.length > 0
+              ? {
+                  selectedReferences: [...new Set(automaticSelection)],
+                  selectionReason:
+                    automaticSelection.length > 0
+                      ? "Automatically selected from the task"
+                      : "No task-relevant references were selected automatically",
+                }
+              : {}),
           loadedReferences: routed.loaded,
           remainingReferences: routed.remaining,
         },
