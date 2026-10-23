@@ -10,7 +10,7 @@ export const InvalidTool = Tool.define("invalid", {
   async execute(params) {
     return {
       title: "Invalid Tool",
-      output: `Unknown or unavailable tool '${params.tool}'. ${params.error} Respond with text only or use one of the available tools.`,
+      output: `Tool call '${params.tool}' was rejected. No action was applied. ${params.error} Correct the arguments using the current tool schema; if the tool name is unavailable, choose a permitted available tool.`,
       metadata: {},
     }
   },
