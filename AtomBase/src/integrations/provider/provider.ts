@@ -20,6 +20,7 @@ import { applyConfiguredProviders } from "./catalog-config"
 import { loadConfiguredAuth } from "./catalog-auth"
 import { filterCatalog } from "./catalog-filter"
 import { ModelAvailability } from "./availability"
+import { setTimeout as delay } from "node:timers/promises"
 import { ModelVerification } from "./verification"
 import { Bus } from "@/core/bus"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
@@ -30,6 +31,8 @@ import { Identifier } from "@/core/id/id"
 import { CUSTOM_LOADERS, type CustomModelLoader } from "./custom-loaders"
 import { BUNDLED_PROVIDERS } from "./bundled"
 
+const ZEN_RETRY_LIMIT = 4
+const ZEN_RETRY_DELAY_MS = 250
 const PROVIDER_REFRESH_INTERVAL_MS = 15_000
 
 export namespace Provider {
@@ -137,7 +140,7 @@ export namespace Provider {
             ...(isTestMode ? { status: "active" as const } : {}),
           }
         }),
-        options: { apiKey: "public" }, // Hint that no API key is needed
+        options: {}, // Credentials are resolved by the provider loader.
       }
     }
 
@@ -412,38 +415,62 @@ export namespace Provider {
     const ttl = PROVIDER_REFRESH_INTERVAL_MS
     let expires = 0
     let catalogRevision = -1
-    let current: ReturnType<typeof initialize> | undefined
+    let current: Awaited<ReturnType<typeof initialize>> | undefined
+    let pending: ReturnType<typeof initialize> | undefined
 
-    return async () => {
+    return async (waitForRefresh = false) => {
       const revision = ModelsDev.revision()
-      if (!current || revision !== catalogRevision || Date.now() >= expires) {
-        expires = Date.now() + ttl
-        catalogRevision = revision
-        current = initialize()
+      const catalogChanged = revision !== catalogRevision
+      if (!pending && (!current || catalogChanged || Date.now() >= expires)) {
+        pending = initialize()
           .then((result) => {
+            current = result
+            expires = Date.now() + ttl
             // Retain the revision that produced this exact state. If another
             // process refreshes during initialization, the next access reloads.
             catalogRevision = result.catalogRevision
             return result
           })
           .catch((error) => {
-            // Allow the next access to retry instead of retaining a rejected
-            // promise for the remainder of the project instance lifetime.
-            current = undefined
-            expires = 0
+            // Keep the last catalog on transient failure; avoid retrying it on every tool turn.
+            expires = Date.now() + ttl
             throw error
           })
+          .finally(() => {
+            pending = undefined
+          })
+        void pending.catch((error) => log.warn("provider refresh failed", { error: error?.name ?? "Error" }))
       }
+      // Cold starts and catalog revisions must resolve; routine TTL refreshes must not block dispatch.
+      if (!current || catalogChanged || (waitForRefresh && pending)) return pending!
       return current
     }
   })
 
-  async function state() {
-    return stateCache()()
+  async function state(waitForRefresh = false) {
+    return stateCache()(waitForRefresh)
   }
 
-  export async function list() {
-    return state().then((state) => state.providers)
+  export async function list(waitForRefresh = true) {
+    const { providers } = await state(waitForRefresh)
+    const failures = await ModelVerification.connectionFailures()
+    await Promise.all(
+      Object.values(providers)
+        .filter((p) => ["atomcli", "opencode"].includes(p.id))
+        .flatMap((provider) =>
+          Object.values(provider.models).map(async (model) => {
+            const info = ModelVerification.active(failures[await ModelVerification.identity(model, provider)])
+            if (!info?.retryAt || !["failed", "rate_limited", "inconclusive"].includes(info.status)) return
+            if (!["rate_limited", "model_unavailable"].includes(info.reason)) return
+            model.availability = {
+              status: info.reason === "rate_limited" ? "rate_limited" : "unavailable",
+              retryAt: info.retryAt,
+              source: "provider-response",
+            }
+          }),
+        ),
+    )
+    return providers
   }
 
   async function getSDK(model: Model) {
@@ -491,7 +518,7 @@ export namespace Provider {
         }
 
         let requestModel = model
-        if (model.providerID === "atomcli" && typeof opts.body === "string") {
+        if ((model.providerID === "atomcli" || model.providerID === "opencode") && typeof opts.body === "string") {
           try {
             const body = JSON.parse(opts.body)
             requestModel = _internals.requestModel(provider, model, body)
@@ -505,11 +532,22 @@ export namespace Provider {
           opts.headers = _internals.openCodeHeaders(opts.headers as HeadersInit | undefined)
         }
 
-        let response = await fetchFn(input, {
-          ...opts,
-          // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
-          timeout: false,
-        })
+        let response: Response
+        for (let attempt = 0; ; attempt++) {
+          opts.signal?.throwIfAborted()
+          response = await fetchFn(input, { ...opts, timeout: false })
+          if (
+            attempt >= ZEN_RETRY_LIMIT ||
+            !["atomcli", "opencode"].includes(model.providerID) ||
+            response.status !== 403 ||
+            !ProviderTransform.isZenFreeTierRejection(await response.clone().text())
+          )
+            break
+          await response.body?.cancel()
+          const waitMs = ZEN_RETRY_DELAY_MS * 2 ** attempt
+          log.warn("retrying Zen free-tier request", { modelID: requestModel.id, attempt: attempt + 1, waitMs })
+          await delay(waitMs, undefined, { signal: opts.signal })
+        }
 
         if (response.status === 403 && (model.providerID.startsWith("atomcli") || model.providerID === "opencode")) {
           const headers = new Headers(opts.headers)
@@ -539,6 +577,23 @@ export namespace Provider {
         })()
 
         const contentType = response.headers.get("content-type") || ""
+        if (
+          isStreaming &&
+          response.ok &&
+          response.body &&
+          contentType.includes("text/event-stream") &&
+          (model.providerID === "atomcli" || model.providerID === "opencode") &&
+          model.api.npm === "@ai-sdk/openai-compatible"
+        ) {
+          const headers = new Headers(response.headers)
+          headers.delete("content-length")
+          headers.delete("content-encoding")
+          response = new Response(ProviderTransform.zenStream(response.body), {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          })
+        }
         if (!isStreaming && contentType.includes("text/event-stream") && response.ok) {
           const text = await response.text()
           const json = ProviderTransform.sseToChatCompletion(text, model.id)
@@ -560,9 +615,9 @@ export namespace Provider {
           }
         }
 
-        if (model.providerID === "atomcli") {
+        if (model.providerID === "atomcli" || model.providerID === "opencode") {
           const availability =
-            ModelAvailability.fromResponse(response) ?? (await ModelAvailability.unavailableFromResponse(response))
+            (await ModelAvailability.unavailableFromResponse(response)) ?? ModelAvailability.fromResponse(response)
           const current = ModelAvailability.active(requestModel.availability)
           // A 2xx response only proves HTTP transport success. Keep a still-active
           // cooldown until its reset time; completed model output updates verification separately.
@@ -581,10 +636,12 @@ export namespace Provider {
               ? "rate_limited"
               : "model_unavailable"
             : response.status === 401 || response.status === 403
-              ? "authentication"
+              ? response.status === 403 && ProviderTransform.isZenFreeTierRejection(await response.clone().text())
+                ? "request_context"
+                : "authentication"
               : undefined
           if (reason) {
-            void (async () => {
+            await (async () => {
               const verificationKey = await ModelVerification.identity(requestModel, provider)
               const attempt = await ModelVerification.begin({
                 key: verificationKey,
@@ -659,7 +716,8 @@ export namespace Provider {
       user?: any
     },
   ) {
-    const s = await state()
+    let s = await state()
+    if (!s.providers[providerID]?.models[modelID]) s = await state(true)
     const provider = s.providers[providerID]
     if (!provider) {
       const availableProviders = Object.keys(s.providers)

@@ -19,6 +19,7 @@ export namespace ProviderModels {
     requested: z.string(),
     mode: z.enum(["explicit", "auto", "free"]),
     allowedProviders: z.array(z.string()),
+    allowedModels: z.array(z.string()).optional(),
     excluded: z.array(z.string()).default([]),
     requiredCapabilities: z.array(ModelVerification.Capability).default(["text"]),
     freeOnly: z.boolean(),
@@ -35,7 +36,7 @@ export namespace ProviderModels {
       family: model.family,
       api: {
         id: model.id,
-        url: provider.api!,
+        url: model.provider?.api ?? provider.api!,
         npm: model.provider?.npm ?? provider.npm ?? "@ai-sdk/openai-compatible",
       },
       status: model.status ?? "active",
@@ -160,9 +161,13 @@ export namespace ProviderModels {
         model,
         connected: Boolean(provider),
         available: model.status !== "deprecated" && !ModelAvailability.active(model.availability),
-        providerAllowed: policy.allowedProviders.includes(model.providerID),
+        providerAllowed:
+          (policy.mode !== "free" || model.providerID === "atomcli") &&
+          policy.allowedProviders.includes(model.providerID),
         modelExcluded:
-          policy.excluded.includes(model.id) || policy.excluded.includes(`${model.providerID}/${model.id}`),
+          policy.excluded.includes(model.id) ||
+          policy.excluded.includes(`${model.providerID}/${model.id}`) ||
+          (policy.allowedModels !== undefined && !policy.allowedModels.includes(`${model.providerID}/${model.id}`)),
         freeOnly: policy.freeOnly,
         price,
         requiredCapabilities: [capability],

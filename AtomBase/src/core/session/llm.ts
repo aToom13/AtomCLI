@@ -171,7 +171,7 @@ export namespace LLM {
     const routePolicy = Provider.routePolicy(input.model)
     if (routePolicy.requireVerification) {
       const capabilities: Array<"text" | "tool"> = Object.keys(tools).length ? ["text", "tool"] : ["text"]
-      await verifyDispatch(input, params, capabilities)
+      await verifyDispatch({ ...input, tools, system }, params, capabilities)
     }
 
     const extractReasoningMiddleware = await getExtractReasoningMiddleware()
@@ -381,7 +381,8 @@ export namespace LLM {
 
 export namespace LLM {
   export async function verifyDispatch(
-    input: Pick<StreamInput, "model" | "sessionID" | "abort" | "execution">,
+    input: Pick<StreamInput, "model" | "sessionID" | "abort" | "execution"> &
+      Partial<Pick<StreamInput, "agent" | "user" | "tools" | "system">>,
     params: Awaited<ReturnType<typeof prepareRouteParams>>["params"],
     capabilities: Array<"text" | "tool">,
   ) {
@@ -394,7 +395,7 @@ export namespace LLM {
         config.experimental?.auto_router?.allow_paid_models === true &&
         config.experimental?.auto_router?.allow_paid_probes === true)
     const { ModelFallback } = await import("@/integrations/provider/fallback")
-    const deadline = Date.now() + 30_000
+    const deadline = Date.now() + 60_000
     for (const capability of capabilities) {
       const context = { effectiveParams: params }
       if (await Provider.isRouteEligible(input.model, policy, capability, context)) continue
@@ -409,12 +410,16 @@ export namespace LLM {
       if (remaining > 0) {
         await ModelFallback.probeModels([`${input.model.providerID}/${input.model.id}`], {
           capability,
+          agent: input.agent,
+          user: input.user,
+          tools: input.tools,
+          system: input.system,
           effectiveParams: params,
           variant: policy.variant,
           sessionID: input.sessionID,
           signal: input.abort,
           execution: input.execution,
-          timeoutMs: Math.min(15_000, remaining),
+          timeoutMs: Math.min(30_000, remaining),
           totalTimeoutMs: remaining,
         })
       }

@@ -91,6 +91,7 @@ export namespace ModelsDev {
       provider: z
         .object({
           npm: z.string().optional(),
+          api: z.string().optional(),
         })
         .passthrough()
         .optional(),
@@ -140,7 +141,7 @@ export namespace ModelsDev {
     // from before the refresh when the cache did not exist yet.
     const latest = await readSnapshot(filepath, "models cache")
     if (latest) return latest
-    return { database: parse(await data(), "bundled models catalog", true), revision: 0 }
+    return { database: parse(await data(), "bundled models catalog", true), revision: revision() }
   }
 
   export async function refresh() {

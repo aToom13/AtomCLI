@@ -74,6 +74,7 @@ Use `/session path` inside the TUI to switch working directory with the integrat
 Pressing Ctrl+C opens a safe exit confirmation with **Cancel** selected by default. Use the arrow keys or H/J/K/L to move between Cancel and Confirm, then press Enter; Escape cancels the dialog.
 
 Prompt, slash-command, and shell submissions show a delivery state. A server rejection is marked **FAILED**; a connection loss before acknowledgement is marked **DELIVERY UNKNOWN** so AtomCLI does not silently resend a command that may already have run. Focus that message and press Enter to restore its draft for inspection or retry.
+While the first prompt creates a session, repeated Enter presses are ignored. If session creation fails, the draft stays in the prompt for retry.
 The TUI keeps the normal chat prompt visible when a prior operation has an uncertain outcome. The server still requires explicit reconciliation of uncertain mutating work before accepting another turn.
 The task panel follows the execution lifecycle: stopped or blocked executions and turns waiting for input no longer show open steps as running. Open work stays unfinished. A new message during a running tool joins the next model step after that tool's result is recorded; it does not cancel or repeat the operation.
 Messages sent while an agent is running join the current execution on its next model step, keeping its scope and budget.

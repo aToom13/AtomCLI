@@ -18,6 +18,27 @@ type CustomLoader = (provider: Info) => Promise<{
   models?: Record<string, Model>
 }>
 
+async function loadZenProvider(input: Info) {
+  if (!input) return { autoload: false }
+  const config = await Config.get()
+  const auth = await Auth.get(input.id)
+  const apiKey =
+    config.provider?.[input.id]?.options?.apiKey ??
+    (auth?.type === "api" ? auth.key : undefined) ??
+    input.env?.map(Env.get).find(Boolean)
+  if ((!apiKey || apiKey === "public") && input.models) {
+    for (const [id, model] of Object.entries(input.models)) {
+      if (id === "atomcli-auto" || id === "atomcli-free") continue
+      if (!ProviderModels.isPublicAtomCLIModel(model)) delete input.models[id]
+    }
+  }
+  return {
+    autoload: Object.keys(input.models ?? {}).length > 0,
+    options: { apiKey: apiKey || "public" },
+    models: input.models,
+  }
+}
+
 export const CUSTOM_LOADERS: Record<string, CustomLoader> = {
   async anthropic() {
     return {
@@ -30,36 +51,8 @@ export const CUSTOM_LOADERS: Record<string, CustomLoader> = {
       },
     }
   },
-  async atomcli(input) {
-    if (!input) {
-      return {
-        autoload: false,
-        options: { apiKey: "public" },
-      }
-    }
-
-    const hasKey = await (async () => {
-      const env = Env.all()
-      if (input.env?.some((item) => env[item])) return true
-      if (input.id && (await Auth.get(input.id))) return true
-      const config = await Config.get()
-      if (config.provider?.["atomcli"]?.options?.apiKey) return true
-      return false
-    })()
-
-    if (!hasKey && input.models) {
-      for (const [key, value] of Object.entries(input.models)) {
-        if (key === "atomcli-auto" || key === "atomcli-free") continue
-        if (value.cost.input === 0 && value.cost.output === 0) continue
-        delete input.models[key]
-      }
-    }
-
-    return {
-      autoload: input.models ? Object.keys(input.models).length > 0 : false,
-      options: hasKey ? {} : { apiKey: "public" },
-    }
-  },
+  atomcli: loadZenProvider,
+  opencode: loadZenProvider,
   // Ollama - Auto-detect running instances and available models
   ollama: async () => {
     const baseURL = Env.get("OLLAMA_HOST") ?? "http://localhost:11434"

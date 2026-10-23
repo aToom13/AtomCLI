@@ -199,6 +199,8 @@ export namespace ModelFallback {
       /** Verify the same reasoning/thinking variant that the real request will use. */
       variant?: string
       agent?: any
+      tools?: ToolSet
+      system?: string[]
       user?: any
       /** Already prepared dispatch parameters; do not rerun stateful parameter plugins. */
       effectiveParams?: Awaited<ReturnType<typeof LLM.prepareRouteParams>>["params"]
@@ -238,6 +240,7 @@ export namespace ModelFallback {
         const model = await Provider.getModel(parsed.providerID, parsed.modelID)
         const provider = await Provider.getProvider(model.providerID)
         if (!provider) throw new Error(`Provider not found: ${model.providerID}`)
+        const isZen = model.providerID === "atomcli" || model.providerID === "opencode"
         const isCodex = provider.id === "openai" && (await Auth.get(provider.id))?.type === "oauth"
         const concreteUser = options?.user
           ? { ...options.user, variant: options.variant ?? options.user.variant }
@@ -290,22 +293,82 @@ export namespace ModelFallback {
                       options?.sessionID ?? "model-verification",
                       provider.options,
                     )
-                    const requestOptions =
-                      prepared?.params.options ??
-                      ProviderTransform.applyVariant(model, options?.variant, base, model.options)
+                    const requestOptions = {
+                      ...(prepared?.params.options ??
+                        ProviderTransform.applyVariant(model, options?.variant, base, model.options)),
+                    }
                     if (isCodex && !prepared) {
                       const { SystemPrompt } = await import("@/core/session/system")
                       requestOptions.instructions = SystemPrompt.instructions()
                       requestOptions.store = false
+                    }
+                    let codingTools: ToolSet = {}
+                    let system = options?.system
+                    if (isZen) {
+                      requestOptions.store = false
+                      if (options?.tools) {
+                        codingTools = Object.fromEntries(
+                          Object.entries(options.tools).map(([id, definition]) => [
+                            id,
+                            { description: definition.description, inputSchema: definition.inputSchema },
+                          ]),
+                        )
+                      } else {
+                        const { Agent } = await import("@/integrations/agent/agent")
+                        const { ToolRegistry } = await import("@/integrations/tool/registry")
+                        const { PermissionNext } = await import("@/util/permission/next")
+                        const { Session } = await import("@/core/session")
+                        const { getJsonSchema } = await import("@/util/util/ai-compat")
+                        const agent = options?.agent ?? (await Agent.get("build"))
+                        const session = options?.sessionID
+                          ? await Session.get(options.sessionID).catch(() => undefined)
+                          : undefined
+                        const native = await ToolRegistry.tools(model.providerID, agent)
+                        const denied = PermissionNext.disabled(
+                          native.map((t) => t.id),
+                          PermissionNext.merge(agent.permission, session?.permission ?? []),
+                        )
+                        const allowed = options?.execution
+                          ? ExecutionRuntime.getExecutionPolicy(options.execution.executionID)?.allowedTools
+                          : undefined
+                        const jsonSchema = await getJsonSchema()
+                        codingTools = Object.fromEntries(
+                          native
+                            .filter(
+                              (t) =>
+                                !denied.has(t.id) &&
+                                options?.user?.tools?.[t.id] !== false &&
+                                (allowed === undefined || allowed.includes(t.id)),
+                            )
+                            .map((t) => [
+                              t.id,
+                              {
+                                description: t.description,
+                                inputSchema: jsonSchema(
+                                  ProviderTransform.schema(model, z.toJSONSchema(t.parameters)) as any,
+                                ),
+                              },
+                            ]),
+                        )
+                      }
+                      if (!system) {
+                        const { SystemPrompt } = await import("@/core/session/system")
+                        system = [
+                          ...SystemPrompt.provider(model, options?.agent?.name),
+                          ...(await SystemPrompt.environment("", [], false)),
+                        ]
+                      }
                     }
                     const signals = [abortController.signal]
                     if (options?.signal) signals.push(options.signal)
                     if (executionAttempt) signals.push(executionAttempt.signal)
                     const requestParams = {
                       model: language,
+                      ...(system?.length ? { system: system.join("\n\n") } : {}),
+                      ...(isZen ? { tools: codingTools } : {}),
                       messages: [{ role: "user" as const, content: probePrompt }],
                       abortSignal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
-                      maxOutputTokens: isCodex ? undefined : maxOutputTokens,
+                      maxOutputTokens: isCodex ? undefined : isZen ? 1024 : maxOutputTokens,
                       maxRetries: 0,
                       temperature: prepared?.params.temperature,
                       topP: prepared?.params.topP,
@@ -320,25 +383,35 @@ export namespace ModelFallback {
                         : {}),
                       ...(probeTool
                         ? {
-                            tools: { verification: probeTool },
+                            tools: { ...codingTools, verification: probeTool },
                             toolChoice: { type: "tool" as const, toolName: "verification" as const },
                           }
                         : {}),
                     }
                     // ChatGPT OAuth accepts only streaming Responses requests, just like normal dispatch.
-                    const response = isCodex
-                      ? await (async () => {
-                          const { getStreamText } = await import("@/util/util/ai-compat")
-                          const stream = (await getStreamText())(requestParams)
-                          const [text, toolCalls, usage, finishReason] = await Promise.all([
-                            stream.text,
-                            stream.toolCalls,
-                            stream.usage,
-                            stream.finishReason,
-                          ])
-                          return { text, toolCalls, usage, finishReason }
-                        })()
-                      : await generateText(requestParams)
+                    const response =
+                      isCodex || isZen
+                        ? await (async () => {
+                            const { getStreamText } = await import("@/util/util/ai-compat")
+                            let streamError: unknown
+                            const stream = (await getStreamText())({
+                              ...requestParams,
+                              onError: ({ error }) => {
+                                streamError = error
+                              },
+                            })
+                            const [text, toolCalls, usage, finishReason] = await Promise.all([
+                              stream.text,
+                              stream.toolCalls,
+                              stream.usage,
+                              stream.finishReason,
+                            ]).catch((error) => {
+                              throw streamError ?? error
+                            })
+                            if (streamError) throw streamError
+                            return { text, toolCalls, usage, finishReason }
+                          })()
+                        : await generateText(requestParams)
                     executionAttempt?.settle(ExecutionRuntime.usageCostUsd(model, response.usage))
                     usageSettled = true
                     if (capability === "tool") validateProbeTool(response)

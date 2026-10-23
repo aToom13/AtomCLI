@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import { ModelAvailability } from "@/integrations/provider/availability"
 
@@ -68,6 +69,24 @@ describe("model availability", () => {
     expect(availability?.retryAt).toBe(now + 30_000)
     expect(ModelAvailability.active(availability, now)).toBeDefined()
     expect(ModelAvailability.active(availability, now + 30_001)).toBeUndefined()
+  })
+
+  test("GLM's 429 endpoint error is unavailable, not a quota failure", async () => {
+    const response = Response.json(
+      { error: { message: "Upstream request failed: Endpoint is unavailable." } },
+      { status: 429 },
+    )
+    expect(await ModelAvailability.unavailableFromResponse(response, now)).toEqual({
+      status: "unavailable",
+      retryAt: now + 300_000,
+      source: "provider-response",
+    })
+    expect(
+      await ModelAvailability.unavailableFromResponse(
+        Response.json({ error: "Too many requests" }, { status: 429 }),
+        now,
+      ),
+    ).toBeUndefined()
   })
 
   test("does not treat arbitrary provider validation errors as model availability", async () => {

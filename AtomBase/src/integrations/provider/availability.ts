@@ -52,12 +52,12 @@ export namespace ModelAvailability {
   const UNAVAILABLE_RETRY_MS = 5 * 60 * 1000
 
   export async function unavailableFromResponse(response: Response, now = Date.now()): Promise<Info | undefined> {
-    if (![400, 404, 503].includes(response.status)) return
+    if (![400, 404, 429, 502, 503, 504].includes(response.status)) return
     const body = await response
       .clone()
       .text()
       .catch(() => "")
-    if (!/\bmodel\s+(?:is\s+)?unavailable\b|\bmodel_not_found\b/i.test(body)) return
+    if (!/\b(?:model|endpoint)\s+(?:is\s+)?unavailable\b|\bmodel_not_found\b/i.test(body)) return
     return {
       status: "unavailable",
       retryAt: retryAfter(response.headers.get("retry-after"), now) ?? now + UNAVAILABLE_RETRY_MS,

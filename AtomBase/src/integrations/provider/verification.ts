@@ -30,6 +30,7 @@ export namespace ModelVerification {
   export type Status = z.infer<typeof Status>
 
   export const Reason = z.enum([
+    "request_context",
     "probe_failed",
     "empty_output",
     "stream_failed",
@@ -204,6 +205,13 @@ export namespace ModelVerification {
     return current((await readStore()).entries[key], now)
   }
 
+  export const active = current
+
+  export async function connectionFailures() {
+    using _ = await Lock.read(filepath)
+    return (await readStore()).entries
+  }
+
   export function isVerified(info: Info | undefined, capability: Capability = "text", now = Date.now()) {
     const active = current(info, now)
     return active?.status === "verified" && (active.capabilities[capability] ?? 0) > now
@@ -272,7 +280,7 @@ export namespace ModelVerification {
         status:
           reason === "rate_limited"
             ? "rate_limited"
-            : ["timeout", "output_limit"].includes(reason)
+            : ["timeout", "output_limit", "request_context"].includes(reason)
               ? "inconclusive"
               : "failed",
         checkedAt: now,
@@ -349,10 +357,15 @@ export namespace ModelVerification {
   }
 
   export function classify(error: unknown): Reason {
-    const value = error instanceof Error ? `${error.name} ${error.message}` : String(error)
+    const value =
+      error instanceof Error
+        ? `${error.name} ${error.message} ${typeof (error as any).responseBody === "string" ? (error as any).responseBody : ""}`
+        : String(error)
+    if (/free tier can only be used from within OpenCode|Zen compatibility metadata/i.test(value))
+      return "request_context"
+    if (/model.?not.?found|(?:model|endpoint).+unavailable/i.test(value)) return "model_unavailable"
     if (/429|rate.?limit|too many requests/i.test(value)) return "rate_limited"
     if (/401|403|unauthori[sz]ed|forbidden|api.?key|authentication/i.test(value)) return "authentication"
-    if (/model.?not.?found|model.+unavailable/i.test(value)) return "model_unavailable"
     if (/timed?\s*out|timeout/i.test(value)) return "timeout"
     if (/output.?limit|length.?limit|max.?output/i.test(value)) return "output_limit"
     if (/empty|whitespace/i.test(value)) return "empty_output"
@@ -371,6 +384,17 @@ export namespace ModelVerification {
       const key = await identity(model, provider, context)
       const attempt = await begin({ key, providerID: model.providerID, modelID: model.id })
       if (error) return failed(attempt, classify(error))
+      // Completed output also clears transport-only cooldowns for this connection.
+      const connectionKey = await identity(model, provider)
+      if (connectionKey !== key) {
+        await update((store) => {
+          const failure = store.entries[connectionKey]
+          if (failure && ["rate_limited", "model_unavailable", "request_context"].includes(failure.reason))
+            delete store.entries[connectionKey]
+        })
+      }
+      model.availability = undefined
+      if (provider.models?.[model.id]) provider.models[model.id].availability = undefined
       return verified(attempt, capabilities)
     } catch (recordError) {
       log.warn("failed to persist observed model evidence", {

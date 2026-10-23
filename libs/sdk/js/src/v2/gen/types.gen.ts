@@ -6942,6 +6942,7 @@ export type ProviderListResponses = {
           }
           provider?: {
             npm?: string
+            api?: string
             [key: string]: unknown
           }
           variants?: {

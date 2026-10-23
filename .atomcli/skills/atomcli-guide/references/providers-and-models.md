@@ -172,7 +172,7 @@ Evidence is bound to the requested reasoning variant and its adapter options. Pr
 
 ## Fallback models
 
-Retryable provider failures receive one retry on the current model before AtomCLI selects a fallback. Cancelling with ESC ends only the active turn; cancellation notices remain chronological and their internal metadata is not sent to the provider. The next user message starts a new execution normally.
+Retryable provider failures receive one retry on the current model before AtomCLI selects a fallback when the budget allows both. With only one retry available, AtomCLI can use it for eligible fallback immediately. Direct answers and greetings allow one retry by default; explicit zero retry limits remain binding. Greetings retain the real `read` tool with normal file permissions and bounded tool calls to preserve coding-agent context. A tool-restricted greeting can receive a free-tier rejection even when a file-read request succeeds. Cancelling with ESC ends only the active turn; cancellation notices remain chronological and their internal metadata is not sent to the provider. The next user message starts a new execution normally.
 
 Provider-native response state, including Responses item IDs and encrypted reasoning, survives history reload and compaction only while dispatch stays on the provider that produced it. Cross-provider model changes and fallbacks keep the conversation content but omit those opaque handles; an OpenAI-compatible gateway's `openai` metadata namespace does not make its item IDs valid for the OpenAI provider.
 

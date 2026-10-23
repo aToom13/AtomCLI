@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { Config } from "@/core/config/config"
@@ -87,11 +88,11 @@ function providerConfig() {
 function liveProbeModels(providerID: string, provider: Provider.Info) {
   const candidates = Object.values(provider.models)
     .filter((model) => model.status === "active" || model.status === "beta")
+    .filter((model) => model.id !== "atomcli-auto" && model.id !== "atomcli-free")
     .filter((model) => model.limit.context > 0 && model.limit.output > 0)
     .filter((model) => model.capabilities.input.text && model.capabilities.output.text)
 
   const preferred: Record<string, string[]> = {
-    atomcli: ["atomcli-free", "atomcli-auto"],
     antigravity: ["gemini-2.5-pro", "gemini-3-flash"],
   }
   for (const modelID of preferred[providerID] ?? []) {

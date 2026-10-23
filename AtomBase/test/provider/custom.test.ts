@@ -1,9 +1,13 @@
+import "../preload"
 import { test, expect, spyOn } from "bun:test"
 import { parseDiscoveredModel, fetchOpenAICompatibleModels } from "@/integrations/provider/custom"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "@/services/project/instance"
 import { Provider } from "@/integrations/provider/provider"
 import path from "path"
+import fs from "fs/promises"
+import { ModelsDev } from "@/integrations/provider/models"
+import { Global } from "@/core/global"
 
 test("parseDiscoveredModel detects reasoning and interleaved format for deepseek r1", () => {
   const model = parseDiscoveredModel({
@@ -214,5 +218,137 @@ test("custom provider discovery adds new models and treats missing prices as sub
   } finally {
     clock.mockRestore()
     globalThis.fetch = originalFetch
+  }
+})
+
+test.each(["missing", "invalid"])(
+  "%s models.dev cache does not rediscover providers on every dispatch",
+  async (kind) => {
+    const fixture = process.env.MODELS_DEV_API_JSON
+    const cache = path.join(Global.Path.cache, "models.json")
+    const previous = await fs.readFile(cache).catch(() => undefined)
+    const refresh = spyOn(ModelsDev, "refresh").mockResolvedValue(false)
+    const discovery = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("https://fallback.example/v1/models")
+      return Response.json({ data: [{ id: "existing-model" }] })
+    }) as typeof fetch)
+    try {
+      delete process.env.MODELS_DEV_API_JSON
+      if (kind === "invalid") await Bun.write(cache, "not JSON")
+      else await fs.rm(cache, { force: true })
+      await using tmp = await tmpdir({
+        config: {
+          disabled_providers: ["ollama"],
+          provider: {
+            "fallback-router": {
+              npm: "@ai-sdk/openai-compatible",
+              api: "https://fallback.example/v1",
+              models: { "existing-model": { name: "Existing" } },
+            },
+          },
+        },
+      })
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          await Provider.list()
+          for (let i = 0; i < 3; i++) {
+            expect((await Provider.getModel("fallback-router", "existing-model")).id).toBe("existing-model")
+          }
+          expect(discovery).toHaveBeenCalledTimes(1)
+        },
+      })
+    } finally {
+      if (fixture === undefined) delete process.env.MODELS_DEV_API_JSON
+      else process.env.MODELS_DEV_API_JSON = fixture
+      if (previous) await Bun.write(cache, previous)
+      else await fs.rm(cache, { force: true })
+      discovery.mockRestore()
+      refresh.mockRestore()
+    }
+  },
+)
+
+test("background catalog refresh cannot stall model dispatch or duplicate in-flight discovery", async () => {
+  let now = Date.now()
+  const clock = spyOn(Date, "now").mockImplementation(() => now)
+  const held = Promise.withResolvers<Response>()
+  const started = Promise.withResolvers<void>()
+  let calls = 0
+  const response = () => Response.json({ data: [{ id: "existing-model" }] })
+  const transport = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL) => {
+    expect(String(input)).toBe("https://latency.example/v1/models")
+    calls++
+    if (calls === 1) {
+      now += 12_000 // Discovery consumes most of the old 15-second TTL.
+      return response()
+    }
+    started.resolve()
+    return held.promise
+  }) as typeof fetch)
+  try {
+    await using tmp = await tmpdir({
+      config: {
+        disabled_providers: ["ollama"],
+        provider: {
+          "latency-router": {
+            npm: "@ai-sdk/openai-compatible",
+            api: "https://latency.example/v1",
+            models: { "existing-model": { name: "Existing" } },
+          },
+        },
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Provider.list()
+        now += 14_999
+        await Provider.getModel("latency-router", "existing-model")
+        expect(calls).toBe(1) // TTL starts after discovery completed.
+        now += 2
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          const dispatch = await Promise.race([
+            Provider.getModel("latency-router", "existing-model"),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("catalog refresh blocked model dispatch")), 500)
+            }),
+          ])
+          expect(dispatch.id).toBe("existing-model")
+        } finally {
+          clearTimeout(timer)
+        }
+        await started.promise
+        await Promise.all(Array.from({ length: 10 }, () => Provider.getProvider("latency-router")))
+        expect((await Provider.list(false))["latency-router"].models["existing-model"]).toBeDefined()
+        expect(calls).toBe(2)
+        let listed = false
+        const listing = Provider.list().then((value) => {
+          listed = true
+          return value
+        })
+        const newModel = Provider.getModel("latency-router", "new-model")
+        await Bun.sleep(10)
+        expect(listed).toBe(false) // An explicit catalog listing waits for fresh results.
+        held.resolve(Response.json({ data: [{ id: "new-model" }] }))
+        expect(Object.keys((await listing)["latency-router"].models)).toEqual(["new-model"])
+        expect((await newModel).id).toBe("new-model")
+
+        now += 15_001
+        const broken = spyOn(ModelsDev, "getWithRevision").mockRejectedValue(new Error("catalog unavailable"))
+        try {
+          await expect(Provider.list()).rejects.toThrow("catalog unavailable")
+          expect((await Provider.getModel("latency-router", "new-model")).id).toBe("new-model")
+          expect(broken).toHaveBeenCalledTimes(1)
+        } finally {
+          broken.mockRestore()
+        }
+      },
+    })
+  } finally {
+    held.resolve(response())
+    transport.mockRestore()
+    clock.mockRestore()
   }
 })

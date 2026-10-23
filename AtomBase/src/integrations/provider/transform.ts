@@ -5,6 +5,9 @@ import type { Provider } from "./provider"
 import type { ModelsDev } from "./models"
 import { iife } from "@/util/util/iife"
 
+const MAX_ZEN_STREAM_TOOL_CALLS = 1024
+const MAX_ZEN_EVENT_CHARS = 5_000_000
+
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
 function mimeToModality(mime: string): Modality | undefined {
@@ -316,7 +319,7 @@ export namespace ProviderTransform {
       case "@ai-sdk/cohere":
         return { none: { thinking: { type: "disabled" } }, high: { thinking: { type: "enabled" } } }
       case "@ai-sdk/openai-compatible":
-        if (model.providerID === "atomcli") {
+        if (model.providerID === "atomcli" || model.providerID === "opencode") {
           return {
             none: { reasoningEffort: ATOMCLI_TOGGLE_DISABLED },
             high: { reasoningEffort: ATOMCLI_TOGGLE_ENABLED },
@@ -633,6 +636,17 @@ export namespace ProviderTransform {
       result["chat_template_args"] = { enable_thinking: true }
     }
 
+    // EvrenLlm's DeepSeek endpoint enables vLLM thinking by default even when
+    // the catalog marks the model as non-reasoning. Disable it so text output
+    // is available within the configured output budget.
+    if (
+      model.providerID === "evrenllm" &&
+      model.api.id.toLowerCase().includes("deepseek") &&
+      !model.capabilities.reasoning
+    ) {
+      result["chat_template_kwargs"] = { enable_thinking: false }
+    }
+
     if (model.providerID === "openai" || providerOptions?.setCacheKey) {
       result["promptCacheKey"] = sessionID
     }
@@ -846,8 +860,18 @@ export namespace ProviderTransform {
     return schema
   }
 
+  export function isZenFreeTierRejection(body: string) {
+    return /free tier can only be used from within OpenCode/i.test(body)
+  }
+
   export function error(providerID: string, error: APICallError) {
     let message = error.message
+    if (
+      (providerID === "atomcli" || providerID === "opencode") &&
+      /free tier can only be used from within OpenCode/i.test(`${message} ${error.responseBody ?? ""}`)
+    ) {
+      return "The free model is temporarily unavailable after automatic retries. Try another model or retry shortly."
+    }
     if (providerID === "github-copilot" && message.includes("The requested model is not supported")) {
       return (
         message +
@@ -856,6 +880,51 @@ export namespace ProviderTransform {
     }
 
     return message
+  }
+
+  /** Zen can emit complete tool calls without the OpenAI streaming index. */
+  export function zenStream(body: ReadableStream<Uint8Array>) {
+    const decoder = new TextDecoder()
+    const encoder = new TextEncoder()
+    const indexes = new Map<string, number>()
+    let pending = ""
+    const normalize = (line: string) => {
+      if (line.length > MAX_ZEN_EVENT_CHARS) throw new Error("Zen stream event exceeded character limit")
+      if (!line.startsWith("data:")) return line
+      let chunk: any
+      try {
+        chunk = JSON.parse(line.slice(5))
+      } catch {
+        return line // Preserve [DONE], comments and invalid payloads for the SDK.
+      }
+      for (const [position, choice] of (chunk?.choices ?? []).entries()) {
+        for (const call of choice.delta?.tool_calls ?? []) {
+          if (typeof call.id !== "string") continue // An unindexed fragment without an ID is ambiguous.
+          const key = `${choice.index ?? position}:${call.id}`
+          if (!indexes.has(key)) {
+            if (indexes.size >= MAX_ZEN_STREAM_TOOL_CALLS) throw new Error("Zen stream exceeded tool call limit")
+            indexes.set(key, call.index ?? Math.max(-1, ...indexes.values()) + 1)
+          }
+          call.index ??= indexes.get(key)
+        }
+      }
+      return `data: ${JSON.stringify(chunk)}`
+    }
+    return body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(bytes, controller) {
+          pending += decoder.decode(bytes, { stream: true })
+          const lines = pending.split("\n")
+          pending = lines.pop()!
+          for (const line of lines) controller.enqueue(encoder.encode(normalize(line) + "\n"))
+          if (pending.length > MAX_ZEN_EVENT_CHARS) throw new Error("Zen stream event exceeded character limit")
+        },
+        flush(controller) {
+          pending += decoder.decode()
+          if (pending) controller.enqueue(encoder.encode(normalize(pending)))
+        },
+      }),
+    )
   }
 
   export function sseToChatCompletion(text: string, modelId: string) {

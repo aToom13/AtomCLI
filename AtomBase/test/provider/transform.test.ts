@@ -82,6 +82,21 @@ describe("ProviderTransform.options - setCacheKey", () => {
     const result = ProviderTransform.options(openaiModel, sessionID, {})
     expect(result.promptCacheKey).toBe(sessionID)
   })
+
+  test("disables EvrenLlm DeepSeek thinking when catalog marks the model non-reasoning", () => {
+    const evrenModel = {
+      ...mockModel,
+      providerID: "evrenllm",
+      api: {
+        id: "deepseek-v4.1-flash",
+        url: "https://evren-llmapi.ssyz.org.tr/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    }
+    expect(ProviderTransform.options(evrenModel, sessionID, {})).toMatchObject({
+      chat_template_kwargs: { enable_thinking: false },
+    })
+  })
 })
 
 describe("ProviderTransform.maxOutputTokens", () => {

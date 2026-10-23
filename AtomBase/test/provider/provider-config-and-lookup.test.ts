@@ -228,7 +228,7 @@ test("provider env fallback - second env var used if first missing", async () =>
                   limit: { context: 4000, output: 1000 },
                 },
               },
-              options: { baseURL: "https://api.example.com" },
+              options: { baseURL: "https://api.example.com", modelDiscovery: false },
             },
           },
         }),
