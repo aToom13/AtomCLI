@@ -388,6 +388,8 @@ flutter devices
 flutter run -d <device-id>
 ```
 
+For repeatable Android integration, boot an emulator and run `python3 tool/test_android_integration.py --device <adb-serial>` from `companion/`. It drives the real app against two isolated AtomCLI processes with scripted model responses, using a separate debug-only `.e2e` application ID. Each run resets only that test package. Cancellation must leave the server alive and reject late completion; the SDK text getter produces a new promise per read, so attach result observation to a single captured promise. The runner retains logs and server evidence outside the repository, removes its port mappings and stops its servers. See `companion/README.md` for coverage and output options. Run the Flutter tests, Companion server tests and bridge/protocol checks as separate acceptance layers. Device integration does not prove live model quality, physical QR scanning, LAN/Tailscale handoff, OEM notifications, Doze behavior or iOS support; Companion remains beta.
+
 Exercise QR pairing, LAN/Tailscale fallback, reconnect, permission decisions, background notifications, uploads/downloads, previews, session/model restoration, and device revocation in proportion to the changed area.
 
 Keep multiple-process behavior explicit: automatic companion listeners may select different ports; an explicitly configured companion port must fail on collision instead of silently moving a stored endpoint.

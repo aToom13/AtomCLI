@@ -169,6 +169,19 @@ flutter build apk --debug
 
 The debug APK is written to `build/app/outputs/flutter-apk/app-debug.apk`. For a release APK, run `flutter build apk --release`; the result is written to `build/app/outputs/flutter-apk/app-release.apk`.
 
+### Android integration suite
+
+Start an Android emulator, then run from `companion/`:
+
+```sh
+adb devices
+python3 tool/test_android_integration.py --device <adb-serial>
+```
+
+The runner starts two isolated AtomCLI processes, maps their ports with `adb reverse`, and drives the real Flutter app through pairing, chat, concurrent file-writing sessions, cancellation, questions/permissions, file transfer, reconnect, offline delivery, lifecycle handoff and project switching. Only the model HTTP responses are scripted; authentication, session execution, tools, storage and mobile services are real. Cancellation is exercised while the model request is active, before its first token: the server must remain alive and must not persist a late completion. This verifies integration, not live provider quality. The debug-only `io.atomcli.companion.e2e` package keeps test pairing keys/cache separate from the normal app; each run resets that test package. Do not run concurrent suites against the same device.
+
+Use `--output /absolute/path/outside/the/repository` with an empty directory to retain fixture logs, device test output and final server evidence. CI runs the same suite on an Android emulator and preserves only the logs and final evidence, excluding fixture credentials. Exit zero requires the whole device test to pass; individual `COMPANION_CASE_PASS` lines do not replace its final result. The runner removes its port mappings and stops its fixture processes. It leaves the emulator and test APK available for inspection. Emulator coverage and injected lifecycle transitions do not establish physical QR-camera behavior, LAN/Tailscale handoff, OEM notification placement, Doze reliability or iOS support; use the device checklist below for those.
+
 The Android toolchain may ask for its SDK and NDK licenses on a new workstation. Review and accept them interactively before the first build:
 
 ```sh
@@ -234,3 +247,5 @@ cd companion
 Exit `0` means the automated checks passed, `1` means an observed failure, `2` means the tool/APK setup is invalid, and `3` means no authorized device was available. A `CHECK` line is deliberately inconclusive: device eligibility or a posted notification is not proof of Now Bar placement, and a running process is not proof of a live authenticated socket.
 
 Android may stop every background component after the user explicitly force-stops the app in system settings. Opening AtomCLI Companion again restarts the command-link service.
+
+Pairing another project through QR or pasted pairing data clears the previous project's in-memory conversation, pending decisions, logs and transfer state before opening the new socket, matching saved-profile switching. Persisted history remains associated with its original profile.

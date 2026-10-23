@@ -217,6 +217,8 @@ The `eval benchmark` command measures model-driven agent behavior and is not par
 
 ## Build and release
 
+For the mobile acceptance layers, run `flutter analyze` and `flutter test` from `companion/`, the Companion server tests from `AtomBase/`, and `bun run test` from `libs/companion/`. With an Android emulator booted, run `python3 tool/test_android_integration.py --device <adb-serial>` from `companion/`. This uses a separate debug test package and two isolated real AtomCLI processes; only model responses are scripted. The cancellation case must abort an active request before its first token and verify server survival and absence of a late completion; observe SDK text-result promises once so cancellation cannot leave a rejected getter result unhandled. See [Companion testing](../companion/README.md#android-integration-suite) for evidence paths, coverage and physical-device checks. Companion remains beta; emulator success does not establish OEM background behavior or release signing.
+
 ```sh
 cd AtomBase
 bun run build

@@ -53,6 +53,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Device tests keep pairing keys and cache separate from the daily app.
+            if (System.getenv("ATOMCLI_ANDROID_E2E") == "1") {
+                applicationIdSuffix = ".e2e"
+            }
+        }
         release {
             // Local release builds remain installable for device testing. The
             // GitHub release workflow requires and injects the persistent
