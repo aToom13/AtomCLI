@@ -31,9 +31,9 @@
       "@cloudflare/workers-types": "4.20251008.0",
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
-      "diff": "8.0.2",
+      "diff": "8.0.4",
       "ai": "5.0.97",
-      "hono": "4.13.1",
+      "hono": "4.13.13",
       "hono-openapi": "1.1.2",
       "fuzzysort": "3.1.0",
       "luxon": "3.6.1",
@@ -51,7 +51,7 @@
       "@solidjs/meta": "0.29.4",
       "@solidjs/router": "0.15.4",
       "@solidjs/start": "https://pkg.pr.new/@solidjs/start@dfb2020",
-      "solid-js": "1.9.10",
+      "solid-js": "1.9.17",
       "vite-plugin-solid": "2.11.10",
       "chromadb": "3.4.3"
     }
@@ -78,8 +78,25 @@
     "web-tree-sitter"
   ],
   "overrides": {
+    "@ai-sdk/provider-utils": "3.0.28",
     "@babel/core": "7.29.6",
+    "@hono/node-server": "1.19.17",
     "@types/bun": "catalog:",
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "brace-expansion": "2.1.7",
+    "browserslist": "4.29.3",
+    "diff": "8.0.4",
+    "express": "5.3.0",
+    "express-rate-limit": "8.7.1",
+    "fast-uri": "3.1.8",
+    "hono": "4.13.13",
+    "jimp": "1.6.1",
+    "js-yaml": "4.3.2",
+    "solid-js": "catalog:",
+    "undici": "6.29.1",
+    "uuid": "11.1.1"
+  },
+  "patchedDependencies": {
+    "gray-matter@4.0.3": "patches/gray-matter@4.0.3.patch"
   }
 }

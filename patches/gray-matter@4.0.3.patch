@@ -1,0 +1,16 @@
+diff --git a/lib/engines.js b/lib/engines.js
+--- a/lib/engines.js
++++ b/lib/engines.js
+@@ -12,9 +12,10 @@ const engines = exports = module.exports;
+  * YAML
+  */
+ 
++// ponytail: gray-matter 4 needs js-yaml 4 compatibility; remove when upstream uses load/dump.
+ engines.yaml = {
+-  parse: yaml.safeLoad.bind(yaml),
+-  stringify: yaml.safeDump.bind(yaml)
++  parse: yaml.load.bind(yaml),
++  stringify: yaml.dump.bind(yaml)
+ };
+ 
+ /**

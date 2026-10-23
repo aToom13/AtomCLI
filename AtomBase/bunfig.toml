@@ -5,3 +5,5 @@ preload = ["@opentui/solid/preload", "./test/preload.ts"]
 timeout = 10000  # 10 seconds (default is 5000ms)
 # Enable code coverage
 coverage = true
+# Bun 1.3.14 text coverage can fail with WriteFailed through Turbo's output pipe.
+coverageReporter = ["lcov"]

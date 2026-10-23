@@ -52,4 +52,3 @@ Report each case's verifier pass/fail, wall duration, first-token time, input/ou
 
 
 Add a directory under `cases/` with the fixture and scripts, then register the case in `atomcli.json`. Case identifiers must be unique: the schema rejects duplicates because observations are keyed by identifier. Prefer cases that fail visibly when the agent cuts corners — verification should assert observable results, not implementation details.
-

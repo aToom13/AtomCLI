@@ -55,6 +55,24 @@ Prefer behavior-level tests over implementation-only assertions. A regression te
 
 Session prompt orchestration remains in `AtomBase/src/core/session/prompt.ts`. Pure context/checkpoint shaping stays in `AtomBase/src/core/session/prompt/context.ts`; turn preparation, persistence, processor creation, tool resolution, and execution side effects live in `AtomBase/src/core/session/prompt/turn-execution.ts`. Keep this boundary one-way: shaping helpers must not import the prompt loop or hold session state.
 
+Bun coverage remains enabled and writes `AtomBase/coverage/lcov.info` (ignored). The native LCOV reporter avoids Bun 1.3.14's `WriteFailed` in the large text coverage table when output is piped through Turbo; test assertions, skip rules and timeouts are unchanged.
+
+### Dependency security updates
+
+Root `package.json` overrides keep patched transitive dependencies consistent, including the single SolidJS runtime
+used by OpenTUI. Verify rendering and real PTY behavior after changing SolidJS, image decoding after changing Jimp,
+and provider/MCP transport behavior after changing HTTP or authentication dependencies. Do not force a newer major
+version into a transitive dependency without testing the consuming package's API.
+
+The gray-matter patch adapts its YAML engine to js-yaml's current `load`/`dump` API. This lets the workspace use
+patched js-yaml without retaining the old argparse/sprintf-js dependency chain. Keep frontmatter parsing, agent
+metadata round-trips, and rejection of executable YAML covered. Remove the patch when upstream provides this
+compatibility. js-yaml 4 follows YAML 1.2 numeric parsing: use explicit `0o` prefixes for octal values.
+
+After the focused checks pass, run workspace typechecks, the full suite, SDK generation, a frozen-lockfile install,
+and `bun audit` again. Record any remaining advisory and its actual exposure; do not suppress it to make the report
+green. Binary build output remains ignored and must not be committed.
+
 ### Workspace result verification
 
 Creating a directory does not change Bash's working directory. Each Bash call starts a new shell; use `workdir` and absolute `write`/`edit` targets. A package-manager test can pass using an ancestor's `package.json`, so verify the requested file locations separately from the exit code.

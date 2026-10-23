@@ -105,6 +105,13 @@ bun run test:providers
 
 Live provider audits require their explicit environment flags and real credentials. Default tests must use fixtures and must never call live provider APIs.
 
+Dependency security maintenance is documented in `docs/DEVELOPMENT.md` under "Dependency security updates". Update
+small groups, record before/after audits and focused tests, then validate the full workspace. Use
+`bun turbo test --force` for a fresh run. Root overrides enforce patched transitive dependencies and one SolidJS
+runtime; the gray-matter patch supports the current YAML API without the legacy argparse/sprintf-js chain.
+Validate TUI/PTY, image decoding, provider/MCP transports, and frontmatter when their dependencies change. YAML 1.2
+uses an explicit `0o` prefix for octal values. Do not hide unresolved audit findings.
+
 ## Test isolation rules
 
 - Tests use `bun:test` and live under `AtomBase/test/`, mirroring source paths.
@@ -468,3 +475,4 @@ Enabled formatters run on created and edited files; `write` and `edit` wait for 
 Compaction retains bounded skill source/range/pending history, visibly reports shortening, and may require reloading bodies. Every work turn restores the durable root objective and checkpoint reason; summaries preserve exact constraints, unresolved work, and verification limits. History shortening does not itself prevent checkpoint generation. Child task panels follow ancestor execution snapshots when their own snapshot is empty; completed steps remain complete while overall execution can be blocked.
 
 Browser flows preserve earlier step observations on known failure. Completed assertion/JavaScript errors and locator preflight failures settle failed with no PASS evidence; transport loss/cancellation and uncertain mutations retain unknown work. Earlier steps stay applied. Mouse down/up can use the current pointer position.
+Coverage stays enabled with the native LCOV reporter at `AtomBase/coverage/lcov.info` (ignored), avoiding Bun 1.3.14 text coverage `WriteFailed` under Turbo. Assertions, skips and timeouts are unchanged.
