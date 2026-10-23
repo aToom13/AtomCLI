@@ -70,4 +70,8 @@ For a remote server that requires OAuth, use the interactive `atomcli mcp add` f
 
 An MCP server is an external program or network service with the permissions you grant it. Review its command, arguments, environment, and access scope before enabling it. Prefer a narrowly scoped directory argument for filesystem servers.
 
+OAuth client information and tokens retain their authorization-server issuer across restarts. Credentials bound to
+one issuer are not sent to another; dynamic registration cannot replace explicitly configured client credentials.
+Older refresh tokens without an issuer may require signing in again with `atomcli mcp auth <name>`.
+
 Use `atomcli mcp debug <name>` for OAuth connection diagnostics and `atomcli --print-logs` for broader runtime logs. Debug output shows the remote origin and token presence, never token bytes or URL credentials/query parameters. The OAuth callback listens only on `127.0.0.1`; a busy callback port fails explicitly. Authorization URLs, callback codes, and state values are omitted from logs.

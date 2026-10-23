@@ -211,6 +211,9 @@ Security guidance:
 - Review local commands and their working-directory access before enabling them.
 - Scope filesystem servers to the narrowest useful directory.
 - Keep tokens and client secrets out of committed project config.
+- OAuth credentials retain their authorization-server issuer and cannot be reused with another issuer. Dynamic
+  registration cannot replace configured client credentials. Older refresh tokens without an issuer may require
+  `atomcli mcp auth <name>` again.
 - Use `atomcli mcp debug <name>` for OAuth diagnostics and `atomcli --print-logs` for broader errors.
 
 ## Bundled skill trees

@@ -5,6 +5,7 @@ import { Global } from "@/core/global"
 
 export namespace McpAuth {
   export const Tokens = z.object({
+    issuer: z.string().optional(),
     accessToken: z.string(),
     refreshToken: z.string().optional(),
     expiresAt: z.number().optional(),
@@ -13,6 +14,7 @@ export namespace McpAuth {
   export type Tokens = z.infer<typeof Tokens>
 
   export const ClientInfo = z.object({
+    issuer: z.string().optional(),
     clientId: z.string(),
     clientSecret: z.string().optional(),
     clientIdIssuedAt: z.number().optional(),
