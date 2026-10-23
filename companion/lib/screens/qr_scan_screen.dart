@@ -12,6 +12,7 @@ import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
 import '../services/auth_service.dart';
 import '../services/pairing_service.dart';
+import '../services/profile_switch_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/control_widgets.dart';
 
@@ -106,6 +107,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
         );
       }
       await ref.read(wsServiceProvider)?.dispose();
+      ProfileSwitchService.clearMachineState(ref);
       final ws = _createWebSocket(payload.endpoints);
       ref.read(wsServiceProvider.notifier).state = ws;
       _setStatus(strings.pairingComplete);

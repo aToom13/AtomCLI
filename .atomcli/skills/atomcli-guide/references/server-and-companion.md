@@ -141,7 +141,7 @@ When no companion port is explicitly configured:
 
 To pair or reach a second process, use the endpoint/QR information for that process. A previously saved `:4096` endpoint normally reaches the process that owns 4096, not the dynamically assigned second process.
 
-The Android Link screen stores and groups paired profiles as machine → project → process. Each profile has its own endpoints, bridge cursor, encrypted cache, and Outbox scope, while only one foreground command socket is active. Switching closes the old socket and clears machine-scoped live state before restoring the selected profile. The authenticated identity check rejects a saved endpoint if it now exposes another machine or a different known project. Rescan that process to deliberately update the profile.
+The Android Link screen stores and groups paired profiles as machine → project → process. Each profile has its own endpoints, bridge cursor, encrypted cache, and Outbox scope, while only one foreground command socket is active. Switching closes the old socket and clears machine-scoped live state before restoring the selected profile. Pairing another project through QR or pasted pairing data uses the same live-state cleanup, including conversation messages. Persisted history stays with its original profile. The authenticated identity check rejects a saved endpoint if it now exposes another machine or a different known project. Rescan that process to deliberately update the profile.
 
 Forgetting a link removes only that project/process cache and queue. Companion device authorization is machine-wide, so server-side revocation occurs only when the last saved link for that physical machine is removed; other machines remain paired.
 
