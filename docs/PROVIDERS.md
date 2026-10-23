@@ -193,5 +193,40 @@ The models.dev catalog is cached at `~/.atomcli/cache/models.json`. It is an imp
 - Run `atomcli models <provider>` to confirm the local model identifier.
 - Use `atomcli --print-logs` for diagnostics.
 - Check the configured `provider` entry and any project-level override before changing global configuration.
-- If the gateway reports `OpenCode's free tier can only be used from within OpenCode`, this is a client rejection, not evidence that login is required. Both chat and verification requests need consistent OpenCode metadata. AtomCLI generates `ses_`/`msg_` IDs for helper calls and isolates cached SDK clients by provider. Restart the running development process after source changes; a successful call to one model does not verify every route.
-- Zen greeting turns retain the real coding tools: sending only `model_control` caused this rejection even with correct headers. Explicit permission and execution-policy restrictions remain in force; tool-free helper requests are not covered by this fix.
+- The specific OpenCode free-tier HTTP 403 receives up to four transport retries with 250/500/1000/2000 ms delays, honoring cancellation and the original request timeout. Persistent rejection enters the bounded session retry/fallback path and ends with a short temporary-unavailability message if recovery fails. Ordinary authentication 403 responses are not retried by this rule. This request-context rejection is not cached as an invalid API key. The remote validation algorithm remains unknown; persistent upstream rejection remains possible.
+- Greetings retain the real `read` tool under normal file permissions, keeping coding-agent request context without granting mutation or delegation. A greeting allows one session retry, available for eligible fallback; an explicit zero retry limit remains binding. A model may reject a tool-restricted greeting even when a file-read request succeeds.
+- Observed Zen quota/model-unavailable failures survive restart for their cooldown. `429 Endpoint is unavailable` means upstream model unavailability (five minutes by default), rather than ordinary quota exhaustion. The picker and normal `atomcli models` output omit active cooldowns; `atomcli models --verbose` retains diagnostics. Expiry or completed successful output permits recovery. Catalog entries without observed failures remain candidates, not guarantees of service.
+- Deprecated or removed catalog models remain unavailable. Refresh with `atomcli models --refresh`; choose a currently listed model. Text generation, tool calls, reasoning variants, and helper requests require separate evidence. Restart a running development process after source changes.
+
+### OpenCode compatibility audit (2026-10-17)
+
+Source revision `8c173a8f38` reports package version `2.0.32`; the installed CLI reports `1.18.32`. These versions are distinct. The supplied `OpenCodeUsage.md` retracts earlier unverified claims about server validation and a working example. Its referenced `OpenCodeUsage/` example directory was absent.
+
+Local defects corrected:
+
+- The anonymous alias's default `apiKey: "public"` could shadow real credentials. Resolve credentials before assigning the fallback.
+- `opencode` lacked the loader used by `atomcli`; activation and anonymous filtering now agree.
+- Catalog `provider.api` was ignored while `provider.npm` was honored. Keep each model's protocol-specific endpoint and adapter together.
+- Zen thinking-toggle translation now covers both provider IDs.
+- The compatibility version is aligned with the observed upstream CLI (`1.18.32`).
+- Some `big-pickle` streaming tool calls omit `index`, causing SDK type validation to fail. Normalize missing indexes by call ID while preserving explicit indexes, UTF-8 boundaries, cancellation, errors and streaming.
+
+REA static parent Evidence: `ev_5e24f25866b646b608e1578d07ec988c44dceb42496fd6fae31b3071673a699e`; provider module view: `ev_ab537e1e66d57ecfd7db084af521cccdb1e3346b3e43444769270a377fdf69b9`. Seven source paths were selected; other source relationships and the remote server's implementation remain unknown.
+
+REA captured the installed OpenCode client, with isolated configuration/data and an empty `OPENCODE_API_KEY`:
+
+- With all tools denied, `big-pickle` returned HTTP 403 `FreeTierError`: `ev_18529893fa149f0d58f7a299042787f37bdee2230db03574bef53e926ae90d12`.
+- Normal `mimo-v2.6-flash-free` returned `OPENCODE_OK`, exit 0, reported cost 0: `ev_2f7736e9922c62a94e823a4bd6c9957640ae71052b34b94475fa79565ea09e39`.
+- Normal `big-pickle` also returned `OPENCODE_OK`, exit 0, cost 0: `ev_4d320871fd3a6d49a55e24fde89d0724f866379fb9b3c934e5cb9d31978e7053`.
+
+Isolated AtomCLI runs with no API keys returned `ATOMCLI_OK` from `atomcli/mimo-v2.6-flash-free`, `atomcli/nemotron-3.5-lightning-free`, and `atomcli/nemotron-3-ultra-free`, and read a temporary file using `find` and `read` with `atomcli/big-pickle`, returning its `ATOMCLI_TOOL_OK` marker. All four exited 0 with reported cost 0. Lightning also completed a `read` call in an earlier run, whose subsequent answer exceeded that probe's 20-second request timeout. Standalone SDK probes returned 403, including a probe advertising coding tools; these probes did not establish that normal coding requests were unavailable. Probe context was subsequently corrected, with cold-alias results recorded below. The exact server checks remain unknown.
+
+The current catalog marks `muse-spark-1.3-contributor-free`, `ling-3.0-flash-fin-free`, `muse-spark-1.2-contributor-free`, and `mimo-v2.5-free` deprecated, so they are excluded from the anonymous list even if an older OpenCode menu still displays them. Paid `muse-spark-1.2` and `muse-spark-1.3` are separate models. A visible free model is a catalog candidate, not proof of live availability; `nemotron-3-ultra-free` initially returned an upstream NVIDIA overload error before succeeding on a later attempt.
+
+Accountless follow-up on 2026-10-18: seven of ten concrete free models completed an isolated `read` call and returned a random file marker: `big-pickle`, `deepseek-v4.1-flash-free`, `longcat-2.5-preview-free`, `mimo-v2.6-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-super-vl-free`, and `space-bunny-free`. Beam and Lightning timed out; GLM returned `429 Endpoint is unavailable`. After correcting probe context and capability selection, both cold Auto and Free passed the final file-read/exact-marker test, exit 0 and reported cost zero. Free also passed two preceding runs; an earlier Auto run returned the correct marker with backticks. These observations do not guarantee every request succeeds. Offline regression tests cover retry recovery/exhaustion, cancellation, authentication failures, separate routing pages and persistent availability cooldowns.
+
+```sh
+# From AtomBase/, using the current catalog and no account for these models:
+bun run --conditions=browser ./src/index.ts run -m atomcli/mimo-v2.6-flash-free "Selam"
+bun run --conditions=browser ./src/index.ts run -m atomcli/big-pickle "README.md dosyasını oku ve özetle"
+```

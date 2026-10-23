@@ -3,6 +3,10 @@ import { Log } from "@/util/util/log"
 import type { Tool } from "./tool"
 import { SessionReplay } from "@/core/session/replay"
 import { ToolAppliedError, ToolNotAppliedError } from "./runtime-error"
+import path from "path"
+import fs from "fs/promises"
+import { Instance } from "@/services/project/instance"
+import type { ExecutionContract } from "@/core/routing/execution-contract"
 
 const READ_ONLY_TOOLS = new Set([
   "find",
@@ -143,7 +147,21 @@ export namespace ToolRuntime {
     return {
       ...(browserNavigations ? { browserNavigations } : {}),
       ...(browserVerificationCalls ? { browserVerificationCalls } : {}),
+      ...(actions.includes("accessibility") ? { browserAccessibilityCalls: 1 } : {}),
+      ...(actions.includes("network") ? { browserNetworkCalls: 1 } : {}),
     }
+  }
+
+  export async function isInspectionReport(tool: string, args: unknown, contract?: ExecutionContract.Info) {
+    if (!["inspect", "operate"].includes(contract?.intent ?? "") || !["write", "edit"].includes(tool)) return false
+    const filePath = (args as { filePath?: unknown })?.filePath
+    if (typeof filePath !== "string" || !/\.(?:md|txt)$/i.test(filePath)) return false
+    // ponytail: exact declared text reports for inspection/operation; unknown writes still invalidate browser proof.
+    const resolved = path.resolve(Instance.directory, filePath)
+    if (!contract.deliverables.some((target) => path.resolve(Instance.directory, target) === resolved)) return false
+    const real = await fs.realpath(resolved).catch(() => undefined)
+    const stat = await fs.lstat(resolved).catch(() => undefined)
+    return real === resolved && stat?.isFile() && stat.nlink === 1
   }
 
   export async function execute<Args, Output extends Result>(input: ExecuteInput<Args, Output>): Promise<Output> {
@@ -404,6 +422,11 @@ export namespace ToolRuntime {
         filesChanged: filePath && effects.workspace === "write" ? [filePath] : [],
         fileWriteCounts: filePath && effects.workspace === "write" ? { [filePath]: 1 } : {},
         mutatingCalls: workspaceMutation ? 1 : 0,
+        browserSourceMutations:
+          workspaceMutation &&
+          !(await isInspectionReport(input.tool, args, ExecutionRuntime.getExecutionContract(execution.executionID)))
+            ? 1
+            : 0,
         externalCalls: effects.external !== "none" ? 1 : 0,
         hasDestructiveAction: effects.destructive,
         ...(interrupted && mutating ? { uncertainOutcome: true } : {}),

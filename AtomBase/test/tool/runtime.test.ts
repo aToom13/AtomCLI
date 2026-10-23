@@ -13,6 +13,8 @@ import { Identifier } from "@/core/id/id"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { BrowserTool } from "@/integrations/tool/browser"
 import { TodoTool } from "@/integrations/tool/todo-tool"
+import path from "path"
+import fs from "fs/promises"
 
 describe("ToolRuntime", () => {
   test("browser flow, saved captures and checklist changes retain verification until a source edit", async () => {
@@ -145,6 +147,100 @@ describe("ToolRuntime", () => {
       }),
     ).toEqual({ browserNavigations: 1, browserVerificationCalls: 2 })
     expect(ToolRuntime.browserRuntimeEvidence("browser", { action: "snapshot" })).toEqual({})
+    expect(
+      ToolRuntime.browserRuntimeEvidence("browser", {
+        action: "flow",
+        steps: [{ action: "accessibility" }, { action: "network" }],
+      }),
+    ).toEqual({ browserAccessibilityCalls: 1, browserNetworkCalls: 1 })
+  })
+
+  test("declared inspection reports preserve proof; source edits and unknown shell writes invalidate it", async () => {
+    await using project = await tmpdir()
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        ExecutionRuntime.setExecutionContract(
+          execution.executionID,
+          ExecutionContract.fallback("site inspection", {
+            intent: "operate",
+            deliverables: ["findings.md"],
+            expectedSurfaces: ["browser", "workspace"],
+          }),
+        )
+        const ctx = {
+          sessionID: session.id,
+          messageID,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { execution },
+          metadata() {},
+          async ask() {},
+        }
+        const browser = await BrowserTool.init()
+        for (const target of ["findings.md", "src/index.html", "src/guide.md", "bash"]) {
+          await ToolRuntime.execute({
+            tool: "browser",
+            args: {
+              action: "flow",
+              steps: [
+                { action: "navigate", url: "http://localhost:4567/" },
+                { action: "accessibility" },
+                { action: "network" },
+              ],
+            },
+            effects: browser.effects as (args: any) => Tool.ToolEffects,
+            context: { ...ctx, callID: `inspect-${target}` },
+            execute: async () => ({
+              title: "inspection",
+              output: "inspection",
+              metadata: { url: "http://localhost:4567/" },
+            }),
+          })
+          await ToolRuntime.execute({
+            tool: target === "bash" ? "bash" : "write",
+            args: target === "bash" ? { command: "unknown script" } : { filePath: path.join(project.path, target) },
+            context: { ...ctx, callID: `write-${target}` },
+            execute: async (args) => {
+              if (args.filePath) await Bun.write(args.filePath, "fixture")
+              return { title: "write", output: "write", metadata: {} }
+            },
+          })
+          const preserved = target === "findings.md" ? 1 : 0
+          expect(ExecutionRuntime.getExecutionEvidence(execution.executionID)).toMatchObject({
+            browserNavigations: preserved,
+            browserAccessibilityCalls: preserved,
+            browserNetworkCalls: preserved,
+          })
+        }
+        const contract = ExecutionContract.fallback("site change", { intent: "change", deliverables: ["findings.md"] })
+        expect(
+          await ToolRuntime.isInspectionReport("write", { filePath: path.join(project.path, "findings.md") }, contract),
+        ).toBe(false)
+        expect(
+          await ToolRuntime.isInspectionReport(
+            "write",
+            { filePath: path.join(project.path, "findings.md") },
+            undefined,
+          ),
+        ).toBe(false)
+        const source = path.join(project.path, "source.html")
+        await Bun.write(source, "source")
+        await fs.symlink(source, path.join(project.path, "symlink.md"))
+        await fs.link(source, path.join(project.path, "hardlink.md"))
+        const linked = ExecutionContract.fallback("inspect", {
+          intent: "inspect",
+          deliverables: ["symlink.md", "hardlink.md"],
+        })
+        for (const name of linked.deliverables)
+          expect(
+            await ToolRuntime.isInspectionReport("write", { filePath: path.join(project.path, name) }, linked),
+          ).toBe(false)
+      },
+    })
   })
 
   test("normalizes bash semantic signatures across non-semantic metadata", () => {
@@ -648,6 +744,7 @@ describe("ToolRuntime", () => {
             filesChanged: ["src/auth.ts"],
             fileWriteCounts: { "src/auth.ts": 1 },
             mutatingCalls: 1,
+            browserSourceMutations: 1,
             externalCalls: 1,
             hasDestructiveAction: true,
             successfulToolCalls: 1,

@@ -154,6 +154,44 @@ describe("tool.browser real Chromium", () => {
     if (enabled) await Browser.close()
   })
 
+  test.skipIf(!enabled)("accessibility distinguishes placeholder-only fields from associated labels", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const tool = await BrowserTool.init()
+        const ctx = {
+          sessionID: "label-audit",
+          messageID: "label-audit",
+          agent: "build",
+          abort: new AbortController().signal,
+          metadata() {},
+          async ask() {},
+        }
+        await tool.execute({ action: "navigate", url: origin }, ctx)
+        const page = await Browser.getPage()
+        await page.setContent(`<body>
+        <input type="email" placeholder="Email">
+        <label>Wrapped label<input></label>
+        <label for="linked">Linked label</label><input id="linked">
+        <input aria-label="ARIA label">
+        <span id="name">Referenced label</span><input aria-labelledby="missing name">
+        <input title="Title label"><input type="hidden"><input style="display:none">
+        <input type="submit" value="Save"><textarea aria-label="Notes"></textarea>
+        <select aria-label="Plan"><option>Basic</option></select>
+      </body>`)
+        const result = await tool.execute({ action: "accessibility" }, ctx)
+        expect(result.metadata.missingLabels).toBe(1)
+        expect(result.output).toContain("input[type=email]")
+        expect(result.output).toContain("placeholder alone is not a persistent label")
+        expect(result.output).not.toContain("input[type=text]")
+        expect(result.output).toContain("not a complete accessibility audit")
+        const scoped = await tool.execute({ action: "accessibility", selector: 'input[type="email"]' }, ctx)
+        expect(scoped.metadata.missingLabels).toBe(1)
+      },
+    })
+  })
+
   test.skipIf(!enabled)("physical movement waits on a goal and failed evidence releases input", async () => {
     await using tmp = await tmpdir()
     await Instance.provide({

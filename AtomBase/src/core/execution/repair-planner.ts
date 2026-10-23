@@ -45,6 +45,13 @@ export namespace RepairPlanner {
           "Check current file content first; a prior edit may already have applied. Then use an exact existing string or a smaller verified replacement.",
       }
     if (tool === "edit") {
+      if (/mixed edits are not applied/.test(message))
+        return {
+          kind: "schema",
+          retryable: true,
+          strategy:
+            "No edit was applied. Use either filePath + oldString + newString, or filePath + operations. Remove the other mode's fields entirely.",
+        }
       if (/completed its operation|post-processing failed/.test(message))
         return {
           kind: "unknown",
@@ -88,7 +95,11 @@ export namespace RepairPlanner {
         retryable: true,
         strategy: "Split the operation into smaller bounded steps and preserve completed state before retrying.",
       }
-    if (/invalid.*(input|argument|schema)|validation|expected.*received|json/.test(message))
+    if (
+      /invalid.*(input|argument|schema)|validation|expected.*received|\bjson(?: parse| syntax)? error\b|\b(?:invalid|malformed) json\b|\bfailed to parse json\b/.test(
+        message,
+      )
+    )
       return {
         kind: "schema",
         retryable: true,

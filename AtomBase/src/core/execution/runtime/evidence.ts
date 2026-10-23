@@ -39,6 +39,7 @@ export function createEvidenceRuntime(input: Dependencies) {
     const contract = existing?.contract ?? ExecutionContract.fallback("default_runtime_policy")
     const prev = existing?.evidence ?? {}
     const next = evidence ?? {}
+    const sourceChanged = (next.browserSourceMutations ?? next.mutatingCalls ?? 0) > 0
     const mergedEvidence: ExecutionPolicy.RuntimeEvidence = {
       ...prev,
       ...next,
@@ -50,10 +51,16 @@ export function createEvidenceRuntime(input: Dependencies) {
       externalCalls: (prev.externalCalls ?? 0) + (next.externalCalls ?? 0),
       toolCalls: (prev.toolCalls ?? 0) + (next.toolCalls ?? 0),
       successfulToolCalls: (prev.successfulToolCalls ?? 0) + (next.successfulToolCalls ?? 0),
-      browserNavigations:
-        (next.mutatingCalls ?? 0) > 0 ? 0 : (prev.browserNavigations ?? 0) + (next.browserNavigations ?? 0),
-      browserVerificationCalls:
-        (next.mutatingCalls ?? 0) > 0 ? 0 : (prev.browserVerificationCalls ?? 0) + (next.browserVerificationCalls ?? 0),
+      browserNavigations: sourceChanged ? 0 : (prev.browserNavigations ?? 0) + (next.browserNavigations ?? 0),
+      browserVerificationCalls: sourceChanged
+        ? 0
+        : (prev.browserVerificationCalls ?? 0) + (next.browserVerificationCalls ?? 0),
+      browserAccessibilityCalls: sourceChanged
+        ? 0
+        : (prev.browserAccessibilityCalls ?? 0) + (next.browserAccessibilityCalls ?? 0),
+      browserNetworkCalls: sourceChanged ? 0 : (prev.browserNetworkCalls ?? 0) + (next.browserNetworkCalls ?? 0),
+      browserSourceMutations:
+        (prev.browserSourceMutations ?? 0) + (next.browserSourceMutations ?? next.mutatingCalls ?? 0),
       recentToolCallSignatures: [
         ...(prev.recentToolCallSignatures ?? []),
         ...(next.recentToolCallSignatures ?? []),

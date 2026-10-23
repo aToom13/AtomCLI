@@ -229,7 +229,13 @@ export namespace ExecutionRuntime {
         : existing?.contract.acceptanceChange,
     }
     if (changed && existing?.contract.acceptance?.length)
-      evidence = { ...evidence, browserNavigations: 0, browserVerificationCalls: 0 }
+      evidence = {
+        ...evidence,
+        browserNavigations: 0,
+        browserVerificationCalls: 0,
+        browserAccessibilityCalls: 0,
+        browserNetworkCalls: 0,
+      }
     const policy = ExecutionPolicy.resolvePolicy(contract, evidence, existing?.promotionReasons ?? [], existing?.policy)
     setExecutionState(executionID, {
       contract,

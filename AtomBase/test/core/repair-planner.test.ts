@@ -22,7 +22,24 @@ describe("RepairPlanner", () => {
     expect(RepairPlanner.classify("Module not found: foo")).toMatchObject({ kind: "dependency", retryable: true })
   })
 
+  test("a missing JSON filename is discovery failure, not malformed JSON", () => {
+    for (const file of ["config/settings.json", "parser/settings.json"])
+      expect(RepairPlanner.classify(`File not found: /project/${file}`, "read")).toMatchObject({
+        kind: "not_found",
+        strategy: expect.stringContaining("Refresh"),
+      })
+    for (const message of ["JSON Parse error: unexpected identifier", "Invalid JSON", "Failed to parse JSON"])
+      expect(RepairPlanner.classify(message, "read")).toMatchObject({ kind: "schema" })
+  })
+
   test("gives edit-specific recovery based on failure state", () => {
+    expect(
+      RepairPlanner.classify("Use either oldString/newString or operations; mixed edits are not applied", "edit"),
+    ).toMatchObject({
+      kind: "schema",
+      retryable: true,
+      strategy: expect.stringContaining("Remove the other mode's fields"),
+    })
     expect(RepairPlanner.annotate("Stale edit: anchored content changed", "edit")).toContain("[repair:stale]")
     expect(RepairPlanner.classify("oldString not found in content", "edit").strategy).toContain("already have applied")
     expect(

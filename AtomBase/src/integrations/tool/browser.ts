@@ -484,14 +484,49 @@ async function perform(
       result = { output: content || "No content found" }
       break
     }
-    case "accessibility":
+    case "accessibility": {
+      const scope = locator ?? page.locator("body")
+      const tree = String(await scope.ariaSnapshot({ timeout: timeout(params), signal: ctx.abort }))
+      // ponytail: bounded native form labels; custom controls, frames and contrast need separate inspection.
+      const missingLabels = await scope.evaluate((root) => {
+        const controls = [root, ...root.querySelectorAll("input,select,textarea")]
+          .filter((element) => element.matches("input,select,textarea"))
+          .slice(0, 100)
+        return controls
+          .filter((element) => {
+            if (!element.getClientRects().length || element.closest('[aria-hidden="true"],[inert]')) return false
+            if (element instanceof HTMLInputElement && /^(hidden|submit|reset|button|image)$/.test(element.type))
+              return false
+            const label =
+              element.getAttribute("aria-label")?.trim() ||
+              element.getAttribute("title")?.trim() ||
+              (element.getAttribute("aria-labelledby") ?? "")
+                .split(/\s+/)
+                .some((id) => element.ownerDocument.getElementById(id)?.textContent?.trim()) ||
+              Array.from((element as HTMLInputElement).labels ?? []).some((label) => label.textContent?.trim())
+            return !label
+          })
+          .map(
+            (element) =>
+              `${element.tagName.toLowerCase()}${element instanceof HTMLInputElement ? `[type=${element.type}]` : ""}`,
+          )
+      })
       result = {
-        output: String(
-          await (locator ?? page.locator("body")).ariaSnapshot({ timeout: timeout(params), signal: ctx.abort }),
-        ).slice(0, MAX_BROWSER_OUTPUT),
-        metadata: { format: "aria-snapshot" },
+        output: [
+          ...(missingLabels.length
+            ? [
+                `Potential missing form labels (first 100 native controls): ${missingLabels.join(", ")}. No associated text label or non-empty ARIA/title label was found; a placeholder alone is not a persistent label.`,
+              ]
+            : []),
+          tree,
+          "This accessibility tree and bounded label check are not a complete accessibility audit.",
+        ]
+          .join("\n\n")
+          .slice(0, MAX_BROWSER_OUTPUT),
+        metadata: { format: "aria-snapshot", missingLabels: missingLabels.length },
       }
       break
+    }
     case "wait": {
       if (params.duration !== undefined) {
         await withAbort(page.waitForTimeout(params.duration), ctx.abort)
