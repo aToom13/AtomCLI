@@ -1,5 +1,7 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import { AgentEval } from "@/core/eval/harness"
+import { ModelQuality } from "@/core/routing/model-quality"
 import type { MessageV2 } from "@/core/session/message-v2"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
@@ -47,6 +49,52 @@ function messages(sessionID: string): MessageV2.WithParts[] {
 }
 
 describe("AgentEval.recordSession", () => {
+  test.each([true, false])(
+    "benchmark=%s preserves quality history while runtime observations still learn",
+    async (benchmark) => {
+      await using tmp = await tmpdir({ git: true })
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          await ModelQuality.initialize()
+          const before = ModelQuality.snapshot()
+          const sessionID = `session-learning-${benchmark}`
+          const input = messages(sessionID)
+          const followup = messages(sessionID)
+          followup[0].info.id = "message-correction-user"
+          followup[0].info.time.created = 300
+          followup[0].parts = [{ ...followup[0].parts[0], text: "still wrong, inspect again" } as MessageV2.TextPart]
+          followup[1].info.id = "message-correction-assistant"
+          const assistant = followup[1].info as MessageV2.Assistant
+          assistant.parentID = followup[0].info.id
+          assistant.time = { created: 310, completed: 400 }
+          for (const message of followup)
+            message.parts = message.parts.map((part) => ({
+              ...part,
+              id: `${part.id}-followup`,
+              messageID: message.info.id,
+            }))
+          if (benchmark)
+            AgentEval.registerBenchmark(sessionID, { suite: "benchmark-learning", caseID: "learning", runID: "run" })
+          try {
+            const results = await AgentEval.recordSession(sessionID, [...input, ...followup])
+            expect(results).toHaveLength(3)
+            expect(await AgentEval.list(benchmark ? "benchmark-learning" : "runtime")).toHaveLength(benchmark ? 2 : 3)
+            if (benchmark) expect(ModelQuality.snapshot()).toEqual(before)
+            else {
+              const category = results[0].category
+              expect(ModelQuality.get("provider", "model", category)?.samples).toBe(
+                (before["provider/model"]?.categories[category]?.samples ?? 0) + 3,
+              )
+            }
+          } finally {
+            AgentEval.unregisterBenchmark(sessionID)
+          }
+        },
+      })
+    },
+  )
+
   test("records benchmark IDs once under concurrent capture", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
@@ -72,7 +120,11 @@ describe("AgentEval.recordSession", () => {
     })
   })
 
-  test("derives test, review, retry, tool, token, and duration signals from a completed turn", async () => {
+  test.each([
+    ["read", "error"],
+    ["invalid", "completed"],
+    ["invalid", "error"],
+  ])("derives signals including a %s/%s tool failure from a completed turn", async (failedTool, failedStatus) => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
@@ -118,11 +170,14 @@ describe("AgentEval.recordSession", () => {
             messageID: "message-assistant",
             type: "tool",
             callID: "call-error",
-            tool: "read",
+            tool: failedTool,
             state: {
-              status: "error",
+              status: failedStatus,
               input: { filePath: "missing.ts" },
               error: "not found",
+              output: "Invalid tool arguments",
+              title: "Invalid Tool",
+              metadata: {},
               time: { start: 151, end: 155 },
             },
           },
@@ -293,6 +348,171 @@ describe("AgentEval.recordSession", () => {
         expect(result.testsPassed).toBe(true)
         expect(result.toolCalls).toBe(2)
         expect(result.success).toBe(true)
+      },
+    })
+  })
+
+  test.each([
+    ["stop", false],
+    ["error", false],
+    ["stop", true],
+    ["error", true],
+  ] as const)("terminal %s includes recovery calls before completion; continuation=%s", async (finish, continued) => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = `session-terminal-${finish}-${continued}`
+        const [user, terminal] = messages(sessionID)
+        terminal.info.id = `message-terminal-${finish}-${continued}`
+        const info = terminal.info as MessageV2.Assistant
+        info.finish = finish
+        const continuation: MessageV2.WithParts = {
+          info: { ...user.info, id: `message-continuation-${finish}`, time: { created: 120 } },
+          parts: [
+            {
+              id: `part-continuation-${finish}`,
+              sessionID,
+              messageID: `message-continuation-${finish}`,
+              type: "text",
+              text: "Continue verification",
+              synthetic: true,
+            },
+          ],
+        }
+        if (continued) {
+          info.parentID = continuation.info.id
+          info.time.created = 160
+        }
+        const recovery: MessageV2.WithParts = {
+          info: {
+            ...info,
+            id: `message-recovery-${finish}`,
+            parentID: continuation.info.id,
+            finish: "tool-calls",
+            time: { created: 150, completed: 190 },
+            tokens: { input: 6, output: 3, reasoning: 0, cache: { read: 2, write: 0 } },
+          },
+          parts: [
+            {
+              id: `part-recovery-error-${finish}`,
+              sessionID,
+              messageID: `message-recovery-${finish}`,
+              type: "tool",
+              callID: `call-recovery-error-${finish}`,
+              tool: "read",
+              state: {
+                status: "error",
+                input: { filePath: "missing.ts" },
+                error: "not found",
+                time: { start: 160, end: 170 },
+              },
+            },
+            {
+              id: `part-recovery-test-${finish}`,
+              sessionID,
+              messageID: `message-recovery-${finish}`,
+              type: "tool",
+              callID: `call-recovery-test-${finish}`,
+              tool: "bash",
+              state: {
+                status: "completed",
+                input: { command: "bun test" },
+                output: "passed",
+                title: "Bash",
+                metadata: { exit: 0 },
+                time: { start: 175, end: 190 },
+              },
+            },
+          ],
+        }
+        const future: MessageV2.WithParts = {
+          info: {
+            ...(recovery.info as MessageV2.Assistant),
+            id: `message-future-${finish}`,
+            time: { created: 201, completed: 210 },
+          },
+          parts: recovery.parts,
+        }
+        const nextUser: MessageV2.WithParts = {
+          info: { ...user.info, id: `message-next-user-${finish}`, time: { created: 195 } },
+          parts: user.parts,
+        }
+        const nextTurn: MessageV2.WithParts = {
+          info: {
+            ...(recovery.info as MessageV2.Assistant),
+            id: `message-next-turn-${finish}`,
+            parentID: nextUser.info.id,
+            time: { created: 196, completed: 199 },
+          },
+          parts: recovery.parts,
+        }
+        const [result] = await AgentEval.recordSession(sessionID, [
+          future,
+          nextTurn,
+          nextUser,
+          recovery,
+          continuation,
+          terminal,
+          user,
+        ])
+        expect(result).toMatchObject({
+          toolCalls: 2,
+          toolErrors: 1,
+          testsPassed: true,
+          inputTokens: 12,
+          outputTokens: 5,
+          completed: finish === "stop",
+          success: finish === "stop",
+        })
+      },
+    })
+  })
+
+  test("uses the latest test across messages delivered newest first", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        for (const lastExit of [0, 1]) {
+          const sessionID = `session-reversed-tests-${lastExit}`
+          const [user, final] = messages(sessionID)
+          final.info.id = `message-final-${lastExit}`
+          const runs = [1 - lastExit, lastExit].map((exit, index) => {
+            const id = `message-test-${lastExit}-${index}`
+            return {
+              info: {
+                ...final.info,
+                id,
+                time: { created: 101 + index, completed: 105 + index },
+                finish: "tool-calls",
+              },
+              parts: [
+                {
+                  id: `part-${id}`,
+                  sessionID,
+                  messageID: id,
+                  type: "tool",
+                  callID: `call-${id}`,
+                  tool: "bash",
+                  state: {
+                    status: "completed",
+                    input: { command: "bun test" },
+                    output: exit === 0 ? "passed" : "failed",
+                    title: "Bash",
+                    metadata: { exit },
+                    time: { start: 103 + index, end: 105 + index },
+                  },
+                },
+              ],
+            } as MessageV2.WithParts
+          })
+          const input = [final, ...runs.toReversed(), user]
+          const [result] = await AgentEval.recordSession(sessionID, input)
+          expect(result.testsPassed).toBe(lastExit === 0)
+          expect(result.success).toBe(lastExit === 0)
+          expect(input[0]).toBe(final)
+        }
       },
     })
   })

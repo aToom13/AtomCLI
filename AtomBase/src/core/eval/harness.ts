@@ -115,6 +115,7 @@ export namespace AgentEval {
     runID: string
     routingMode?: "fixed-base" | "fixed-expert" | "adaptive"
     expertModel?: string
+    privatePaths?: string[]
   }
 
   const automaticState = Instance.state(() => ({
@@ -142,6 +143,11 @@ export namespace AgentEval {
     return automaticState().benchmarks.get(sessionID)
   }
 
+  /** Applies to child sessions too while any evaluator is active in this project. */
+  export function benchmarkPrivatePaths() {
+    return [...new Set([...automaticState().benchmarks.values()].flatMap((context) => context.privatePaths ?? []))]
+  }
+
   export function executionPolicy(sessionID: string) {
     const benchmark = isBenchmarkSession(sessionID)
     return {
@@ -159,6 +165,9 @@ export namespace AgentEval {
 
   /** Derive reproducible quality observations from real completed turns. */
   export async function recordSession(sessionID: string, messages: MessageV2.WithParts[]) {
+    messages = [...messages].sort(
+      (a, b) => a.info.time.created - b.info.time.created || a.info.id.localeCompare(b.info.id),
+    )
     const byID = new Map(messages.map((message) => [message.info.id, message]))
     const benchmark = automaticState().benchmarks.get(sessionID)
     const recorded: Result[] = []
@@ -188,11 +197,32 @@ export namespace AgentEval {
         const marker = ["agent-eval-auto", Instance.project.id, message.info.id]
         if (await Storage.read<boolean>(marker).catch(() => false)) continue
 
-        const parentID = message.info.parentID
-        const assistantCreated = message.info.time.created
+        let parent = byID.get(message.info.parentID)
+        while (
+          parent?.info.role === "user" &&
+          parent.parts.length &&
+          parent.parts.every((part) => part.type === "text" && part.synthetic)
+        ) {
+          const previous = messages.slice(0, messages.indexOf(parent)).findLast((item) => item.info.role === "user")
+          if (!previous) break
+          parent = previous
+        }
+        const parentID = parent?.info.id ?? message.info.parentID
+        // Recovery can finalize a message created before its later tool calls.
+        const turnCompleted = message.info.time.completed
         const providerID = message.info.providerID
         const modelID = message.info.modelID
-        const parent = byID.get(parentID)
+        const turnParents = new Set([parentID])
+        for (const candidate of messages) {
+          if (
+            candidate.info.role !== "user" ||
+            candidate.info.time.created <= (parent?.info.time.created ?? turnCompleted) ||
+            candidate.info.time.created > turnCompleted
+          )
+            continue
+          if (!candidate.parts.length || candidate.parts.some((part) => part.type !== "text" || !part.synthetic)) break
+          turnParents.add(candidate.info.id)
+        }
         const prompt = userText(parent)
         const profile = TaskProfile.infer(prompt)
         const turnMessages = messages.filter(
@@ -200,8 +230,8 @@ export namespace AgentEval {
             const info = candidate.info
             return (
               info.role === "assistant" &&
-              info.parentID === parentID &&
-              info.time.created <= assistantCreated &&
+              turnParents.has(info.parentID) &&
+              info.time.created <= turnCompleted &&
               (!!benchmark || (info.providerID === providerID && info.modelID === modelID))
             )
           },
@@ -273,15 +303,16 @@ export namespace AgentEval {
             if (previous?.info.role === "assistant") {
               const previousPrompt = userText(byID.get(previous.info.parentID))
               const previousProfile = TaskProfile.infer(previousPrompt)
-              await ModelQuality.record({
-                providerID: previous.info.providerID,
-                modelID: previous.info.modelID,
-                category: previousProfile.category,
-                quality: 0.2,
-                success: false,
-                signal: "user_correction",
-                timestamp: parent?.info.time.created ?? Date.now(),
-              })
+              if (!benchmark)
+                await ModelQuality.record({
+                  providerID: previous.info.providerID,
+                  modelID: previous.info.modelID,
+                  category: previousProfile.category,
+                  quality: 0.2,
+                  success: false,
+                  signal: "user_correction",
+                  timestamp: parent?.info.time.created ?? Date.now(),
+                })
               const correction = await record(
                 {
                   id: `correction-${previous.info.id}`,
@@ -302,43 +333,46 @@ export namespace AgentEval {
             }
           }
         }
-        const result = await record({
-          id: benchmark?.caseID ?? `${sessionID}-${message.info.id}`,
-          suite: benchmark?.suite ?? "runtime",
-          promptVersion: benchmark?.runID ?? "current",
-          category: profile.category,
-          providerID,
-          modelID,
-          completed: !message.info.error && !!message.info.finish,
-          responseEmpty: text.length === 0,
-          testsPassed,
-          reviewerVerdict,
-          toolCalls: toolParts.length,
-          toolErrors: toolParts.filter((part) => part.state.status === "error").length,
-          retries,
-          inputTokens: totals.input,
-          outputTokens: totals.output,
-          cost: totals.cost,
-          durationMs: Math.max(
-            0,
-            message.info.time.completed -
-              (parent?.info.time.created ?? turnMessages[0]?.info.time.created ?? message.info.time.created),
-          ),
-          routingMode: benchmark?.routingMode,
-          modelCalls: execution?.budget.execution.calls.used ?? 0,
-          expertEpisodes: execution?.route?.expert?.episodes ?? 0,
-          unpricedCalls: execution?.budget.execution.unpricedCalls ?? 0,
-          ttftMs: firstOutputAt ? Math.max(0, firstOutputAt - (parent?.info.time.created ?? firstOutputAt)) : 0,
-          routeProposals: proposals.length,
-          rejectedProposals: proposals.filter((proposal) => proposal.state === "rejected").length,
-          repeatedQuestions: /\b(again|still|repeat)\b|tekrar|hala/i.test(prompt) ? 1 : 0,
-          baseReturns:
-            execution?.route?.stage === "base"
-              ? proposals.filter((proposal) => proposal.scope === "expert" && proposal.state === "applied").length
-              : 0,
-          timestamp: message.info.time.completed,
-          automatic: true,
-        })
+        const result = await record(
+          {
+            id: benchmark?.caseID ?? `${sessionID}-${message.info.id}`,
+            suite: benchmark?.suite ?? "runtime",
+            promptVersion: benchmark?.runID ?? "current",
+            category: profile.category,
+            providerID,
+            modelID,
+            completed: !message.info.error && !!message.info.finish && message.info.finish !== "error",
+            responseEmpty: text.length === 0,
+            testsPassed,
+            reviewerVerdict,
+            toolCalls: toolParts.length,
+            toolErrors: toolParts.filter((part) => part.state.status === "error" || part.tool === "invalid").length,
+            retries,
+            inputTokens: totals.input,
+            outputTokens: totals.output,
+            cost: totals.cost,
+            durationMs: Math.max(
+              0,
+              message.info.time.completed -
+                (parent?.info.time.created ?? turnMessages[0]?.info.time.created ?? message.info.time.created),
+            ),
+            routingMode: benchmark?.routingMode,
+            modelCalls: execution?.budget.execution.calls.used ?? 0,
+            expertEpisodes: execution?.route?.expert?.episodes ?? 0,
+            unpricedCalls: execution?.budget.execution.unpricedCalls ?? 0,
+            ttftMs: firstOutputAt ? Math.max(0, firstOutputAt - (parent?.info.time.created ?? firstOutputAt)) : 0,
+            routeProposals: proposals.length,
+            rejectedProposals: proposals.filter((proposal) => proposal.state === "rejected").length,
+            repeatedQuestions: /\b(again|still|repeat)\b|tekrar|hala/i.test(prompt) ? 1 : 0,
+            baseReturns:
+              execution?.route?.stage === "base"
+                ? proposals.filter((proposal) => proposal.scope === "expert" && proposal.state === "applied").length
+                : 0,
+            timestamp: message.info.time.completed,
+            automatic: true,
+          },
+          { updateModelQuality: !benchmark },
+        )
         await Storage.write(marker, true)
         recorded.push(result)
       } finally {
