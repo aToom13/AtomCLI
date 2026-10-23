@@ -5,6 +5,8 @@ import type { ExecutionRuntime } from "@/core/execution/runtime"
 import type { MessageV2 } from "@/core/session/message-v2"
 import type { SessionProcessor } from "@/core/session/processor"
 import type { PromptContext } from "./context"
+import { PromptFinalization } from "./finalization"
+import { VerificationEvidence } from "@/core/execution/verification-evidence"
 
 export async function handleCheckpoint(input: {
   result: SessionProcessor.Result
@@ -43,7 +45,11 @@ export async function handleCheckpoint(input: {
     for (const checkpointInput of parseCheckpointJsonCandidates(candidateText)) {
       const normalized = ExecutionCheckpoint.normalizeCandidate(checkpointInput)
       const candidate = ExecutionCheckpoint.Result.safeParse(normalized)
-      if (candidate.success) {
+      if (
+        candidate.success &&
+        (candidate.data.decision !== "finish" ||
+          PromptFinalization.isUserFacingReport(candidate.data.finalResponse ?? ""))
+      ) {
         parsedCheckpoint = candidate.data
         checkpointSource = candidateText
         break
@@ -80,6 +86,28 @@ export async function handleCheckpoint(input: {
     reason: eventCheckpoint
       ? "final_gate"
       : (RouteRuntime.checkpointReason(executionContext.executionID) ?? "requested"),
+  }
+  if (parsedCheckpoint.checks?.length) {
+    const acceptedUser = RouteRuntime.view(executionContext.executionID)?.userMessageID
+    const accepted = (await Session.messages({ sessionID })).find((message) => message.info.id === acceptedUser)
+    const checks = await VerificationEvidence.resolve(
+      sessionID,
+      parsedCheckpoint.checks,
+      accepted?.info.time.created ?? lastUser.time.created,
+    )
+    const failed = checks
+      .filter((check) => check.status !== "PASS")
+      .map((check) => `${check.name}: ${check.status} (${check.reason})`)
+    if (checks.length) parsedCheckpoint.progressSummary = `Verified checks: ${JSON.stringify(checks)}`.slice(0, 2000)
+    if (failed.length) {
+      parsedCheckpoint.failures = [...parsedCheckpoint.failures, ...failed]
+      parsedCheckpoint.remainingWork = [...parsedCheckpoint.remainingWork, ...failed]
+      if (parsedCheckpoint.decision === "finish") {
+        parsedCheckpoint.decision = "continue"
+        parsedCheckpoint.requestedCalls = ExecutionCheckpoint.MIN_CHECKPOINT_CALLS
+        parsedCheckpoint.finalResponse = undefined
+      }
+    }
   }
   // Reconcile durable taskflow *bookkeeping* steps against a verified
   // completion before the finalization gate. When the model has finished the

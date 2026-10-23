@@ -12,6 +12,7 @@ Rules:
 - Output over ${maxLines} lines / ${maxBytes} bytes is auto-truncated; full output saved to file. No need for head/tail.
 - Independent commands → multiple parallel Bash calls in one message. Dependent → chain with `&&`.
 - POSIX shells run with `-e`; Bash/Zsh/Ksh also use `pipefail`. An unhandled failure stops a `;` chain: `false; echo success` exits 1 without printing the marker. Handle expected failures explicitly with `||`.
+- Run independent acceptance checks as separate tool calls. Exit status covers the whole command only; never mark later subcommands as executed after early failure. For grep, exit 1 means no matches, exit 2 means an error; handle these separately, never mask both with `|| true`. Checkpoint checks reference this call's callID; PASS also requires a current source snapshot.
 - DO NOT use newlines to separate commands (newlines ok in quoted strings).
 - Timeout: 120000ms default; expiry terminates the command, never backgrounds it. Persistent servers need detached execution with redirected stdio and a readiness check.
 - Write a clear 5-10 word description of what each command does.

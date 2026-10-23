@@ -11,6 +11,8 @@ import path from "path"
 import fs from "fs/promises"
 import { Filesystem } from "@/util/util/filesystem"
 import { TaskVerification } from "@/core/execution/task-verification"
+import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
+import { VerificationEvidence } from "@/core/execution/verification-evidence"
 
 const { reviewRetryText, reviewBlockedText } = PromptFinalization
 const MAX_COMPLETION_DESCENDANT_DEPTH = 32
@@ -30,6 +32,12 @@ async function returnExpertHandoff(input: {
   messageID: string
 }) {
   const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  if (!PromptFinalization.isUserFacingReport(input.text))
+    input = {
+      ...input,
+      status: "inconclusive",
+      text: "The expert returned empty output or unexecuted tool protocol. No successful handoff is claimed; use structured tool calls to continue.",
+    }
   const episodeID = input.route.activeEpisodeID!
   const baseModel = await Provider.getModel(input.route.base.providerID, input.route.base.modelID).catch(
     () => undefined,
@@ -475,6 +483,15 @@ async function resolveCompletion(input: {
     return "retry" as const
   }
   const blockers: string[] = []
+  const candidateText = input.candidate.parts
+    .filter((part): part is MessageV2.TextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+  // Internal review candidates may contain no text parts; validate every report that is actually supplied.
+  const malformedReport =
+    input.candidate.parts.some((part) => part.type === "text") && !PromptFinalization.isUserFacingReport(candidateText)
+  if (malformedReport)
+    blockers.push("final response is empty or contains unexecuted tool protocol; use structured tool calls")
   const staticChecks = await TaskVerification.staticChecks(
     input.candidate.editedFiles,
     Instance.directory,
@@ -510,6 +527,10 @@ async function resolveCompletion(input: {
           }
           logs.push({
             command,
+            verificationSimple:
+              typeof part.state.metadata.verificationSimple === "boolean"
+                ? part.state.metadata.verificationSimple
+                : undefined,
             workdir:
               typeof part.state.metadata.workdir === "string"
                 ? part.state.metadata.workdir
@@ -532,15 +553,29 @@ async function resolveCompletion(input: {
     failures.push(...(await TaskVerification.staleBuildChecks(builds, input.candidate.editedFiles, Instance.directory)))
     return failures
   }
-  blockers.push(...(await failedChecks()).map((command) => `verification failed: ${command}`))
+  const failedVerification = await failedChecks()
+  blockers.push(...failedVerification.map((command) => `verification failed: ${command}`))
   const contract = ExecutionRuntime.getExecutionContract(input.execution.executionID)
   const evidence = ExecutionRuntime.getExecutionEvidence(input.execution.executionID)
   const checkpoint = ExecutionRuntime.checkpoints(input.execution.executionID).at(-1)
+  const referencedChecks = new Map<string, NonNullable<ExecutionCheckpoint.Result["checks"]>[number]>()
+  for (const record of ExecutionRuntime.checkpoints(input.execution.executionID))
+    for (const check of record.payload?.checkpoint?.checks ?? []) referencedChecks.set(check.name, check)
+  const checkResults = await VerificationEvidence.resolve(
+    input.sessionID,
+    [...referencedChecks.values()],
+    verificationStart,
+  )
+  blockers.push(
+    ...checkResults
+      .filter((check) => check.status !== "PASS")
+      .map((check) => `${check.name}: ${check.status} (${check.reason})`),
+  )
   // ponytail: unchanged assessments only; semantic proof remains with task acceptance.
   if (
-    contract?.acceptance?.length &&
     checkpoint?.decision === "continue" &&
     checkpoint.payload?.checkpoint?.remainingWork?.length &&
+    typeof checkpoint.payload?.evidence?.toolCalls === "number" &&
     checkpoint.payload?.evidence?.toolCalls === evidence?.toolCalls
   )
     blockers.push("the checkpoint still requires work; no tools ran after its unfinished assessment")
@@ -552,9 +587,22 @@ async function resolveCompletion(input: {
   ) {
     if (!evidence?.browserNavigations)
       blockers.push(
-        "the browser deliverable has not been opened or reloaded since the last source edit or write-effect tool (including Bash verification commands)",
+        "the inspected site or browser deliverable needs navigation/reload at its original URL after the latest source or unknown write-effect tool; serving a text findings report does not verify the site",
       )
-    if (!evidence?.browserVerificationCalls) blockers.push("the browser deliverable has no visual or behavior check")
+    const criteria = (contract.acceptance ?? []).join("\n")
+    const inspectionIntent = ["inspect", "operate"].includes(contract.intent)
+    const inspectAccessibility = inspectionIntent && /\baccessibility\b/i.test(criteria)
+    const inspectNetwork = inspectionIntent && /\bnetwork\b/i.test(criteria)
+    const inspectionOnly =
+      inspectionIntent &&
+      (inspectAccessibility || inspectNetwork) &&
+      !/\b(screenshot|visual|render(?:ing)?|game(?:play)?|pointer|keyboard|animation)\b/i.test(criteria)
+    if (inspectAccessibility && !evidence?.browserAccessibilityCalls)
+      blockers.push("the inspected site has no successful accessibility inspection")
+    if (inspectNetwork && !evidence?.browserNetworkCalls)
+      blockers.push("the inspected site has no successful network inspection")
+    if (!evidence?.browserVerificationCalls && !inspectionOnly)
+      blockers.push("the browser deliverable has no visual or behavior check")
   }
   if (HarnessState.hasActivePlan(input.sessionID, input.execution.executionID))
     blockers.push("the taskflow plan is still open")
@@ -567,8 +615,26 @@ async function resolveCompletion(input: {
     }
   }
   if (blockers.length) {
-    const reason = `Completion preconditions failed: ${blockers.join("; ")}.`
-    if (input.allowRetry !== false) return retry(reason, false)
+    const reason = [
+      `Completion preconditions failed: ${blockers.join("; ")}.`,
+      ...(failedVerification.length
+        ? [
+            "After repairs, rerun the failed verification commands listed above successfully in the same working directory. Passing individual files does not clear a failed grouped or directory test run. Inspect and fix any remaining failures; do not change test expectations to bypass them.",
+          ]
+        : []),
+    ].join("\n")
+    const protocolRetries = rootMessages.filter(
+      (message) =>
+        message.info.time.created >= verificationStart &&
+        message.parts.some(
+          (part) => part.type === "text" && part.synthetic && part.text.includes("contains unexecuted tool protocol"),
+        ),
+    ).length
+    if (
+      input.allowRetry !== false &&
+      (!malformedReport || protocolRetries < ExecutionCheckpoint.MAX_INVALID_RESPONSES - 1)
+    )
+      return retry(reason, false)
     await ExecutionRuntime.discardCompletion({
       sessionID: input.sessionID,
       execution: input.execution,
@@ -580,16 +646,20 @@ async function resolveCompletion(input: {
       .map((part) => part.text)
       .join("\n\n")
       .trim()
-    const failure = ExecutionRuntime.classifyTerminalFailure(
-      new ExecutionRuntime.BudgetExceededError("step_limit", input.execution.executionID),
-    )
+    const failure: import("@/core/execution/runtime").ExecutionRuntime.TerminalFailure = malformedReport
+      ? { outcome: "blocked", reasonCode: "verification_required", reasonMessage: reason, retryable: false }
+      : ExecutionRuntime.classifyTerminalFailure(
+          new ExecutionRuntime.BudgetExceededError("step_limit", input.execution.executionID),
+        )
     const completion = ExecutionRuntime.finalizeOutcome({
       sessionID: input.sessionID,
       messageID: input.candidate.messageID,
       execution: input.execution,
       failure: {
         ...failure,
-        reasonMessage: `${reason} Execution stopped at its step limit; send another message to continue.`,
+        reasonMessage: malformedReport
+          ? `${reason} Protocol recovery stopped without successful completion.`
+          : `${reason} Execution stopped at its step limit; send another message to continue.`,
       },
       parts: [
         {
@@ -600,7 +670,10 @@ async function resolveCompletion(input: {
             type: "text" as const,
             time: { start: Date.now(), end: Date.now() },
           }),
-          text: [directoryIssues.length ? "" : candidateText, `Execution status: technical blocker. ${reason}`]
+          text: [
+            directoryIssues.length || malformedReport ? "" : candidateText,
+            `Execution status: technical blocker. ${reason}`,
+          ]
             .filter(Boolean)
             .join("\n\n"),
           synthetic: true,

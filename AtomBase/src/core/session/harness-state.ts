@@ -28,6 +28,7 @@ export interface TaskFlowStep {
 export interface ExecutionLog {
   command: string
   workdir?: string
+  verificationSimple?: boolean
   /** Combined stdout + stderr, truncated to MAX_LOG_BYTES */
   output: string
   exitCode: number | null
@@ -130,10 +131,13 @@ export const REVIEW_TOTAL_ATTEMPT_MULTIPLIER = 3
 const CRITICAL_FILE_RE = /(^|[._/\\-])(auth|config|database|migration|\.env|secret|password|credentials?)([._/\\-]|$)/i
 const NON_PRODUCTION_PATH_RE =
   /(^|[/\\])(fixtures?|tests?|testdata|__fixtures__|__tests__|generated|examples?|samples?|mocks?)([/\\]|$)/i
-const BUN_TEST_REPORTERS = new Set(["dots", "verbose"])
+const BUN_TEST_REPORTERS = new Set(["dots", "verbose", "junit"])
 
 function verificationCommandKey(command: string): string {
+  const environment = command.match(/^(?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:-]+\s+)+(?=bun\s+test(?:\s|$))/)?.[0]
+  if (environment) return environment + verificationCommandKey(command.slice(environment.length))
   // ponytail: normalize only direct, simple Bun test commands; use a shell parser if broader syntax equivalence is needed.
+  if (/^bun\s+test(?:\s|$)/.test(command) && !/["'`$\\]/.test(command)) command = command.replace(/\s+2>&1$/, "")
   if (!/^bun\s+test(?:\s|$)/.test(command) || /["'`$\\;&|<>]/.test(command)) return command
   const tokens = command.match(/\S+/g)
   if (!tokens) return command
@@ -745,7 +749,7 @@ export namespace HarnessState {
    */
   export function pushExecutionLog(
     sessionID: string,
-    entry: { command: string; workdir?: string; output: string; exitCode: number | null },
+    entry: { command: string; workdir?: string; output: string; exitCode: number | null; verificationSimple?: boolean },
   ): void {
     const s = getSession(sessionID)
     const truncated = truncateUtf8(entry.output, MAX_LOG_BYTES, "[...truncated]")
@@ -778,10 +782,18 @@ export namespace HarnessState {
     for (const entry of [...logs].sort((first, second) => first.timestamp - second.timestamp)) {
       if (entry.timestamp < notBefore) continue
       const checks = entry.command.matchAll(
-        /(?:^|&&|\|\||[;\n])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:-]+\s+)*((?:static_check|bun\s+(?:test|run\s+(?:test|typecheck|build))|(?:npm|pnpm)\s+(?:test|run\s+(?:test|typecheck|build))|yarn\s+(?:test|typecheck|build)|pytest|go\s+test|cargo\s+test|tsc|tsgo)\b[^;&|\n]*)/g,
+        /(?:^|&&|\|\||[;\n])\s*((?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:-]+\s+)*(?:static_check|bun\s+(?:test|run\s+(?:test|typecheck|build))|(?:npm|pnpm)\s+(?:test|run\s+(?:test|typecheck|build))|yarn\s+(?:test|typecheck|build)|pytest|go\s+test|cargo\s+test|tsc|tsgo)\b(?:2>&1|[^;&|\n])*)/g,
       )
-      for (const check of checks)
-        latest.set(`${entry.workdir ?? Instance.directory}\0${verificationCommandKey(check[1].trim())}`, entry)
+      for (const check of checks) {
+        // ponytail: legacy logs use conservative shell syntax checks; native Bash supplies its parser verdict.
+        const simple = entry.verificationSimple ?? !/[;&|\n`$()<>]/.test(entry.command)
+        const command = simple ? entry.command.trim() : check[1].trim()
+        latest.set(`${entry.workdir ?? Instance.directory}\0${verificationCommandKey(command)}`, {
+          ...entry,
+          command,
+          exitCode: entry.exitCode === 0 && !simple ? null : entry.exitCode,
+        })
+      }
     }
     return [...new Set([...latest.values()].filter((entry) => entry.exitCode !== 0).map((entry) => entry.command))]
   }

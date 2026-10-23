@@ -949,3 +949,168 @@ describe("HarnessState - restored edit evidence", () => {
     expect(truncateUtf8("ab", -5, "m")).toBe("")
   })
 })
+
+test("verification recovery extracts the check from failed diagnostic compounds and rejects masked passes", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "verification-compound-recovery"
+      const command = "bun test catalog.test.ts"
+      HarnessState.pushExecutionLog(sessionID, {
+        command: command + " && git diff --no-index /dev/null catalog.ts",
+        workdir: tmp.path,
+        output: "1 pass; diff found",
+        exitCode: 1,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([command])
+      HarnessState.pushExecutionLog(sessionID, {
+        command: command + "; true",
+        workdir: tmp.path,
+        output: "test failed; true succeeded",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([command])
+      HarnessState.pushExecutionLog(sessionID, { command, workdir: tmp.path, output: "1 pass", exitCode: 0 })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([])
+    },
+  })
+})
+
+test("stderr duplication survives compound recovery without changing the test scope", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "verification-stderr-recovery"
+      const command = "bun test catalog.test.ts checkout.test.ts"
+      HarnessState.pushExecutionLog(sessionID, {
+        command: command + " 2>&1; git diff -- catalog.ts",
+        workdir: tmp.path,
+        output: "test failed",
+        exitCode: 1,
+        verificationSimple: false,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([command + " 2>&1"])
+      HarnessState.pushExecutionLog(sessionID, {
+        command,
+        workdir: tmp.path,
+        output: "2 pass",
+        exitCode: 0,
+        verificationSimple: true,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([])
+      const quoted = 'bun test "catalog 2>&1"'
+      HarnessState.pushExecutionLog(sessionID, {
+        command: quoted,
+        workdir: tmp.path,
+        output: "test failed",
+        exitCode: 1,
+        verificationSimple: true,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([quoted])
+    },
+  })
+})
+
+test("Bun JUnit reporter failures can recover through the same full test scope", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "verification-junit-recovery"
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "bun test --reporter=junit catalog.test.ts checkout.test.ts",
+        workdir: tmp.path,
+        output: "reporter outfile required",
+        exitCode: 1,
+      })
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "bun test catalog.test.ts",
+        workdir: tmp.path,
+        output: "1 pass",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toHaveLength(1)
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "bun test catalog.test.ts checkout.test.ts",
+        workdir: tmp.path,
+        output: "2 pass",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([])
+    },
+  })
+})
+
+test("verification results distinguish masked exits from native single commands", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "verification-masked-result"
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "bun test catalog.test.ts",
+        workdir: tmp.path,
+        output: "failed",
+        exitCode: 1,
+      })
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "bun test catalog.test.ts; true",
+        workdir: tmp.path,
+        output: "failed then true",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(["bun test catalog.test.ts"])
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "bun test catalog.test.ts",
+        workdir: tmp.path,
+        output: "passed",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([])
+      for (const command of ["static_check /repo/file;name.ts", 'bun test "test/a;b.test.ts"']) {
+        for (const exitCode of [1, 0]) {
+          HarnessState.pushExecutionLog(sessionID, {
+            command,
+            workdir: tmp.path,
+            output: "native result",
+            exitCode,
+            verificationSimple: true,
+          })
+          expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(exitCode ? [command] : [])
+        }
+      }
+    },
+  })
+})
+
+test("changed environment grants do not retire a different verification scope", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "verification-environment-boundary"
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "TEST_MODE=one bun test catalog.test.ts",
+        workdir: tmp.path,
+        output: "failed",
+        exitCode: 1,
+      })
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "TEST_MODE=two bun test catalog.test.ts",
+        workdir: tmp.path,
+        output: "passed",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual(["TEST_MODE=one bun test catalog.test.ts"])
+      HarnessState.pushExecutionLog(sessionID, {
+        command: "TEST_MODE=one bun test catalog.test.ts",
+        workdir: tmp.path,
+        output: "passed",
+        exitCode: 0,
+      })
+      expect(HarnessState.failedVerificationCommands(sessionID)).toEqual([])
+    },
+  })
+})

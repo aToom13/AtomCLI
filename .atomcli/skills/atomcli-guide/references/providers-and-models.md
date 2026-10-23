@@ -26,7 +26,7 @@ atomcli auth login --provider cline
 atomcli models cline
 ```
 
-AtomCLI refreshes Cline credentials automatically. Its model list is dynamic: it combines Cline's promoted free list with every API catalog ID ending in `:free`. This includes free variants such as Gemma even when they are absent from Cline's promoted UI list. Every model in this union has explicit zero pricing and is eligible for AtomCLI Free verification. Temporary upstream 404, 429, quota, or availability errors do not change that billing classification; they still prevent verification until the model works again.
+AtomCLI refreshes Cline credentials automatically. Its dynamic list combines Cline's promoted free list with every API catalog ID ending in `:free`, including Gemma variants missing from Cline's promoted UI list. These models have explicit zero pricing and are eligible for AtomCLI Auto verification. Free only uses the `atomcli` provider. Temporary quota or availability failures prevent verification without changing billing classification.
 
 Matching OpenRouter metadata, cached for five minutes, supplies context limits, modalities, and reasoning controls. Reasoning-capable Cline models expose their thinking variants in the TUI and through `--variant`. Cline catalog loading continues without enrichment if the metadata endpoint is unavailable.
 
@@ -129,7 +129,7 @@ ChatGPT OAuth verification must stream Responses, just like normal dispatch; non
 
 Use `/model routing` → Adaptive in the TUI to change or stop proposals. Ctrl+P → Model → Routing settings (or `/routing`) has separate Auto, Free and Adaptive pages. Auto selects included providers/models and paid routing/probe permissions. Free has independent mode, ratings, model inclusion and category settings, restricted to `atomcli`. Adaptive contains shared model/thinking proposal controls. Enter toggles inclusion; arrows adjust ratings; Shift+E expands per-category ratings. Lists are searchable. Routing selects a starting model; adaptive routing proposes changes during work. The shared task-category routing toggle controls orchestration; Auto/Free aliases always resolve. The route strip reports the active route, thinking variant, base/expert stage, manual pins and call budget.
 
-Cold verification completes text/tool checks for batches of two candidates within a shared 30-second deadline, stopping once a model is eligible. Cached probe results are released after use, so expired evidence and cooldowns can be retried without restarting.
+Cold alias verification completes text/tool checks for batches of two candidates within a shared 60-second deadline, stopping once a model is eligible. Cached probe results are released after use, so expired evidence and cooldowns can be retried without restarting.
 
 Category overrides retain alternative candidates, and provider-qualified exclusions apply before probing. Auto/Free settings include direct alias selection; save preferences before switching. Saving uses the configured SDK connection and reports failures before updating local settings.
 
@@ -160,9 +160,11 @@ Use explicit `-m provider/model` when reproducibility matters more than automati
 
 `atomcli/atomcli-auto` and `atomcli/atomcli-free` choose only candidates with fresh evidence for the capabilities required by the task. Catalog metadata and HTTP 200 alone are not sufficient. AtomCLI uses bounded text and side-effect-free tool probes, shares their TTL-based results across processes, and refreshes evidence from completed non-empty real calls. The evidence key includes a safe fingerprint of the effective endpoint and credential/configuration identity; secrets are not persisted.
 
-OpenCode Zen models marked for anonymous access do not require login. AtomCLI uses `Bearer public` with the current OpenCode request identity (`User-Agent: opencode/<version>` and direct `x-opencode-*` metadata), while OpenCode enforces its anonymous-model and IP limits. This OpenCode protocol version is maintained independently from the AtomCLI release version. API-key login remains optional for account-backed access.
+Catalog-supported anonymous Zen models use `Bearer public` without creating an account. Both `atomcli` and `opencode` resolve an explicitly configured API key, a stored API key, or a catalog environment key before assigning that fallback. The Zen compatibility User-Agent uses the independently maintained upstream protocol version; `x-opencode-client` and session metadata describe the actual caller. Catalog pricing alone is not proof that every request shape works: normal coding turns, tool-free helpers, and verification probes need separate evidence.
 
-By default, both aliases consider explicitly zero-cost models from connected providers. Free keeps its free-only and verification requirements through retry, fallback, tool turns, compaction, memory helpers, and child sessions. Unknown price is not free, and no route silently falls back to a paid model. Auto can consider verified paid models only with `experimental.auto_router.allow_paid_models: true`; automatic paid probes additionally require `allow_paid_probes: true`. Limit either alias's candidate set with `allowed_providers`. Free ignores the paid flags and remains free-only.
+Model-specific catalog `provider.api` and `provider.npm` values select the endpoint and adapter together. For example, an Anthropic-format model must use its Anthropic endpoint, even when the provider's default endpoint uses the OpenAI format. A configured `options.baseURL` remains an explicit endpoint override.
+
+Auto considers explicitly zero-cost models from connected providers by default. Free considers only explicitly zero-cost models under `atomcli`, including retry, fallback, compaction, memory helpers and child sessions. Unknown price is not free. Auto permits verified paid models only with `experimental.auto_router.allow_paid_models: true`; paid probes also require `allow_paid_probes: true`. Auto uses `auto_router.allowed_providers`; both `auto_router` and independent `free_router` accept qualified `allowed_models` (`provider/model`). Omitted lists permit all eligible candidates; empty lists permit none. Free ignores Auto settings and stays on `atomcli`. Explicit user-approved conversation changes can leave Free.
 
 When no verified eligible candidate remains, AtomCLI stores a visible assistant error under the selected Auto/Free alias instead of leaving the prompt unanswered or restoring excluded, unavailable, unverified, capability-incompatible, or non-free candidates. The TUI also surfaces transport failures and does not automatically resend an uncertain prompt.
 
@@ -255,10 +257,14 @@ Configure a non-default endpoint with `provider.ollama.options.baseURL`.
 5. Run the failing command with `--print-logs`.
 6. Refresh the catalog only if stale metadata is plausible: `atomcli models --refresh`.
 
-If the gateway reports `OpenCode's free tier can only be used from within OpenCode`, it rejected the client; this does not establish a login requirement. Chat and verification requests use OpenCode metadata, helper calls generate `ses_`/`msg_` IDs, and SDK caches are isolated by provider. Restart the development process after source changes. One successful model call does not verify every route.
+The specific OpenCode free-tier HTTP 403 is retried up to four times with 250/500/1000/2000 ms delays, honoring cancellation and the original request timeout. Persistent rejection follows bounded session retry/fallback and ends with a short temporary-unavailability message if recovery fails. Other authentication 403 responses are not retried by this rule. Zen verification streams permitted coding tool schemas and system context without executing coding tools or mutating dispatch parameters. Denied tools remain denied. The server validation algorithm remains unverified; persistent upstream rejection remains possible. Zen streams normalize tool-call indexes omitted by the gateway before SDK validation.
+
+Refresh deprecated or removed model listings with `atomcli models --refresh`, then select a current model. Verify text, tools, reasoning variants, and helper calls separately; one successful request does not prove all routes. Restart the development process after source changes.
 
 The anonymous list excludes deprecated models and models without explicitly free pricing. An older OpenCode menu can differ from the current catalog. In the 2026-10-18 accountless file-read audit, seven concrete models passed, Beam and Lightning timed out, GLM returned `429 Endpoint is unavailable`. After probe fixes, both cold Auto and Free passed the final file-read/exact-marker test, exit 0 and reported cost zero. This does not guarantee every model or request.
 
 Observed Zen quota/model-unavailable cooldowns survive restart. `429 Endpoint is unavailable` means temporary model unavailability, five minutes by default. Active cooldowns disappear from the picker and normal model listing; `atomcli models --verbose` retains diagnostics. Expiry or completed output permits recovery. Catalog presence alone never proves live availability.
 
 The models.dev cache under `~/.atomcli/cache/models.json` is regenerable implementation data, not the source of credentials or account entitlement.
+
+A missing or unreadable cache retains the fallback catalog under the normal provider cache policy instead of repeating discovery on every model call. A changed cache file still triggers a reload.

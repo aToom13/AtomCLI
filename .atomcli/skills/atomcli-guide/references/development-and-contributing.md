@@ -480,6 +480,15 @@ Enabled formatters run on created and edited files; `write` and `edit` wait for 
 Compaction retains bounded skill source/range/pending history, visibly reports shortening, and may require reloading bodies. Every work turn restores the durable root objective and checkpoint reason; summaries preserve exact constraints, unresolved work, and verification limits. History shortening does not itself prevent checkpoint generation. Child task panels follow ancestor execution snapshots when their own snapshot is empty; completed steps remain complete while overall execution can be blocked.
 
 Browser flows preserve earlier step observations on known failure. Completed assertion/JavaScript errors and locator preflight failures settle failed with no PASS evidence; transport loss/cancellation and uncertain mutations retain unknown work. Earlier steps stay applied. Mouse down/up can use the current pointer position.
+
+### Evidence-backed completion
+
+Share synchronization resolves message models only when the session has a share record. Unshared history with an unavailable model does not trigger provider resolution; corrupt share records remain errors.
+
+Run verification checks separately, selecting their directory with Bash `workdir`. Recovery lists the checks inside ambiguous compound calls; trailing diagnostics cannot certify or permanently poison a test result. Rerun the same full scope independently. Bun reporter changes preserve that scope; different environment assignments remain separate.
+
+An unfinished checkpoint cannot become successful completion without new work merely because classification omitted acceptance criteria. Raw tool-protocol output is rejected and never executed as text. Recovery is bounded; exhaustion reports a non-success result.
+
 For configuration/auth troubleshooting, use `scope_control status`: it reports actual runtime paths and safe provider-source diagnostics. Missing legacy paths or environment variables do not establish missing credentials. Access stays unverified until a real provider operation supplies evidence; never print config/auth contents.
 
 Coverage stays enabled with the native LCOV reporter at `AtomBase/coverage/lcov.info` (ignored), avoiding Bun 1.3.14 text coverage `WriteFailed` under Turbo. Assertions, skips and timeouts are unchanged.

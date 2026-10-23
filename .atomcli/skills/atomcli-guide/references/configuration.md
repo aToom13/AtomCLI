@@ -81,6 +81,7 @@ Prefer `atomcli auth login`, environment variables, or an ignored secret file. D
 - `disabled_providers` suppresses selected automatically loaded providers.
 - `share` accepts `manual`, `auto`, or `disabled`.
 - `agent_mode` accepts `safe` or `autonomous`. Prefer `safe` unless the user explicitly wants reduced approval prompts.
+- Configured `autonomous` mode applies only to its project. Process-level YOLO flags apply across projects. Explicit external-directory denials remain enforced in either mode.
 - `channel` accepts `stable`, `beta`, or `alfa`.
 
 ## Server settings

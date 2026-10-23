@@ -169,6 +169,7 @@ export namespace PromptContext {
       objectiveAssessment: checkpoint.objectiveAssessment,
       progressSummary: checkpoint.progressSummary,
       completedWork: strings(checkpoint.completedWork),
+      checks: checkpoint.checks,
       remainingWork: strings(checkpoint.remainingWork),
       failures: strings(checkpoint.failures),
       blockers: strings(checkpoint.blockers),
@@ -249,7 +250,12 @@ export namespace PromptContext {
                 : part.state.status === "error"
                   ? part.state.error
                   : part.state.status
-            return [`tool ${part.tool} [${part.state.status}]: ${String(detail).slice(0, 1000)}`]
+            const lines = [`tool ${part.tool} [${part.state.status}]: ${String(detail).slice(0, 1000)}`]
+            if (part.tool === "bash" && part.state.status === "completed" && part.state.metadata?.outputFingerprint)
+              lines.push(
+                `verification callID=${part.callID}; exit=${part.state.metadata.exit}; timedOut=${Boolean(part.state.metadata.timedOut)}; aborted=${Boolean(part.state.metadata.aborted)}; singleCommand=${Boolean(part.state.metadata.verificationSimple)}; outputFingerprint=${part.state.metadata.outputFingerprint}`,
+              )
+            return lines
           }
           if (part.type === "patch") return [`files changed: ${part.files.join(", ")}`]
           if (part.type === "subtask") return [`child task: ${part.prompt}`]

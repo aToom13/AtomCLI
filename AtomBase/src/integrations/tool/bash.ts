@@ -23,6 +23,7 @@ import { ExecutionWorld } from "@/core/execution/world"
 import { Config } from "@/core/config/config"
 import { WorkflowOwnership } from "./orchestrate/ownership"
 import { TaskVerification } from "@/core/execution/task-verification"
+import { VerificationEvidence } from "@/core/execution/verification-evidence"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -299,6 +300,12 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       const sourceSnapshot = TaskVerification.isBuildCommand(params.command)
         ? await TaskVerification.buildSnapshot(HarnessState.getEditedFiles(ctx.sessionID), cwd, Instance.directory)
         : undefined
+      const verificationSnapshot = await VerificationEvidence.snapshot()
+      const verificationSimple =
+        !tree.rootNode.hasError &&
+        tree.rootNode.children.length === 1 &&
+        ["command", "redirected_statement"].includes(tree.rootNode.children[0]?.type) &&
+        tree.rootNode.descendantsOfType("command").length === 1
       const proc = spawn(prepared.executable, prepared.args, {
         shell: false,
         cwd: prepared.cwd,
@@ -460,6 +467,7 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
       HarnessState.pushExecutionLog(ctx.sessionID, {
         command: params.command,
         workdir: cwd,
+        verificationSimple,
         output,
         exitCode,
       })
@@ -473,6 +481,8 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
           aborted,
           workdir: cwd,
           outputFingerprint: outputHasher.digest("hex"),
+          verificationSimple,
+          ...(verificationSnapshot && { verificationSnapshot }),
           ...(sourceSnapshot && { sourceSnapshot }),
           description: params.description,
           truncated: truncated.truncated,

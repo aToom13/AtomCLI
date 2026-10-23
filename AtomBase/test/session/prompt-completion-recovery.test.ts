@@ -20,6 +20,113 @@ import path from "path"
 import { TaskVerification } from "@/core/execution/task-verification"
 
 describe("session prompt completion and recovery", () => {
+  test.each([
+    [true, false, "committed"],
+    [false, false, "retry"],
+    [true, true, "retry"],
+  ] as const)(
+    "site audit completion requires requested inspections without replacing visual checks: network=%s visual=%s",
+    async (network, visual, expected) => {
+      await using tmp = await tmpdir({
+        git: true,
+        config: {
+          review: { enabled: false, policy: "off", reviewer_count: 1, max_attempts: 1, high_risk_patterns: [] },
+        },
+      })
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const session = await Session.create({})
+          const user = (await Session.updateMessage({
+            id: Identifier.ascending("message"),
+            sessionID: session.id,
+            role: "user",
+            time: { created: Date.now() },
+            agent: "build",
+            model: { providerID: "test", modelID: "fixture" },
+          })) as MessageV2.User
+          const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: user.id })
+          ExecutionRuntime.setExecutionContract(
+            execution.executionID,
+            ExecutionContract.fallback("inspect existing site", {
+              intent: "operate",
+              deliverables: ["findings.md"],
+              expectedSurfaces: ["browser", "network", "workspace"],
+              needsExternalAction: true,
+              acceptance: ["Inspect accessibility and network activity", ...(visual ? ["Verify a screenshot"] : [])],
+            }),
+          )
+          ExecutionRuntime.recordRuntimeEvidence(execution.executionID, {
+            browserNavigations: 1,
+            browserAccessibilityCalls: 1,
+            browserNetworkCalls: network ? 1 : 0,
+          })
+          const messageID = Identifier.ascending("message")
+          await Session.updateMessage({
+            id: messageID,
+            parentID: user.id,
+            sessionID: session.id,
+            role: "assistant",
+            agent: user.agent,
+            path: { cwd: tmp.path, root: tmp.path },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: user.model.modelID,
+            providerID: user.model.providerID,
+            time: { created: Date.now() },
+          })
+          await ToolRuntime.execute({
+            tool: "write",
+            args: { filePath: path.join(tmp.path, "findings.md") },
+            context: {
+              sessionID: session.id,
+              messageID,
+              agent: "build",
+              callID: "report",
+              abort: new AbortController().signal,
+              extra: { execution },
+              metadata() {},
+              async ask() {},
+            },
+            execute: async (args) => {
+              await Bun.write(
+                args.filePath,
+                "# Findings\nObserved form submission and inspected accessibility and network data.\n",
+              )
+              return { title: "findings", output: "findings saved", metadata: {} }
+            },
+          })
+          const candidate = await ExecutionRuntime.stageCompletion({
+            sessionID: session.id,
+            messageID,
+            finish: "stop",
+            execution,
+            editedFiles: [path.join(tmp.path, "findings.md")],
+            requiresReview: false,
+            parts: [
+              {
+                id: Identifier.ascending("part"),
+                messageID,
+                sessionID: session.id,
+                type: "text",
+                text: "Findings recorded.",
+              },
+            ],
+          })
+          expect(
+            await SessionPrompt._internals.resolveCompletion({
+              sessionID: session.id,
+              lastUser: user,
+              execution,
+              candidate,
+              abort: new AbortController().signal,
+            }),
+          ).toBe(expected)
+        },
+      })
+    },
+  )
+
   test.each([false, true])(
     "unfinished checkpoint cannot complete without further work: newEvidence=%s",
     async (newEvidence) => {
@@ -364,6 +471,8 @@ describe("session prompt completion and recovery", () => {
             time: { start: Date.now(), end: Date.now() },
           },
         })
+        const automaticSelectionRecorded = !explicit && !leafLoaded && parent.metadata?.selectedReferences !== undefined
+        const referenceLoaded = leafLoaded || automaticSelectionRecorded
         if (leafLoaded) {
           const leaf = await (
             await SkillTool.init()
@@ -414,7 +523,7 @@ describe("session prompt completion and recovery", () => {
             return { title: "Write", output: "Applied", metadata: {} }
           },
         })
-        if (leafLoaded) {
+        if (referenceLoaded) {
           await write
           expect(await Bun.file(filePath).text()).toBe("Applied")
         } else {
@@ -446,12 +555,12 @@ describe("session prompt completion and recovery", () => {
             abort: new AbortController().signal,
             allowRetry: false,
           }),
-        ).toBe(leafLoaded ? "committed" : "blocked")
+        ).toBe(referenceLoaded ? "committed" : "blocked")
         const result = (await Session.messages({ sessionID: session.id })).find(
           (message) => message.info.id === messageID,
         )!
-        expect(result.info).toMatchObject({ finish: leafLoaded ? "stop" : "error" })
-        if (!leafLoaded) {
+        expect(result.info).toMatchObject({ finish: referenceLoaded ? "stop" : "error" })
+        if (!referenceLoaded) {
           expect(
             result.parts
               .filter((part) => part.type === "text")
@@ -460,7 +569,7 @@ describe("session prompt completion and recovery", () => {
           ).toContain(explicit ? "completion-reading/references/controls.md, offset=0" : "select relevant references")
         }
         expect(ExecutionRuntime.execution(execution.executionID)?.outcome).toBe(
-          leafLoaded ? "completed" : "budget_exhausted",
+          referenceLoaded ? "completed" : "budget_exhausted",
         )
       },
     })
@@ -644,7 +753,7 @@ describe("session prompt completion and recovery", () => {
         expect(finalPart?.text).toContain("Candidate response")
         expect(finalPart?.text).toContain("the taskflow plan is still open")
         expect(finalPart?.text).toContain(
-          "the browser deliverable has not been opened or reloaded since the last source edit",
+          "the inspected site or browser deliverable needs navigation/reload at its original URL",
         )
         expect(finalPart?.text).toContain("the browser deliverable has no visual or behavior check")
         expect(finalPart?.metadata).toMatchObject({ blockerKind: "technical" })

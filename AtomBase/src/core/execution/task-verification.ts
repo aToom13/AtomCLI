@@ -146,6 +146,7 @@ export namespace TaskVerification {
         HarnessState.pushExecutionLog(sessionID, {
           command: `static_check ${file}`,
           workdir: cwd,
+          verificationSimple: true,
           output: evidence,
           exitCode: ok ? 0 : 1,
         })

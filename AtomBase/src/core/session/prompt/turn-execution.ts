@@ -394,8 +394,8 @@ export async function prepareTurnExecution(input: TurnExecutionInput) {
     const accumulatedCompleted =
       accumulatedFields.completedWork.length > 0
         ? [
-            "Accumulated completed work already recorded (report deltas only — do NOT repeat these):",
-            ...accumulatedFields.completedWork.slice(-50).map((item) => `  done: ${item}`),
+            "Accumulated self-reported work (not independent verification; report deltas only):",
+            ...accumulatedFields.completedWork.slice(-50).map((item) => `  reported: ${item}`),
           ]
         : []
     system.push(

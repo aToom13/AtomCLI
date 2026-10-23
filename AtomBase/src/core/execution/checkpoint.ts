@@ -17,6 +17,10 @@ export namespace ExecutionCheckpoint {
       progressSummary: z.string().max(2000),
       discoveries: z.string().array().max(100),
       completedWork: z.string().array().max(100),
+      checks: z
+        .array(z.object({ name: z.string().min(1).max(200), callID: z.string().min(1).max(200) }))
+        .max(100)
+        .optional(),
       invalidatedWork: z
         .array(z.object({ claim: z.string().min(1).max(2000), reason: z.string().min(1).max(2000) }))
         .max(100)

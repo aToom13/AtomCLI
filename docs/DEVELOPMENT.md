@@ -7,6 +7,10 @@
 
 Use Bun only; this repository does not use npm or Yarn. The monorepo root delegates workspace tasks, while the primary application package is `AtomBase/`.
 
+Share synchronization resolves message models only for sessions with an existing share record. Unshared history can retain unavailable model IDs without triggering a provider lookup; malformed share records still report errors.
+
+Run verification commands in separate Bash calls using `workdir`. Compound exit codes cannot independently establish test results; completion recovery requests the extracted checks rather than unrelated diagnostic commands. A successful compound cannot mask a test failure. Bun reporter changes preserve the same test scope; environment assignment changes do not.
+
 ## Repository layout
 
 | Location                   | Purpose                                                                           |
@@ -59,6 +63,10 @@ Bun coverage remains enabled and writes `AtomBase/coverage/lcov.info` (ignored).
 
 ### Dependency security updates
 
+Run `bun audit` from the repository root. Update dependencies in small groups, recording the affected manifests,
+lockfile, runtime surfaces, audit results, and focused tests before and after each group. Use
+`bun turbo test --force` when a fresh full-suite run is required; a Turbo cache hit replays an earlier result.
+
 Root `package.json` overrides keep patched transitive dependencies consistent, including the single SolidJS runtime
 used by OpenTUI. Verify rendering and real PTY behavior after changing SolidJS, image decoding after changing Jimp,
 and provider/MCP transport behavior after changing HTTP or authentication dependencies. Do not force a newer major
@@ -100,7 +108,6 @@ Bun's native transpiler validates syntax and removes TS types/JSX before symbol 
 Native execution reuses its existing trusted Read/own-write revision record when Edit omits `contentHash`. Explicit hashes still reject mismatches; they are never corrected silently. Native Write advances the same revision record and checks known source hashes before overwriting, including external changes whose mtime was restored. Existing permission, lock, post-permission freshness and anchor checks remain in force. Legacy callers without execution revision evidence retain the read-time protocol.
 
 Native model Edit schemas expose text replacements and atomic batches, without hash or range-anchor parameters: freshness belongs to the existing execution revision record. Put every replacement in `operations` when using a batch; mixing it with nonempty top-level replacement fields rejects the whole request before writing. Empty provider-generated top-level strings and an empty `operations` array retain their existing behavior. Direct integrations retain optional explicit hashes and anchors, with unchanged mismatch rejection. Stale-edit recovery requests current source and an exact unique replacement; add surrounding text for repeated matches. For direct scoped calls, Read's end anchor hashes the entire returned range, not an independently chosen line.
-
 
 Workflow `isolation="auto"` uses Git worktrees when available, otherwise the existing shared-workspace ownership and permission guards. `isolation="required"` rejects a non-Git workspace during planning, before workflow/task/blocker creation or child dispatch; it is never silently downgraded. Execute retains its isolation check for persisted plans and workspace changes.
 
@@ -145,6 +152,26 @@ Before the first manifest cutover, AtomCLI creates and verifies `~/.atomcli/data
 An interrupted cutover does not rescan and hash the entire legacy tree during every startup. Existing manifest keys open immediately; missing legacy records and list prefixes are imported on demand. A new cutover records completion only after the full initial import, so a crash cannot hide records and tombstones still take precedence over legacy files.
 
 Use `test/core/storage-manifest.test.ts`, `test/core/storage-backup.test.ts`, and `test/core/storage-migration.test.ts` when changing this boundary. The manifest format check intentionally rejects a database written by a newer AtomCLI binary.
+
+Snapshot capture has a **global 1024 MiB object budget**, shared across projects and processes. At the budget, new captures stop with a warning; existing rollback trees are preserved. Files over 2 MiB and local runtime/dependency directories are excluded. Project Git ignore rules select the remaining files; no media-extension blacklist is used. A capture also stops before staging a tree over 64 MiB or 10,000 files. Excluded files have no snapshot rollback. Original project files and the project's Git index are never changed by capture.
+
+Live record writes have a fixed **2 GiB admission ceiling**, conservatively counting payload bytes plus 4 KiB per pointer. SQLite tracks usage atomically across processes. A write that grows beyond the ceiling fails before preparing its payload; existing data, deletes and shrinking writes remain available. The error directs users to delete unused conversations or run cleanup; history is never silently evicted. Existing legacy imports can exceed the ceiling to preserve recovery data, but new growth is refused until reduced. Orphans, backup copies and binaries are outside this live-record accounting; this is not a hard cap on the entire application directory.
+
+A successful record replacement/deletion immediately retires its old blob after commit when no live pointer shares it. Open readers retain their handles; failed/unlink-blocked cleanup is left for GC. Maintenance also completes interrupted legacy imports and removes original JSON copies only after validating the current blob; malformed recovery material is preserved and counted while unrelated compaction continues. The verified cutover backup is preserved automatically.
+
+Maintenance starts 30 seconds after bootstrap, checks hourly, and normally runs once per 24 hours. The background sweeper covers inactive snapshots, with a 24-hour orphan grace and 1024 MiB deletion budget per pass. It preserves retained chats and rollback roots. The snapshot budget prevents new capture growth; it does not automatically delete old oversized repositories. This is not a hard cap on user-authored conversation history, attachments, backups, installed binaries or all of `~/.atomcli`. Failures and protected repositories are logged.
+
+From `AtomBase/`, preview before applying (the preview does not start background maintenance):
+
+Without `--all-projects`, snapshot maintenance targets the current project; storage blobs are global. Reports include legacy compaction, diagnostic expiry, orphan counts/bytes, budget limits, and blocked snapshot repositories. A partial block returns exit 1 even if eligible storage blobs were already removed. Previews report candidates, not a guaranteed future deletion count.
+
+Optional configuration (all existing configurations remain valid):
+
+`enabled: false` disables automatic maintenance; the explicit command still works. The grace and interval cannot be below one hour. Restart all AtomCLI processes onto the updated version before applying cleanup: older binaries do not participate in the new coordination protocol.
+
+Storage GC rechecks references and unlinks under the same SQLite writer lock as pointer publication; publishers republish a collected blob before committing a reference. Readers acquire a file descriptor under that lock and can finish reading a retired version. Shared live blobs, tombstones and the verified cutover backup remain. Legacy originals are removed only by verified compaction. Unknown files and symlinks are not deletion candidates.
+
+Snapshot tracking pins newly created trees. Maintenance discovers snapshot, patch-before/after, and session-revert trees from all retained sessions in the project, including interrupted legacy imports, validates every object, then publishes the retained roots before expiring unused pins and running Git GC. An unreadable record, missing tree, unsafe directory, or unfinished/uncertain execution postpones that repository's cleanup. Cross-process SQLite locks serialize snapshot readers/writers and maintenance and release automatically on crash. Grace protects new and not-yet-persisted roots; unfinished executions prevent age-based eviction of their pins.
 
 When the bundled AtomCLI guide changes, validate its frontmatter, reference paths, development coverage, and runtime discovery:
 
@@ -487,6 +514,13 @@ Do not update `RELEASE_NOTES.md` merely because documentation changed. Release n
 Every tracked skill under `.atomcli/skills/` is part of the default distribution. `AtomBase/script/build.ts` copies the tree into platform artifacts and release CI publishes verified `skills.tar.gz` and `skills.zip` archives. Installers copy a local checkout tree or verify and extract the release archive; they abort when the complete archive is unavailable instead of silently falling back to a partial skill set.
 
 Skill loading retains bounded source/range/pending history through compaction and shows shortening. The durable root objective is included in every work turn; summary prompts preserve exact constraints, acceptance criteria, unresolved work, and checkpoint reasons. See [Skills Guide](SKILLS-GUIDE.md) for chunk budgets and recovery. Task-panel lifecycle projection also follows an ancestor execution snapshot for child sessions; completed steps remain complete even when overall execution is blocked.
+
+### Completion and verification evidence
+
+Normal completion and checkpoint final answers reject raw tool-protocol output. Text containing a serialized tool request is never executed as a substitute for an actual tool call. Fenced documentation examples remain supported. Protocol recovery is bounded; exhausted recovery produces a non-success report. An unfinished checkpoint with no subsequent tool activity prevents completion even when execution classification timed out and supplied no acceptance list.
+
+Checkpoint `checks` is an optional, backward-compatible array of `{name, callID}` references. Run each acceptance command in its own Bash call. Runtime derives PASS/FAIL/BLOCKED from completed tool records, exit/timeout/abort metadata, an output fingerprint and a current Git-source snapshot. Shell command chains and pipelines do not prove individual subchecks. Changed or missing source evidence invalidates PASS. Nonzero exits fail; interrupted/unrun checks are blocked. For `grep`, distinguish no matches (exit 1) from an error (exit 2), rather than hiding both with `|| true`. Unreferenced `completedWork` remains self-reported; it is not independent verification. These checks establish command execution and source freshness, not the semantic truth of arbitrary prose or the correctness of a test's expectations.
+
 Use `scope_control` with `action="status"` before diagnosing configuration or credential problems. Its diagnostics use the actual runtime paths and provider resolver, expose only credential-source presence/type, and do not probe provider access. Missing environment credentials or legacy config directories do not prove access unavailable. Never print raw config/auth records; preserve actual provider error classes, including quota failures.
 
 Filesystem tools accept workspace-relative paths where documented; prefer them for local targets instead of rebuilding long absolute roots. Read reports its current workspace after a missing target; use `find` there to discover the exact file. A denied external path does not deny permitted discovery inside the workspace. Paths are never silently redirected, and permission checks remain binding.

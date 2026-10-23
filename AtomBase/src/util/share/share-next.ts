@@ -25,6 +25,11 @@ export namespace ShareNext {
       ])
     })
     Bus.subscribe(MessageV2.Event.Updated, async (evt) => {
+      const share = await get(evt.properties.info.sessionID).catch((error) => {
+        if (error instanceof Storage.NotFoundError) return undefined
+        throw error
+      })
+      if (!share) return
       await sync(evt.properties.info.sessionID, [
         {
           type: "message",

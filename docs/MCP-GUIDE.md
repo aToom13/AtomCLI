@@ -77,6 +77,11 @@ one issuer are not sent to another; dynamic registration cannot replace explicit
 Older refresh tokens without an issuer may require signing in again with `atomcli mcp auth <name>`.
 
 Use `atomcli mcp debug <name>` for OAuth connection diagnostics and `atomcli --print-logs` for broader runtime logs. Debug output shows the remote origin and token presence, never token bytes or URL credentials/query parameters. The OAuth callback listens only on `127.0.0.1`; a busy callback port fails explicitly. Authorization URLs, callback codes, and state values are omitted from logs.
+
+## Tool catalog and explicit schema loading
+
 Connected servers no longer inject every tool schema into each model request. The `mcp_tools` tool lists every permitted tool in stable, 50-item pages, including its exact ID, server and a short description. Optional search only narrows the displayed page; it never determines which tools are available. Use `load` with exact IDs; their full schemas appear on the next model turn. Use `unload` explicitly to release schema budget.
 
 Selections belong to one session and survive checkpoints, compaction and resume. Child sessions start with their own selections. Permissions apply during discovery, loading and execution, including parent-session denials. Reviewers cannot access MCP discovery. Native execution-policy allowlists do not hide MCP tools. Server startup uses its configured timeout; there is no short discovery deadline.
+
+Changed schemas require explicit reload. Disconnected tools remain selected but are reported as stale and cannot execute. Loading is atomic: an unknown/denied ID or a schema-budget failure changes no selection. Full schemas may consume at most one quarter of the model context, capped at 16,000 estimated tokens. An oversized selection blocks MCP dispatch with an explicit notice; it is never silently truncated or evicted. List or unload tools to recover after switching to a smaller-context model. This is an estimated schema ceiling, not a guarantee that the entire conversation fits the provider context.

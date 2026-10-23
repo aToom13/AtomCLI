@@ -1,6 +1,7 @@
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { HarnessState } from "../harness-state"
 import { PromptContext } from "./context"
+import { VerificationEvidence } from "@/core/execution/verification-evidence"
 
 export namespace PromptFinalization {
   export async function durableFailureReasons(executionID: string) {
@@ -37,7 +38,16 @@ export namespace PromptFinalization {
   }
 
   export function isUserFacingReport(text: string) {
-    return Boolean(text.trim()) && !/<\s*(?:[｜|]DSML[｜|]|invoke\b|function_calls\b|tool_call\b)/iu.test(text)
+    // Fenced examples are documentation, never executable tool calls.
+    const report = text.replace(/```[^\n]*\n[\s\S]*?(?:```|$)/g, "").trim()
+    if (!text.trim()) return false
+    return !(
+      /(?:^|\n)\s*<\s*\/?\s*(?:[｜|]DSML[｜|]|system_dispatch\b|system_privacy\b|invoke\b|function_calls\b|tool_call\b)/iu.test(
+        report,
+      ) ||
+      /^\s*\{\s*"(?:type|id|name)"[\s\S]*"type"\s*:\s*"tool_use"/u.test(report) ||
+      /^\s*\{\s*"type"\s*:\s*"tool_use"/u.test(report)
+    )
   }
 
   export function reviewRetryText(reason?: string) {
@@ -90,19 +100,19 @@ export namespace PromptFinalization {
     ]
     const uniqueCompleted = [...new Set(completed)]
     if (uniqueCompleted.length > 0) {
-      lines.push("\nCompleted work:")
+      lines.push("\nReported work (not independent verification):")
       for (const item of uniqueCompleted) lines.push(`- ${item}`)
     }
 
-    const logs = HarnessState.getLastLogs(input.sessionID)
-    const verificationLogs = logs.filter((l) => /test|check|verify|lint|build/i.test(l.command))
-    if (verificationLogs.length > 0) {
-      lines.push("\nVerification:")
-      for (const l of verificationLogs) {
-        const status = l.exitCode === 0 ? "PASSED" : `FAILED (exit ${l.exitCode})`
-        lines.push(`- \`${l.command}\`: ${status}`)
-      }
+    const references = new Map<string, NonNullable<ExecutionCheckpoint.Result["checks"]>[number]>()
+    for (const record of checkpoints) {
+      for (const check of record.payload?.checkpoint?.checks ?? []) references.set(check.name, check)
     }
+    const checks = await VerificationEvidence.resolve(input.sessionID, [...references.values()])
+    if (checks.length > 0) {
+      lines.push("\nVerification:")
+      for (const check of checks) lines.push(`- ${check.name}: ${check.status}; call ${check.callID}; ${check.reason}`)
+    } else lines.push("\nVerification: BLOCKED; no structured check evidence was supplied.")
 
     const tasks = ExecutionRuntime.tasks(input.executionID)
     if (tasks.length) {
