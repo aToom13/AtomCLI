@@ -6,8 +6,8 @@ import fs from "fs/promises"
 import fsSync from "fs"
 import { afterAll, setDefaultTimeout } from "bun:test"
 
-// Bun can fall back to its 5s default when this package is reached through the
-// monorepo. Keep the effective timeout aligned with bunfig.toml.
+// Bun 1.3.14 applies this only to the first collected file. Slow integration
+// files must also set their timeout locally instead of relying on this preload.
 setDefaultTimeout(10_000)
 
 const dir = path.join(os.tmpdir(), "atomcli-test-data-" + process.pid)

@@ -176,14 +176,6 @@ export namespace SlashCommand {
   const modelChildren: Info[] = [
     { name: "select", aliases: ["list"], description: "choose a model", action: "model.list" },
     {
-      name: "adaptive-routing",
-      aliases: ["adaptive"],
-      description: "configure adaptive model proposals",
-      action: "adaptive-routing.set",
-      acceptsArguments: true,
-      children: adaptiveRoutingOptions,
-    },
-    {
       name: "think",
       aliases: ["reasoning"],
       description: "set model thinking level",

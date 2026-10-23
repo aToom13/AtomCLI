@@ -45,6 +45,10 @@ Plugin event subscriptions retain their initialized hooks for the instance lifet
 
 ## Package and test commands
 
+Bun 1.3.14 resets the preload's `setDefaultTimeout` between files despite `test.timeout`. Slow integration files must set their bounded timeout locally; see `AtomBase/test/tool/atomic-work.test.ts`.
+
+Scripted PTY fixtures reuse installed dependencies and disable downloaded auth plugins, including session resume. Live `pty-smoke.py --home ...` runs retain normal plugin loading.
+
 From the monorepo root:
 
 ```sh

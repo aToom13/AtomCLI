@@ -76,6 +76,9 @@ if not args.home:
     cache.mkdir(parents=True)
     (cache / "version").write_text("16")
     (cache / "models.json").write_bytes((package / "test/tool/fixtures/models-api.json").read_bytes())
+    # Use installed workspace dependencies; TUI fixtures must not wait on registry installs.
+    (home / ".atomcli/node_modules").symlink_to(package.parent / "node_modules", target_is_directory=True)
+    os.environ["ATOMCLI_DISABLE_DEFAULT_PLUGINS"] = "1"
 
 command = ["bun", "run", "--conditions=browser", str(package / "src/index.ts"), str(workspace)]
 if not args.type_prompt:

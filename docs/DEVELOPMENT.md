@@ -55,6 +55,10 @@ bun turbo test
 
 The models.dev fixture is the required test convention. `test/preload.ts` copies that fixture into the isolated test data directory, so the standard test suite does not require a live models.dev request.
 
+Bun 1.3.14 resets `setDefaultTimeout` between test files, even when it ran in preload; the configured `test.timeout` does not prevent this reset. Integration files that spawn real Git or test processes must set their bounded timeout locally, as `test/tool/atomic-work.test.ts` does.
+
+Scripted PTY fixtures reuse installed workspace dependencies and disable downloaded auth plugins, including during session resume. Live `pty-smoke.py --home ...` runs retain normal plugin loading.
+
 Prefer behavior-level tests over implementation-only assertions. A regression test should exercise the public boundary that failed, use an isolated temporary project when filesystem or Git state matters, and assert an observable result. Provider unit tests may mock transport, but live provider probes must remain explicitly opt-in and must distinguish rate limits from compatibility failures.
 
 Session prompt orchestration remains in `AtomBase/src/core/session/prompt.ts`. Pure context/checkpoint shaping stays in `AtomBase/src/core/session/prompt/context.ts`; turn preparation, persistence, processor creation, tool resolution, and execution side effects live in `AtomBase/src/core/session/prompt/turn-execution.ts`. Keep this boundary one-way: shaping helpers must not import the prompt loop or hold session state.

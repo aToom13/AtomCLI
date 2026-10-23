@@ -74,6 +74,7 @@ Running tools settle before that next step; a new message does not cancel or rep
 Ctrl+C opens the exit confirmation with Cancel selected by default. Move between Cancel and Confirm with the arrow keys or H/J/K/L, press Enter to choose, or press Escape to stay in AtomCLI.
 
 Normal prompts, slash commands, and shell submissions use the same delivery indicator. `FAILED` means the server rejected the request; `DELIVERY UNKNOWN` means the connection ended before an acknowledgement, so the operation may already have started and is never resent automatically. Focus the message and press Enter to restore its draft, inspect current session state, and retry only when safe.
+While the first prompt creates a session, repeated Enter presses are ignored. If session creation fails, the draft stays in the prompt for retry.
 
 The TUI does not replace the chat prompt with an execution-recovery panel. If the server rejects a new turn because earlier mutating work has an uncertain outcome, the submitted draft remains recoverable. Inspect the execution snapshot and reconcile that work through the session execution API before retrying; AtomCLI does not repeat the uncertain operation automatically.
 

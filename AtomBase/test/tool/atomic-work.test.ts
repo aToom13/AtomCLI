@@ -1,5 +1,5 @@
 import "../preload"
-import { expect, spyOn, test } from "bun:test"
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import path from "path"
 import { ExecutionRuntime } from "@/core/execution/runtime"
 import { runAutomaticTaskChecks } from "@/core/execution/task-verification"
@@ -30,6 +30,9 @@ import z from "zod"
 import { AgentTool } from "@/integrations/tool/agent-tool"
 import { OrchestrateTool } from "@/integrations/tool/orchestrate"
 import { Config } from "@/core/config/config"
+
+// Bun 1.3.14 resets the preload's timeout between files; these workflows spawn real Git and test processes.
+setDefaultTimeout(10_000)
 
 const reviewOptIn = Config.Info.parse({ review: { auto: true } })
 

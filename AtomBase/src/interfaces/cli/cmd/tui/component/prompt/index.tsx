@@ -62,6 +62,7 @@ export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
   let anchor: BoxRenderable
   let autocomplete: AutocompleteRef
+  let creatingSession = false
 
   const keybind = useKeybind()
   const local = useLocal()
@@ -512,7 +513,7 @@ export function Prompt(props: PromptProps) {
   }
 
   async function submit(hiddenInstruction?: string) {
-    if (props.disabled) return
+    if (props.disabled || creatingSession) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
     const trimmed = store.prompt.input.trim()
@@ -565,9 +566,24 @@ export function Prompt(props: PromptProps) {
       promptModelWarning()
       return
     }
-    const sessionID = props.sessionID
-      ? props.sessionID
-      : await sdk.client.session.create({}).then((response) => response.data!.id)
+    let sessionID = props.sessionID
+    if (!sessionID) {
+      creatingSession = true
+      try {
+        const response = await sdk.client.session.create({}, { throwOnError: true })
+        if (!response.data?.id) throw new Error("The server did not create a session")
+        sessionID = response.data.id
+      } catch (error) {
+        toast.show({
+          title: "Session creation failed",
+          message: error instanceof Error ? error.message : String(error),
+          variant: "error",
+        })
+        return
+      } finally {
+        creatingSession = false
+      }
+    }
     const messageID = Identifier.ascending("message")
     let inputText = store.prompt.input
 
@@ -877,12 +893,6 @@ export function Prompt(props: PromptProps) {
                   return
                 }
 
-                // Handle submission locally (moved from global command to prevent interception)
-                if (keybind.match("input_submit", e)) {
-                  e.preventDefault()
-                  submit()
-                  return
-                }
                 // Handle clipboard paste (Ctrl+V) - check for images first on Windows
                 // This is needed because Windows terminal doesn't properly send image data
                 // through bracketed paste, so we need to intercept the keypress and
@@ -964,7 +974,7 @@ export function Prompt(props: PromptProps) {
                     input.cursorOffset = input.plainText.length
                 }
               }}
-              onSubmit={submit}
+              onSubmit={() => void submit()}
               onPaste={(event: PasteEvent) =>
                 handlePromptPaste(event, {
                   disabled: !!props.disabled,
