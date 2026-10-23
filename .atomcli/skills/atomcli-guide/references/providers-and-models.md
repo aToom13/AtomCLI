@@ -228,7 +228,7 @@ Project overrides take precedence over global settings. Check both scopes when a
 - `PLAN` or `SUBSCRIPTION` means access is associated with a connected subscription. It does not mean zero cost or unlimited use.
 - `UNKNOWN` means the provider catalog omitted usable prices. Internal zero defaults never prove free access.
 
-OpenAI-compatible custom providers refresh `/models` every 15 seconds while AtomCLI runs, so gateway changes appear without logout/login. Authenticated catalogs with missing prices are classified as subscription access and excluded from AtomCLI Free. Explicit zero pricing remains required for `FREE`; use `provider.<id>.options.modelDiscovery: false` for a deliberately static model list.
+OpenAI-compatible custom providers refresh `/models` on access after a 15-second cache period measured from completed initialization. Routine model dispatch keeps using the last catalog during one background refresh; an explicit catalog listing waits for fresh results, so gateway changes appear without logout/login. Cold initialization and models.dev catalog changes still wait for loading. Authenticated catalogs with missing prices are classified as subscription access and excluded from AtomCLI Free. Explicit zero pricing remains required for `FREE`; use `provider.<id>.options.modelDiscovery: false` for a deliberately static model list.
 
 - Metered catalog prices are informational and may not reflect account-specific billing or negotiated limits.
 
@@ -257,6 +257,8 @@ Configure a non-default endpoint with `provider.ollama.options.baseURL`.
 
 If the gateway reports `OpenCode's free tier can only be used from within OpenCode`, it rejected the client; this does not establish a login requirement. Chat and verification requests use OpenCode metadata, helper calls generate `ses_`/`msg_` IDs, and SDK caches are isolated by provider. Restart the development process after source changes. One successful model call does not verify every route.
 
-Zen greeting turns retain real coding tools because requests advertising only `model_control` were rejected despite correct headers. Explicit permissions and execution-policy limits still apply. Tool-free helper calls are not covered by this fix.
+The anonymous list excludes deprecated models and models without explicitly free pricing. An older OpenCode menu can differ from the current catalog. In the 2026-10-18 accountless file-read audit, seven concrete models passed, Beam and Lightning timed out, GLM returned `429 Endpoint is unavailable`. After probe fixes, both cold Auto and Free passed the final file-read/exact-marker test, exit 0 and reported cost zero. This does not guarantee every model or request.
+
+Observed Zen quota/model-unavailable cooldowns survive restart. `429 Endpoint is unavailable` means temporary model unavailability, five minutes by default. Active cooldowns disappear from the picker and normal model listing; `atomcli models --verbose` retains diagnostics. Expiry or completed output permits recovery. Catalog presence alone never proves live availability.
 
 The models.dev cache under `~/.atomcli/cache/models.json` is regenerable implementation data, not the source of credentials or account entitlement.

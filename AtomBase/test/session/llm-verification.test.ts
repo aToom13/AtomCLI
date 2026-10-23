@@ -57,11 +57,11 @@ test("Free dispatch verifies missing tools and changed parameters without permit
       const attempt = await ModelVerification.begin({ key, providerID: concrete.providerID, modelID: concrete.id })
       await ModelVerification.verified(attempt, ["text"])
       const calls: any[] = []
-      const generate = spyOn(AICompat, "getGenerateText").mockResolvedValue((async (request: any) => {
+      const generate = spyOn(AICompat, "getStreamText").mockResolvedValue(((request: any) => {
         calls.push(request)
         return {
-          text: request.tools ? "" : "OK",
-          toolCalls: request.tools ? [{ toolName: "verification", input: { value: "ok" } }] : [],
+          text: request.toolChoice ? "" : "OK",
+          toolCalls: request.toolChoice ? [{ toolName: "verification", input: { value: "ok" } }] : [],
           usage: {},
         }
       }) as any)
@@ -69,12 +69,25 @@ test("Free dispatch verifies missing tools and changed parameters without permit
       const admission = spyOn(ExecutionRuntime, "admitModelCall").mockResolvedValue(undefined)
       const prepare = spyOn(LLM, "prepareRouteParams")
       try {
-        const input = { model, sessionID: "ses_dispatch_verification", abort: new AbortController().signal }
+        const execute = () => {
+          throw new Error("Probes must never execute coding tools")
+        }
+        const input = {
+          model,
+          sessionID: "ses_dispatch_verification",
+          abort: new AbortController().signal,
+          tools: { read: { description: "Read project files", inputSchema: { type: "object" }, execute } } as any,
+          system: ["Coding agent for this project"],
+        }
         await LLM.verifyDispatch(input, params, ["text", "tool"])
+        expect(params.options).not.toHaveProperty("store")
         expect(calls).toHaveLength(1)
         expect(calls[0].toolChoice).toEqual({ type: "tool", toolName: "verification" })
         expect(calls[0].temperature).toBe(0.2)
         expect(calls[0].topP).toBe(0.8)
+        expect(calls[0].system).toBe("Coding agent for this project")
+        expect(calls[0].tools.read.description).toBe("Read project files")
+        expect(calls[0].tools.read.execute).toBeUndefined()
         expect(prepare).not.toHaveBeenCalled()
         expect(ModelVerification.isVerified(await ModelVerification.get(key), "tool")).toBe(true)
 

@@ -121,7 +121,7 @@ for (const decision of ["accept", "accept_free", "reject", "verification_failure
                         mode: "free",
                         freeOnly: true,
                         requested: "atomcli/atomcli-free",
-                        allowedProviders: [target.providerID],
+                        allowedProviders: ["atomcli"],
                       })
                     return { status: "stop" }
                   },

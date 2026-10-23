@@ -945,7 +945,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                           parentSession,
                           fullPrompt(),
                         )
-                        const requested = preferredModel(explicit, configured, routed)
+                        const requested =
+                          fallbackModel.providerID === "atomcli" && fallbackModel.modelID === "atomcli-free"
+                            ? fallbackModel
+                            : preferredModel(explicit, configured, routed)
                         try {
                           model = await canonicalModel(requested, parentSession, fullPrompt())
                         } catch (error) {
@@ -1126,7 +1129,10 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                           parentSession,
                           fullPrompt(),
                         )
-                        const reviewerRequested = reviewerAgent.model ?? reviewerRouted
+                        const reviewerRequested =
+                          fallbackModel.providerID === "atomcli" && fallbackModel.modelID === "atomcli-free"
+                            ? fallbackModel
+                            : (reviewerAgent.model ?? reviewerRouted)
                         try {
                           reviewerModel = await canonicalModel(reviewerRequested, parentSession, fullPrompt())
                         } catch (error) {

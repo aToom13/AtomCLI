@@ -62,7 +62,7 @@ test("provider requests have a finite default timeout", () => {
   expect(Provider.requestTimeout({ timeout: false })).toBe(false)
 })
 
-test("AtomCLI Zen requests use the current OpenCode client identity", async () => {
+test("Zen requests preserve the upstream protocol version and session metadata", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
@@ -78,7 +78,6 @@ test("AtomCLI Zen requests use the current OpenCode client identity", async () =
       expect(headers.get("x-opencode-request")).toBe("request")
       expect(headers.get("x-opencode-client")).toBe("cli")
       expect(headers.get("User-Agent")).toBe(`opencode/${Installation.OPENCODE_VERSION}`)
-      expect(Installation.OPENCODE_VERSION).toBe("1.18.31")
       expect(headers.has("x-atomcli-session")).toBe(false)
       const probeHeaders = Provider._internals.openCodeHeaders()
       expect(probeHeaders.get("x-opencode-session")).toMatch(/^ses_[a-zA-Z0-9]{26}$/)
@@ -391,12 +390,26 @@ test("atomcli-free never inherits AtomCLI Auto's paid model permission", async (
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      await expect(
-        Provider.getModel("atomcli", "atomcli-free", {
-          session: { id: "ses_paid_free_alias" },
-          prompt: "Say hello.",
-        }),
-      ).rejects.toThrow("atomcli-free: no eligible model is configured")
+      const provider = (await Provider.getProvider("atomcli"))!
+      const concrete = Object.values(provider.models).find(
+        (m) => !m.id.startsWith("atomcli-") && Provider.isExplicitlyFree(m),
+      )!
+      const key = await ModelVerification.identity(concrete, provider)
+      await ModelVerification.verified(
+        await ModelVerification.begin({ key, providerID: concrete.providerID, modelID: concrete.id }),
+        ["text"],
+      )
+      const selected = await Provider.getModel("atomcli", "atomcli-free", {
+        session: { id: "ses_paid_free_alias" },
+        prompt: "Say hello.",
+      })
+      expect(selected.providerID).toBe("atomcli")
+      expect(Provider.isExplicitlyFree(selected)).toBe(true)
+      expect(Provider.routePolicy(selected)).toMatchObject({
+        mode: "free",
+        freeOnly: true,
+        allowedProviders: ["atomcli"],
+      })
     },
   })
 })

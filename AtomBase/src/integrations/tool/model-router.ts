@@ -354,12 +354,16 @@ export function modelIsRoutable(model: Provider.Model): boolean {
 export function selectCandidates(
   freeModels: Array<[string, Provider.Model]>,
   category: TaskCategory,
-  autoRouterConfig?: { excluded_models?: string[] },
+  autoRouterConfig?: { excluded_models?: string[]; allowed_models?: string[]; allowed_providers?: string[] },
 ): Array<[string, Provider.Model]> {
   const excluded = new Set(autoRouterConfig?.excluded_models ?? [])
   const routableModels = freeModels.filter(
     ([id, model]) =>
       modelIsRoutable(model) &&
+      (autoRouterConfig?.allowed_providers === undefined ||
+        autoRouterConfig.allowed_providers.includes(model.providerID)) &&
+      (autoRouterConfig?.allowed_models === undefined ||
+        autoRouterConfig.allowed_models.includes(`${model.providerID}/${id}`)) &&
       !excluded.has(id) &&
       !excluded.has(`${model.providerID}/${id}`) &&
       categoryHardOk(model, category),
@@ -419,7 +423,10 @@ export function finalScore(
   score -= failures * 15
 
   // 6. Kullanıcı Rating Çarpanı (auto_router.model_ratings, -3..+3)
-  const userRating = autoRouterConfig?.model_ratings?.[id]?.[category] ?? 0
+  const userRating =
+    autoRouterConfig?.model_ratings?.[`${m.providerID}/${id}`]?.[category] ??
+    autoRouterConfig?.model_ratings?.[id]?.[category] ??
+    0
   score += userRating * 15 // -45 ile +45 arası bonus/ceza
 
   // 7. Outcome quality learned from tests, reviewer verdicts and user corrections.
@@ -570,6 +577,8 @@ export async function selectModel(
   if (!Array.isArray(allFreeModelsOrFallback)) {
     // Old signature: selectModel(category, fallback)
     const fallback = allFreeModelsOrFallback
+    if (fallback.providerID === "atomcli" && ["atomcli-auto", "atomcli-free"].includes(fallback.modelID))
+      return fallback
     const config = await Config.get()
 
     if (!config.experimental?.smart_model_routing) {
@@ -577,7 +586,7 @@ export async function selectModel(
     }
 
     try {
-      const providers = await Provider.list()
+      const providers = await Provider.list(false)
       const atomcliProvider = providers["atomcli"]
       let freeModels: Array<[string, Provider.Model]> = []
       if (atomcliProvider) {

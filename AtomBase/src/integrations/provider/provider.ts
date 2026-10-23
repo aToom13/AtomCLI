@@ -737,18 +737,25 @@ export namespace Provider {
     // AtomCLI Auto / Free: resolve to a concrete model with fresh capability evidence.
     // Returns the REAL model entry so the entire pipeline uses correct metadata
     if (providerID === "atomcli" && (modelID === "atomcli-auto" || modelID === "atomcli-free")) {
+      await list(false)
       const isAuto = modelID === "atomcli-auto"
       const config = await Config.get()
-      const mode = config.experimental?.auto_mode ?? "quality"
-      const autoRouterConfig = config.experimental?.auto_router
-      const allowedProviders = new Set(autoRouterConfig?.allowed_providers ?? Object.keys(s.providers))
-      const allowPaidModels = isAuto && autoRouterConfig?.allow_paid_models === true
-      const allowPaidProbes = isAuto && allowPaidModels && autoRouterConfig?.allow_paid_probes === true
+      const autoRouterConfig = isAuto ? config.experimental?.auto_router : config.experimental?.free_router
+      const mode = autoRouterConfig?.mode ?? (isAuto ? config.experimental?.auto_mode : undefined) ?? "quality"
+      const allowedProviders = new Set(
+        isAuto ? (config.experimental?.auto_router?.allowed_providers ?? Object.keys(s.providers)) : ["atomcli"],
+      )
+      const allowPaidModels = isAuto && config.experimental?.auto_router?.allow_paid_models === true
+      const allowPaidProbes = isAuto && allowPaidModels && config.experimental?.auto_router?.allow_paid_probes === true
       const availableModels = Object.entries(s.providers).flatMap(([candidateProviderID, candidateProvider]) => {
         if (!allowedProviders.has(candidateProviderID)) return []
         return Object.entries(candidateProvider.models).filter(([id, model]) => {
           if (candidateProviderID === "atomcli" && (id === "atomcli-auto" || id === "atomcli-free")) return false
-          return isExplicitlyFree(model) || allowPaidModels
+          return (
+            (autoRouterConfig?.allowed_models === undefined ||
+              autoRouterConfig.allowed_models.includes(`${candidateProviderID}/${id}`)) &&
+            (isExplicitlyFree(model) || allowPaidModels)
+          )
         })
       })
 
@@ -805,7 +812,8 @@ export namespace Provider {
       const complexity = promptText ? estimateComplexity(promptText) : 0
       const { TaskProfile } = await import("@/core/routing/task-profile")
       const taskProfile = TaskProfile.infer(promptText, category === "general" ? undefined : category)
-      const requiredCapabilities: Array<"text" | "tool"> = taskProfile.needsTools ? ["text", "tool"] : ["text"]
+      const requiredCapabilities: Array<"text" | "tool"> =
+        taskProfile.needsTools || context?.agent ? ["text", "tool"] : ["text"]
       const effectiveParams = async (model: Model) => {
         if (!context?.agent || !context?.user) return undefined
         const { LLM } = await import("@/core/session/llm")
@@ -853,6 +861,7 @@ export namespace Provider {
                 requested: `${providerID}/${modelID}`,
                 mode: isAuto ? "auto" : "free",
                 allowedProviders: Array.from(allowedProviders),
+                allowedModels: autoRouterConfig?.allowed_models,
                 excluded: autoRouterConfig?.excluded_models ?? [],
                 requiredCapabilities,
                 freeOnly: !allowPaidModels,
@@ -878,7 +887,7 @@ export namespace Provider {
             .filter(({ m }) => isExplicitlyFree(m) || allowPaidProbes)
             .map(({ m }) => `${m.providerID}/${m.id}`)
           const { ModelFallback } = await import("./fallback")
-          const deadline = Date.now() + 30_000
+          const deadline = Date.now() + 60_000
           // Complete every required capability for a small batch before moving
           // on; probing all text candidates first can starve tool verification.
           for (let i = 0; i < probeCandidates.length && Date.now() < deadline; i += 2) {
@@ -886,7 +895,7 @@ export namespace Provider {
               const remaining = deadline - Date.now()
               if (remaining <= 0) break
               await ModelFallback.probeModels(probeCandidates.slice(i, i + 2), {
-                timeoutMs: Math.min(7000, remaining),
+                timeoutMs: Math.min(20_000, remaining),
                 totalTimeoutMs: remaining,
                 concurrency: 2,
                 capability,
@@ -966,6 +975,7 @@ export namespace Provider {
               requested: `${providerID}/${modelID}`,
               mode: isAuto ? "auto" : "free",
               allowedProviders: Array.from(allowedProviders),
+              allowedModels: autoRouterConfig?.allowed_models,
               excluded: autoRouterConfig?.excluded_models ?? [],
               requiredCapabilities,
               freeOnly: !allowPaidModels,

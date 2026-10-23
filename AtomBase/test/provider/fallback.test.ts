@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, it, expect } from "bun:test"
 import { ModelFallback } from "@/integrations/provider/fallback"
 

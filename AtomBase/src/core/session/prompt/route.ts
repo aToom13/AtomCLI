@@ -70,19 +70,32 @@ export async function resolveRouteAndExpert(input: RouteInput) {
         const requestedAlias = acceptedProposal.evidenceRefs
           .find((ref) => ref.startsWith("requested-route:"))
           ?.slice(16)
-        const autoRouter = (await Config.get()).experimental?.auto_router
+        const routingConfig = (await Config.get()).experimental
+        const isFreeAlias = requestedAlias?.endsWith("/atomcli-free")
+        const autoRouter = isFreeAlias ? routingConfig?.free_router : routingConfig?.auto_router
         const routePolicy: Provider.RoutePolicy = {
           requested: requestedAlias ?? `${acceptedProposal.toRoute.providerID}/${acceptedProposal.toRoute.modelID}`,
           mode: requestedAlias?.endsWith("/atomcli-free")
             ? "free"
             : requestedAlias
               ? "auto"
-              : explicitRequest
-                ? "explicit"
-                : "auto",
+              : !explicitRequest && inheritedPolicy.mode === "free"
+                ? "free"
+                : explicitRequest
+                  ? "explicit"
+                  : "auto",
           allowedProviders: requestedAlias
-            ? (autoRouter?.allowed_providers ?? [target.providerID])
-            : [target.providerID],
+            ? isFreeAlias
+              ? ["atomcli"]
+              : (routingConfig?.auto_router?.allowed_providers ?? [target.providerID])
+            : explicitRequest
+              ? [target.providerID]
+              : inheritedPolicy.allowedProviders,
+          allowedModels: requestedAlias
+            ? autoRouter?.allowed_models
+            : explicitRequest
+              ? undefined
+              : inheritedPolicy.allowedModels,
           excluded: requestedAlias
             ? (autoRouter?.excluded_models ?? [])
             : explicitRequest
@@ -90,7 +103,7 @@ export async function resolveRouteAndExpert(input: RouteInput) {
               : inheritedPolicy.excluded,
           requiredCapabilities: ["text", "tool"],
           freeOnly: requestedAlias
-            ? requestedAlias.endsWith("/atomcli-free") || !autoRouter?.allow_paid_models
+            ? requestedAlias.endsWith("/atomcli-free") || !routingConfig?.auto_router?.allow_paid_models
             : explicitRequest
               ? false
               : inheritedPolicy.freeOnly || lastUser.model.modelID === "atomcli-free",

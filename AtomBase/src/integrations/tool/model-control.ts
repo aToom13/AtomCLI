@@ -71,6 +71,13 @@ export namespace ModelControl {
       if (message.info.role !== "user") throw new Error("Model switching requires a user invocation")
       const user = { ...message.info, variant: args.variant }
       const agent = await Agent.get(ctx.agent)
+      const inheritedPolicy = ctx.extra?.model ? Provider.routePolicy(ctx.extra.model) : undefined
+      if (
+        args.scope !== "model" &&
+        inheritedPolicy?.mode === "free" &&
+        (args.providerID !== "atomcli" || args.modelID === "atomcli-auto")
+      )
+        throw new Error("Free routing only permits atomcli models")
       const alias = args.providerID === "atomcli" && ["atomcli-auto", "atomcli-free"].includes(args.modelID)
       const target = await Provider.getModel(
         args.providerID,
@@ -136,6 +143,15 @@ export namespace ModelControl {
       )
         throw new Error("This route was already requested in this user turn; respect its decision and do not repeat it")
       const policy = Provider.routePolicy(ctx.extra?.model ?? target)
+      if (
+        args.scope !== "model" &&
+        !(await Provider.isRouteEligible(
+          target,
+          { ...policy, variant: args.variant, requireVerification: false },
+          "tool",
+        ))
+      )
+        throw new Error("The proposed model is outside the current routing provider/model restrictions")
       if (args.scope !== "model" && policy.freeOnly && !Provider.isExplicitlyFree(target))
         throw new Error(
           "Free routing cannot automatically escalate to a paid model; request a model switch for approval",

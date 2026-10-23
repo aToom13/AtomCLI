@@ -34,6 +34,15 @@ export namespace TaskDispatch {
           ]
         : config.parts,
     } as SubAgent.SpawnConfig
+    const parentUser = (
+      await Session.messages({ sessionID: config.parentSessionID, limit: 20, excludePatches: true })
+    ).findLast((message) => message.info.role === "user")
+    if (
+      parentUser?.info.role === "user" &&
+      parentUser.info.model.providerID === "atomcli" &&
+      parentUser.info.model.modelID === "atomcli-free"
+    )
+      spawnConfig.model = parentUser.info.model
     let pending: Promise<SubAgent.SpawnResult>
     if (guard) {
       using _lock = await Lock.write(`execution-tasks:${guard.execution.executionID}`)

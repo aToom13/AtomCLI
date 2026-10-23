@@ -1,4 +1,5 @@
-import { describe, test, expect, mock } from "bun:test"
+import "../preload"
+import { describe, test, expect } from "bun:test"
 import { SessionCompaction } from "@/core/session/compaction"
 import { SessionSummary } from "@/core/session/summary"
 import { Instance } from "@/services/project/instance"
@@ -21,7 +22,7 @@ describe("Faz B Null Safety & Boundary Checks", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        expect(
+        await expect(
           SessionCompaction.process({
             parentID: "non-existent-parent-id",
             messages: [],
@@ -82,7 +83,7 @@ describe("Faz B Null Safety & Boundary Checks", () => {
           const outsidePath = path.resolve(tmp.path, "../outside-file.txt")
           const fileUrl = pathToFileURL(outsidePath).href
 
-          expect(
+          await expect(
             SessionPrompt.prompt({
               sessionID: session.id,
               agent: "agent",
@@ -129,7 +130,7 @@ describe("Faz B Null Safety & Boundary Checks", () => {
           }
 
           const externalWorkdir = path.resolve(tmp.path, "../outside-dir")
-          expect(
+          await expect(
             instance.execute(
               {
                 action: "screenshot",

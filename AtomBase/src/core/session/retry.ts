@@ -1,5 +1,6 @@
 import type { NamedError } from "@atomcli/util/error"
 import { MessageV2 } from "./message-v2"
+import { ProviderTransform } from "@/integrations/provider/transform"
 
 export namespace SessionRetry {
   export const RETRY_INITIAL_DELAY = 2000
@@ -84,6 +85,8 @@ export namespace SessionRetry {
 
   export function retryable(error: ReturnType<NamedError["toObject"]>) {
     if (MessageV2.APIError.isInstance(error)) {
+      if (error.data.statusCode === 403 && ProviderTransform.isZenFreeTierRejection(error.data.responseBody ?? ""))
+        return "Free model temporarily unavailable"
       // Check isRetryable flag from AI SDK
       if (error.data.isRetryable) {
         return error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message

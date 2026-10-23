@@ -1073,9 +1073,14 @@ export type Config = {
      */
     auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
     /**
-     * Auto router user preferences
+     * AtomCLI Auto routing preferences
      */
     auto_router?: {
+      mode?: "speed" | "balanced" | "quality" | "reasoning"
+      /**
+       * Optional provider/model allowlist; omitted means all models from allowed providers
+       */
+      allowed_models?: Array<string>
       /**
        * Providers that AtomCLI Auto may consider; defaults to all connected providers
        */
@@ -1088,6 +1093,44 @@ export type Config = {
        * Allow automatic verification probes for models that are not explicitly free
        */
       allow_paid_probes?: boolean
+      /**
+       * Models to exclude from auto-routing selection
+       */
+      excluded_models?: Array<string>
+      /**
+       * Per-model user ratings (-3 to +3) for each task category
+       */
+      model_ratings?: {
+        [key: string]: {
+          coding?: number
+          documentation?: number
+          analysis?: number
+          general?: number
+        }
+      }
+      /**
+       * Force a specific model for a task category
+       */
+      category_overrides?: {
+        coding?: string
+        documentation?: string
+        analysis?: string
+        general?: string
+      }
+      /**
+       * Controlled probability of exploring a non-top model; zero keeps routing deterministic
+       */
+      exploration_rate?: number
+    }
+    /**
+     * Independent AtomCLI Free preferences; only explicitly free atomcli models are eligible
+     */
+    free_router?: {
+      mode?: "speed" | "balanced" | "quality" | "reasoning"
+      /**
+       * Optional provider/model allowlist; omitted means all models from allowed providers
+       */
+      allowed_models?: Array<string>
       /**
        * Models to exclude from auto-routing selection
        */
@@ -3531,9 +3574,14 @@ export type ConfigUpdateData = {
        */
       auto_mode?: "speed" | "balanced" | "quality" | "reasoning"
       /**
-       * Auto router user preferences
+       * AtomCLI Auto routing preferences
        */
       auto_router?: {
+        mode?: "speed" | "balanced" | "quality" | "reasoning"
+        /**
+         * Optional provider/model allowlist; omitted means all models from allowed providers
+         */
+        allowed_models?: Array<string>
         /**
          * Providers that AtomCLI Auto may consider; defaults to all connected providers
          */
@@ -3546,6 +3594,44 @@ export type ConfigUpdateData = {
          * Allow automatic verification probes for models that are not explicitly free
          */
         allow_paid_probes?: boolean
+        /**
+         * Models to exclude from auto-routing selection
+         */
+        excluded_models?: Array<string>
+        /**
+         * Per-model user ratings (-3 to +3) for each task category
+         */
+        model_ratings?: {
+          [key: string]: {
+            coding?: number
+            documentation?: number
+            analysis?: number
+            general?: number
+          }
+        }
+        /**
+         * Force a specific model for a task category
+         */
+        category_overrides?: {
+          coding?: string
+          documentation?: string
+          analysis?: string
+          general?: string
+        }
+        /**
+         * Controlled probability of exploring a non-top model; zero keeps routing deterministic
+         */
+        exploration_rate?: number
+      }
+      /**
+       * Independent AtomCLI Free preferences; only explicitly free atomcli models are eligible
+       */
+      free_router?: {
+        mode?: "speed" | "balanced" | "quality" | "reasoning"
+        /**
+         * Optional provider/model allowlist; omitted means all models from allowed providers
+         */
+        allowed_models?: Array<string>
         /**
          * Models to exclude from auto-routing selection
          */

@@ -22,7 +22,7 @@ Run `atomcli auth login --provider cline` and complete the browser sign-in. Atom
 - models promoted by Cline's `recommended-models` free list;
 - every catalog model whose ID ends in `:free`, including models such as Gemma that may not appear in Cline's promoted UI list.
 
-Both groups are marked explicitly zero-cost and can participate in `atomcli/atomcli-free`. A free classification describes current billing metadata, not current health: upstream quota, 404, or 429 failures can still make an individual model temporarily unavailable. Check the live list with `atomcli models cline` after login.
+Both groups are marked explicitly zero-cost and can participate in AtomCLI Auto. AtomCLI Free is restricted to the `atomcli` provider. A free classification describes current billing metadata, not current health: upstream quota, 404, or 429 failures can still make an individual model temporarily unavailable. Check the live list with `atomcli models cline` after login.
 
 AtomCLI enriches matching Cline entries from OpenRouter's public model metadata, cached for five minutes. Reasoning-capable models then expose supported thinking variants in the TUI and through `--variant`; catalog loading still works if metadata enrichment is unavailable.
 
@@ -57,7 +57,7 @@ The model picker distinguishes these access types:
 - `PLAN` / `SUBSCRIPTION`: the model is available through a connected subscription, such as ChatGPT OAuth for Codex models. This does not mean the model is free.
 - `UNKNOWN`: the provider did not publish usable pricing. Zero-filled internal defaults are never proof of free access.
 
-OpenAI-compatible custom providers refresh `/models` every 15 seconds while AtomCLI runs. Newly linked gateway models therefore appear without logout/login. Authenticated custom catalogs that omit pricing are shown as subscription access and remain excluded from AtomCLI Free; explicit zero pricing is required for `FREE`. Set `provider.<id>.options.modelDiscovery` to `false` only for a deliberately static catalog.
+OpenAI-compatible custom providers refresh `/models` on access after a 15-second cache period measured from completed initialization. Routine model dispatch uses the last catalog while one refresh runs in the background; an explicit catalog listing waits for that refresh, so newly linked gateway models appear without logout/login. Cold initialization and changes to the models.dev catalog still wait for loading. Authenticated custom catalogs that omit pricing are shown as subscription access and remain excluded from AtomCLI Free; explicit zero pricing is required for `FREE`. Set `provider.<id>.options.modelDiscovery` to `false` only for a deliberately static catalog.
 
 - Models with metered catalog pricing do not receive a free badge; their per-million-token input and output prices appear in the details panel.
 
@@ -85,7 +85,7 @@ By default, both aliases consider explicitly zero-cost models from connected pro
 }
 ```
 
-With this example, Auto can reuse fresh evidence for a paid OpenAI model but will not spend money probing it automatically. Free ignores both paid flags and remains free-only.
+With this example, Auto can reuse fresh evidence for a paid OpenAI model but will not spend money probing it automatically. Free remains restricted to verified, zero-cost `atomcli` models. Its separate configuration can use, for example, `"free_router": { "mode": "speed", "allowed_models": ["atomcli/big-pickle"] }` inside `experimental`.
 
 If no eligible verified candidate exists, the session stores a visible assistant error under the selected Auto/Free alias instead of leaving only the user's message or relaxing exclusions, price, capabilities, or verification. The TUI also reports transport failures immediately. Reloading history preserves the model-selection failure and does not resubmit the prompt automatically.
 

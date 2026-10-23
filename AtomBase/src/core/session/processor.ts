@@ -757,16 +757,29 @@ export namespace SessionProcessor {
                     if (config.fallback?.enabled === false) {
                       log.info("fallback disabled by config")
                     } else {
+                      const routePolicy = Provider.routePolicy(streamInput.model)
+                      const fallbackAbort = AbortSignal.any([input.abort, AbortSignal.timeout(60_000)])
                       // Try each fallback model in order
                       for (const fallbackModelID of fallbackModels) {
+                        if (fallbackAbort.aborted) break
                         try {
                           const parsed = Provider.parseModel(fallbackModelID)
+                          if (
+                            routePolicy.mode !== "explicit" &&
+                            !routePolicy.allowedProviders.includes(parsed.providerID)
+                          )
+                            continue
+                          if (routePolicy.mode === "free" && parsed.providerID !== "atomcli") continue
+                          if (["atomcli-auto", "atomcli-free"].includes(parsed.modelID)) continue
                           const fallbackModel = await Provider.getModel(parsed.providerID, parsed.modelID)
 
-                          const routePolicy = Provider.routePolicy(streamInput.model)
                           const eligible = await Promise.all(
                             routePolicy.requiredCapabilities.map((capability) =>
-                              Provider.isRouteEligible(fallbackModel, routePolicy, capability),
+                              Provider.isRouteEligible(
+                                fallbackModel,
+                                { ...routePolicy, requireVerification: false },
+                                capability,
+                              ),
                             ),
                           )
                           if (eligible.some((value) => !value)) continue
@@ -792,6 +805,19 @@ export namespace SessionProcessor {
                             routePolicy.requireVerification || routePolicy.freeOnly
                               ? Provider.applyRoutePolicy(fallbackModel, routePolicy)
                               : fallbackModel
+                          if (routePolicy.requireVerification) {
+                            const provider = await Provider.getProvider(fallbackModel.providerID)
+                            const { params } = await LLM.prepareRouteParams({
+                              ...streamInput,
+                              model: routedFallback,
+                              provider,
+                            })
+                            await LLM.verifyDispatch(
+                              { ...streamInput, model: routedFallback, abort: fallbackAbort },
+                              params,
+                              Object.keys(streamInput.tools).length ? ["text", "tool"] : ["text"],
+                            )
+                          }
                           const sanitizedMessages = streamInput.messages?.map((msg: any) => {
                             if (!Array.isArray(msg.content)) return msg
                             const content = msg.content.map((c: any) => {

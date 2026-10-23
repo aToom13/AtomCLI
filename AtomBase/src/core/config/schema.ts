@@ -4,6 +4,57 @@ import { LSPServer } from "@/integrations/lsp/server"
 import { Log } from "@/util/util/log"
 
 export namespace ConfigSchema {
+  export const RouterPreferences = z.object({
+    mode: z.enum(["speed", "balanced", "quality", "reasoning"]).optional(),
+    allowed_models: z
+      .array(z.string())
+      .optional()
+      .describe("Optional provider/model allowlist; omitted means all models from allowed providers"),
+    allowed_providers: z
+      .array(z.string())
+      .optional()
+      .describe("Providers that AtomCLI Auto may consider; defaults to all connected providers"),
+    allow_paid_models: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Allow AtomCLI Auto to select verified models that are not explicitly free"),
+    allow_paid_probes: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Allow automatic verification probes for models that are not explicitly free"),
+    excluded_models: z.array(z.string()).optional().describe("Models to exclude from auto-routing selection"),
+    model_ratings: z
+      .record(
+        z.string(),
+        z.object({
+          coding: z.number().min(-3).max(3).optional().default(0),
+          documentation: z.number().min(-3).max(3).optional().default(0),
+          analysis: z.number().min(-3).max(3).optional().default(0),
+          general: z.number().min(-3).max(3).optional().default(0),
+        }),
+      )
+      .optional()
+      .describe("Per-model user ratings (-3 to +3) for each task category"),
+    category_overrides: z
+      .object({
+        coding: z.string().optional(),
+        documentation: z.string().optional(),
+        analysis: z.string().optional(),
+        general: z.string().optional(),
+      })
+      .optional()
+      .describe("Force a specific model for a task category"),
+    exploration_rate: z
+      .number()
+      .min(0)
+      .max(0.5)
+      .optional()
+      .default(0)
+      .describe("Controlled probability of exploring a non-top model; zero keeps routing deterministic"),
+  })
+
   export const McpLocal = z
     .object({
       type: z.literal("local").describe("Type of MCP server connection"),
@@ -853,54 +904,14 @@ export namespace ConfigSchema {
             .enum(["speed", "balanced", "quality", "reasoning"])
             .optional()
             .describe("Routing mode for automatic model selection"),
-          auto_router: z
-            .object({
-              allowed_providers: z
-                .array(z.string())
-                .optional()
-                .describe("Providers that AtomCLI Auto may consider; defaults to all connected providers"),
-              allow_paid_models: z
-                .boolean()
-                .optional()
-                .default(false)
-                .describe("Allow AtomCLI Auto to select verified models that are not explicitly free"),
-              allow_paid_probes: z
-                .boolean()
-                .optional()
-                .default(false)
-                .describe("Allow automatic verification probes for models that are not explicitly free"),
-              excluded_models: z.array(z.string()).optional().describe("Models to exclude from auto-routing selection"),
-              model_ratings: z
-                .record(
-                  z.string(),
-                  z.object({
-                    coding: z.number().min(-3).max(3).optional().default(0),
-                    documentation: z.number().min(-3).max(3).optional().default(0),
-                    analysis: z.number().min(-3).max(3).optional().default(0),
-                    general: z.number().min(-3).max(3).optional().default(0),
-                  }),
-                )
-                .optional()
-                .describe("Per-model user ratings (-3 to +3) for each task category"),
-              category_overrides: z
-                .object({
-                  coding: z.string().optional(),
-                  documentation: z.string().optional(),
-                  analysis: z.string().optional(),
-                  general: z.string().optional(),
-                })
-                .optional()
-                .describe("Force a specific model for a task category"),
-              exploration_rate: z
-                .number()
-                .min(0)
-                .max(0.5)
-                .optional()
-                .default(0)
-                .describe("Controlled probability of exploring a non-top model; zero keeps routing deterministic"),
-            })
+          auto_router: RouterPreferences.optional().describe("AtomCLI Auto routing preferences"),
+          free_router: RouterPreferences.omit({
+            allowed_providers: true,
+            allow_paid_models: true,
+            allow_paid_probes: true,
+          })
             .optional()
-            .describe("Auto router user preferences"),
+            .describe("Independent AtomCLI Free preferences; only explicitly free atomcli models are eligible"),
           mcp_timeout: z
             .number()
             .int()
