@@ -126,6 +126,7 @@
   "scanPairingCode": "AtomCLI'ın gösterdiği kodu tarayın. Uygulama önce Tailscale'i, ardından yerel ağınızı deneyecek.",
   "pastePairingCode": "Eşleştirme kodunu yapıştır",
   "clipboardNoPairingCode": "Panoda eşleştirme kodu yok.",
+  "cameraUnavailable": "Kamera kullanılamıyor. Devam etmek için eşleştirme kodunu yapıştırın.",
   "cameraStartFailed": "Kamera başlatılamadı: {error}",
   "markUpImage": "Görseli işaretle",
   "markUpAnImage": "Bir görseli işaretle",

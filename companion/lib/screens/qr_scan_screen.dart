@@ -12,6 +12,7 @@ import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
 import '../services/auth_service.dart';
 import '../services/pairing_service.dart';
+import '../services/mobile_input_service.dart';
 import '../services/profile_switch_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/control_widgets.dart';
@@ -27,10 +28,19 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
   final MobileScannerController _controller = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
   );
+  bool? _cameraAvailable;
   bool _processing = false;
   bool _torchEnabled = false;
   String? _status;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    MobileInputService.instance.hasCamera().then((available) {
+      if (mounted) setState(() => _cameraAvailable = available);
+    });
+  }
 
   @override
   void dispose() {
@@ -165,7 +175,7 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
       _error = null;
     });
     try {
-      await _controller.start();
+      if (_cameraAvailable == true) await _controller.start();
     } catch (error) {
       _setError(strings.cameraStartFailed(_cleanError(error)));
     }
@@ -217,12 +227,14 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                   const Spacer(),
                   IconButton(
                     tooltip: strings.toggleTorch,
-                    onPressed: () async {
-                      await _controller.toggleTorch();
-                      if (mounted) {
-                        setState(() => _torchEnabled = !_torchEnabled);
-                      }
-                    },
+                    onPressed: _cameraAvailable != true
+                        ? null
+                        : () async {
+                            await _controller.toggleTorch();
+                            if (mounted) {
+                              setState(() => _torchEnabled = !_torchEnabled);
+                            }
+                          },
                     icon: Icon(
                       _torchEnabled
                           ? Icons.flash_on_rounded
@@ -243,38 +255,52 @@ class _QrScanScreenState extends ConsumerState<QrScanScreen> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      MobileScanner(
-                        controller: _controller,
-                        onDetect: _handleBarcode,
-                      ),
+                      if (_cameraAvailable == true)
+                        MobileScanner(
+                          controller: _controller,
+                          onDetect: _handleBarcode,
+                        )
+                      else
+                        Center(
+                          child: _cameraAvailable == null
+                              ? const CircularProgressIndicator()
+                              : Padding(
+                                  padding: const EdgeInsets.all(24),
+                                  child: Text(
+                                    strings.cameraUnavailable,
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                        ),
                       DecoratedBox(
                         decoration: BoxDecoration(
                           border: Border.all(color: AppPalette.strokeStrong),
                           borderRadius: BorderRadius.circular(26),
                         ),
                       ),
-                      Center(
-                        child: Container(
-                          width: 238,
-                          height: 238,
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                              color: AppPalette.primary,
-                              width: 2,
-                            ),
-                            borderRadius: BorderRadius.circular(24),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppPalette.primary.withValues(
-                                  alpha: 0.18,
-                                ),
-                                blurRadius: 28,
-                                spreadRadius: 2,
+                      if (_cameraAvailable == true)
+                        Center(
+                          child: Container(
+                            width: 238,
+                            height: 238,
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: AppPalette.primary,
+                                width: 2,
                               ),
-                            ],
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppPalette.primary.withValues(
+                                    alpha: 0.18,
+                                  ),
+                                  blurRadius: 28,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
                       if (_processing)
                         ColoredBox(
                           color: AppPalette.background.withValues(alpha: 0.78),

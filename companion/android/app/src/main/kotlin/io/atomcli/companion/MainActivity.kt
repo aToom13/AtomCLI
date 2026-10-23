@@ -2,6 +2,7 @@ package io.atomcli.companion
 
 import android.content.Intent
 import android.database.Cursor
+import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -46,6 +47,9 @@ class MainActivity : FlutterActivity() {
         mobileInputChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, mobileInputChannelName).also { methodChannel ->
             methodChannel.setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "hasCamera" -> result.success(runCatching {
+                        getSystemService(CameraManager::class.java).cameraIdList.isNotEmpty()
+                    }.getOrDefault(false))
                     "getInitialShare" -> {
                         val pending = initialShare
                         initialShare = null

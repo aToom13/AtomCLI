@@ -21,7 +21,7 @@ atomcli --companion
 atomcli serve --companion
 ```
 
-Use `atomcli --companion` for interactive pairing or `atomcli serve --companion` for the headless server. Use `atomcli --no-companion` when the interactive listener must stay disabled. The TUI footer reports the actual control API and Companion ports, including partial startup failures. Scan the printed QR code in the Android app. The payload may contain both kinds of endpoint:
+Use `atomcli --companion` for interactive pairing or `atomcli serve --companion` for the headless server. Use `atomcli --no-companion` when the interactive listener must stay disabled. The TUI footer reports the actual control API and Companion ports, including partial startup failures. Scan the printed QR code in the Android app. Android checks actual camera availability before opening the QR scanner. Without a camera, the app stays open and offers **Paste pairing code**; torch and camera startup remain disabled. The payload may contain both kinds of endpoint:
 
 - a Tailscale address for encrypted access across networks;
 - a private LAN address for devices on the same trusted network.

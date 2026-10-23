@@ -145,6 +145,7 @@
   "scanPairingCode": "Scan the code shown by AtomCLI. The app will try Tailscale first, then your local network.",
   "pastePairingCode": "Paste pairing code",
   "clipboardNoPairingCode": "Clipboard does not contain a pairing code.",
+  "cameraUnavailable": "Camera unavailable. Paste a pairing code to continue.",
   "cameraStartFailed": "Camera could not be started: {error}",
   "@cameraStartFailed": {"placeholders": {"error": {"type": "String"}}},
   "markUpImage": "Mark up image",

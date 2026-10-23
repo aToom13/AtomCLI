@@ -81,6 +81,16 @@ class MobileInputService {
 
   Stream<IncomingShare> get shares => _shares.stream;
 
+  Future<bool> hasCamera() async {
+    try {
+      return await _channel.invokeMethod<bool>('hasCamera') ?? false;
+    } on MissingPluginException {
+      return !Platform.isAndroid;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   Future<IncomingShare?> initialize() async {
     if (!_initialized) {
       _initialized = true;

@@ -6,12 +6,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'package:atomcli_companion/main.dart' as app;
 import 'package:atomcli_companion/l10n/app_localizations.dart';
 import 'package:atomcli_companion/models.dart';
 import 'package:atomcli_companion/providers/app_providers.dart';
 import 'package:atomcli_companion/services/auth_service.dart';
+import 'package:atomcli_companion/services/mobile_input_service.dart';
+import 'package:atomcli_companion/screens/qr_scan_screen.dart';
 import 'package:atomcli_companion/services/companion_preferences.dart';
 import 'package:atomcli_companion/services/power_policy.dart';
 import 'package:atomcli_companion/services/profile_switch_service.dart';
@@ -26,6 +29,12 @@ void main() {
   testWidgets('real Android Companion and concurrent AtomCLI servers', (
     tester,
   ) async {
+    final previousErrorHandler = FlutterError.onError;
+    FlutterError.onError = (details) {
+      debugPrint(details.toString());
+      previousErrorHandler?.call(details);
+    };
+    addTearDown(() => FlutterError.onError = previousErrorHandler);
     expect(first, isNotEmpty, reason: 'Use tool/test_android_integration.py');
     expect(second, isNotEmpty);
 
@@ -102,6 +111,24 @@ void main() {
 
     await app.main();
     await tester.pump();
+    await until(
+      () => find.byType(QrScanScreen).evaluate().isNotEmpty,
+      'pairing screen',
+    );
+    final hasCamera = await online(MobileInputService.instance.hasCamera);
+    final pairingStrings = AppLocalizations.of(
+      tester.element(find.byType(QrScanScreen)),
+    );
+    await until(
+      () => hasCamera
+          ? find.byType(MobileScanner).evaluate().isNotEmpty
+          : find.text(pairingStrings.cameraUnavailable).evaluate().isNotEmpty,
+      'camera availability and manual pairing fallback',
+    );
+    expect(
+      find.byType(MobileScanner),
+      hasCamera ? findsOneWidget : findsNothing,
+    );
     await pair(first);
     ProviderContainer container() => ProviderScope.containerOf(
       tester.element(find.byType(app.MainShell).last),
