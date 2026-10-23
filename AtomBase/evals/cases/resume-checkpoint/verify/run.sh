@@ -25,13 +25,28 @@ count=$(ls "$MIGRATED" | wc -l)
 (cd "$WS" && sha256sum -c "$SB/resume-checkpoint/completed.sha256") >>"$LOG" 2>&1 \
   || fail "already-migrated records 1-5 were modified (completed work was redone)"
 
-# 4) Every record carries schemaVersion: 2.
-for file in "$MIGRATED"/*.json; do
-  grep -q '"schemaVersion":2' "$file" || fail "$(basename "$file") lacks schemaVersion 2"
-done
-
-# 5) New records carry the correct payload.
-grep -q 'Barbara Liskov' "$MIGRATED/rec-006.json" || fail "rec-006 content wrong"
-grep -q 'Gordon Bell' "$MIGRATED/rec-010.json" || fail "rec-010 content wrong"
+# 4) Independently parse every output; formatting does not change JSON meaning.
+# Ground truth stays here, outside agent-visible fixture sources.
+bun -e '
+import { readFileSync } from "node:fs"
+const expected = [
+  ["Ada Lovelace", "ada@example.com"],
+  ["Alan Turing", "alan@example.com"],
+  ["Grace Hopper", "grace@example.com"],
+  ["Linus Benedict", "linus@example.com"],
+  ["Margaret Hamilton", "margaret@example.com"],
+  ["Barbara Liskov", "barbara@example.com"],
+  ["Donald Knuth", "donald@example.com"],
+  ["Edsger Dijkstra", "edsger@example.com"],
+  ["Frances Allen", "frances@example.com"],
+  ["Gordon Bell", "gordon@example.com"],
+]
+for (const [index, [name, email]] of expected.entries()) {
+  const id = `rec-${String(index + 1).padStart(3, "0")}`
+  const record = JSON.parse(readFileSync(`${process.argv[1]}/${id}.json`, "utf8"))
+  if (record?.id !== id || record.name !== name || record.email !== email || record.schemaVersion !== 2)
+    throw new Error(`${id}.json has an incorrect payload or schemaVersion`)
+}
+' "$MIGRATED" >>"$LOG" 2>&1 || fail "migrated JSON is invalid or has incorrect record fields"
 
 echo "VERIFY PASS"

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 WS="${ATOMCLI_EVAL_WORKSPACE:?ATOMCLI_EVAL_WORKSPACE must be set}"
+SB="${ATOMCLI_EVAL_SANDBOX:?ATOMCLI_EVAL_SANDBOX must be set}"
 
 DIR="$WS/eval-fixtures/agent-coordination"
 rm -rf "$DIR"
@@ -62,5 +63,8 @@ Two analyses of `logs/gateway.log` disagree about p99 latency:
 Both teams insist their numbers are correct. The incident review needs an
 adjudicated answer backed by the raw log data itself.
 EOF
+
+mkdir -p "$SB/agent-coordination"
+(cd "$DIR" && sha256sum logs/gateway.log evidence/metrics-a.json evidence/metrics-b.json) > "$SB/agent-coordination/evidence.sha256"
 
 echo "fixture ready at $DIR"
