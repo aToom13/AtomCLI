@@ -3,7 +3,8 @@ import type { Tool } from "./tool"
 import { Filesystem } from "@/util/util/filesystem"
 import { Instance } from "@/services/project/instance"
 import { Global } from "@/core/global"
-import { Flag } from "@/interfaces/flag/flag"
+import fs from "fs/promises"
+import { AgentEval } from "@/core/eval/harness"
 
 type Kind = "file" | "directory"
 
@@ -35,8 +36,15 @@ function isTrustedPath(target: string): boolean {
 export async function assertExternalDirectory(ctx: Tool.Context, target?: string, options?: Options) {
   if (!target) return
 
-  // YOLO mode: full filesystem access without prompts
-  if (Flag.ATOMCLI_YOLO) return
+  const privatePaths = AgentEval.benchmarkPrivatePaths()
+  if (privatePaths.length) {
+    const resolved = await fs.realpath(target).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return path.resolve(target)
+      throw error
+    })
+    if (privatePaths.some((root) => Filesystem.contains(root, resolved) || Filesystem.contains(root, target)))
+      throw new Error("Benchmark evaluator data is private")
+  }
 
   if (options?.bypass) return
 

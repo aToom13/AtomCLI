@@ -24,6 +24,7 @@ import { Config } from "@/core/config/config"
 import { WorkflowOwnership } from "./orchestrate/ownership"
 import { TaskVerification } from "@/core/execution/task-verification"
 import { VerificationEvidence } from "@/core/execution/verification-evidence"
+import { AgentEval } from "@/core/eval/harness"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.ATOMCLI_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -284,17 +285,20 @@ export const BashTool = Tool.define("bash", async (initCtx: Tool.InitContext = {
         grants: EnvPolicy.Grant.array().parse(ctx.extra?.envGrants ?? []),
         approvedInherit: envMode === "inherit",
       })
+      const privatePaths = AgentEval.benchmarkPrivatePaths()
+      const benchmark = AgentEval.isBenchmarkSession(ctx.sessionID) || privatePaths.length > 0
       const prepared = ExecutionWorld.prepare(
         { executable: shell, args: ExecutionWorld.shellArguments(shell, params.command), cwd, env },
         {
           workspaceRoot: Instance.directory,
           // Shared owned tasks use native file tools for writes. Shell code is
           // arbitrary, so require OS read-only enforcement rather than guessing its paths.
-          sandbox: owned && !ciVerification ? "require" : (execution?.sandbox ?? "off"),
+          sandbox: benchmark || (owned && !ciVerification) ? "require" : (execution?.sandbox ?? "off"),
           filesystem: owned && !ciVerification ? "read-only" : (execution?.filesystem ?? "workspace-write"),
           network: execution?.network ?? "allow",
           environment: envMode,
-          processVisibility: execution?.processVisibility ?? "restricted",
+          processVisibility: benchmark ? "restricted" : (execution?.processVisibility ?? "restricted"),
+          hiddenPaths: privatePaths,
         },
       )
       const sourceSnapshot = TaskVerification.isBuildCommand(params.command)

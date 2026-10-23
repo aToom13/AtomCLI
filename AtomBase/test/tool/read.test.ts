@@ -21,6 +21,26 @@ const ctx = {
 }
 
 describe("tool.read external_directory permission", () => {
+  test("resolves workspace-relative paths and gives a recovery root without redirecting missing targets", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "configuration", "settings.json"), '{"retry_budget":7}')
+      },
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const read = await ReadTool.init()
+        const missing = read.execute({ filePath: "config/settings.json" }, ctx)
+        await expect(missing).rejects.toThrow(`Current workspace: ${tmp.path}`)
+        await expect(missing).rejects.toThrow('find with path="."')
+        expect((await read.execute({ filePath: "configuration/settings.json" }, ctx)).output).toContain(
+          '"retry_budget":7',
+        )
+      },
+    })
+  })
+
   test("allows reading absolute path inside project directory", async () => {
     await using tmp = await tmpdir({
       init: async (dir) => {

@@ -4,7 +4,89 @@ import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
 import { Storage } from "@/core/storage/storage"
 import { Flag } from "@/interfaces/flag/flag"
+import { Config } from "@/core/config/config"
+import { Bus } from "@/core/bus"
+import { assertExternalDirectory } from "@/integrations/tool/external-directory"
 import { tmpdir } from "../fixture/fixture"
+
+test("autonomous config stays project-scoped and safe projects still request approval", async () => {
+  await using autonomous = await tmpdir({ config: { agent_mode: "autonomous" } })
+  await using safe = await tmpdir({ config: { agent_mode: "safe" } })
+  const previous = Flag.ATOMCLI_YOLO
+  Flag.ATOMCLI_YOLO = false
+  const request = {
+    sessionID: "session_mode",
+    permission: "read",
+    patterns: ["file.txt"],
+    metadata: {},
+    always: [],
+    ruleset: [],
+  }
+  try {
+    await Instance.provide({
+      directory: autonomous.path,
+      fn: async () => {
+        expect((await Config.get()).agent_mode).toBe("autonomous")
+        expect(Flag.ATOMCLI_YOLO).toBe(false)
+        await PermissionNext.ask(request)
+        await Instance.provide({
+          directory: safe.path,
+          fn: async () => {
+            let asked = false
+            const unsubscribe = Bus.subscribe(PermissionNext.Event.Asked, (event) => {
+              asked = true
+              void PermissionNext.reply({ requestID: event.properties.id, reply: "reject" })
+            })
+            try {
+              await expect(PermissionNext.ask(request)).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+              expect(asked).toBe(true)
+            } finally {
+              unsubscribe()
+            }
+          },
+        })
+        await PermissionNext.ask(request)
+      },
+    })
+  } finally {
+    Flag.ATOMCLI_YOLO = previous
+  }
+})
+
+test.each(["flag", "config"])("external-directory denial survives autonomous %s mode", async (mode) => {
+  await using project = await tmpdir({ config: { agent_mode: mode === "config" ? "autonomous" : "safe" } })
+  await using external = await tmpdir()
+  const previous = Flag.ATOMCLI_YOLO
+  Flag.ATOMCLI_YOLO = mode === "flag"
+  try {
+    await Instance.provide({
+      directory: project.path,
+      fn: async () => {
+        await expect(
+          assertExternalDirectory(
+            {
+              sessionID: "session_external_mode",
+              messageID: "msg_external_mode",
+              agent: "build",
+              abort: new AbortController().signal,
+              metadata: () => {},
+              ask: (request) =>
+                PermissionNext.ask({
+                  ...request,
+                  sessionID: "session_external_mode",
+                  ruleset: [{ permission: "external_directory", pattern: "*", action: "deny" }],
+                }),
+            },
+            external.path,
+            { kind: "directory" },
+          ),
+        ).rejects.toBeInstanceOf(PermissionNext.DeniedError)
+      },
+    })
+  } finally {
+    Flag.ATOMCLI_YOLO = previous
+  }
+})
 
 // fromConfig tests
 

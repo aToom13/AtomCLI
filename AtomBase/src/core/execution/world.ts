@@ -9,6 +9,7 @@ export namespace ExecutionWorld {
     processVisibility: z.enum(["restricted", "inherit"]).default("restricted"),
     workspaceRoot: z.string(),
     sandbox: z.enum(["off", "prefer", "require"]).default("off"),
+    hiddenPaths: z.array(z.string()).default([]),
   })
   export type Policy = z.infer<typeof Policy>
 
@@ -47,12 +48,23 @@ export namespace ExecutionWorld {
       prepare(command, policy) {
         const binary = Bun.which("bwrap")!
         const rootMount = policy.filesystem === "full" ? ["--bind", "/", "/"] : ["--ro-bind", "/", "/"]
-        const args = ["--die-with-parent", "--new-session", "--unshare-user", ...rootMount, "--proc", "/proc", "--dev", "/dev"]
+        const args = [
+          "--die-with-parent",
+          "--new-session",
+          "--unshare-user",
+          ...rootMount,
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+        ]
         if (policy.processVisibility === "restricted") args.push("--unshare-pid")
         if (policy.network === "deny") args.push("--unshare-net")
+        if (policy.hiddenPaths.length) args.push("--tmpfs", "/tmp")
         if (policy.filesystem === "workspace-write") {
           args.push("--bind", policy.workspaceRoot, policy.workspaceRoot)
         }
+        for (const location of policy.hiddenPaths) args.push("--tmpfs", path.resolve(location))
         args.push("--chdir", command.cwd, "--", command.executable, ...command.args)
         return { ...command, executable: binary, args, enforcement: "full", provider: "bubblewrap" }
       },
@@ -90,9 +102,16 @@ export namespace ExecutionWorld {
     providers: Provider[] = [bubblewrap(), seatbelt()],
   ) {
     const policy = Policy.parse(input)
+    // Private evaluator data needs PID and mount isolation, not best-effort policy.
+    if (policy.hiddenPaths.length && (policy.sandbox !== "require" || process.platform !== "linux"))
+      throw new Error("Hidden execution paths require a Linux sandbox")
     if (policy.sandbox === "off") return { ...command, enforcement: "off", provider: "host" } satisfies PreparedCommand
     const provider = providers.find((candidate) => candidate.available())
-    if (provider) return provider.prepare(command, policy)
+    if (provider) {
+      if (policy.hiddenPaths.length && provider.id !== "bubblewrap")
+        throw new Error("Hidden execution paths require bubblewrap")
+      return provider.prepare(command, policy)
+    }
     if (policy.sandbox === "require") {
       throw new Error(`Sandbox was required but no OS execution provider is available on ${process.platform}`)
     }
