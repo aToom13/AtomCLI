@@ -682,6 +682,36 @@ export class Config extends HeyApiClient {
       }
       plugin?: Array<string>
       snapshot?: boolean
+      retention?: {
+        /**
+         * Automatically collect unused storage blobs and snapshot objects (default: true)
+         */
+        enabled?: boolean
+        /**
+         * Minimum orphan grace period in hours (default: 24); retained conversations and rollback trees are never age-deleted
+         */
+        orphan_hours?: number
+        /**
+         * Automatic maintenance interval in hours (default: 24)
+         */
+        interval_hours?: number
+        /**
+         * Persist duplicate model/tool replay payloads for diagnostics (default: false)
+         */
+        replay?: boolean
+        /**
+         * Global snapshot capture budget in MiB (default: 1024); existing rollback data is never automatically evicted
+         */
+        snapshot_mib?: number
+        /**
+         * Maximum file size captured in snapshots in MiB (default: 2)
+         */
+        snapshot_file_mib?: number
+        /**
+         * Storage blob deletion budget per pass in MiB (default: 1024); snapshot packing has no byte quota
+         */
+        max_delete_mib?: number
+      }
       memory?: {
         /**
          * Run an LLM retrospective at session close and persist what it learns (default: true)
@@ -1019,6 +1049,7 @@ export class Config extends HeyApiClient {
             { in: "body", key: "watcher" },
             { in: "body", key: "plugin" },
             { in: "body", key: "snapshot" },
+            { in: "body", key: "retention" },
             { in: "body", key: "memory" },
             { in: "body", key: "share" },
             { in: "body", key: "autoshare" },

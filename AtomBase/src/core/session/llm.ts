@@ -184,27 +184,29 @@ export namespace LLM {
         : system.map((x): ModelMessage => ({ role: "system", content: x }))),
       ...input.messages,
     ]
-    const toolDefinitions = Object.entries(tools).map(([id, definition]) => ({
-      id,
-      description: definition.description,
-      schema: "inputSchema" in definition ? definition.inputSchema : undefined,
-    }))
-    const envelope = await SessionReplay.record({
-      sessionID: input.sessionID,
-      system,
-      messages: finalMessages,
-      tools: toolDefinitions,
-      route: { providerID: input.model.providerID, modelID: input.model.id, agent: input.agent.name },
-      pluginTransforms: ["experimental.chat.system.transform", "chat.params"],
-      injectedContext: input.user.system ? [input.user.system] : [],
-    })
-    if (process.env.ATOMCLI_TEST === "true") {
-      await SessionReplay.assertModelInput(input.sessionID, envelope.requestID, {
+    if (cfg.retention?.replay === true) {
+      const toolDefinitions = Object.entries(tools).map(([id, definition]) => ({
+        id,
+        description: definition.description,
+        schema: "inputSchema" in definition ? definition.inputSchema : undefined,
+      }))
+      const envelope = await SessionReplay.record({
+        sessionID: input.sessionID,
         system,
         messages: finalMessages,
         tools: toolDefinitions,
         route: { providerID: input.model.providerID, modelID: input.model.id, agent: input.agent.name },
+        pluginTransforms: ["experimental.chat.system.transform", "chat.params"],
+        injectedContext: input.user.system ? [input.user.system] : [],
       })
+      if (process.env.ATOMCLI_TEST === "true") {
+        await SessionReplay.assertModelInput(input.sessionID, envelope.requestID, {
+          system,
+          messages: finalMessages,
+          tools: toolDefinitions,
+          route: { providerID: input.model.providerID, modelID: input.model.id, agent: input.agent.name },
+        })
+      }
     }
 
     const startTime = Date.now()

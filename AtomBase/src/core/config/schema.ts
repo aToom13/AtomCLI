@@ -591,6 +591,60 @@ export namespace ConfigSchema {
         .optional(),
       plugin: z.string().array().optional(),
       snapshot: z.boolean().optional(),
+      retention: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .describe("Automatically collect unused storage blobs and snapshot objects (default: true)"),
+          orphan_hours: z
+            .number()
+            .int()
+            .min(1)
+            .max(87600)
+            .optional()
+            .describe(
+              "Minimum orphan grace period in hours (default: 24); retained conversations and rollback trees are never age-deleted",
+            ),
+          interval_hours: z
+            .number()
+            .int()
+            .min(1)
+            .max(8760)
+            .optional()
+            .describe("Automatic maintenance interval in hours (default: 24)"),
+          replay: z
+            .boolean()
+            .optional()
+            .describe("Persist duplicate model/tool replay payloads for diagnostics (default: false)"),
+          snapshot_mib: z
+            .number()
+            .int()
+            .min(1)
+            .max(1048576)
+            .optional()
+            .describe(
+              "Global snapshot capture budget in MiB (default: 1024); existing rollback data is never automatically evicted",
+            ),
+          snapshot_file_mib: z
+            .number()
+            .int()
+            .min(1)
+            .max(1024)
+            .optional()
+            .describe("Maximum file size captured in snapshots in MiB (default: 2)"),
+          max_delete_mib: z
+            .number()
+            .int()
+            .min(1)
+            .max(1048576)
+            .optional()
+            .describe(
+              "Storage blob deletion budget per pass in MiB (default: 1024); snapshot packing has no byte quota",
+            ),
+        })
+        .strict()
+        .optional(),
       memory: z
         .object({
           retrospective: z

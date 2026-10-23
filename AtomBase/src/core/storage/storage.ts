@@ -274,7 +274,8 @@ export namespace Storage {
       await StorageBackup.createLegacy(dir, path.join(Global.Path.data, "storage-backups", "cutover-v1"))
     }
     await runMigrations(dir, migration)
-    const manifest = await StorageManifest.open(dir)
+    // ponytail: live records have a fixed 2 GiB ceiling; configurable archives can be added with an export workflow.
+    const manifest = await StorageManifest.open(dir, { maxBytes: 2 * 1024 * 1024 * 1024 })
     if (!manifestExisted && !manifest.legacyImportComplete()) {
       const known = manifest.logicalKeys()
       for await (const item of new Bun.Glob("**/*.json").scan({ cwd: dir, onlyFiles: true })) {
@@ -346,11 +347,15 @@ export namespace Storage {
     const current = await state()
     return withErrorHandling(async () => {
       await record(current, key)
-      const pointer = current.manifest.pointer(key)
-      if (!pointer || pointer.tombstone || !pointer.contentHash) {
+      const opened = current.manifest.openBlob(key)
+      if (!opened) {
         throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
       }
-      return Bun.file(current.manifest.blobPath(pointer.contentHash)).slice(0, Math.max(0, maxBytes)).text()
+      try {
+        return await opened.file.slice(0, Math.max(0, maxBytes)).text()
+      } finally {
+        opened.close()
+      }
     })
   }
 
@@ -362,12 +367,11 @@ export namespace Storage {
     const current = await state()
     return withErrorHandling(async () => {
       await record(current, key)
-      const pointer = current.manifest.pointer(key)
-      if (!pointer || pointer.tombstone || !pointer.contentHash) {
+      const opened = current.manifest.openBlob(key)
+      if (!opened) {
         throw Object.assign(new Error("Resource not found"), { code: "ENOENT", path: key.join("/") })
       }
-      const target = current.manifest.blobPath(pointer.contentHash)
-      const reader = Bun.file(target).stream().getReader()
+      const reader = opened.file.stream().getReader()
       const decoder = new TextDecoder()
       let depth = 0
       let inString = false
@@ -452,7 +456,12 @@ export namespace Storage {
           if (done) return
         }
       } finally {
-        reader.releaseLock()
+        try {
+          await reader.cancel()
+        } finally {
+          reader.releaseLock()
+          opened.close()
+        }
       }
     })
   }
@@ -552,6 +561,84 @@ export namespace Storage {
     return current.manifest.sessionGuard(sessionID)
   }
 
+  /** Complete interrupted lazy imports, then retire verified duplicate legacy files. */
+  export async function compactLegacy(dryRun: boolean) {
+    const current = await state()
+    const result = { files: 0, bytes: 0, removedFiles: 0, unreadableFiles: 0 }
+    for await (const relative of new Bun.Glob("**/*.json").scan({
+      cwd: current.dir,
+      onlyFiles: true,
+      followSymlinks: false,
+    })) {
+      if (relative.split(path.sep)[0] === ".blobs") continue
+      const file = path.join(current.dir, relative)
+      const stat = await fs.lstat(file)
+      if (!stat.isFile()) continue
+      const content = await Bun.file(file).text()
+      try {
+        JSON.parse(content)
+      } catch {
+        result.unreadableFiles++ // Preserve malformed recovery material; continue unrelated cleanup.
+        continue
+      }
+      const key = relative.slice(0, -5).split(path.sep)
+      const pointer = current.manifest.pointer(key)
+      if (!pointer && dryRun) continue
+      if (!pointer) await current.manifest.importLegacy(key, content)
+      if (!current.manifest.pointer(key)?.tombstone) {
+        const stored = await current.manifest.read(key)
+        if (!stored || new Bun.CryptoHasher("sha256").update(stored.content).digest("hex") !== stored.contentHash) {
+          throw new Error("Legacy compaction refused: current blob integrity check failed")
+        }
+        JSON.parse(stored.content)
+      }
+      result.files++
+      result.bytes += stat.size
+      if (!dryRun) {
+        await fs.unlink(file)
+        result.removedFiles++
+      }
+    }
+    if (!dryRun && !result.unreadableFiles) current.manifest.markLegacyImportComplete()
+    return result
+  }
+
+  export async function expireDiagnostics(olderThan: number, dryRun: boolean, replay = true) {
+    const current = await state()
+    return current.manifest.expireDiagnostics(olderThan, dryRun, replay)
+  }
+
+  export async function collectGarbage(options: { dryRun: boolean; olderThan: number; maxBytes: number }) {
+    const current = await state()
+    return current.manifest.collectGarbage(options)
+  }
+
+  /** Fail closed: include legacy keys during interrupted migration; never hide read/list errors. */
+  export async function snapshotRoots(projectID: string) {
+    const roots = new Set<string>()
+    const add = (value: unknown) => {
+      if (value === undefined) return
+      if (typeof value !== "string" || !/^[a-f0-9]{40,64}$/.test(value))
+        throw new Error("Invalid retained snapshot hash")
+      roots.add(value)
+    }
+    for (const key of await listStrict(["session", projectID])) {
+      const session = await read<{ id: string; revert?: { snapshot?: string } }>(key)
+      add(session.revert?.snapshot)
+      for (const message of await listStrict(["message", session.id])) {
+        for (const partKey of await listStrict(["part", message.at(-1)!])) {
+          const part = await read<{ type: string; snapshot?: string; hash?: string; after?: string }>(partKey)
+          if (["snapshot", "step-start", "step-finish"].includes(part.type)) add(part.snapshot)
+          if (part.type === "patch") {
+            add(part.hash)
+            add(part.after)
+          }
+        }
+      }
+    }
+    return roots
+  }
+
   export function isSessionDeletedError(error: unknown): error is StorageManifest.SessionDeletedError {
     return (
       error instanceof StorageManifest.SessionDeletedError ||
@@ -571,26 +658,28 @@ export namespace Storage {
   }
 
   export async function list(prefix: string[]) {
+    return listStrict(prefix).catch(() => [])
+  }
+
+  async function listStrict(prefix: string[]) {
     const current = await state()
-    try {
-      const result = current.manifest.list(prefix)
-      if (current.manifest.legacyImportComplete()) return result
-      const legacyDir = path.join(current.dir, ...prefix)
-      if (
-        !(await fs
-          .stat(legacyDir)
-          .then((entry) => entry.isDirectory())
-          .catch(() => false))
-      )
-        return result
-      for await (const item of new Bun.Glob("**/*.json").scan({ cwd: legacyDir, onlyFiles: true })) {
-        const key = [...prefix, ...item.slice(0, -5).split(path.sep)]
-        if (!current.manifest.pointer(key)) result.push(key)
-      }
-      return result.sort((a, b) => StorageManifest.logicalKey(a).localeCompare(StorageManifest.logicalKey(b)))
-    } catch {
-      return []
+    const result = current.manifest.list(prefix)
+    if (current.manifest.legacyImportComplete()) return result
+    const legacyDir = path.join(current.dir, ...prefix)
+    const stat = await fs.lstat(legacyDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error
+    })
+    if (!stat) return result
+    if (!stat.isDirectory()) throw new Error("Invalid legacy storage directory")
+    for await (const item of new Bun.Glob("**/*.json").scan({
+      cwd: legacyDir,
+      onlyFiles: true,
+      followSymlinks: false,
+    })) {
+      const key = [...prefix, ...item.slice(0, -5).split(path.sep)]
+      if (!current.manifest.pointer(key)) result.push(key)
     }
+    return result.sort((a, b) => StorageManifest.logicalKey(a).localeCompare(StorageManifest.logicalKey(b)))
   }
 
   export const _internals = {

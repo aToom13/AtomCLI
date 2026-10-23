@@ -1,6 +1,7 @@
 import { Plugin } from "@/integrations/plugin"
 import { Log } from "@/util/util/log"
 import type { Tool } from "./tool"
+import { Config } from "@/core/config/config"
 import { SessionReplay } from "@/core/session/replay"
 import { ToolAppliedError, ToolNotAppliedError } from "./runtime-error"
 import path from "path"
@@ -166,6 +167,14 @@ export namespace ToolRuntime {
 
   export async function execute<Args, Output extends Result>(input: ExecuteInput<Args, Output>): Promise<Output> {
     const started = Date.now()
+    const replay = (await Config.get()).retention?.replay === true
+    const appendReplay: typeof SessionReplay.append = async (event) => {
+      if (!replay && (event.type === "tool.call" || event.type === "tool.result")) return
+      // Preserve applied/error provenance without duplicating large request/result bodies.
+      return SessionReplay.append(
+        !replay && typeof event.error === "string" ? { ...event, error: event.error.slice(0, 2000) } : event,
+      )
+    }
     const context = {
       ...input.context,
       abort: combinedSignal(input.context.abort, input.timeoutMs),
@@ -209,7 +218,7 @@ export namespace ToolRuntime {
     await assertExecutionActive()
 
     const callID = context.callID ?? `runtime-${crypto.randomUUID()}`
-    await SessionReplay.append({
+    await appendReplay({
       type: "tool.call",
       sessionID: context.sessionID,
       callID,
@@ -392,7 +401,7 @@ export namespace ToolRuntime {
                   : "failed",
         }).catch((workError) => log.warn("failed to persist tool work failure", { workError, operationID }))
       }
-      await SessionReplay.append({
+      await appendReplay({
         type: "tool.error",
         sessionID: context.sessionID,
         callID,
@@ -460,7 +469,7 @@ export namespace ToolRuntime {
       }
     }
 
-    await SessionReplay.append({
+    await appendReplay({
       type: "tool.applied",
       sessionID: context.sessionID,
       callID,
@@ -493,7 +502,7 @@ export namespace ToolRuntime {
         }).catch((workError) => log.warn("failed to close applied tool work", { workError, operationID }))
       }
       const appliedError = new AppliedError(input.tool, error)
-      await SessionReplay.append({
+      await appendReplay({
         type: "tool.error",
         sessionID: context.sessionID,
         callID,
@@ -504,7 +513,7 @@ export namespace ToolRuntime {
       throw appliedError
     }
 
-    await SessionReplay.append({
+    await appendReplay({
       type: "tool.result",
       sessionID: context.sessionID,
       callID,
