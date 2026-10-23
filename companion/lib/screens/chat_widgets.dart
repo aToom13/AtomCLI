@@ -188,7 +188,7 @@ class _EmptyConversation extends StatelessWidget {
   Widget build(BuildContext context) {
     final strings = AppLocalizations.of(context);
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -212,14 +212,15 @@ class _EmptyConversation extends StatelessWidget {
             ),
             if (!hasSession) ...[
               const SizedBox(height: 18),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 10,
+                runSpacing: 8,
                 children: [
                   OutlinedButton(
                     onPressed: onHistory,
                     child: Text(strings.openHistory),
                   ),
-                  const SizedBox(width: 10),
                   FilledButton(
                     onPressed: onCreate,
                     child: Text(strings.newSession),

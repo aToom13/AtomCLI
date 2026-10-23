@@ -333,6 +333,31 @@ void main() {
     expect(find.text('Delete this session?'), findsNothing);
   });
 
+  testWidgets(
+    'empty chat remains usable on a small screen with the keyboard open',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1;
+      tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pumpWidget(chatTestApp());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.ensureVisible(find.text('Open history'));
+      await tester.pump();
+      expect(find.text('Open history').hitTestable(), findsOneWidget);
+      await tester.ensureVisible(find.text('New session'));
+      await tester.pump();
+      expect(find.text('New session').hitTestable(), findsOneWidget);
+      expect(
+        find.byKey(const Key('message-input')).hitTestable(),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('composer exposes mobile input controls and attachment choices', (
     tester,
   ) async {

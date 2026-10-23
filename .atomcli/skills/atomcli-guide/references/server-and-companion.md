@@ -178,3 +178,5 @@ Check:
 mDNS publication is useful only on a non-loopback hostname. Loopback binds intentionally skip mDNS publication because other devices cannot reach them. Binding `0.0.0.0` does not itself make a service internet-accessible, but it exposes it on available interfaces; pair it with authentication and firewall rules appropriate to the network.
 
 Android checks actual camera availability before opening the pairing scanner. With no camera, the app stays open and offers **Paste pairing code**; camera startup and torch remain disabled.
+
+The empty conversation panel scrolls when a small screen or open keyboard reduces the available height, and its session/history buttons wrap on narrow screens, keeping both actions reachable without clipping.

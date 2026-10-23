@@ -249,3 +249,5 @@ Exit `0` means the automated checks passed, `1` means an observed failure, `2` m
 Android may stop every background component after the user explicitly force-stops the app in system settings. Opening AtomCLI Companion again restarts the command-link service.
 
 Pairing another project through QR or pasted pairing data clears the previous project's in-memory conversation, pending decisions, logs and transfer state before opening the new socket, matching saved-profile switching. Persisted history remains associated with its original profile.
+
+The empty conversation panel scrolls when a small screen or open keyboard reduces the available height, and its session/history buttons wrap on narrow screens, keeping both actions reachable without clipping.
