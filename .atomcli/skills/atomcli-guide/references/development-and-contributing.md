@@ -60,6 +60,8 @@ bun turbo test
 
 The root `bun run dev` wrapper loads the CLI from `AtomBase/` while preserving the monorepo root as the active project directory.
 
+Security updates retain Zod 3 where ACP/Jimp require it; `bun audit` still reports GHSA-mrhx-c7xc-m3w5 for those transitive copies. No patched Zod 3 is available; do not force a major-version override or suppress the advisory.
+
 From `AtomBase/`:
 
 For one delegated task, `orchestrate` accepts `{ "request": "plain-language task" }` in one call. Omitted `action` means `run`; multi-task DAGs still use `plan` and `execute`. Dispatch enforces `task` permission for each agent.

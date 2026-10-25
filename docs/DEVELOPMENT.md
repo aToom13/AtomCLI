@@ -87,6 +87,8 @@ After the focused checks pass, run workspace typechecks, the full suite, SDK gen
 and `bun audit` again. Record any remaining advisory and its actual exposure; do not suppress it to make the report
 green. Binary build output remains ignored and must not be committed.
 
+The workspace uses Zod 4.6.7, body-parser 2.4.0, and fast-uri 3.1.9 for their security fixes. `bun audit` still reports GHSA-mrhx-c7xc-m3w5 for transitive Zod 3.25.76 copies required by ACP and Jimp. No patched Zod 3 release is available; do not force Zod 4 into those consumers or suppress the advisory. Recheck when upstream dependencies support a patched version.
+
 ### Workspace result verification
 
 Creating a directory does not change Bash's working directory. Each Bash call starts a new shell; use `workdir` and absolute `write`/`edit` targets. A package-manager test can pass using an ancestor's `package.json`, so verify the requested file locations separately from the exit code.
