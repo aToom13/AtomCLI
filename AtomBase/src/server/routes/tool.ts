@@ -2,7 +2,6 @@ import { Hono } from "hono"
 import { describeRoute, resolver, validator } from "hono-openapi"
 import { z } from "zod"
 import { ToolRegistry } from "@/integrations/tool/registry"
-import { zodToJsonSchema } from "zod-to-json-schema"
 import { errors } from "../error"
 
 export const ToolRoute = new Hono()
@@ -75,7 +74,7 @@ export const ToolRoute = new Hono()
           id: t.id,
           description: t.description,
           // Handle both Zod schemas and plain JSON schemas
-          parameters: (t.parameters as any)?._def ? zodToJsonSchema(t.parameters as any) : t.parameters,
+          parameters: t.parameters instanceof z.ZodType ? z.toJSONSchema(t.parameters) : t.parameters,
         })),
       )
     },
