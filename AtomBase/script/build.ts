@@ -14,6 +14,7 @@ process.chdir(dir)
 
 import pkg from "../package.json"
 import { Script } from "@atomcli/script"
+import { BundledAssets } from "@/services/installation/bundled-assets"
 
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
@@ -177,20 +178,8 @@ for (const item of targets) {
     ),
   )
 
-  // Copy skills directories to be bundled with the binary
-  // .atomcli and .claude are in the project root (one level up from AtomBase)
-  const rootAtom = path.resolve(dir, "../.atomcli")
-  const rootClaude = path.resolve(dir, "../.claude")
-
-  if (fs.existsSync(rootAtom)) {
-    console.log(`Copying .atomcli to dist/${name}/...`)
-    await fs.promises.cp(rootAtom, `dist/${name}/.atomcli`, { recursive: true })
-  }
-
-  if (fs.existsSync(rootClaude)) {
-    console.log(`Copying .claude to dist/${name}/...`)
-    await fs.promises.cp(rootClaude, `dist/${name}/.claude`, { recursive: true })
-  }
+  // Only tracked release assets belong in distributable builds.
+  await BundledAssets.copy(path.resolve(dir, ".."), path.resolve(dir, "dist", name))
 
   binaries[name] = Script.version
 }

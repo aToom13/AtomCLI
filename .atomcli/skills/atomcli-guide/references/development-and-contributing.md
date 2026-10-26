@@ -41,6 +41,8 @@ The `--conditions=browser` flag is required for TUI and SolidJS resolution. Omit
 
 Do not infer permission to commit, push, tag, publish, or create a release from permission to implement a code change.
 
+Binary builds require Git and bundle only tracked `.atomcli/` and `.claude/` files, using current working-tree contents. Ignored/untracked private state and deleted assets are excluded; symlinks are rejected. New release assets must be staged before testing their bundled form.
+
 Plugin event subscriptions retain their initialized hooks for the instance lifetime. Publishing the final disposal event does not initialize plugin/config state again.
 
 ## Package and test commands

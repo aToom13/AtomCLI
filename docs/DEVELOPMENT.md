@@ -89,6 +89,8 @@ After the focused checks pass, run workspace typechecks, the full suite, SDK gen
 and `bun audit` again. Record any remaining advisory and its actual exposure; do not suppress it to make the report
 green. Binary build output remains ignored and must not be committed.
 
+Binary builds require a Git checkout and copy only tracked files under `.atomcli/` and `.claude/`, using their current working-tree contents. Ignored and untracked local state stays out of distribution directories; deleted assets are omitted and symlinks are rejected. Stage new release assets before testing their bundled form.
+
 The workspace uses Zod 4.6.7, body-parser 2.4.0, and fast-uri 3.1.9 for their security fixes. `bun audit` still reports GHSA-mrhx-c7xc-m3w5 for transitive Zod 3.25.76 copies required by ACP and Jimp. No patched Zod 3 release is available; do not force Zod 4 into those consumers or suppress the advisory. Recheck when upstream dependencies support a patched version.
 
 ### Workspace result verification
