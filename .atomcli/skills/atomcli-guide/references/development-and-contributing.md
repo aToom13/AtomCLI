@@ -62,6 +62,8 @@ bun turbo test
 
 The root `bun run dev` wrapper loads the CLI from `AtomBase/` while preserving the monorepo root as the active project directory.
 
+Root `bun turbo test` includes AtomBase and Companion bridge tests. AtomBase declares CI's `ATOMCLI_TEST` and `ATOMCLI_BASH_SANDBOX_BYPASS` for forwarding and cache keys.
+
 The tool-list API exports Zod parameter schemas through the native JSON Schema converter, preserving required fields and validation constraints.
 
 Security updates retain Zod 3 where ACP/Jimp require it; `bun audit` still reports GHSA-mrhx-c7xc-m3w5 for those transitive copies. No patched Zod 3 is available; do not force a major-version override or suppress the advisory.

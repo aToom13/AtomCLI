@@ -57,6 +57,8 @@ bun turbo test
 
 The models.dev fixture is the required test convention. `test/preload.ts` copies that fixture into the isolated test data directory, so the standard test suite does not require a live models.dev request.
 
+The root test task includes both AtomBase and the Companion bridge tests. AtomBase's test task declares `ATOMCLI_TEST` and `ATOMCLI_BASH_SANDBOX_BYPASS` so Turbo forwards them and includes their values in the cache key.
+
 `GET /tool?provider=<id>&model=<id>` exports parameter schemas with Zod's native JSON Schema converter, preserving object properties, required fields, and validation constraints for clients.
 
 Bun 1.3.14 resets `setDefaultTimeout` between test files, even when it ran in preload; the configured `test.timeout` does not prevent this reset. Integration files that spawn real Git or test processes must set their bounded timeout locally, as `test/tool/atomic-work.test.ts` does.
