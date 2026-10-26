@@ -57,7 +57,7 @@ bun turbo test
 
 The models.dev fixture is the required test convention. `test/preload.ts` copies that fixture into the isolated test data directory, so the standard test suite does not require a live models.dev request.
 
-The root test task includes both AtomBase and the Companion bridge tests. AtomBase's test task declares `ATOMCLI_TEST` and `ATOMCLI_BASH_SANDBOX_BYPASS` so Turbo forwards them and includes their values in the cache key.
+The root test task includes both AtomBase and the Companion bridge tests. AtomBase's test task declares `ATOMCLI_TEST` and `ATOMCLI_BASH_SANDBOX_BYPASS` so Turbo forwards them and includes their values in the cache key. SDK builds are uncached: code generation imports the AtomBase server outside the SDK package and updates tracked generated sources. This ensures CI's generated-SDK diff checks use the current API rather than a cached build log.
 
 `GET /tool?provider=<id>&model=<id>` exports parameter schemas with Zod's native JSON Schema converter, preserving object properties, required fields, and validation constraints for clients.
 

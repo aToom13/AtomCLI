@@ -1,27 +1,19 @@
 {
   "$schema": "https://turborepo.com/schema.json",
-  "globalPassThroughEnv": [
-    "ATOMCLI_TEST_HOME"
-  ],
+  "globalPassThroughEnv": ["ATOMCLI_TEST_HOME"],
   "tasks": {
     "typecheck": {},
     "test": {},
     "build": {
-      "dependsOn": [
-        "^build"
-      ],
-      "outputs": [
-        "dist/**"
-      ]
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "@atomcli/sdk#build": {
+      "cache": false
     },
     "atomcli#test": {
-      "dependsOn": [
-        "^build"
-      ],
-      "env": [
-        "ATOMCLI_TEST",
-        "ATOMCLI_BASH_SANDBOX_BYPASS"
-      ],
+      "dependsOn": ["^build"],
+      "env": ["ATOMCLI_TEST", "ATOMCLI_BASH_SANDBOX_BYPASS"],
       "outputs": []
     }
   }

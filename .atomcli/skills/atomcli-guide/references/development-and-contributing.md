@@ -62,7 +62,7 @@ bun turbo test
 
 The root `bun run dev` wrapper loads the CLI from `AtomBase/` while preserving the monorepo root as the active project directory.
 
-Root `bun turbo test` includes AtomBase and Companion bridge tests. AtomBase declares CI's `ATOMCLI_TEST` and `ATOMCLI_BASH_SANDBOX_BYPASS` for forwarding and cache keys.
+Root `bun turbo test` includes AtomBase and Companion bridge tests. AtomBase declares CI's `ATOMCLI_TEST` and `ATOMCLI_BASH_SANDBOX_BYPASS` for forwarding and cache keys. SDK builds always regenerate from the current server; they are uncached so generated-SDK diff checks cannot pass on an old build log.
 
 The tool-list API exports Zod parameter schemas through the native JSON Schema converter, preserving required fields and validation constraints.
 
