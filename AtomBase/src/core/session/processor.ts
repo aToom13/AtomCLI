@@ -716,7 +716,14 @@ export namespace SessionProcessor {
               await recordModelEvidence(streamInput.model, [], e, streamInput.user.variant, verificationParams)
             }
             const error = await MessageV2.fromError(e, { providerID: streamInput.model.providerID })
-            const retry = e instanceof ExecutionRuntime.BudgetExceededError ? undefined : SessionRetry.retryable(error)
+            const reviewerWaitExceeded =
+              streamInput.agent.name === "reviewer" &&
+              error.name === "APIError" &&
+              (SessionRetry.retryAfter(error.data.responseHeaders) ?? 0) > SessionRetry.RETRY_MAX_DELAY
+            const retry =
+              e instanceof ExecutionRuntime.BudgetExceededError || reviewerWaitExceeded
+                ? undefined
+                : SessionRetry.retryable(error)
             if (retry !== undefined) {
               attempt++
               const exhausted = SessionRetry.exhausted(attempt, maxRetries)

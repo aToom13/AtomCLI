@@ -296,12 +296,28 @@ export namespace AtomicWork {
         ),
       )
     ) {
-      await ctx.ask({
-        permission: "review.require",
-        patterns: [root.id],
-        always: [],
-        metadata: { description: "Require independent reviewer evidence for this Atomic Work plan." },
-      })
+      try {
+        await ctx.ask({
+          permission: "review.require",
+          patterns: [root.id],
+          always: [],
+          metadata: { description: "Require independent reviewer evidence for this Atomic Work plan." },
+        })
+      } catch (error) {
+        if (
+          !(
+            error instanceof PermissionNext.RejectedError ||
+            error instanceof PermissionNext.DeniedError ||
+            error instanceof PermissionNext.CorrectedError
+          )
+        )
+          throw error
+        return {
+          title: "Review requirement denied",
+          output: `${error.message} Plan unchanged. Do not repeat this review.require request. If reviewer verification was your optional proposal, submit parent or automatic verification with faithful test evidence. If the user or policy requires an independent reviewer, report that blocker; never downgrade their criteria. Starting /atomic-work authorizes the workflow, not an additional mandatory reviewer.`,
+          metadata: { error: true, rootID: root.id },
+        }
+      }
     }
     const updated = await ExecutionRuntime.updateAtomicPlan({
       sessionID: ctx.sessionID,

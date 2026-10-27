@@ -328,69 +328,76 @@ describe("session processor retry budget", () => {
     expect(stream).toHaveBeenCalledTimes(1)
   })
 
-  test("does not call the model again after the retry budget is exhausted", async () => {
-    await using tmp = await tmpdir({ git: true })
-    const model = {
-      id: "retry-test-model",
-      providerID: "test-provider",
-    } as Provider.Model
-    const assistantMessage = {
-      id: "msg_retry_budget",
-      sessionID: "ses_retry_budget",
-      parentID: "msg_user",
-      role: "assistant",
-      agent: "build",
-      path: { cwd: "/tmp", root: "/tmp" },
-      cost: 0,
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      modelID: model.id,
-      providerID: model.providerID,
-      time: { created: Date.now() },
-    } as MessageV2.Assistant
-    const retryError = new MessageV2.APIError({
-      message: "temporary rate limit",
-      statusCode: 429,
-      isRetryable: true,
-    }).toObject()
+  test.each([false, true])(
+    "stops retry on exhausted budget or reviewer Retry-After above wait budget: %s",
+    async (reviewer) => {
+      await using tmp = await tmpdir({ git: true })
+      const model = {
+        id: "retry-test-model",
+        providerID: "test-provider",
+      } as Provider.Model
+      const assistantMessage = {
+        id: "msg_retry_budget",
+        sessionID: "ses_retry_budget",
+        parentID: "msg_user",
+        role: "assistant",
+        agent: reviewer ? "reviewer" : "build",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: model.id,
+        providerID: model.providerID,
+        time: { created: Date.now() },
+      } as MessageV2.Assistant
+      const retryError = new MessageV2.APIError({
+        message: "temporary rate limit",
+        statusCode: 429,
+        isRetryable: true,
+        responseHeaders: reviewer ? { "retry-after": "120" } : undefined,
+      }).toObject()
 
-    const stream = spyOn(LLM, "stream").mockRejectedValue(new Error("fake retryable failure"))
-    spies.push(stream)
-    spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: 0 } } as any))
-    spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({ maxRetries: undefined } as any))
-    spies.push(spyOn(MessageV2, "fromError").mockResolvedValue(retryError))
-    spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
-    spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
+      const stream = spyOn(LLM, "stream").mockRejectedValue(new Error("fake retryable failure"))
+      spies.push(stream)
+      const sleep = spyOn(SessionRetry, "sleep").mockResolvedValue()
+      spies.push(sleep)
+      spies.push(spyOn(Config, "get").mockResolvedValue({ experimental: { chatMaxRetries: reviewer ? 3 : 0 } } as any))
+      spies.push(spyOn(AgentEval, "executionPolicy").mockReturnValue({ maxRetries: undefined } as any))
+      spies.push(spyOn(MessageV2, "fromError").mockResolvedValue(retryError))
+      spies.push(spyOn(MessageV2, "parts").mockResolvedValue([]))
+      spies.push(spyOn(Session, "updateMessage").mockImplementation((async (message: any) => message) as any))
 
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const processor = SessionProcessor.create({
-          assistantMessage,
-          sessionID: assistantMessage.sessionID,
-          model,
-          abort: new AbortController().signal,
-        })
-        const result = await processor.process(
-          {
-            user: {} as MessageV2.User,
-            agent: {} as any,
-            abort: new AbortController().signal,
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const processor = SessionProcessor.create({
+            assistantMessage,
             sessionID: assistantMessage.sessionID,
-            system: [],
-            messages: [],
-            tools: {},
             model,
-          },
-          { enableAmendments: false },
-        )
+            abort: new AbortController().signal,
+          })
+          const result = await processor.process(
+            {
+              user: {} as MessageV2.User,
+              agent: { name: assistantMessage.agent } as any,
+              abort: new AbortController().signal,
+              sessionID: assistantMessage.sessionID,
+              system: [],
+              messages: [],
+              tools: {},
+              model,
+            },
+            { enableAmendments: false },
+          )
 
-        expect(result.status).toBe("stop")
-        expect(stream).toHaveBeenCalledTimes(1)
-        expect(assistantMessage.time.completed).toBeNumber()
-        expect(assistantMessage.error).toEqual(retryError)
-      },
-    })
-  })
+          expect(result.status).toBe("stop")
+          expect(stream).toHaveBeenCalledTimes(1)
+          expect(sleep).not.toHaveBeenCalled()
+          expect(assistantMessage.time.completed).toBeNumber()
+          expect(assistantMessage.error).toEqual(retryError)
+        },
+      })
+    },
+  )
 
   test("keeps tool-producing turns non-terminal when provider reports stop", async () => {
     await using tmp = await tmpdir({ git: true })

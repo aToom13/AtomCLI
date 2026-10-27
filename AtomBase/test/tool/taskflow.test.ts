@@ -40,35 +40,45 @@ describe("TaskFlowTool", () => {
     ).toBe(false)
   })
 
-  test("denied review obligation leaves no plan or durable blocker", async () => {
-    await using tmp = await tmpdir()
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const session = await Session.create({})
-        const messageID = Identifier.ascending("message")
-        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
-        const ctx = {
-          ...dummyCtx,
-          sessionID: session.id,
-          messageID,
-          extra: { execution },
-          ask: async (request: any) => {
-            if (request.permission === "review.require") throw new PermissionNext.RejectedError()
-          },
-        }
-        await expect(
-          (await TaskFlowTool.init()).execute(
+  test.each(["reject", "deny", "feedback"])(
+    "denied review obligation leaves no plan and permits work recovery: %s",
+    async (denial) => {
+      await using tmp = await tmpdir()
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const session = await Session.create({})
+          const messageID = Identifier.ascending("message")
+          const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+          const ctx = {
+            ...dummyCtx,
+            sessionID: session.id,
+            messageID,
+            extra: { execution },
+            ask: async (request: any) => {
+              if (request.permission === "review.require") {
+                if (denial === "deny") throw new PermissionNext.DeniedError([])
+                if (denial === "feedback") throw new PermissionNext.CorrectedError("No optional review")
+                throw new PermissionNext.RejectedError()
+              }
+            },
+          }
+          const tool = await TaskFlowTool.init()
+          const denied = await tool.execute(
             { action: "start", plan: [{ id: "review", name: "Review", type: "independent_review" }] },
             ctx,
-          ),
-        ).rejects.toBeInstanceOf(PermissionNext.RejectedError)
-        expect(HarnessState.getSteps(session.id)).toEqual([])
-        expect(ExecutionRuntime.snapshot(session.id).blockers).toEqual([])
-        ExecutionRuntime.cancelExecution(execution)
-      },
-    })
-  })
+          )
+          expect(denied.output).toContain("Do not repeat")
+          expect(denied.output).toContain("do not remove or weaken")
+          expect(HarnessState.getSteps(session.id)).toEqual([])
+          expect(ExecutionRuntime.snapshot(session.id).blockers).toEqual([])
+          await tool.execute({ action: "start", plan: [{ id: "work", name: "Run focused tests", type: "work" }] }, ctx)
+          expect(HarnessState.getSteps(session.id).map((step) => step.type)).toEqual(["work"])
+          ExecutionRuntime.cancelExecution(execution)
+        },
+      })
+    },
+  )
 
   test("restores explicit independent review step types", async () => {
     await using tmp = await tmpdir({ config: {} })

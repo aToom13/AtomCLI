@@ -177,38 +177,53 @@ async function setup() {
   return { parent, child, ctx, root, execution, tool: await TaskTool.init() }
 }
 
-test("advisory Atomic plan cannot add reviewer criteria without user authorization", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const { tool, ctx: baseContext, root, execution } = await setup()
-      const ctx = {
-        ...baseContext,
-        ask: async (request: any) => {
-          expect(request.permission).toBe("review.require")
-          asked++
-          throw new PermissionNext.RejectedError()
-        },
-      }
-      let asked = 0
-      await expect(
-        tool.execute(
+test.each(["reject", "deny", "feedback"])(
+  "advisory Atomic plan permits faithful recovery after review denial: %s",
+  async (denial) => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const { tool, ctx: baseContext, root, execution } = await setup()
+        const ctx = {
+          ...baseContext,
+          ask: async (request: any) => {
+            expect(request.permission).toBe("review.require")
+            asked++
+            if (denial === "deny") throw new PermissionNext.DeniedError([])
+            if (denial === "feedback") throw new PermissionNext.CorrectedError("No optional review")
+            throw new PermissionNext.RejectedError()
+          },
+        }
+        let asked = 0
+        const denied = await tool.execute(
           {
             action: "plan",
             tasks: [{ id: "worker", prompt: "Inspect fixture", acceptance: automatic }],
             acceptance: [{ id: "audit", description: "Independent behavior check", verification: "reviewer" }],
           },
           ctx,
-        ),
-      ).rejects.toBeInstanceOf(PermissionNext.RejectedError)
-      expect(asked).toBe(1)
-      expect(ExecutionRuntime.atomicRoot(execution.executionID)?.version).toBe(root.version)
-      expect(ExecutionRuntime.tasks(execution.executionID)).toHaveLength(1)
-      ExecutionRuntime.cancelExecution(execution)
-    },
-  })
-})
+        )
+        expect(denied.output).toContain("Do not repeat")
+        expect(denied.output).toContain("never downgrade")
+        expect(asked).toBe(1)
+        expect(ExecutionRuntime.atomicRoot(execution.executionID)?.version).toBe(root.version)
+        expect(ExecutionRuntime.tasks(execution.executionID)).toHaveLength(1)
+        const recovered = await tool.execute(
+          {
+            action: "plan",
+            tasks: [{ id: "worker", prompt: "Inspect fixture", acceptance: automatic }],
+            acceptance: automatic,
+          },
+          ctx,
+        )
+        expect(recovered.metadata.error).toBe(false)
+        expect(asked).toBe(1)
+        ExecutionRuntime.cancelExecution(execution)
+      },
+    })
+  },
+)
 
 test("action-specific schema rejects mixed initial payload, preserves default run, and recovers without fallback", async () => {
   await using tmp = await tmpdir()
@@ -249,6 +264,7 @@ test("action-specific schema rejects mixed initial payload, preserves default ru
         tool.execute({ action: "revise", expectedVersion: root.version, tasks: plan.tasks }, ctx),
       ).rejects.toThrow("no plan to revise")
       const spawn = spyOn(SubAgent, "spawn")
+      spawn.mockClear()
       try {
         await expect(
           tool.execute(

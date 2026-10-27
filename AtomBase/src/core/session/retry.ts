@@ -34,37 +34,35 @@ export namespace SessionRetry {
 
   export function delay(attempt: number, error?: MessageV2.APIError) {
     if (error) {
-      const headers = error.data.responseHeaders
-      if (headers) {
-        const retryAfterMs = headers["retry-after-ms"]
-        if (retryAfterMs) {
-          const parsedMs = Number.parseFloat(retryAfterMs)
-          if (!Number.isNaN(parsedMs)) {
-            return Math.min(Math.max(0, parsedMs), RETRY_MAX_DELAY)
-          }
-        }
-
-        const retryAfter = headers["retry-after"]
-        if (retryAfter) {
-          const parsedSeconds = Number.parseFloat(retryAfter)
-          if (!Number.isNaN(parsedSeconds)) {
-            // convert seconds to milliseconds
-            return Math.min(Math.max(0, Math.ceil(parsedSeconds * 1000)), RETRY_MAX_DELAY)
-          }
-          // Try parsing as HTTP date format
-          const parsed = Date.parse(retryAfter) - Date.now()
-          if (!Number.isNaN(parsed) && parsed > 0) {
-            return Math.min(Math.ceil(parsed), RETRY_MAX_DELAY)
-          }
-        }
-
-        return RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
-      }
+      const retryAfterMs = retryAfter(error.data.responseHeaders)
+      if (retryAfterMs !== undefined) return Math.min(retryAfterMs, RETRY_MAX_DELAY)
+      if (error.data.responseHeaders) return RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
     }
 
     const base = RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
     const jitter = base * (0.75 + Math.random() * 0.5) // F17: ±25% jitter
     return Math.min(jitter, RETRY_MAX_DELAY_NO_HEADERS)
+  }
+
+  /** Uncapped provider delay; callers must not retry early when their wait budget is smaller. */
+  export function retryAfter(headers?: Record<string, string>, now = Date.now()) {
+    const normalized = Object.fromEntries(
+      Object.entries(headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]),
+    )
+    for (const [key, multiplier] of [
+      ["retry-after-ms", 1],
+      ["retry-after", 1000],
+    ] as const) {
+      const value = normalized[key]
+      if (!value?.trim()) continue
+      const numeric = Number(value)
+      if (Number.isFinite(numeric) && numeric >= 0) return Math.ceil(numeric * multiplier)
+      if (key === "retry-after") {
+        const date = Date.parse(value)
+        if (Number.isFinite(date) && date > now) return date - now
+      }
+    }
+    return undefined
   }
 
   // HTTP status codes that should trigger retry/fallback

@@ -928,7 +928,7 @@ test.each([false, true])("infrastructure retries remain bounded; user retry appr
           return approve
         },
       })
-      expect(retrySleep.mock.calls.map(([delay]) => delay)).toEqual([2_000, 4_000])
+      expect(retrySleep.mock.calls.map(([delay]) => delay)).toEqual(approve ? [2_000, 4_000, 8_000] : [2_000, 4_000])
       expect(approvals).toBe(1)
       expect(calls).toBe(approve ? 4 : 3)
       expect(result.passed).toBe(approve)
@@ -993,3 +993,51 @@ test("hard execution limits block review without automatic retries or retry appr
     },
   })
 })
+
+test.each(["seconds", "milliseconds", "http-date", "over-budget"])(
+  "review honors nested provider Retry-After: %s",
+  async (kind) => {
+    await using tmp = await tmpdir({ config: { review: { ...enforcedReview.review, reviewer_count: 1 } } })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const sessionID = `session-retry-after-${kind}`
+        await Config.clearCache()
+        HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+        const headers =
+          kind === "milliseconds"
+            ? { "Retry-After-Ms": "12000" }
+            : kind === "http-date"
+              ? { "Retry-After": new Date(Date.now() + 20000).toUTCString() }
+              : { "retry-after": kind === "over-budget" ? "120" : "12" }
+        spawnMock.mockImplementation(async () => {
+          throw new Error("Provider failed", {
+            cause: { name: "APIError", data: { message: "Rate limited", isRetryable: true, responseHeaders: headers } },
+          })
+        })
+        let approvals = 0
+        const result = await runBlockingReview(sessionID, {
+          requestRetry: async () => {
+            approvals++
+            return false
+          },
+        })
+        expect(result.passed).toBe(false)
+        expect(result.exhausted).toBe(true)
+        if (kind === "over-budget") {
+          expect(spawnMock).toHaveBeenCalledTimes(1)
+          expect(retrySleep).not.toHaveBeenCalled()
+          expect(approvals).toBe(0)
+          expect(result.reason).toContain("retry later")
+        } else {
+          expect(spawnMock).toHaveBeenCalledTimes(3)
+          expect(retrySleep).toHaveBeenCalledTimes(2)
+          for (const [delay] of retrySleep.mock.calls) {
+            expect(delay).toBeGreaterThanOrEqual(kind === "http-date" ? 18000 : 12000)
+            expect(delay).toBeLessThanOrEqual(20000)
+          }
+        }
+      },
+    })
+  },
+)

@@ -412,12 +412,28 @@ export const TaskFlowTool = Tool.define("taskflow", {
           }
           let binding: Awaited<ReturnType<typeof createDurablePlan>>
           if (smSteps.some((step) => step.type === "independent_review")) {
-            await ctx.ask({
-              permission: "review.require",
-              patterns: smSteps.filter((step) => step.type === "independent_review").map((step) => step.id),
-              always: [],
-              metadata: { description: "Require independent reviewer PASS before these plan items can complete." },
-            })
+            try {
+              await ctx.ask({
+                permission: "review.require",
+                patterns: smSteps.filter((step) => step.type === "independent_review").map((step) => step.id),
+                always: [],
+                metadata: { description: "Require independent reviewer PASS before these plan items can complete." },
+              })
+            } catch (error) {
+              if (
+                !(
+                  error instanceof PermissionNext.RejectedError ||
+                  error instanceof PermissionNext.DeniedError ||
+                  error instanceof PermissionNext.CorrectedError
+                )
+              )
+                throw error
+              return {
+                title: "Review requirement denied",
+                output: `${error.message} Plan unchanged. Do not repeat this review.require request. If independent review was your optional proposal, continue with work steps and test evidence. If the user or policy requires independent review, report that blocker; do not remove or weaken the requirement.`,
+                metadata: { steps: undefined, step_id: undefined, status: "error" },
+              }
+            }
           }
           try {
             binding = await createDurablePlan(ctx, smSteps)

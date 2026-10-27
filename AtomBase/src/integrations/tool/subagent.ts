@@ -601,7 +601,7 @@ export namespace SubAgent {
             ? result.info.error.message
             : "Sub-agent prompt failed"
       await notifyFailed(`Error: ${result.info.error.name}: ${detail}`)
-      throw new Error(`${result.info.error.name}: ${detail}`)
+      throw new Error(`${result.info.error.name}: ${detail}`, { cause: result.info.error })
     }
 
     // Preserve multi-part final answers instead of silently returning only the

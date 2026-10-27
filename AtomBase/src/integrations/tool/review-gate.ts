@@ -42,6 +42,8 @@ export interface ReviewResult {
   error?: boolean
   /** Transport/runtime failure; eligible for bounded retries, never a waiver. */
   retryable?: boolean
+  /** Uncapped provider minimum delay, retained across child-session errors. */
+  retryAfterMs?: number
   /** Valid reviewer output needs more evidence; return to the worker, not infrastructure retry. */
   repairable?: boolean
   /** Validated structured review report when a review ran. */
@@ -63,6 +65,19 @@ const MAX_USER_REQUEST_CHARS = 10_000
 /** Cap the number of edited files listed in the reviewer prompt. */
 const MAX_EDITED_FILES = 200
 const MAX_REVIEW_INFRASTRUCTURE_ATTEMPTS = 3
+
+function retryAfterError(error: unknown): number | undefined {
+  for (let depth = 0; error && typeof error === "object" && depth < 5; depth++) {
+    const value = error as {
+      data?: { responseHeaders?: Record<string, string> }
+      responseHeaders?: Record<string, string>
+      cause?: unknown
+    }
+    const delay = SessionRetry.retryAfter(value.data?.responseHeaders ?? value.responseHeaders)
+    if (delay !== undefined) return delay
+    error = value.cause
+  }
+}
 
 /**
  * Build the reviewer prompt for the main agent's edits.
@@ -333,12 +348,21 @@ export async function runBlockingReview(
   for (let attempt = 1; ; attempt++) {
     const result = await runReviewAttempt(sessionID, options)
     if (!result.retryable || options.signal?.aborted) return result
+    const delay = Math.max(2_000 * 2 ** (attempt - 1), result.retryAfterMs ?? 0)
+    if (delay > SessionRetry.RETRY_MAX_DELAY) {
+      return {
+        ...result,
+        exhausted: true,
+        reason: `${result.reason}. Provider Retry-After exceeds the 60-second review wait budget; retry later.`,
+      }
+    }
     if (attempt < maxInfrastructureAttempts) {
-      await SessionRetry.sleep(2_000 * 2 ** (attempt - 1), options.signal ?? new AbortController().signal)
+      await SessionRetry.sleep(delay, options.signal ?? new AbortController().signal)
       continue
     }
     if (!approvedRetry && options.requestRetry && (await options.requestRetry(result.reason ?? "Review unavailable"))) {
       approvedRetry = true
+      await SessionRetry.sleep(delay, options.signal ?? new AbortController().signal)
       attempt = 0
       continue
     }
@@ -647,6 +671,10 @@ async function runReviewAttempt(
         !settled.some(
           (result) => result.status === "rejected" && result.reason instanceof ExecutionRuntime.BudgetExceededError,
         ),
+      retryAfterMs: Math.max(
+        0,
+        ...settled.flatMap((result) => (result.status === "rejected" ? [retryAfterError(result.reason) ?? 0] : [])),
+      ),
       report,
     }
   } catch (error) {
@@ -661,6 +689,7 @@ async function runReviewAttempt(
     return {
       passed: false,
       reason: `Review infrastructure error: ${(error as Error).message}`,
+      retryAfterMs: retryAfterError(error),
       error: true,
       retryable: !options.signal?.aborted && !(error instanceof ExecutionRuntime.BudgetExceededError),
       exhausted,
