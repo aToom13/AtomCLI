@@ -352,3 +352,25 @@ test("background catalog refresh cannot stall model dispatch or duplicate in-fli
     clock.mockRestore()
   }
 })
+
+test("custom discovery fallback shares its deadline with the first attempt", async () => {
+  const signals: AbortSignal[] = []
+  const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (_input, init) => {
+    signals.push(init!.signal!)
+    if (signals.length === 1) return new Response(null, { status: 404 })
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init!.signal!
+      if (signal.aborted) reject(signal.reason)
+      else signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+    })
+  }) as typeof fetch)
+  try {
+    const result = await fetchOpenAICompatibleModels({ baseURL: "http://fake-provider/api", timeout: 20 })
+    expect(result.ok).toBe(false)
+    expect(signals).toHaveLength(2)
+    expect(signals[1]).toBe(signals[0])
+    expect(signals[1].aborted).toBe(true)
+  } finally {
+    fetchMock.mockRestore()
+  }
+})

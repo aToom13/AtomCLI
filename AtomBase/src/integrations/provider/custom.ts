@@ -267,12 +267,12 @@ export async function fetchOpenAICompatibleModels(options: {
   log.info("fetching openai compatible models", { url: modelsURL })
 
   try {
+    // One deadline covers both URL attempts and response body consumption.
+    const signal = AbortSignal.timeout(options.timeout ?? 10_000)
     let response = await fetch(modelsURL, {
       method: "GET",
       headers,
-      signal: AbortSignal.timeout(options.timeout ?? 10_000),
-    }).catch((e) => {
-      throw e
+      signal,
     })
 
     // If /v1/models failed with 404 and baseURL already had a custom path, try directly ${baseURL}/models
@@ -282,7 +282,7 @@ export async function fetchOpenAICompatibleModels(options: {
       response = await fetch(altURL, {
         method: "GET",
         headers,
-        signal: AbortSignal.timeout(options.timeout ?? 10_000),
+        signal,
       })
     }
 
