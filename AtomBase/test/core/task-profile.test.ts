@@ -19,6 +19,8 @@ describe("TaskProfile", () => {
   })
 
   test.each([
+    "Uygulamayı değiştirme, sadece incele",
+    "don't change anything, just review",
     "Uygulamayı incele; dosyaları değiştirme, test yazma.",
     "Review the app, don't modify it. Don't write tests.",
     "Inspect the implementation without changing files.",
