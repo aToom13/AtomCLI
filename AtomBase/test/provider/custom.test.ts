@@ -353,6 +353,79 @@ test("background catalog refresh cannot stall model dispatch or duplicate in-fli
   }
 })
 
+test("applyConfiguredProviders discovers custom providers in parallel and bounds unreachable endpoints", async () => {
+  const { applyConfiguredProviders } = await import("@/integrations/provider/catalog-config")
+  const originalFetch = globalThis.fetch
+  const started: string[] = []
+  let healthyFinished = false
+  let healthyFinishedBeforeTimeout = false
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input.toString()
+    started.push(url)
+    if (url.startsWith("http://reachable-provider")) {
+      healthyFinished = true
+      return Response.json({ data: [{ id: "reachable-model" }] })
+    }
+    if (url.startsWith("http://unreachable-provider")) {
+      // Never answers: mirrors an offline LAN endpoint that only the timeout can release.
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          healthyFinishedBeforeTimeout = healthyFinished
+          reject(new Error("The operation timed out."))
+        })
+      })
+    }
+    return new Response("Not Found", { status: 404 })
+  }) as typeof globalThis.fetch
+
+  try {
+    const config = {
+      provider: {
+        unreachable: {
+          npm: "@ai-sdk/openai-compatible",
+          api: "http://unreachable-provider/v1",
+          models: { "stored-model": { name: "Stored model" } },
+        },
+        reachable: {
+          npm: "@ai-sdk/openai-compatible",
+          api: "http://reachable-provider/v1",
+          models: {},
+        },
+        disabled: {
+          npm: "@ai-sdk/openai-compatible",
+          api: "http://disabled-provider/v1",
+          options: { modelDiscovery: false },
+          models: { "static-model": { name: "Static model" } },
+        },
+      },
+    } as any
+
+    const database: Record<string, any> = {}
+    const start = Date.now()
+    await applyConfiguredProviders({
+      config,
+      database,
+      modelsDev: {},
+      configuredVariants: (_existing, parsed) => ({ ...parsed }),
+    })
+    const elapsed = Date.now() - start
+
+    // The first provider never answers. Its healthy peer must finish before its
+    // deadline; this proves concurrency without scheduler-sensitive timing gaps.
+    expect(started.toSorted()).toEqual(["http://reachable-provider/v1/models", "http://unreachable-provider/v1/models"])
+    expect(healthyFinishedBeforeTimeout).toBe(true)
+    // Timeout is 2.5s, so total elapsed must stay well under the previous 10s+ tail.
+    expect(elapsed).toBeLessThan(5_000)
+    // The healthy catalog still lands even though its peer failed.
+    expect(database["reachable"].models["reachable-model"]).toBeDefined()
+    expect(database["unreachable"].models["stored-model"].name).toBe("Stored model")
+    expect(database["disabled"].models["static-model"].name).toBe("Static model")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("custom discovery fallback shares its deadline with the first attempt", async () => {
   const signals: AbortSignal[] = []
   const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (_input, init) => {

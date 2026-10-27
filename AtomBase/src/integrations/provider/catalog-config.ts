@@ -8,18 +8,25 @@ import type { Provider } from "./provider"
 
 const log = Log.create({ service: "provider.catalog" })
 
+// Startup runs this while the TUI is still on the loading screen, so an unreachable
+// endpoint must not stall boot. Discovery is best-effort: stored catalogs stay usable.
+const DISCOVERY_TIMEOUT_MS = 2_500
+
 export async function applyConfiguredProviders(input: {
   config: Awaited<ReturnType<typeof Config.get>>
   database: Record<string, Provider.Info>
   modelsDev: Record<string, any>
   configuredVariants: (existing: Provider.Model | undefined, parsed: Provider.Model) => Record<string, any>
 }) {
-  for (const [providerID, provider] of Object.entries(input.config.provider ?? {})) {
-    const existing = input.database[providerID]
-    let configuredModels = provider.models ?? {}
-    const baseURL = provider.api ?? provider.options?.baseURL
-    const npm = provider.npm ?? Object.values(existing?.models ?? {})[0]?.api.npm
-    if (provider.options?.modelDiscovery !== false && npm === "@ai-sdk/openai-compatible" && baseURL) {
+  const entries = Object.entries(input.config.provider ?? {})
+  // Fetch in parallel: sequential discovery made boot time the sum of every remote endpoint.
+  const discoveries = await Promise.all(
+    entries.map(async ([providerID, provider]) => {
+      const existing = input.database[providerID]
+      const baseURL = provider.api ?? provider.options?.baseURL
+      const npm = provider.npm ?? Object.values(existing?.models ?? {})[0]?.api.npm
+      if (provider.options?.modelDiscovery === false || npm !== "@ai-sdk/openai-compatible" || !baseURL)
+        return undefined
       const storedAuth = await Auth.get(providerID)
       const apiKey =
         storedAuth?.type === "api"
@@ -29,8 +36,18 @@ export async function applyConfiguredProviders(input: {
         baseURL,
         apiKey,
         headers: provider.options?.headers,
-        timeout: 10_000,
+        timeout: DISCOVERY_TIMEOUT_MS,
       })
+      return { discovery, apiKey }
+    }),
+  )
+
+  for (const [index, [providerID, provider]] of entries.entries()) {
+    const existing = input.database[providerID]
+    let configuredModels = provider.models ?? {}
+    const discovered = discoveries[index]
+    if (discovered) {
+      const { discovery, apiKey } = discovered
       if (discovery.ok && discovery.models.length > 0) {
         configuredModels = Object.fromEntries(
           discovery.models.map((model) => [
