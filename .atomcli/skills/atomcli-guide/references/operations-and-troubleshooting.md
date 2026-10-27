@@ -133,7 +133,7 @@ Diagnostic `node --check` probes report their actual exit status; current static
 
 Bash timeouts return exit status 124; cancellation returns 130, even if the parent shell exited successfully before a background child closed captured output. Harness logs preserve that non-success status. Interrupted commands with write effects retain unknown work until reconciled; killing their processes does not prove their side effects were rolled back.
 
-Review is optional by default. Requested reviewers retain native permissions, concrete claim authorization during finalizing, 30 tool operations, 12 native steps, 180 seconds, shared hard budgets, and late-result rejection. Timeout/cancellation/inconclusive is recorded separately from a completed code outcome with an explicit warning, never PASS. Validated findings, failed tests, unresolved tasks, and unknown effects still block success.
+Automatic review is opt-in. Without `review.auto: true`, the effective policy is advisory. Requested reviewers retain native permissions, concrete claim authorization during finalizing, 30 tool operations, 12 native steps, 180 seconds, shared hard budgets, and late-result rejection. Required review fails closed on timeout, cancellation, infrastructure error, or inconclusive verdict. Outcome is blocked, never success with a warning. Failed checks, unresolved tasks, and unknown effects remain blockers.
 
 `Session event stream ended before completion` means the CLI lost streaming output, not that the task succeeded. Prompt runs attempt bounded, version-checked cancellation of their exact execution without cancelling a newer user turn. If the control plane is unreachable or keeps conflicting, cancellation may not persist; inspect durable session execution state before resuming rather than treating CLI termination as completion.
 
@@ -192,7 +192,7 @@ Check precedence in this order: `ATOMCLI_CONFIG_CONTENT`, project config, `ATOMC
 
 ### Prompt fails with `Execution blocked: stale_policy`
 
-Independent review is optional for every scope and risk. `review.auto: true` explicitly opts into policy-triggered review. `agent(action="spawn", subagent_type="reviewer", prompt="Review changes and test results independently")` remains available. Count defaults to one; multiple reviewers require explicit requests or configuration. Skipped completion review is durable `not_required`, never PASS. Timeout, cancellation, and inconclusive review remain separate from the code outcome, with a persisted warning and `inconclusive` claim. Failed checks, validated findings, unresolved work, uncertain effects, root cancellation, fencing, isolation, and hard budgets still prevent false success. Policy/content conflicts retry up to three times; lifecycle and fence failures never retry.
+`review.auto: true` opts into policy-triggered reviewers; otherwise effective policy is advisory (off when disabled). Explicit independent-review steps remain enforceable. One reviewer by default; extra reviewers require requests or configuration. Skipped review is durable `not_required`, never PASS. Required review needs PASS; infrastructure failure or inconclusive result blocks completion. Policy/content conflicts retry up to three times; lifecycle and fence failures never retry. See `docs/REVIEW.md` in a source checkout.
 
 ### Skill or agent is missing
 
@@ -237,3 +237,7 @@ Native Edit can omit `contentHash`: execution remembers trusted Read and own-wri
 For an Edit batch, put all replacements in `operations`. Nonempty top-level `oldString/newString` alongside a nonempty batch rejects the whole request before writing; neither replacement is silently dropped. Empty provider-generated top-level strings remain compatible.
 
 Native model Edit schemas omit hash/anchor parameters; the existing revision record enforces freshness. Direct integrations still support explicit hashes/anchors and reject mismatches. After a stale edit, read current source and use an exact unique replacement, adding surrounding text if needed. For direct scoped calls, copy Read's returned anchor pair; the end hash covers the entire returned range.
+
+Advisory runs local assessment only, with no reviewer model calls. Transport/runtime review failures receive up to `min(3, max_attempts)` attempts; concrete rejection counters are preserved. Completion may offer `review.retry` for one additional bounded group when repair is allowed. Approval retries review; it never waives acceptance. Repeated failure stays blocked. Fix reviewer/provider availability, then send a new message; the earlier blocked decision remains in the audit history. Cancellation and missing-evidence inconclusive reports do not trigger infrastructure retries.
+
+An explicit taskflow independent-review item exposes the same bounded retry approval even under advisory defaults; denial leaves the item unresolved.

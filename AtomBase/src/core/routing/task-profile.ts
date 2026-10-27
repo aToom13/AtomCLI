@@ -1,8 +1,9 @@
+import type { ExecutionContract } from "./execution-contract"
 import type { Provider } from "@/integrations/provider/provider"
 
 export namespace TaskProfile {
   export type Category = "coding" | "documentation" | "analysis" | "general"
-  export type Risk = "low" | "medium" | "high"
+  export type Risk = ExecutionContract.Risk
   export type Priority = "speed" | "balanced" | "quality"
 
   export interface Info {
@@ -40,13 +41,25 @@ export namespace TaskProfile {
     return "general"
   }
 
+  export function isReadOnly(prompt: string) {
+    const text = prompt.trim().toLowerCase()
+    const parts = text.split(/[,;]|\b(?:and|then|after that|ve)\b|sonra|ardından/i)
+    const mutation =
+      /^(?:then\s+)?(?:fix|change|edit|create|build|implement|write|generate|code|make|update|improve|refactor|remove|add|düzelt|oluştur|yap|geliştir|kodla|değiştir|düzenle|ekle|sil)(?=\s|$)/i
+    if (parts.slice(1).some((part) => mutation.test(part.trim()))) return false
+    return (
+      /^(?:please\s+)?(?:what is|what's|how does|how to|why|explain|define|describe|compare|summarize|analyse|analyze|review|inspect|neden|nedir|nasıl|açıkla|anlat|karşılaştır|özetle|incele)(?=\s|\?|$)/i.test(
+        text,
+      ) ||
+      (/\b(?:read[- ]?only|do not change|don't edit)\b|değiştirme|düzenleme/.test(text) && !mutation.test(text))
+    )
+  }
+
   export function infer(prompt: string, category?: Category): Info {
     const text = prompt.toLowerCase()
     category ??= inferCategory(text)
     const words = text.split(/\s+/).filter(Boolean).length
-    const readOnly =
-      has(text, /\b(incele|analiz|audit|review|explain|açıkla|değiştirme|read[- ]?only)\b/) &&
-      !has(withoutNegativeMutation(text), /\b(düzelt|değiştir|uygula|implement|fix|write|edit|refactor|ekle|kaldır)\b/)
+    const readOnly = isReadOnly(prompt)
     const needsBrowser = has(
       text,
       /\b(browser|playwright|web ui|website|web search|search online|latest|current|news|weather|price|sayfa|tarayıcı|internette ara|güncel|haber|hava durumu|fiyat|dom|accessibility)\b/,
@@ -81,7 +94,7 @@ export namespace TaskProfile {
     return {
       category,
       complexity: Math.min(10, complexity),
-      risk: highRisk ? "high" : mediumRisk ? "medium" : "low",
+      risk: readOnly ? "low" : highRisk ? "critical" : mediumRisk ? "elevated" : "low",
       priority,
       needsTools:
         category === "coding" ||
@@ -100,7 +113,7 @@ export namespace TaskProfile {
     if (profile.needsTools && !model.capabilities.toolcall) return -1_000
     if (profile.needsVision && !model.capabilities.input.image) return -1_000
     let score = 0
-    if ((profile.needsPlanning || profile.risk === "high") && model.capabilities.reasoning) score += 35
+    if ((profile.needsPlanning || profile.risk === "critical") && model.capabilities.reasoning) score += 35
     if (profile.needsBrowser && model.capabilities.toolcall) score += 20
     if (profile.longContext) score += Math.min((model.limit?.context ?? 0) / 8_000, 30)
     if (profile.priority === "speed" && !model.capabilities.reasoning) score += 15

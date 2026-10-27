@@ -29,7 +29,6 @@ import { Truncate } from "./truncation"
 import { BrowserTool } from "./browser"
 import { SystemHealthTool } from "./system-health"
 import { StaticCheckTool } from "./static-check"
-import { TaskTool } from "./task"
 import { AgentTool } from "./agent-tool"
 import { OrchestrateTool } from "./orchestrate"
 import { TaskFlowTool } from "./taskflow"
@@ -226,17 +225,12 @@ export namespace ToolRegistry {
     return all().then((x) => x.map((t) => t.id))
   }
 
-  export async function tools(
-    _providerID: string,
-    agent?: Agent.Info,
-    requested?: ReadonlySet<string>,
-    atomicWork = false,
-  ) {
+  export async function tools(_providerID: string, agent?: Agent.Info, requested?: ReadonlySet<string>) {
     const allTools = await all()
-    if (atomicWork) allTools.push(TaskTool)
     const allowList = agent?.name ? AGENT_TOOL_ALLOW_LISTS[agent.name] : undefined
 
-    let filteredTools = allTools.filter((t) => {
+    const filteredTools = allTools.filter((t) => {
+      if (["taskflow", "orchestrate"].includes(t.id)) return false
       if (requested && !requested.has(t.id)) return false
       if (allowList) return t.id === "invalid" || allowList.includes(t.id)
       return true

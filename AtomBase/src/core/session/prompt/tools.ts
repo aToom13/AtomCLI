@@ -37,6 +37,40 @@ export function requestedToolIDs(allowedTools: string[] | undefined, loadAll: bo
   return loadAll ? undefined : new Set(["model_control", "scope_control", "mcp_tools", "skill", "invalid"])
 }
 
+export function filterTurnTools<T>(
+  tools: Record<string, T>,
+  input: {
+    checkpointRequired?: boolean
+    expert?: boolean
+    pendingSkills?: boolean
+  },
+) {
+  return Object.fromEntries(
+    Object.entries(tools).filter(([name]) => {
+      const reason = input.checkpointRequired
+        ? "checkpoint"
+        : input.expert && !["read", "grep", "find"].includes(name)
+          ? "expert_read_only"
+          : input.pendingSkills &&
+              ![
+                "read",
+                "grep",
+                "find",
+                "skill",
+                "todo",
+                "scope_control",
+                "model_control",
+                "question",
+                "invalid",
+              ].includes(name)
+            ? "skill_reads_pending"
+            : undefined
+      if (reason) log.debug("Pruning tool for turn", { tool: name, reason })
+      return !reason
+    }),
+  )
+}
+
 export async function resolveTools(input: {
   agent: Agent.Info
   model: Provider.Model
@@ -69,7 +103,7 @@ export async function resolveTools(input: {
   const atomicExecution = Boolean(input.execution && ExecutionRuntime.atomicRoot(input.execution.executionID))
   const atomicWork = !input.session.parentID && atomicExecution
   const requestedTools = requestedToolIDs(allowedTools, loadAll || atomicWork || reviewer)
-  if (atomicWork) requestedTools?.add("task")
+  if (atomicWork) requestedTools?.add("agent")
 
   // The visible `todo` checklist is only advertised for non-direct scopes and
   // only when the prompt actually asks for one. Direct turns must never gain a
@@ -128,10 +162,11 @@ export async function resolveTools(input: {
 
   const tool = await getTool()
   const jsonSchema = await getJsonSchema()
-  for (const item of await ToolRegistry.tools(input.model.providerID, input.agent, requestedTools, atomicWork)) {
+  for (const item of await ToolRegistry.tools(input.model.providerID, input.agent, requestedTools)) {
     if (item.id === "mcp_tools" && (reviewer || input.agent.name === "reviewer")) continue
     if (atomicExecution && item.id === "taskflow" && !input.checkpointRequired) continue
-    if (atomicExecution && ["agent", "orchestrate"].includes(item.id)) continue
+    if (atomicExecution && ["task", "orchestrate"].includes(item.id)) continue
+    if (atomicExecution && item.id === "agent" && !atomicWork) continue
     if (item.id === "model_control" && input.session.parentID) continue
     const schema = z.toJSONSchema(item.parameters)
     if (item.id === "edit") {

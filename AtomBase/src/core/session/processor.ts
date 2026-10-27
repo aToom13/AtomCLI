@@ -199,7 +199,7 @@ export namespace SessionProcessor {
                       // Persist amendment as a user turn. The prompt loop picks it
                       // up on its next step and binds it to the same execution. The
                       // parent agent decides which task changed, then uses
-                      // task(action="revise") so unrelated work stays accepted.
+                      // agent(action="revise") so unrelated work stays accepted.
                       log.info("amendment received", { sessionID: input.sessionID, amendmentID: amendment.id })
                       const amendmentMessage = await Session.updateMessage({
                         id: Identifier.ascending("message"),

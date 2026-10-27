@@ -1,5 +1,7 @@
 # Atomic Work
 
+Atomic Work is the acceptance-driven profile of the common workflow scheduler. The model uses `agent` for delegation and durable `plan/execute/status/verify/revise` actions; `todo` remains a visible checklist. Legacy `task`, `taskflow`, and `orchestrate` implementations remain compatibility adapters and are not advertised to the model. The native `/atomic-work` command selects the profile explicitly.
+
 Start a durable goal from the TUI with the native command:
 
 ```text
@@ -27,7 +29,7 @@ Automatic commands run in the parent project directory (the directory where this
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `automatic`  | Harness executes the exact declared command and records its exit code and output.                                            |
 | `reviewer`   | Independent reviewer supplies a result and concrete evidence for each criterion; ledger records the actual reviewer session. |
-| `parent`     | Parent explicitly verifies the criterion with evidence through `task(action="verify")`.                                      |
+| `parent`     | Parent explicitly verifies the criterion with evidence through `agent(action="verify")`.                                     |
 
 A generic reviewer PASS does not satisfy all criteria. Successful parent/reviewer checks require current runtime evidence: an actual successful test run, or browser interaction followed by assertion/evaluation. Evidence must match the verifier's stored tool arguments and raw output; `observed` must quote that output. Source searches, screenshots, builds, and no-op commands alone cannot prove behavior. Reviewer/parent criteria cannot declare `command`; use automatic commands for structural checks. Parent-supplied automatic or reviewer checks are rejected.
 
@@ -55,17 +57,17 @@ Revision requires the expected ledger version. One transaction archives old snap
 
 These calls are made by the parent agent after native activation:
 
-- `task(action="plan", tasks=[...], acceptance=[...])`: persist implementation tasks and global acceptance.
-- `task(action="execute")`: await the existing scheduler.
-- `task(action="status")`: inspect authoritative task definitions, versions, evidence, and pending messages.
-- `task(action="verify", task_id="...", checks=[...])`: supply parent evidence; harness runs automatic and reviewer verification.
-- `task(action="revise", task_id="...", expectedVersion=..., definition={...})`: change one definition. The expected version belongs to that task.
-- `task(action="revise", expectedVersion=..., tasks=[...], amendment={messageID:"...", classification:"amendment", evidence:"..."})`: apply an amendment. The top-level expected version belongs to the root; each changed existing task entry needs its own expected version.
+- `agent(action="plan", tasks=[...], acceptance=[...])`: persist implementation tasks and global acceptance.
+- `agent(action="execute")`: await the existing scheduler.
+- `agent(action="status")`: inspect authoritative task definitions, versions, evidence, and pending messages.
+- `agent(action="verify", task_id="...", checks=[...])`: supply parent evidence; harness runs automatic and reviewer verification.
+- `agent(action="revise", task_id="...", expectedVersion=..., definition={...})`: change one definition. The expected version belongs to that task.
+- `agent(action="revise", expectedVersion=..., tasks=[...], amendment={messageID:"...", classification:"amendment", evidence:"..."})`: apply an amendment. The top-level expected version belongs to the root; each changed existing task entry needs its own expected version.
 - Use the same amendment object with `classification="status"` to acknowledge a question without changing definitions, or `classification="stop"` to cancel execution.
 
 `tasks` entries use `id`, `prompt`, `agent`, `dependsOn`, `owns`, `skills`, `acceptance`, optional `model`, `budget.maxRetries`, and `isolation`. Acceptance entries use `id`, `description`, `verification`, and an exact `command` for automatic checks. A single-task `definition` uses ledger names `goal`, `agent`, `dependsOn`, `acceptance`, and `execution`; execution contains ownership in `owns`, `skills`, `isolation`, `category`, `model`, and `maxRetries`.
 
-Each Task action has its own strict schema. Initial planning accepts only `action`, `tasks`, and `acceptance`; it cannot carry `definition`, `amendment`, empty `checks`, or fake task IDs. Invalid plans leave the root unplanned and can be corrected. Generic Task runs, agent spawning, orchestration plans, and Taskflow plans are blocked during an active Atomic Work goal. Taskflow checkpoint controls remain available when needed by execution budgeting. Automatic cross-project memory recall and user-memory context are suppressed during Atomic Work; workspace discovery remains available.
+Each Task action has its own strict schema. Initial planning accepts only `action`, `tasks`, and `acceptance`; it cannot carry `definition`, `amendment`, empty `checks`, or fake task IDs. Invalid plans leave the root unplanned and can be corrected. `agent` dispatch is fixed by action: `plan/execute/verify/revise` always require native Atomic activation. During Atomic Work, `spawn/workflow/steer/revive` are rejected; `plan/execute/status/verify/revise` remain available. Untargeted `status` reads the Atomic ledger; targeted `status`, `wait`, and `cancel/abort` control existing child lifecycles. Atomic children are not advertised `agent`. Generic Task runs, independent orchestration plans, and Taskflow plans are blocked during an active Atomic Work goal. Taskflow checkpoint controls remain available when needed by execution budgeting. Automatic cross-project memory recall and user-memory context are suppressed during Atomic Work; workspace discovery remains available.
 
 Passing parent checks additionally include `runtime={criterion, setup, action, expected, observed, evidence:[{tool:"browser"|"bash", input:"exact arguments as JSON", output:"exact raw output excerpt"}]}`. `criterion` matches the acceptance description exactly. Parent tool calls must occur after the current submission; reviewer calls must occur in the current review. Failed checks may report failure without runtime evidence. Evidence authenticity is enforced; judging whether a test adequately covers a semantic requirement still depends on the verifier.
 

@@ -1,3 +1,4 @@
+import "../preload"
 import { describe, expect, test } from "bun:test"
 import { TaskProfile } from "@/core/routing/task-profile"
 
@@ -9,7 +10,7 @@ describe("TaskProfile", () => {
       needsBrowser: true,
       needsVision: true,
       needsPlanning: true,
-      risk: "high",
+      risk: "critical",
       needsTools: true,
     })
   })
@@ -48,7 +49,7 @@ describe("TaskProfile", () => {
       category: "coding",
       readOnly: false,
       needsTools: true,
-      risk: "high",
+      risk: "critical",
     })
   })
 })

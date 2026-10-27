@@ -310,12 +310,7 @@ export function createCompletionLifecycle(input: CompletionLifecycleDependencies
     return recorded.claim
   }
 
-  async function commitCompletion(input: {
-    sessionID: string
-    execution: RuntimeTypes.Context
-    digest: string
-    reviewWarning?: string
-  }) {
+  async function commitCompletion(input: { sessionID: string; execution: RuntimeTypes.Context; digest: string }) {
     const resolved = await context(input.sessionID, input.execution)
     if (!resolved) throw new BudgetExceededError("not_active", input.execution.executionID)
     const candidate = resolved.store.completion(input.execution.executionID)
@@ -326,23 +321,6 @@ export function createCompletionLifecycle(input: CompletionLifecycleDependencies
       throw new BudgetExceededError("stale_policy", input.execution.executionID)
     }
     const snapshotDigest = await contentSnapshotDigest(z.string().array().parse(JSON.parse(candidate.reviewFiles)))
-    const deliveryPayload = input.reviewWarning
-      ? JSON.stringify([
-          ...MessageV2.TextPart.array().parse(JSON.parse(candidate.payload)),
-          {
-            id: Identifier.ascending("part"),
-            sessionID: input.sessionID,
-            messageID: candidate.messageID,
-            type: "text",
-            text: `Independent review incomplete: ${input.reviewWarning}. This is not a reviewer approval.`,
-            synthetic: true,
-            time: { start: Date.now(), end: Date.now() },
-            metadata: { reviewStatus: "inconclusive" },
-          },
-        ])
-      : undefined
-    if (deliveryPayload && new TextEncoder().encode(deliveryPayload).byteLength > MAX_COMPLETION_PAYLOAD_BYTES)
-      throw new Error(`Completion payload exceeds ${MAX_COMPLETION_PAYLOAD_BYTES} bytes`)
     const committed = resolved.store.commitCompletion({
       executionID: input.execution.executionID,
       ownerID: input.execution.ownerID,
@@ -350,7 +328,6 @@ export function createCompletionLifecycle(input: CompletionLifecycleDependencies
       digest: input.digest,
       policyDigest: currentPolicy.policyDigest,
       contentSnapshotDigest: snapshotDigest,
-      deliveryPayload,
     })
     if (!committed.committed) throw new BudgetExceededError(committed.reason, input.execution.executionID)
     stopLease(input.execution.executionID)

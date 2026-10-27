@@ -92,8 +92,6 @@ export namespace ExecutionPolicy {
     scope: ExecutionContract.Scope
     risk: ExecutionContract.Risk
     budget: Budget
-    requiresReview: boolean
-    requiresChecker: boolean
     allowedTools?: string[]
     promotionReasons: string[]
     budgetExtension?: {
@@ -204,8 +202,6 @@ export namespace ExecutionPolicy {
       maxSteps: Math.max(BUDGETS[scope].maxSteps, priorPolicy?.budget.maxSteps ?? 0),
       maxToolCalls: Math.max(BUDGETS[scope].maxToolCalls, priorPolicy?.budget.maxToolCalls ?? 0),
     }
-    const requiresReview = false
-    const requiresChecker = risk === "critical" && (evidence?.hasAuthOrSecurityEffect ?? false)
     const allowedTools = selectAllowedTools(scope, contract.intent, contract.expectedSurfaces, contract.needsMutation)
     const diagnostics = detectContradictions({ contract: { ...contract, scope, risk }, budget, allowedTools })
 
@@ -213,8 +209,6 @@ export namespace ExecutionPolicy {
       scope,
       risk,
       budget,
-      requiresReview,
-      requiresChecker,
       allowedTools,
       promotionReasons: [...new Set(promotionReasons)],
       budgetExtension: priorPolicy?.budgetExtension,

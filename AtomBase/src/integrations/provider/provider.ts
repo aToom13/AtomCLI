@@ -829,19 +829,6 @@ export namespace Provider {
         ).params
       }
 
-      // For complex tasks in quality/reasoning modes, use meta-router
-      const { selectMetaRouter } = await import("@/integrations/tool/meta-router")
-      let metaRouterInfo = undefined
-      if ((mode === "reasoning" || mode === "quality") && complexity >= 5) {
-        const mrResult = selectMetaRouter(candidateModels)
-        metaRouterInfo = mrResult
-        log.info("meta-router selected for complex task", {
-          mode,
-          complexity,
-          metaRouter: mrResult.modelID,
-        })
-      }
-
       const preliminary = await selectModel(
         category,
         candidateModels,
@@ -957,7 +944,6 @@ export namespace Provider {
           mode,
           complexity,
           fallbackCount: fallbackChain.fallbacks.length,
-          hasMetaRouter: !!metaRouterInfo,
         })
         return {
           ...selected.m,
@@ -966,11 +952,10 @@ export namespace Provider {
           // to pass back into Provider.getModel on later turns.
           id: selected.id,
           name: isAuto ? `AtomCLI Auto (${selected.id})` : `AtomCLI Free (${selected.id})`,
-          // Store fallback chain and meta-router in options for the LLM call pipeline
+          // Preserve verified fallback candidates for the LLM call pipeline
           options: {
             ...selected.m.options,
             _fallbackChain: fallbackChain,
-            _metaRouter: metaRouterInfo,
             _routePolicy: {
               requested: `${providerID}/${modelID}`,
               mode: isAuto ? "auto" : "free",

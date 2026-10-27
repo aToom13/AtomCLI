@@ -17,6 +17,8 @@ import { ReviewV2 } from "@/core/verification/review-v2"
 import { ReviewPolicy } from "@/core/verification/review-policy"
 import { evaluateReviewDecision } from "@/integrations/tool/review-gate"
 import { Config } from "@/core/config/config"
+import { Bus } from "@/core/bus"
+import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
@@ -333,9 +335,13 @@ test.each([
   "failed_test",
   "mutation",
   "step_limit",
+  "retry-approved",
+  "retry-rejected",
+  "retry-exhausted",
 ] as const)(
-  "optional completion review terminates: %s",
+  "required completion review terminates: %s",
   async (verdict) => {
+    const recovery = verdict.startsWith("retry-")
     await using project = await tmpdir({
       git: true,
       config: Config.Info.parse({
@@ -344,8 +350,8 @@ test.each([
           auto: true,
           enabled: true,
           policy: "always",
-          ...(verdict === "single" ? {} : { reviewer_count: 2 }),
-          max_attempts: 1,
+          ...(verdict === "single" || recovery ? {} : { reviewer_count: 2 }),
+          max_attempts: recovery ? 3 : 1,
           high_risk_patterns: [],
         },
       }),
@@ -406,6 +412,23 @@ test.each([
         } as never)
         const modelLookup = spyOn(Provider, "getModel").mockResolvedValue(model)
         const recordedReviews = spyOn(ExecutionRuntime, "recordReview")
+        const originalSpawn = SubAgent.spawn
+        let dispatches = 0
+        const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (options) => {
+          if (recovery && (++dispatches <= 3 || verdict === "retry-exhausted")) throw new Error("provider unavailable")
+          return originalSpawn(options)
+        })
+        let permissionRequests = 0
+        const unsubscribe = Bus.subscribe(PermissionNext.Event.Asked, async (event) => {
+          if (event.properties.permission !== "review.retry") return
+          permissionRequests++
+          expect(recordedReviews).not.toHaveBeenCalled()
+          expect(ExecutionRuntime.view(execution.executionID)?.lifecycle).not.toBe("terminal")
+          await PermissionNext.reply({
+            requestID: event.properties.id,
+            reply: verdict === "retry-rejected" ? "reject" : "once",
+          })
+        })
         const setTimer = globalThis.setTimeout
         const reviewerTimeouts: Array<() => void> = []
         let passingReviewFinished = false
@@ -462,7 +485,7 @@ test.each([
                     exitCode: 1,
                   })
                 const output = {
-                  verdict: ["single", "timeout", "cancelled", "mutation"].includes(verdict)
+                  verdict: ["single", "timeout", "cancelled", "mutation", "retry-approved"].includes(verdict)
                     ? "passed"
                     : verdict === "failed_test"
                       ? "inconclusive"
@@ -509,11 +532,17 @@ test.each([
             execution,
             candidate,
             abort: new AbortController().signal,
-            allowRetry: false,
+            allowRetry: recovery,
           })
-          const completed = ["single", "passed", "inconclusive", "timeout", "cancelled", "step_limit"].includes(verdict)
-          expect(children).toHaveLength(verdict === "single" ? 1 : 2)
+          const completed = ["single", "passed", "retry-approved"].includes(verdict)
+          expect(children).toHaveLength(recovery ? (completed ? 1 : 0) : verdict === "single" ? 1 : 2)
+          if (recovery) {
+            expect(permissionRequests).toBe(1)
+            expect(dispatches).toBe(verdict === "retry-approved" ? 4 : verdict === "retry-exhausted" ? 6 : 3)
+          }
           expect(result).toBe(completed ? "committed" : "blocked")
+          expect(HarnessState.getEditedFiles(root.id)).toEqual(completed ? [] : ["math.ts"])
+          expect(HarnessState.getReviewerSession(root.id)).toBeUndefined()
           expect(ExecutionRuntime.view(execution.executionID)).toMatchObject({
             lifecycle: "terminal",
             outcome: completed ? "completed" : "blocked",
@@ -528,7 +557,7 @@ test.each([
             expect(
               messages
                 .flatMap((message) => message.parts)
-                .some((part) => part.type === "text" && part.text.includes("Independent review incomplete:")),
+                .some((part) => part.type === "text" && part.text.includes("Independent review could not run:")),
             ).toBe(true)
           }
           expect(ExecutionRuntime.allowance(execution.executionID)).toEqual(before)
@@ -552,6 +581,8 @@ test.each([
           recordedReviews.mockRestore()
           evaluations.mockRestore()
           timer.mockRestore()
+          spawn.mockRestore()
+          unsubscribe()
         }
       },
     })

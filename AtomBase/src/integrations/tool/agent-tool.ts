@@ -1,5 +1,6 @@
 import z from "zod"
 import { Tool } from "./tool"
+import { TaskActions } from "./task"
 import { ToolNotAppliedError } from "./runtime-error"
 import { Agent } from "../agent/agent"
 import { PermissionNext } from "@/util/permission/next"
@@ -10,7 +11,7 @@ import { TaskSchema, RecoverySchema } from "./orchestrate/schema"
 import { Instance } from "@/services/project/instance"
 import { activeOwnershipRoot } from "./orchestrate/ownership"
 
-const parameters = z.object({
+const delegation = z.object({
   action: z
     .enum(["spawn", "workflow", "abort", "cancel", "wait", "steer", "revive", "status"])
     .default("spawn")
@@ -95,6 +96,7 @@ const safeTaskId = (s: string) =>
     .slice(0, 40) || "task"
 
 export const AgentTool = Tool.define("agent", async (ctx) => {
+  const parameters = z.union([...TaskActions.Atomic.options, delegation])
   let taskToolPromise: ReturnType<(typeof import("./task"))["TaskTool"]["init"]> | undefined
   let orchestrateToolPromise: ReturnType<(typeof import("./orchestrate"))["OrchestrateTool"]["init"]> | undefined
   const taskTool = () => (taskToolPromise ??= import("./task").then((mod) => mod.TaskTool.init(ctx)))
@@ -140,6 +142,8 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     "7. action='status': Return runtime status, timestamps, and elapsed time.",
     "One independent task: blocking spawn. Multiple independent tasks: workflow plan+execute; put dependencies in the DAG.",
     "",
+    "Atomic Work profile: plan(tasks, acceptance), execute, status, verify(task_id, checks), revise. The durable ledger controls acceptance and dependencies; the same workflow scheduler runs the DAG.",
+    "Dispatch is action-based: plan/execute/verify/revise always use the Atomic adapter and require a native Atomic root. During Atomic Work spawn/workflow/steer/revive are rejected. wait, targeted status, cancel/abort remain lifecycle controls; untargeted status reads the Atomic ledger.",
     "AVAILABLE SUB-AGENT TYPES:",
     agentList,
   ].join("\n")
@@ -149,10 +153,23 @@ export const AgentTool = Tool.define("agent", async (ctx) => {
     parameters,
     mutating: (params: z.infer<typeof parameters>) => params.action !== "status" && params.action !== "wait",
     async execute(params: z.infer<typeof parameters>, ctx) {
+      if (
+        params.action === "plan" ||
+        params.action === "execute" ||
+        params.action === "verify" ||
+        params.action === "revise"
+      )
+        return (await taskTool()).execute(params, ctx)
+      if (params.action === "status" && !params.session_id && !params.workflowId && ctx.extra?.execution) {
+        const { ExecutionRuntime } = await import("@/core/execution/runtime")
+        if (ExecutionRuntime.atomicRoot(ctx.extra.execution.executionID))
+          return (await taskTool()).execute({ action: "status" }, ctx)
+      }
+
       if (ctx.extra?.execution && ["spawn", "workflow", "steer", "revive"].includes(params.action)) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         if (ExecutionRuntime.atomicRoot(ctx.extra.execution.executionID))
-          throw new Error("ATOMIC_PLAN_REQUIRED: use task plan/execute for Atomic Work children")
+          throw new Error("ATOMIC_PLAN_REQUIRED: use agent plan/execute for Atomic Work children")
       }
 
       const ownedChildSession = async (sessionID: string) => {

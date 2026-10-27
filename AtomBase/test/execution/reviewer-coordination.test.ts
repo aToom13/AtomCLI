@@ -174,10 +174,10 @@ test.each(["rejected", "inconclusive"] as const)(
             abort: new AbortController().signal,
             allowRetry: false,
           }),
-        ).toBe(state === "inconclusive" ? "committed" : "blocked")
+        ).toBe("blocked")
         expect(ExecutionRuntime.view(execution.executionID)).toMatchObject({
           lifecycle: "terminal",
-          outcome: state === "inconclusive" ? "completed" : "blocked",
+          outcome: "blocked",
           ...(state === "rejected" ? { reason: { code: "review_rejected" } } : {}),
         })
         await expect(

@@ -129,6 +129,15 @@ const parameters = z.discriminatedUnion("action", [
     .strict(),
 ])
 
+export namespace TaskActions {
+  export const Atomic = z.discriminatedUnion("action", [
+    parameters.options[1],
+    parameters.options[2],
+    parameters.options[4],
+    parameters.options[5],
+  ])
+}
+
 export const TaskTool = Tool.define("task", async (ctx) => {
   const agents = await Agent.list().then((x) => x.filter((a) => a.mode !== "primary"))
 
@@ -339,14 +348,14 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         if (ExecutionRuntime.atomicRoot(execution.executionID))
           throw new Error(
-            "ATOMIC_PLAN_REQUIRED: use task(action='plan'), then task(action='execute'); generic run is unavailable during Atomic Work",
+            "ATOMIC_PLAN_REQUIRED: use agent(action='plan'), then agent(action='execute'); generic run is unavailable during Atomic Work",
           )
       }
       if (execution && params.task_id) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")
         const target = await ExecutionRuntime.getTask({ sessionID: ctx.sessionID, execution, taskID: params.task_id })
         if (target && AtomicWork.isTask(target, execution.executionID))
-          throw new Error("Atomic Work tasks run through task(action='execute')")
+          throw new Error("Atomic Work tasks run through agent(action='execute')")
       }
       if (execution && params.depends_on?.length) {
         const { ExecutionRuntime } = await import("@/core/execution/runtime")

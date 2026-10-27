@@ -142,7 +142,6 @@ describe("ExecutionPolicy", () => {
     expect(policy.scope).toBe("focused")
     expect(policy.risk).toBe("critical")
     expect(policy.budget.maxSteps).toBe(6)
-    expect(policy.requiresReview).toBe(false)
   })
 
   test("runtime evidence promotes direct to focused on multiple reads", () => {

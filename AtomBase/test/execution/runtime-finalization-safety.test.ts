@@ -131,7 +131,7 @@ describe("ExecutionRuntime finalization safety", () => {
         })
         HarnessState.addEditedFile(root.id, "index.html")
         const decision = (await evaluateReviewDecision(root.id, execution.executionID)).decision
-        expect(decision).toMatchObject({ requirement: "not_required", reasonCode: "automatic_review_disabled" })
+        expect(decision).toMatchObject({ requirement: "not_required", reasonCode: "review_advised" })
         ExecutionRuntime.cancelExecution(execution)
       },
     })

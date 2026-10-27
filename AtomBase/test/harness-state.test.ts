@@ -4,7 +4,36 @@ import "./preload"
 import { describe, expect, test } from "bun:test"
 import { escapeXmlText, HarnessState, truncateUtf8 } from "@/core/session/harness-state"
 import { Instance } from "@/services/project/instance"
+import { Session } from "@/core/session"
 import { tmpdir } from "./fixture/fixture"
+
+test("session deletion clears descendant harness/QA state without losing surviving-parent review evidence", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const parent = await Session.create({})
+      const child = await Session.create({ parentID: parent.id })
+      const grandchild = await Session.create({ parentID: child.id })
+      for (const session of [child, grandchild]) {
+        HarnessState.addEditedFile(session.id, `${session.id}.ts`)
+        HarnessState.recordReviewVerdict(session.id, { status: "fail", reason: "Needs review" })
+        HarnessState.setReviewerSession(session.id, "reviewer-fixture")
+        HarnessState.setQASession(session.id, "task", "qa-fixture")
+      }
+      await Session.remove(child.id)
+      expect(HarnessState.getEditedFiles(parent.id).sort()).toEqual([`${child.id}.ts`, `${grandchild.id}.ts`].sort())
+      for (const session of [child, grandchild]) {
+        expect(HarnessState.getEditedFiles(session.id)).toEqual([])
+        expect(HarnessState.getReviewVerdict(session.id)).toBeUndefined()
+        expect(HarnessState.getReviewerSession(session.id)).toBeUndefined()
+        expect(HarnessState.getQASession(session.id, "task")).toBeUndefined()
+      }
+      await Session.remove(parent.id)
+      expect(HarnessState.getEditedFiles(parent.id)).toEqual([])
+    },
+  })
+})
 
 describe("HarnessState - OrchestratorLock", () => {
   test("lockOrchestrator sets active workflow ID and unlockOrchestrator clears it", async () => {

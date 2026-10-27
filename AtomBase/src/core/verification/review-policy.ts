@@ -92,9 +92,13 @@ export namespace ReviewPolicy {
     const executionProfile = input.executionProfile ?? "default"
     const effectivePolicy: Mode = !input.enabled
       ? "off"
-      : input.configuredPolicy === "adaptive" && executionProfile === "companion-fast"
-        ? "fast"
-        : input.configuredPolicy
+      : input.configuredPolicy === "off"
+        ? "off"
+        : input.auto !== true
+          ? "advisory"
+          : input.configuredPolicy === "adaptive" && executionProfile === "companion-fast"
+            ? "fast"
+            : input.configuredPolicy
     const value = {
       policyVersion: 2 as const,
       auto: input.auto === true,

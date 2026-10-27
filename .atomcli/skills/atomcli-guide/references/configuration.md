@@ -177,7 +177,7 @@ Use `none` to disable a binding. Avoid assigning the same key sequence to confli
 
 ## Adaptive execution and classification
 
-Adaptive execution pipelines (`direct`, `focused`, `coordinated`) and model-based semantic classification are active by default. Disable classification only when needed:
+Adaptive execution pipelines (`direct`, `focused`, `coordinated`) use the deterministic local `TaskProfile`, shared with model routing. Classification adds no model call. Disable local profiling only when conservative defaults are desired:
 
 ```jsonc
 {
@@ -195,18 +195,18 @@ Execution contracts use these pipelines:
 
 An empty tool allowlist means the scope states no tool preference; it never means no tools are advertised. A turn is only treated as conversational when it is a short question or greeting that names no work surface, so continuations such as "devam et" keep the full toolset. A chat turn still collapses to `model_control` alone. If a turn receives no tools, the agent is instructed to say so rather than guess.
 
-When enabled, the classifier call runs with the user's selected model and is admitted against the execution call and cost budget. Scope and risk promote dynamically based on observable runtime evidence. Checkpoint `continue` grants extend the adaptive work slice in the same durable transaction, but explicit `max_calls`/`max_steps` remain hard admission ceilings. Slice growth stays bounded by the twenty-grant extension ceiling and 50-call slice clamps. Cost ceilings and the duration deadline are never raised by adaptive policy.
+Classification uses the shared local TaskProfile without model calls or classifier cost. Scope and risk promote dynamically based on observable runtime evidence. Checkpoint `continue` grants extend the adaptive work slice in the same durable transaction, but explicit `max_calls`/`max_steps` remain hard admission ceilings. Slice growth stays bounded by the twenty-grant extension ceiling and 50-call slice clamps. Cost ceilings and the duration deadline are never raised by adaptive policy.
 
 Each checkpoint also requires a structured self-critique: `routeDecision` (`keep` or `revise`), `selfCritique`, `failedApproaches`, and `whatToChanges`. A `revise` verdict or any recorded failed approach steers the next work slice through a route-guidance block instead of merely being stored, and four consecutive `revise` verdicts without progress are treated as a stall.
 
-When `execution_classification` is explicitly `false`, AtomCLI skips the classifier model call and uses conservative defaults: normal agent/build/plan/explore work is focused, and reviewer work is direct. Runtime evidence may promote focused work to coordinated when cross-package, public API, schema, wide-change, repeated-failure, or delegated-work signals require it. Adaptive limits, checkpoints, watchdogs, and finalization remain active.
+When `execution_classification` is explicitly `false`, AtomCLI uses conservative defaults: normal agent/build/plan/explore work is focused, reviewer work is direct. Runtime evidence may promote scope and risk. Adaptive limits, checkpoints, watchdogs, and finalization remain active.
 
 Scope may be raised during an active execution with the `scope_control` tool. Only the main conversation may escalate or reset; child agents may inspect status but cannot change the root execution scope. Reset clears the session floor for future turns, not the active execution's scope. `experimental.scope_escalation.mode` accepts `ask` (default), `auto`, or `off`; `max_per_session` bounds repeated escalation. `cooldown_ms` defaults to 0 and may be set to add a delay. Escalation is monotonic; per-session count and configured cooldown state persist across restart. Manual model and thinking pins still override adaptive routing.
 `scope_control(action="status")` reports current scope/floor, next scope's policy-level tool allowance and subagent eligibility, plus persisted escalation use and cooldown. Agent allowlists and user permissions may still narrow the actual advertised tools.
 
 Policy-triggered review requires workspace mutation evidence. Conversation-only and read-only turns do not automatically launch reviewers. Explicit reviewer agent calls can inspect existing code without edits.
 
-Independent review is optional for all scopes and risks. Without `review.auto: true`, code tasks complete after their own tests and validation, with durable `not_required`, not PASS. The optional block defaults to `adaptive`, one reviewer, three attempts. Multiple reviewers require explicit `reviewer_count` (1–4) or multiple requested reviewer tasks. Use `agent(action="spawn", subagent_type="reviewer", prompt="Review changes and test results independently")` for an independent report. `off` or `enabled: false` disables policy-triggered review, not explicit agent calls. Incomplete optional review is reported separately, never approval; failed tests and unresolved work still block success. `high_risk_patterns` also applies in Companion `fast`. Policy/content conflicts retry at most three times; lifecycle rejections such as `stale_fence` never retry.
+Automatic review requires `review.auto: true`. Without it, the effective policy is `advisory`; `configuredPolicy` retains the configured strategy. `off` or `enabled: false` makes the effective policy `off`. Explicit independent-review steps can still require review. Required review fails closed: timeout, cancellation, infrastructure error, or inconclusive verdict blocks completion; warnings cannot substitute for PASS. The optional block defaults to configured `adaptive`, one reviewer, three attempts. Multiple reviewers require explicit `reviewer_count` (1–4) or requested reviewer tasks. `high_risk_patterns` also applies in Companion `fast` when auto review is enabled. Policy/content conflicts retry at most three times; stale ownership never retries.
 
 ## Data retention
 

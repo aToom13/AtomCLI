@@ -592,24 +592,12 @@ export namespace SessionPrompt {
               )
             } else if (cfg.experimental?.execution_classification !== false) {
               const { ExecutionClassifier } = await import("@/core/routing/execution-classifier")
-              let classifierModel: any = undefined
-              const baseModel = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID).catch(
-                () => undefined,
-              )
-              if (baseModel) {
-                classifierModel = await Provider.getLanguage(baseModel).catch(() => undefined)
-              }
               const explicitOrchestration = PromptContext.explicitOrchestration(userPromptText)
               const scopeFloor = await SessionScopeFloor.merge(sessionID, "direct")
               const classification = await ExecutionClassifier.classify({
-                sessionID,
-                execution: executionContext,
                 invocationID: executionContext.invocationID,
                 prompt: userPromptText,
                 agentMode: lastUser.agent,
-                model: classifierModel,
-                modelInfo: baseModel,
-                signal: abort,
                 explicitOrchestration,
                 scopeFloor,
               })
@@ -777,7 +765,6 @@ export namespace SessionPrompt {
         RouteRuntime,
         insertReminders,
         shouldResolveTools,
-        checkpointTools,
         prepareTurnContext,
         earlyProgressReminder,
         checkpointHandoff,

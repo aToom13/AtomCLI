@@ -553,3 +553,40 @@ describe("ExecutionLedger", () => {
     ledger.close()
   })
 })
+
+test("an inconclusive required review cannot commit success with a warning payload", async () => {
+  await using tmp = await tmpdir()
+  const ledger = ExecutionLedger.open(path.join(tmp.path, "closed-review.sqlite"))
+  try {
+    ledger.start({ id: "closed-review", projectID: "project", rootSessionID: "session", fence: 1, now: 100 })
+    ledger.claimOwner({ executionID: "closed-review", ownerID: "owner", leaseMs: 100, now: 100 })
+    const owner = { executionID: "closed-review", ownerID: "owner", fence: 1 }
+    expect(
+      ledger.stageCompletion({
+        ...owner,
+        sessionID: "session",
+        messageID: "assistant",
+        finish: "stop",
+        payload: "[]",
+        reviewFiles: "[]",
+        digest: "digest",
+        requiresReview: true,
+        revision: 0,
+        now: 101,
+      }).staged,
+    ).toBe(true)
+    expect(ledger.claimReview({ ...owner, id: "review", digest: "digest", revision: 0, now: 102 }).claimed).toBe(true)
+    expect(ledger.recordReview({ ...owner, reviewID: "review", state: "inconclusive", now: 103 }).recorded).toBe(true)
+    expect(
+      ledger.commitCompletion({
+        ...owner,
+        digest: "digest",
+        deliveryPayload: '[{"text":"review unavailable"}]',
+        now: 104,
+      }),
+    ).toMatchObject({ committed: false, reason: "review_required" })
+    expect(ledger.completion("closed-review")?.state).toBe("staged")
+  } finally {
+    ledger.close()
+  }
+})

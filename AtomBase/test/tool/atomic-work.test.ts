@@ -197,6 +197,14 @@ test("action-specific schema rejects mixed initial payload, preserves default ru
         amendment: { messageID: "fake", classification: "amendment", evidence: "placeholder" },
         checks: [],
       }
+      const agent = await AgentTool.init()
+      expect(agent.parameters.safeParse(mixed).success).toBe(false)
+      expect(
+        ProviderTransform.schema(
+          { providerID: "openai", api: { id: "test" } } as any,
+          z.toJSONSchema(agent.parameters) as any,
+        ).type,
+      ).toBe("object")
       await expect(tool.execute(mixed, ctx)).rejects.toThrow("invalid arguments")
       await expect(
         AtomicWork.action({ ...plan, tasks: AtomicWork.Tasks.parse(plan.tasks), definition: {} }, ctx),
@@ -221,9 +229,10 @@ test("action-specific schema rejects mixed initial payload, preserves default ru
           ),
         ).rejects.toThrow("ATOMIC_PLAN_REQUIRED")
         expect(spawn).not.toHaveBeenCalled()
-        await expect(
-          (await AgentTool.init()).execute({ action: "spawn", subagent_type: "general", prompt: "Fallback" }, ctx),
-        ).rejects.toThrow("ATOMIC_PLAN_REQUIRED")
+        for (const action of ["spawn", "workflow", "steer", "revive"] as const)
+          await expect(
+            (await AgentTool.init()).execute({ action, subagent_type: "general", prompt: "Fallback" }, ctx),
+          ).rejects.toThrow("ATOMIC_PLAN_REQUIRED")
         await expect(
           (await OrchestrateTool.init()).execute({ action: "run", request: "Fallback" }, ctx),
         ).rejects.toThrow("ATOMIC_PLAN_REQUIRED")
@@ -411,8 +420,10 @@ test("native command is discoverable, rejects blank goal and carries native meta
           "task",
         )
         expect(
-          (await ToolRegistry.tools("atomcli", await Agent.get("build"), undefined, true)).map((tool) => tool.id),
-        ).toContain("task")
+          (await ToolRegistry.tools("atomcli", await Agent.get("build"), new Set(["agent", "task"]))).map(
+            (tool) => tool.id,
+          ),
+        ).not.toContain("task")
       } finally {
         model.mockRestore()
       }
@@ -420,16 +431,21 @@ test("native command is discoverable, rejects blank goal and carries native meta
   })
 })
 
-test("default Atomic Work accepts parent runtime evidence without spawning reviewers", async () => {
+test("agent Atomic Work profile accepts parent runtime evidence without spawning reviewers", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      const { tool, ctx, child, root, execution } = await setup()
-      await tool.execute({
-        action: "plan", acceptance: automatic,
-        tasks: [{ id: "worker", prompt: "Inspect feature", acceptance: automatic }],
-      }, ctx)
+      const { ctx, child, root, execution } = await setup()
+      const tool = await AgentTool.init()
+      await tool.execute(
+        {
+          action: "plan",
+          acceptance: automatic,
+          tasks: [{ id: "worker", prompt: "Inspect feature", acceptance: automatic }],
+        },
+        ctx,
+      )
       const planned = ExecutionRuntime.tasks(execution.executionID).find((task) => task.id === root.id)!
       expect(planned.acceptance.find((criterion) => criterion.id === "atomic-global-1")?.verification).toBe("parent")
       const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (config) => {
@@ -438,11 +454,27 @@ test("default Atomic Work accepts parent runtime evidence without spawning revie
       })
       try {
         expect((await tool.execute({ action: "execute" }, ctx)).metadata.status).toBe("resumable")
-        await tool.execute({ action: "verify", task_id: root.id, checks: [{
-          criterionID: "atomic-global-1", verifier: "parent", passed: true, evidence: "Current integration verified",
-          runtime: await runtimeEvidence(ctx.sessionID, "Inspect feature", ExecutionRuntime.tasks(execution.executionID),
-            'expect(state.find(task => task.id === "worker").status).toBe("accepted")'),
-        }] }, ctx)
+        await tool.execute(
+          {
+            action: "verify",
+            task_id: root.id,
+            checks: [
+              {
+                criterionID: "atomic-global-1",
+                verifier: "parent",
+                passed: true,
+                evidence: "Current integration verified",
+                runtime: await runtimeEvidence(
+                  ctx.sessionID,
+                  "Inspect feature",
+                  ExecutionRuntime.tasks(execution.executionID),
+                  'expect(state.find(task => task.id === "worker").status).toBe("accepted")',
+                ),
+              },
+            ],
+          },
+          ctx,
+        )
         expect((await tool.execute({ action: "execute" }, ctx)).metadata.status).toBe("completed")
         expect(ExecutionRuntime.tasks(execution.executionID).every((task) => task.status === "accepted")).toBe(true)
         expect(spawn).toHaveBeenCalledTimes(2)
@@ -739,7 +771,7 @@ test("parent criteria pause dependencies, automatic bypass is rejected, then int
             },
             ctx,
           ),
-        ).rejects.toThrow("task(action='execute')")
+        ).rejects.toThrow("agent(action='execute')")
       } finally {
         spawn.mockRestore()
       }

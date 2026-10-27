@@ -921,7 +921,7 @@ export type Config = {
      */
     auto?: boolean
     /**
-     * Enable review policy evaluation. Advisory mode reports review recommendations without spawning reviewers.
+     * Enable review policy evaluation. Without auto=true the effective policy is advisory; no reviewer agents spawn.
      */
     enabled?: boolean
     /**
@@ -933,7 +933,7 @@ export type Config = {
      */
     reviewer_count?: number
     /**
-     * Recommend review without spawning, enforce high-risk review, review every edit, or disable
+     * Review strategy when auto=true; otherwise effective policy is advisory. Required review fails closed on infrastructure errors
      */
     policy?: "advisory" | "enforced" | "adaptive" | "always" | "off"
     /**
@@ -1083,7 +1083,7 @@ export type Config = {
      */
     continue_loop_on_deny?: boolean
     /**
-     * Enable model-based semantic execution classification; enabled by default unless explicitly false
+     * Enable deterministic local execution profiling with runtime evidence promotion; no classification model call
      */
     execution_classification?: boolean
     /**
@@ -3452,7 +3452,7 @@ export type ConfigUpdateData = {
        */
       auto?: boolean
       /**
-       * Enable review policy evaluation. Advisory mode reports review recommendations without spawning reviewers.
+       * Enable review policy evaluation. Without auto=true the effective policy is advisory; no reviewer agents spawn.
        */
       enabled?: boolean
       /**
@@ -3464,7 +3464,7 @@ export type ConfigUpdateData = {
        */
       reviewer_count?: number
       /**
-       * Recommend review without spawning, enforce high-risk review, review every edit, or disable
+       * Review strategy when auto=true; otherwise effective policy is advisory. Required review fails closed on infrastructure errors
        */
       policy?: "advisory" | "enforced" | "adaptive" | "always" | "off"
       /**
@@ -3614,7 +3614,7 @@ export type ConfigUpdateData = {
        */
       continue_loop_on_deny?: boolean
       /**
-       * Enable model-based semantic execution classification; enabled by default unless explicitly false
+       * Enable deterministic local execution profiling with runtime evidence promotion; no classification model call
        */
       execution_classification?: boolean
       /**

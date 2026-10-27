@@ -34,6 +34,7 @@ describe("ReviewPolicy", () => {
       highRiskPatterns: [],
     })
     expect(snapshot.auto).toBe(false)
+    expect(snapshot.effectivePolicy).toBe("advisory")
     expect(snapshot.policyDigest).toBeString()
   })
 
@@ -94,7 +95,7 @@ describe("ReviewPolicy", () => {
       },
     })
     expect(absent.policyDigest).toBe(explicit.policyDigest)
-    expect(absent.effectivePolicy).toBe("adaptive")
+    expect(absent.effectivePolicy).toBe("advisory")
     expect(absent.auto).toBe(false)
   })
 

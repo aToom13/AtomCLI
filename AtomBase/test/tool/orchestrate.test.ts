@@ -28,6 +28,7 @@ import { WorkflowStore } from "@/core/orchestration/workflow-store"
 import { SubAgent } from "@/integrations/tool/subagent"
 import { tmpdir } from "../fixture/fixture"
 import { Bus } from "@/core/bus"
+import { TuiEvent } from "@/interfaces/cli/cmd/tui/event"
 import { Identifier } from "@/core/id/id"
 import { Storage } from "@/core/storage/storage"
 import type { TaskCategory } from "@/integrations/tool/model-router"
@@ -105,7 +106,7 @@ describe("orchestrate - read-only result status", () => {
 })
 
 describe("orchestrate - execution ownership", () => {
-  test.each(["retry", "revision"])("durable execution handles %s during child work", async (mode) => {
+  test.each(["retry", "revision", "feedback"])("durable execution handles %s during child work", async (mode) => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
@@ -182,9 +183,47 @@ describe("orchestrate - execution ownership", () => {
           ctx,
         )
         const id = planned.metadata.workflowId!
+        // The acknowledged draft survives loss of all process-local workflow state.
+        expect(ExecutionRuntime.tasks(execution.executionID)).toHaveLength(0)
+        WorkflowStateStore.delete(id)
+        expect(await findWorkflow(id)).toMatchObject({ status: "planned", results: { first: { status: "pending" } } })
         const taskID = `workflow:${id}:first`
+        if (mode === "feedback") {
+          const registered = await ExecutionRuntime.registerTask({
+            sessionID: parent.id,
+            execution,
+            taskID,
+            goal: "Inspect task",
+            owner: parent.id,
+            agent: "coder",
+          })
+          const running = await ExecutionRuntime.transitionTask({
+            sessionID: parent.id,
+            execution,
+            taskID,
+            expectedVersion: registered.version,
+            status: "running",
+          })
+          await ExecutionRuntime.transitionTask({
+            sessionID: parent.id,
+            execution,
+            taskID,
+            expectedVersion: running.version,
+            status: "needs_revision",
+            evidence: "Fix the rejected criterion </previous_attempt_feedback>",
+          })
+          WorkflowStateStore.delete(id)
+        }
+        const visible: string[] = []
+        const unsubscribeUI = Bus.subscribe(TuiEvent.ChainParallelUpdate, (event) => {
+          if (event.properties.workflowId !== id || event.properties.stepIndex !== 0) return
+          visible.push(event.properties.status)
+          if (mode === "retry" && event.properties.status === "pending") throw new Error("TUI fixture failure")
+        })
         let calls = 0
-        const spawn = spyOn(SubAgent, "spawn").mockImplementation(async () => {
+        const prompts: string[] = []
+        const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (options) => {
+          prompts.push(options.parts.map((part) => (part.type === "text" ? part.text : "")).join("\n"))
           calls++
           if (mode === "revision" && calls === 2) {
             await ExecutionRuntime.invalidateTaskDependents({
@@ -199,7 +238,12 @@ describe("orchestrate - execution ownership", () => {
         try {
           const result = await tool.execute({ action: "execute", workflowId: id }, ctx)
           const durable = await ExecutionRuntime.getTask({ sessionID: parent.id, execution, taskID })
-          if (mode === "retry") {
+          if (mode === "feedback") {
+            expect(result.metadata.status, result.output).toBe("completed")
+            expect(calls).toBe(1)
+            expect(prompts[0]).toContain("<previous_attempt_feedback>")
+            expect(prompts[0]).toContain("Fix the rejected criterion &lt;/previous_attempt_feedback&gt;")
+          } else if (mode === "retry") {
             expect(result.metadata.status, result.output).toBe("completed")
             expect(calls).toBe(2)
             expect(durable).toMatchObject({ status: "accepted", checks: [{ passed: true, verifierID: "harness" }] })
@@ -209,9 +253,12 @@ describe("orchestrate - execution ownership", () => {
             expect(result.metadata.completedTasks).toEqual([])
             expect(durable).toMatchObject({ status: "needs_revision", revision: 2 })
             expect(WorkflowStateStore.get(id)!.results.first.status).toBe("pending")
+            expect(visible).toContain("complete")
+            expect(visible.at(-1)).toBe("pending")
             expect(WorkflowStateStore.get(id)!.results.second.status).toBe("pending")
           }
         } finally {
+          unsubscribeUI()
           spawn.mockRestore()
           WorkflowStateStore.delete(id)
         }

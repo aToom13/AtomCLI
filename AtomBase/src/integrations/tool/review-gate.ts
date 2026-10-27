@@ -39,6 +39,8 @@ export interface ReviewResult {
   skipped: boolean
   /** True when the review could not run due to an infrastructure error. */
   error?: boolean
+  /** Transport/runtime failure; eligible for bounded retries, never a waiver. */
+  retryable?: boolean
   /** Validated structured review report when a review ran. */
   report?: ReviewV2.Report
   status?: "not_requested" | "passed" | "rejected" | "inconclusive"
@@ -57,6 +59,7 @@ type ReviewAssessment = {
 const MAX_USER_REQUEST_CHARS = 10_000
 /** Cap the number of edited files listed in the reviewer prompt. */
 const MAX_EDITED_FILES = 200
+const MAX_REVIEW_INFRASTRUCTURE_ATTEMPTS = 3
 
 /**
  * Build the reviewer prompt for the main agent's edits.
@@ -257,23 +260,6 @@ export async function evaluateReviewDecision(
     extraHighRiskPatterns: snapshot.highRiskPatterns,
   })
   const policy = snapshot.effectivePolicy
-  if (!snapshot.auto && !independentReviewStep) {
-    return {
-      decision: {
-        policyVersion: snapshot.policyVersion,
-        policyDigest: snapshot.policyDigest,
-        requirement: "not_required",
-        reasonCode: config.review?.enabled === false ? "review_disabled" : "automatic_review_disabled",
-        requiredReviewers: 0,
-        attemptLimit: snapshot.attemptLimit,
-      },
-      impact,
-      diff,
-      originalPrompt,
-      editedFiles,
-      policy,
-    }
-  }
   return {
     decision: {
       policyVersion: snapshot.policyVersion,
@@ -330,6 +316,34 @@ export async function evaluateReviewDecision(
  * calls short-circuit — they do not re-spawn the reviewer (cost amplifier).
  */
 export async function runBlockingReview(
+  sessionID: string,
+  options: Parameters<typeof runReviewAttempt>[1] & {
+    requestRetry?: (reason: string) => Promise<boolean>
+  } = {},
+): Promise<ReviewResult> {
+  // ponytail: two automatic retries and one user-approved group; use a durable retry queue if reviews become asynchronous.
+  const maxInfrastructureAttempts = Math.min(
+    MAX_REVIEW_INFRASTRUCTURE_ATTEMPTS,
+    options.decision?.attemptLimit ?? (await Config.get()).review?.max_attempts ?? 3,
+  )
+  let approvedRetry = false
+  for (let attempt = 1; ; attempt++) {
+    const result = await runReviewAttempt(sessionID, options)
+    if (!result.retryable || options.signal?.aborted) return result
+    if (attempt < maxInfrastructureAttempts) {
+      await Bun.sleep(attempt * 200)
+      continue
+    }
+    if (!approvedRetry && options.requestRetry && (await options.requestRetry(result.reason ?? "Review unavailable"))) {
+      approvedRetry = true
+      attempt = 0
+      continue
+    }
+    return { ...result, exhausted: true }
+  }
+}
+
+async function runReviewAttempt(
   sessionID: string,
   options: {
     signal?: AbortSignal
@@ -473,20 +487,15 @@ export async function runBlockingReview(
     const reviewerAgent = await Agent.get("reviewer")
     if (!reviewerAgent) {
       log.warn("reviewer agent not found — blocking review", { sessionID })
-      // Record the unavailable attempt so infrastructure failures are bounded,
-      // while replacing the pending claim keeps the next attempt claimable.
-      HarnessState.recordReviewVerdict(sessionID, {
-        status: "fail",
-        reason: "Reviewer agent is unavailable, so the required review could not run.",
-      })
-      const exhausted = (HarnessState.getReviewVerdict(sessionID)?.attempts ?? 1) >= maxAttempts
+      HarnessState.releaseReview(sessionID)
       return {
         passed: false,
         reason: "Reviewer agent is unavailable, so the required review could not run.",
-        exhausted,
+        exhausted: false,
         skipped: true,
         status: "inconclusive",
         error: true,
+        retryable: true,
       }
     }
 
@@ -616,7 +625,9 @@ export async function runBlockingReview(
     }
 
     const reason = formatReviewReason(report)
-    HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason })
+    const infrastructureFailure = report.verdict === "inconclusive" && reviewerResults.some((result) => result.error)
+    if (infrastructureFailure) HarnessState.releaseReview(sessionID)
+    else HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason })
     const attempts = HarnessState.getReviewVerdict(sessionID)?.attempts ?? 1
     const exhausted = attempts >= maxAttempts
     log.info("review gate: FAIL", { sessionID, attempts, exhausted, verdict: report.verdict })
@@ -627,28 +638,27 @@ export async function runBlockingReview(
       skipped: false,
       status: report.verdict === "inconclusive" ? "inconclusive" : "rejected",
       error: report.verdict === "inconclusive",
+      retryable:
+        infrastructureFailure &&
+        !settled.some(
+          (result) => result.status === "rejected" && result.reason instanceof ExecutionRuntime.BudgetExceededError,
+        ),
       report,
     }
   } catch (error) {
-    // Reviewer infrastructure failure — do not silently pass the gate. Surface
-    // the error so the clear output can report "review skipped due to error"
-    // instead of appearing to have been reviewed. Cancellation restores the
-    // previous verdict; other infrastructure failures consume a bounded attempt.
+    // Infrastructure failures have their own bounded retry budget; preserve
+    // concrete rejection counts and the previous verdict on cancellation.
     log.error("review gate: review failed with error", {
       sessionID,
       error: (error as Error).message,
     })
-    if (options.signal?.aborted) HarnessState.releaseReview(sessionID)
-    else
-      HarnessState.recordReviewVerdict(sessionID, {
-        status: "fail",
-        reason: `Review infrastructure error: ${(error as Error).message}`,
-      })
+    HarnessState.releaseReview(sessionID)
     const exhausted = (HarnessState.getReviewVerdict(sessionID)?.attempts ?? 0) >= maxAttempts
     return {
       passed: false,
       reason: `Review infrastructure error: ${(error as Error).message}`,
       error: true,
+      retryable: !options.signal?.aborted && !(error instanceof ExecutionRuntime.BudgetExceededError),
       exhausted,
       skipped: true,
       status: "inconclusive",
@@ -666,6 +676,9 @@ function formatReviewReason(report: ReviewV2.Report) {
     )
   return [
     report.summary,
+    ...report.reviewers
+      .filter((reviewer) => reviewer.error)
+      .map((reviewer) => `${reviewer.reviewer}: ${reviewer.error}`),
     ...findings,
     ...(report.rejectedChecks ?? []).map((check) => `${check.criterion ?? "Acceptance evidence"}: ${check.reason}`),
   ]

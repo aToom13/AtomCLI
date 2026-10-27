@@ -221,12 +221,22 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
               <Match when={props.request.permission === "doom_loop"}>
                 <TextBody icon="⟳" title="Continue after repeated failures" />
               </Match>
+              <Match when={props.request.permission === "review.retry"}>
+                <TextBody
+                  title="Retry independent review"
+                  description={`${props.request.metadata.description}\n${props.request.metadata.reason}`}
+                />
+              </Match>
               <Match when={true}>
                 <TextBody icon="⚙" title={`Call tool ` + props.request.permission} />
               </Match>
             </Switch>
           }
-          options={{ once: "Allow once", always: "Allow always", reject: "Reject" }}
+          options={
+            props.request.permission === "review.retry"
+              ? { once: "Retry review", reject: "Keep blocked" }
+              : { once: "Allow once", always: "Allow always", reject: "Reject" }
+          }
           escapeKey="reject"
           onSelect={(option) => {
             if (option === "always") {

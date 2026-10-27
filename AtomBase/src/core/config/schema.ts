@@ -752,7 +752,7 @@ export namespace ConfigSchema {
             .optional()
             .default(true)
             .describe(
-              "Enable review policy evaluation. Advisory mode reports review recommendations without spawning reviewers.",
+              "Enable review policy evaluation. Without auto=true the effective policy is advisory; no reviewer agents spawn.",
             ),
           max_attempts: z
             .number()
@@ -773,7 +773,9 @@ export namespace ConfigSchema {
             .enum(["advisory", "enforced", "adaptive", "always", "off"])
             .optional()
             .default("adaptive")
-            .describe("Recommend review without spawning, enforce high-risk review, review every edit, or disable"),
+            .describe(
+              "Review strategy when auto=true; otherwise effective policy is advisory. Required review fails closed on infrastructure errors",
+            ),
           high_risk_patterns: z
             .array(z.string().max(500))
             .max(100)
@@ -940,7 +942,7 @@ export namespace ConfigSchema {
             .boolean()
             .optional()
             .describe(
-              "Enable model-based semantic execution classification; enabled by default unless explicitly false",
+              "Enable deterministic local execution profiling with runtime evidence promotion; no classification model call",
             ),
           scope_escalation: z
             .object({

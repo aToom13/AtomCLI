@@ -1,40 +1,33 @@
 import "../preload"
 import { describe, expect, test, beforeEach, spyOn } from "bun:test"
 import { ExecutionClassifier } from "@/core/routing/execution-classifier"
+import { TaskProfile } from "@/core/routing/task-profile"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import * as AICompat from "@/util/util/ai-compat"
 
 describe("ExecutionClassifier", () => {
-  test("classification sees late requirements and preserves non-game acceptance", async () => {
-    const criterion = "Import failures leave the existing database unchanged."
-    const prompt = `Implement a CSV import command. ${"Project background. ".repeat(70)}${criterion}`
-    let observedPrompt = ""
-    let observedSystem = ""
-    const generate = spyOn(AICompat, "getGenerateObject").mockImplementation(
-      async () =>
-        (async (input: { prompt: string; system: string }) => {
-          observedPrompt = input.prompt
-          observedSystem = input.system
-          return {
-            object: ExecutionContract.parseSafe({
-              intent: "change",
-              scope: "focused",
-              confidence: 0.9,
-              needsMutation: true,
-              acceptance: [criterion],
-            }),
-          }
-        }) as never,
-    )
+  test("classifies locally without invoking the provider or spending a model call", async () => {
+    const generate = spyOn(AICompat, "getGenerateObject").mockImplementation(() => {
+      throw new Error("unexpected model call")
+    })
     try {
-      const result = await ExecutionClassifier.classify({ prompt, model: {} as never })
-      expect(result.fallback).toBe(false)
-      expect(observedPrompt).toContain(criterion)
-      expect(observedSystem).toContain('"acceptance"')
-      expect(result.contract.acceptance).toEqual([criterion])
+      const result = await ExecutionClassifier.classify({ prompt: "Implement an auth migration across the monorepo" })
+      expect(result).toMatchObject({
+        fallback: false,
+        contract: { scope: "coordinated", risk: "critical", needsMutation: true },
+      })
+      expect(generate).not.toHaveBeenCalled()
     } finally {
       generate.mockRestore()
     }
+  })
+
+  test("localized high-risk work remains focused and shares the routing risk", async () => {
+    const prompt = "Implement a database migration in one file"
+    const result = await ExecutionClassifier.classify({ prompt })
+    expect(result.contract.scope).toBe("focused")
+    expect(result.contract.risk).toBe(TaskProfile.infer(prompt).risk)
+    expect(result.contract.risk).toBe("critical")
   })
 
   test.each(["browser flow", "browser navigation", "input_sequence"])(
@@ -120,42 +113,28 @@ describe("ExecutionClassifier", () => {
     expect(explanation.fallback).toBe(false)
   })
 
-  test("uses a read-only fallback for workspace questions without a model", async () => {
+  test("classifies workspace questions as read-only", async () => {
     const result = await ExecutionClassifier.classify({ prompt: "Explain the project architecture" })
-    expect(result.fallback).toBe(true)
+    expect(result.fallback).toBe(false)
     expect(result.contract.scope).toBe("focused")
     expect(result.contract.intent).toBe("inspect")
     expect(result.contract.needsMutation).toBe(false)
     expect(result.contract.needsDiscovery).toBe(true)
   })
 
-  test("keeps broad game questions read-only when the model is unavailable", async () => {
+  test("keeps broad game questions read-only", async () => {
     const conceptual = await ExecutionClassifier.classify({ prompt: "Analyze a complete 3D game design" })
-    expect(conceptual).toMatchObject({ fallback: true, contract: { intent: "answer", scope: "direct" } })
+    expect(conceptual).toMatchObject({ fallback: false, contract: { intent: "answer", scope: "direct" } })
     expect(conceptual.contract.needsMutation).toBe(false)
 
     const repository = await ExecutionClassifier.classify({ prompt: "Review the complete browser game in this repo" })
-    expect(repository).toMatchObject({ fallback: true, contract: { intent: "inspect", scope: "focused" } })
+    expect(repository).toMatchObject({ fallback: false, contract: { intent: "inspect", scope: "focused" } })
     expect(repository.contract.needsMutation).toBe(false)
 
     const mixed = await ExecutionClassifier.classify({ prompt: "Inspect the game and then fix its collision bug" })
     expect(mixed.contract.needsMutation).toBe(true)
     const comma = await ExecutionClassifier.classify({ prompt: "Review this code, fix the collision bug" })
     expect(comma.contract.needsMutation).toBe(true)
-  })
-
-  test("sends broad read-only analysis through the model path when a model exists", async () => {
-    const controller = new AbortController()
-    controller.abort()
-    const result = await ExecutionClassifier.classify({
-      prompt: "Review the complete browser game in this repo",
-      model: {} as any,
-      signal: controller.signal,
-    })
-    expect(result.fallback).toBe(true)
-    expect(result.contract.rationale).toContain("classifier_timeout_or_abort")
-    expect(result.contract.intent).toBe("inspect")
-    expect(result.contract.needsMutation).toBe(false)
   })
 
   test("caches results by invocationID or prompt", async () => {
@@ -166,18 +145,6 @@ describe("ExecutionClassifier", () => {
     const second = await ExecutionClassifier.classify({ prompt })
     expect(second.cached).toBe(true)
     expect(second.contract).toEqual(first.contract)
-  })
-
-  test("does not cache a fallback before a model becomes available", async () => {
-    const prompt = "Review the complete browser game in this repo"
-    const unavailable = await ExecutionClassifier.classify({ prompt })
-    expect(unavailable.fallback).toBe(true)
-    expect(unavailable.cached).toBe(false)
-    const controller = new AbortController()
-    controller.abort()
-    const available = await ExecutionClassifier.classify({ prompt, model: {} as any, signal: controller.signal })
-    expect(available.cached).toBe(false)
-    expect(available.contract.rationale).toContain("classifier_timeout_or_abort")
   })
 
   test("cache can be cleared", async () => {
@@ -194,21 +161,7 @@ describe("ExecutionClassifier", () => {
     const second = await ExecutionClassifier.classify({ prompt: "Explain recursion", scopeFloor: "focused" })
     expect(first.cached).toBe(false)
     expect(second.cached).toBe(false)
-    expect(second.contract.scope).toBe("direct")
-  })
-
-  test("handles signal timeout and returns fallback", async () => {
-    const controller = new AbortController()
-    controller.abort()
-
-    const result = await ExecutionClassifier.classify({
-      prompt: "Do something long",
-      model: {} as any,
-      signal: controller.signal,
-    })
-
-    expect(result.fallback).toBe(true)
-    expect(result.contract.rationale).toContain("classifier_timeout_or_abort")
+    expect(second.contract.scope).toBe("focused")
   })
 
   test("promotes complete interactive browser games to coordinated scope", () => {

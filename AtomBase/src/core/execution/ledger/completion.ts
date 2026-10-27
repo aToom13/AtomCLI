@@ -389,7 +389,7 @@ export function createCompletionModule(ctx: Context) {
             !review ||
             review.digest !== candidate.digest ||
             review.revision !== candidate.revision ||
-            (review.state !== "passed" && !(review.state === "inconclusive" && input.deliveryPayload))
+            review.state !== "passed"
           ) {
             return { committed: false as const, reason: "review_required" as const }
           }
@@ -408,7 +408,8 @@ export function createCompletionModule(ctx: Context) {
           )
           .get(input.executionID)?.count
         if ((openBlockers ?? 0) > 0) return { committed: false as const, reason: "active_blocker" as const }
-        if (ctx.hasUnresolvedTasks(input.executionID)) return { committed: false as const, reason: "active_task" as const }
+        if (ctx.hasUnresolvedTasks(input.executionID))
+          return { committed: false as const, reason: "active_task" as const }
         db.query(
           `UPDATE execution_completion SET state = 'committed', terminal_outcome = 'completed',
              delivery_payload = ?, delivery_finish = NULL, reason_code = NULL,

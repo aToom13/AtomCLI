@@ -16,7 +16,7 @@ import { SubAgentIsolation } from "./subagent-isolation"
 import { TaskSchema } from "./orchestrate/schema"
 import { normalizeOwnership } from "./orchestrate/ownership"
 import { validateModel, parseModelSpecifier } from "./orchestrate/models"
-import { reserveWorkflowSlot } from "./orchestrate/lifecycle"
+import { reserveWorkflowSlot, durableTaskResult } from "./orchestrate/lifecycle"
 import { WorkflowStateStore, WorkflowExecutionStore, type WorkflowState } from "./orchestrate/state"
 import type { ExecutionLedger } from "@/core/execution/ledger"
 import { ReviewV2 } from "@/core/verification/review-v2"
@@ -76,23 +76,6 @@ export namespace AtomicWork {
           ExecutionRuntime.tasks(executionID).some((root) => root.id === task.parentTaskID && root.atomic)),
     )
   }
-  function result(task: ExecutionLedger.Task) {
-    return {
-      status:
-        task.status === "accepted"
-          ? ("completed" as const)
-          : task.status === "failed" ||
-              task.status === "cancelled" ||
-              (task.status === "needs_revision" &&
-                (task.execution?.attempts ?? 0) >= (task.execution?.maxRetries ?? 2) + 1)
-            ? ("failed" as const)
-            : ["running", "blocked", "submitted", "verifying"].includes(task.status)
-              ? ("unknown" as const)
-              : ("pending" as const),
-      output: task.evidence.join("\n"),
-      error: ["submitted", "verifying"].includes(task.status) ? "Waiting for criterion verification" : undefined,
-    }
-  }
   export async function project(root: ExecutionLedger.Task, ctx: Tool.Context) {
     if (WorkflowExecutionStore.has(root.atomic!.workflowID)) return
     using _capacity = await Lock.write("workflow-capacity")
@@ -120,7 +103,7 @@ export namespace AtomicWork {
         maxRetries: task.execution!.maxRetries,
         validationMode: "strict",
       })),
-      results: Object.fromEntries(members.map((task) => [task.id, result(task)])),
+      results: Object.fromEntries(members.map((task) => [task.id, durableTaskResult(task)])),
       status: members.every((task) => task.status === "accepted") ? "completed" : "planned",
       createdAt: root.createdAt,
       sessionMapKeys: [],
@@ -128,15 +111,6 @@ export namespace AtomicWork {
       activeExecution: { executionID: root.executionID, blockerID: "" },
     }
     WorkflowStateStore.set(workflow.id, workflow)
-  }
-  export function reconcile(workflow: WorkflowState) {
-    const tasks = ExecutionRuntime.tasks(workflow.activeExecution!.executionID)
-    WorkflowStateStore.update(workflow.id, (current) => {
-      for (const task of tasks) {
-        if (!current.results[task.id]) continue
-        current.results[task.id] = { ...current.results[task.id], ...result(task) }
-      }
-    })
   }
   async function validateDefinitions(definitions: AtomicPlan.Definition[], ctx: Tool.Context) {
     const session = await Session.get(ctx.sessionID)
@@ -179,9 +153,9 @@ export namespace AtomicWork {
         metadata: { error: false, rootID: root.id },
       }
     if (params.action === "execute") {
-      if (!root.atomic!.planned) throw new Error("Atomic Work requires task(action='plan') before execute")
+      if (!root.atomic!.planned) throw new Error("Atomic Work requires agent(action='plan') before execute")
       if (ExecutionRuntime.atomicPending(execution.executionID))
-        throw new Error("ATOMIC_PAUSED: classify pending user messages with task(action='revise')")
+        throw new Error("ATOMIC_PAUSED: classify pending user messages with agent(action='revise')")
       await project(root, ctx)
       const tool = await OrchestrateTool.init()
       return tool.execute({ action: "execute", workflowId: root.atomic!.workflowID }, ctx)
@@ -199,7 +173,7 @@ export namespace AtomicWork {
       !root.atomic!.planned &&
       (params.tasks?.length || params.definition || params.acceptance)
     )
-      throw new Error("Atomic Work has no plan to revise; use task(action='plan')")
+      throw new Error("Atomic Work has no plan to revise; use agent(action='plan')")
     if (params.action === "revise" && params.expectedVersion === undefined)
       throw new Error("Atomic Work revision requires expectedVersion")
     if (params.action === "revise" && params.definition && params.tasks?.length)
@@ -277,9 +251,10 @@ export namespace AtomicWork {
         definition.acceptance.push({
           id: `atomic-global-${index + 1}`,
           description,
-          verification: reviewPolicy.auto && reviewPolicy.enabled && !["off", "advisory"].includes(reviewPolicy.effectivePolicy)
-            ? "reviewer"
-            : "parent",
+          verification:
+            reviewPolicy.auto && reviewPolicy.enabled && !["off", "advisory"].includes(reviewPolicy.effectivePolicy)
+              ? "reviewer"
+              : "parent",
         })
     }
     if (definitions.length) {
@@ -323,7 +298,7 @@ export namespace AtomicWork {
     if (params.amendment?.classification === "stop") ExecutionRuntime.cancelExecution(execution)
     return {
       title: "Atomic Work plan recorded",
-      output: `Atomic Work ${updated.id}, version ${updated.version}. Use task(action='status') for task versions, then task(action='execute').`,
+      output: `Atomic Work ${updated.id}, version ${updated.version}. Use agent(action='status') for task versions, then agent(action='execute').`,
       metadata: { error: false, rootID: updated.id, workflowId: updated.atomic!.workflowID },
     }
   }

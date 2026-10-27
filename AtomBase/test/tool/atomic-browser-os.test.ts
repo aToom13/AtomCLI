@@ -169,7 +169,8 @@ if (process.env.ATOMCLI_ATOMIC_NATIVE_FIXTURE !== "1") {
                     rootID = root.id
                     expect(root.goal).toBe(GOAL)
                     expect(root.atomic?.planned).toBe(false)
-                    expect(Object.keys(tools)).toContain("task")
+                    expect(Object.keys(tools)).toContain("agent")
+                    expect(Object.keys(tools)).not.toContain("task")
                     const tasks = MILESTONES.map((id, index) => ({
                       id,
                       prompt: `Implement Browser OS deliverable: ${id}.\n${GOAL}`,
@@ -198,13 +199,19 @@ if (process.env.ATOMCLI_ATOMIC_NATIVE_FIXTURE !== "1") {
                       },
                     ]
                     await expect(
-                      runTool("task", { action: "plan", tasks, acceptance, definition: {}, amendment: {}, checks: [] }),
+                      runTool("agent", {
+                        action: "plan",
+                        tasks,
+                        acceptance,
+                        definition: {},
+                        amendment: {},
+                        checks: [],
+                      }),
                     ).rejects.toThrow("invalid arguments")
                     expect(ExecutionRuntime.tasks(executionID)).toHaveLength(1)
                     await expect(
-                      runTool("task", {
-                        action: "run",
-                        task_id: "browser-os",
+                      runTool("agent", {
+                        action: "spawn",
                         description: "Fallback",
                         prompt: GOAL,
                         subagent_type: "general",
@@ -224,7 +231,7 @@ if (process.env.ATOMCLI_ATOMIC_NATIVE_FIXTURE !== "1") {
                         },
                       ),
                     ).rejects.toThrow("ATOMIC_PLAN_REQUIRED")
-                    await runTool("task", { action: "plan", tasks, acceptance })
+                    await runTool("agent", { action: "plan", tasks, acceptance })
                     const planned = ExecutionRuntime.tasks(executionID)
                     expect(planned).toHaveLength(7)
                     expect(planned.find((item) => item.id === rootID)?.atomic?.planned).toBe(true)
@@ -234,14 +241,14 @@ if (process.env.ATOMCLI_ATOMIC_NATIVE_FIXTURE !== "1") {
                         .filter((item) => item.parentTaskID === rootID)
                         .every((item) => item.execution?.skills.includes("atomic-browser-fixture")),
                     ).toBe(true)
-                    const executed = await runTool("task", { action: "execute" })
+                    const executed = await runTool("agent", { action: "execute" })
                     expect(executed.metadata.status, executed.output + "\n" + dispatchErrors.join("\n")).toBe(
                       "completed",
                     )
                     expect(ExecutionRuntime.tasks(executionID).every((item) => item.status === "accepted")).toBe(true)
                     return reply("Scripted Browser OS lifecycle verified; product behavior requires live review.")
                   }
-                  expect(Object.keys(tools)).not.toContain("task")
+                  expect(Object.keys(tools)).not.toContain("agent")
                   expect((await Session.get(stream.sessionID)).directory).toBe(tmp.path)
                   await Instance.provide({
                     directory: tmp.path,

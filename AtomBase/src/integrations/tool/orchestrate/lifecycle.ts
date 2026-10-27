@@ -1,4 +1,5 @@
 import { WorkflowStore } from "@/core/orchestration/workflow-store"
+import type { ExecutionLedger } from "@/core/execution/ledger"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
 import { Tool } from "../tool"
 import { Lock } from "@/util/util/lock"
@@ -150,6 +151,31 @@ export async function findWorkflow(id: string) {
   return WorkflowStateStore.get(id)
 }
 
+// Only ledger acceptance is a completed task; submitted output still needs verification.
+export function durableTaskResult(task: ExecutionLedger.Task, executing = false) {
+  return {
+    status:
+      task.status === "accepted"
+        ? ("completed" as const)
+        : task.status === "failed" ||
+            task.status === "cancelled" ||
+            (task.status === "needs_revision" &&
+              (task.execution?.attempts ?? 0) >= (task.execution?.maxRetries ?? 2) + 1)
+          ? ("failed" as const)
+          : task.status === "running" && executing
+            ? ("running" as const)
+            : ["running", "blocked", "submitted", "verifying"].includes(task.status)
+              ? ("unknown" as const)
+              : ("pending" as const),
+    output: task.evidence.join("\n"),
+    error: ["submitted", "verifying"].includes(task.status)
+      ? "Waiting for criterion verification"
+      : ["failed", "cancelled"].includes(task.status)
+        ? task.evidence.at(-1) || `Durable task ${task.status}`
+        : undefined,
+  }
+}
+
 export async function reconcileDurableTaskProjection(workflow: WorkflowState) {
   if (!workflow.activeExecution) return
   const { ExecutionRuntime } = await import("@/core/execution/runtime")
@@ -157,18 +183,41 @@ export async function reconcileDurableTaskProjection(workflow: WorkflowState) {
   let changed = false
   WorkflowStateStore.update(workflow.id, (current) => {
     for (const task of current.tasks) {
-      const durable = tasks.find((item) => item.id === `workflow:${workflow.id}:${task.id}`)
+      const durable = tasks.find(
+        (item) => item.id === (current.atomicRootID ? task.id : `workflow:${workflow.id}:${task.id}`),
+      )
       const result = current.results[task.id]
-      if (durable?.status === "needs_revision" && result.status !== "pending") {
+      if (!durable) {
+        if (result.status === "completed") {
+          result.status = "unknown"
+          result.error = "No durable acceptance evidence"
+          changed = true
+        }
+        continue
+      }
+      const projected = durableTaskResult(durable, WorkflowExecutionStore.has(workflow.id))
+      if (durable.status === "needs_revision" && projected.status === "pending") {
+        if (result.status === "pending" && Object.keys(result).length === 1) continue
         current.results[task.id] = { status: "pending" }
         changed = true
-      } else if (durable?.status === "failed" && result.status === "completed") {
-        result.status = "failed"
-        result.error = "Durable task failed after workflow result"
-        changed = true
+        continue
       }
+      if (result.status === projected.status && result.error === projected.error) continue
+      current.results[task.id] = {
+        ...result,
+        ...projected,
+        output: result.output || projected.output,
+      }
+      changed = true
     }
-    if (changed && current.status === "completed") current.status = "resumable"
+    const results = Object.values(current.results)
+    if (current.status !== "running" && results.every((result) => result.status === "completed")) {
+      if (current.status !== "completed") changed = true
+      current.status = "completed"
+    } else if (current.status === "completed" && results.some((result) => result.status !== "completed")) {
+      current.status = "resumable"
+      changed = true
+    }
   })
   if (changed) await checkpoint(workflow.id)
 }

@@ -891,9 +891,100 @@ describe("ReviewGate - runBlockingReview", () => {
         expect(spawnMock).not.toHaveBeenCalled()
 
         // Infrastructure failures are bounded but remain re-claimable.
-        expect(HarnessState.getReviewVerdict(sessionID)).toMatchObject({ status: "fail", attempts: 1 })
+        expect(result.exhausted).toBe(true)
+        expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
         expect(HarnessState.beginReview(sessionID)).toBe(true)
       },
     })
+  })
+})
+
+test.each([false, true])("infrastructure retries remain bounded; user retry approval=%s", async (approve) => {
+  await using tmp = await tmpdir({ config: { review: { ...enforcedReview.review, reviewer_count: 1 } } })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "session-infrastructure-recovery"
+      await Config.clearCache()
+      HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+      let calls = 0
+      let approvals = 0
+      spawnMock.mockImplementation(async () => {
+        if (++calls <= 3 || !approve) throw new Error("temporary provider outage")
+        return {
+          sessionId: "reviewer-recovered",
+          structuredOutput: { verdict: "passed", summary: "Verified", findings: [] },
+        } as any
+      })
+      const result = await runBlockingReview(sessionID, {
+        requestRetry: async (reason) => {
+          expect(reason).toContain("temporary provider outage")
+          expect(HarnessState.getReviewVerdict(sessionID)).toBeUndefined()
+          approvals++
+          return approve
+        },
+      })
+      expect(approvals).toBe(1)
+      expect(calls).toBe(approve ? 4 : 3)
+      expect(result.passed).toBe(approve)
+      expect(HarnessState.getEditedFiles(sessionID)).toEqual(["src/auth/a.ts"])
+    },
+  })
+})
+
+test("an approved retry group cannot retry indefinitely or erase concrete rejections", async () => {
+  await using tmp = await tmpdir({ config: { review: { ...enforcedReview.review, reviewer_count: 1 } } })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const sessionID = "session-retry-ceiling"
+      await Config.clearCache()
+      HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+      HarnessState.recordReviewVerdict(sessionID, { status: "fail", reason: "Concrete finding" })
+      spawnMock.mockImplementation(async () => {
+        throw new Error("provider outage")
+      })
+      let approvals = 0
+      const result = await runBlockingReview(sessionID, {
+        requestRetry: async () => {
+          approvals++
+          return true
+        },
+      })
+      expect(result).toMatchObject({ passed: false, error: true, exhausted: true })
+      expect(spawnMock).toHaveBeenCalledTimes(6)
+      expect(approvals).toBe(1)
+      expect(HarnessState.getReviewVerdict(sessionID)).toMatchObject({
+        status: "fail",
+        attempts: 1,
+        reason: "Concrete finding",
+      })
+    },
+  })
+})
+
+test("hard execution limits block review without automatic retries or retry approval", async () => {
+  const { ExecutionRuntime } = await import("@/core/execution/runtime")
+  await using tmp = await tmpdir({ config: { review: { ...enforcedReview.review, reviewer_count: 1 } } })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      await Config.clearCache()
+      const sessionID = "session-review-hard-budget"
+      HarnessState.addEditedFile(sessionID, "src/auth/a.ts")
+      spawnMock.mockImplementation(async () => {
+        throw new ExecutionRuntime.BudgetExceededError("call_limit", "test-execution")
+      })
+      let approvals = 0
+      const result = await runBlockingReview(sessionID, {
+        requestRetry: async () => {
+          approvals++
+          return true
+        },
+      })
+      expect(result).toMatchObject({ passed: false, error: true, retryable: false })
+      expect(spawnMock).toHaveBeenCalledTimes(1)
+      expect(approvals).toBe(0)
+    },
   })
 })

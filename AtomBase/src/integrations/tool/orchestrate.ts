@@ -585,11 +585,28 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         }
         const reconcileDurableProjection = async () => {
           if (!durableExecution) return
-          if (workflow.atomicRootID) {
-            const { AtomicWork } = await import("./atomic-work")
-            AtomicWork.reconcile(refreshWorkflow())
-          } else await reconcileDurableTaskProjection(refreshWorkflow())
+          const previous = refreshWorkflow().results
+          await reconcileDurableTaskProjection(refreshWorkflow())
           refreshWorkflow()
+          if (ownsTaskflowUI) {
+            for (const task of workflow.tasks) {
+              const status = taskResult(task.id).status
+              if (status === previous[task.id].status) continue
+              await Bus.publish(TuiEvent.ChainParallelUpdate, {
+                sessionID: ctx.sessionID,
+                workflowId: workflow.id,
+                stepIndex: taskIndexMap[task.id],
+                status:
+                  status === "completed"
+                    ? "complete"
+                    : status === "unknown"
+                      ? "waiting"
+                      : status === "skipped"
+                        ? "stopped"
+                        : status,
+              }).catch((error) => log.warn("workflow UI projection failed", { workflowId: workflow.id, error }))
+            }
+          }
           completedTasks.splice(
             0,
             completedTasks.length,
@@ -598,24 +615,23 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           failedTasks.splice(0, failedTasks.length, ...failedTasks.filter((id) => taskResult(id).status === "failed"))
         }
         let projectionQueue = Promise.resolve()
-        const unsubscribeTaskProjection =
-          durableExecution && !workflow.atomicRootID
-            ? Bus.subscribeAll((event) => {
-                if (
-                  event.type !== "execution.task.updated" ||
-                  event.properties.executionID !== durableExecution.executionID ||
-                  workflow.status !== "running"
-                )
-                  return
-                projectionQueue = projectionQueue.then(reconcileDurableProjection).catch((error) => {
-                  log.warn("durable task projection reconciliation failed", {
-                    workflowId: workflow.id,
-                    error: error instanceof Error ? error.message : String(error),
-                  })
+        const unsubscribeTaskProjection = durableExecution
+          ? Bus.subscribeAll((event) => {
+              if (
+                event.type !== "execution.task.updated" ||
+                event.properties.executionID !== durableExecution.executionID ||
+                workflow.status !== "running"
+              )
+                return
+              projectionQueue = projectionQueue.then(reconcileDurableProjection).catch((error) => {
+                log.warn("durable task projection reconciliation failed", {
+                  workflowId: workflow.id,
+                  error: error instanceof Error ? error.message : String(error),
                 })
-                return projectionQueue
               })
-            : undefined
+              return projectionQueue
+            })
+          : undefined
         if (durableExecution && !workflow.atomicRootID) {
           const { ExecutionRuntime } = await import("@/core/execution/runtime")
           for (const taskID of topologicalSort(workflow.tasks)) {
@@ -672,7 +688,25 @@ export const OrchestrateTool = Tool.define("orchestrate", {
 
               // Run ready tasks in parallel
               const promises = ready.map(async (task) => {
+                const { ExecutionRuntime } = await import("@/core/execution/runtime")
                 if (refreshWorkflow().status !== "running" || taskResult(task.id).status !== "pending") return
+                // Capture rejection evidence before running-state synchronization changes the status.
+                const previousTask = durableExecution
+                  ? await ExecutionRuntime.getTask({
+                      sessionID: ctx.sessionID,
+                      execution: durableExecution,
+                      taskID: durableTaskIDs.get(task.id)!,
+                    })
+                  : undefined
+                const revisionFeedback =
+                  previousTask?.status === "needs_revision"
+                    ? [
+                        ...previousTask.evidence,
+                        ...previousTask.checks.filter((check) => !check.passed).map((check) => check.evidence),
+                      ]
+                        .join("\n")
+                        .slice(-10_000)
+                    : undefined
                 updateTaskResult(task.id, { status: "running", startedAt: Date.now() })
                 await syncDurableTask(task, "running", `Workflow task ${task.id} started`)
                 await checkpoint(workflow.id)
@@ -733,7 +767,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                 let reviewerSessionIds: string[] = []
                 let qaFeedback: string | undefined
                 let rejectedReviewEvidence: string | undefined
-                let workerFeedback: string | undefined
+                let workerFeedback: string | undefined = revisionFeedback
                 let cachedSpawnResult: Awaited<ReturnType<typeof SubAgent.spawn>> | undefined
                 let isolation: SubAgentIsolation.Workspace | undefined
                 let atomicAttemptRevision: number | undefined
@@ -867,7 +901,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
                     if (ownsTaskflowUI) {
                       await Bus.publish(TuiEvent.ChainParallelUpdate, {
                         stepIndex: stepIdx,
-                        status: "complete",
+                        status: accepted ? "complete" : "waiting",
                         sessionID: ctx.sessionID,
                         workflowId: workflow.id,
                       })
@@ -1716,7 +1750,7 @@ export const OrchestrateTool = Tool.define("orchestrate", {
         const output =
           formatWorkflowOutput(finalWorkflow) +
           (workflow.atomicRootID
-            ? "\n\nUse task(action='status') for authoritative ledger states and pending messages. Submitted/verifying tasks require task(action='verify') with evidence for parent criteria; only accepted tasks release dependencies."
+            ? "\n\nUse agent(action='status') for authoritative ledger states and pending messages. Submitted/verifying tasks require agent(action='verify') with evidence for parent criteria; only accepted tasks release dependencies."
             : "")
         return {
           title: `Workflow: ${finalWorkflow.tasks.length} tasks — ${finalWorkflow.status}`,

@@ -1,5 +1,5 @@
 import "../preload"
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, spyOn } from "bun:test"
 import { TaskFlow, TaskFlowTool } from "@/integrations/tool/taskflow"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
@@ -8,6 +8,8 @@ import { Config } from "@/core/config/config"
 import { Identifier } from "@/core/id/id"
 import { Session } from "@/core/session"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { SubAgent } from "@/integrations/tool/subagent"
+import { PermissionNext } from "@/util/permission/next"
 
 describe("TaskFlowTool", () => {
   const dummyCtx = {
@@ -97,6 +99,56 @@ describe("TaskFlowTool", () => {
         expect(HarnessState.getSteps(session.id)[0].status).toBe("completed")
         expect((await tool.execute({ action: "clear" }, ctx)).metadata.status).toBe("cleared")
         HarnessState.reset(session.id)
+      },
+    })
+  })
+
+  test.each([false, true])("explicit review obligation retries only after approval=%s", async (approve) => {
+    await using tmp = await tmpdir({
+      config: Config.Info.parse({ review: { auto: false, policy: "advisory", max_attempts: 3 } }),
+    })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Config.clearCache()
+        const parent = await Session.create({})
+        const reviewer = await Session.create({ parentID: parent.id })
+        const tool = await TaskFlowTool.init({})
+        let approvals = 0
+        const ctx = {
+          ...dummyCtx,
+          sessionID: parent.id,
+          ask: async (request: any) => {
+            if (request.permission !== "review.retry") return
+            expect(request.permission).toBe("review.retry")
+            approvals++
+            if (!approve) throw new PermissionNext.RejectedError()
+          },
+        }
+        await tool.execute(
+          { action: "start", plan: [{ id: "review", name: "Review", type: "independent_review" }] },
+          ctx,
+        )
+        await tool.execute({ action: "update", step_id: "review", status: "running" }, ctx)
+        HarnessState.addEditedFile(parent.id, "src/a.ts")
+        let calls = 0
+        const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (options) => {
+          if (++calls <= 3) throw new Error("temporary reviewer outage")
+          await options.onSession?.({ sessionId: reviewer.id, isNewSession: true })
+          return {
+            sessionId: reviewer.id,
+            structuredOutput: { verdict: "passed", summary: "Verified", findings: [] },
+          } as any
+        })
+        try {
+          const result = await tool.execute({ action: "complete", step_id: "review" }, ctx)
+          expect(approvals).toBe(1)
+          expect(calls).toBe(approve ? 4 : 3)
+          expect(result.metadata.status).toBe(approve ? "completed" : "error")
+          expect(HarnessState.getSteps(parent.id)[0].status).toBe(approve ? "completed" : "running")
+        } finally {
+          spawn.mockRestore()
+        }
       },
     })
   })

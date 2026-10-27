@@ -8,6 +8,7 @@ import { HarnessState } from "@/core/session/harness-state"
 import { Log } from "@/util/util/log"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
 import { Lock } from "@/util/util/lock"
+import { PermissionNext } from "@/util/permission/next"
 
 const log = Log.create({ service: "taskflow" })
 
@@ -260,6 +261,29 @@ async function transitionTaskflowStep(ctx: Tool.Context, stepID: string, state: 
         signal: ctx.abort,
         executionID: executionContext(ctx)?.executionID,
         independentReviewStep: true,
+        requestRetry: async (reason) => {
+          try {
+            await ctx.ask({
+              permission: "review.retry",
+              patterns: [`${executionContext(ctx)?.executionID ?? ctx.sessionID}:${stepID}`],
+              always: [],
+              metadata: {
+                reason,
+                description:
+                  "Retry the required independent review. Approval does not waive this plan item; rejection leaves it unresolved.",
+              },
+            })
+            return true
+          } catch (error) {
+            if (
+              error instanceof PermissionNext.RejectedError ||
+              error instanceof PermissionNext.CorrectedError ||
+              error instanceof PermissionNext.DeniedError
+            )
+              return false
+            throw error
+          }
+        },
       })
       if (!review.passed || (review.skipped && !HarnessState.getReviewerSession(ctx.sessionID))) {
         throw new Error(
@@ -308,7 +332,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
       const { ExecutionRuntime } = await import("@/core/execution/runtime")
       if (ExecutionRuntime.atomicRoot(activeExecution.executionID))
         throw new Error(
-          "ATOMIC_PLAN_REQUIRED: Atomic Work uses task(action='plan'); taskflow only supports checkpoint here",
+          "ATOMIC_PLAN_REQUIRED: Atomic Work uses agent(action='plan'); taskflow only supports checkpoint here",
         )
     }
     if (activeExecution) await restoreDurablePlan(ctx.sessionID, activeExecution.executionID)
@@ -721,19 +745,13 @@ export const TaskFlowTool = Tool.define("taskflow", {
         }
         const isSubAgent = sessionInfo?.parentID != null
         let reviewBypassed = false
-        let reviewWarning = ""
 
         if (!isSubAgent) {
           const { runBlockingReview } = await import("./review-gate")
           const execution = ctx.extra?.execution as ExecutionRuntime.Context | undefined
           const review = await runBlockingReview(ctx.sessionID, { executionID: execution?.executionID })
 
-          if (review.error) {
-            ctx.abort.throwIfAborted()
-            reviewWarning = `\n\nIndependent review incomplete: ${review.reason ?? "Reviewer unavailable"}. This is not a reviewer approval.`
-          }
-
-          if (!review.passed && !review.error && !params.force) {
+          if (!review.passed && !params.force) {
             const verdict = HarnessState.getReviewVerdict(ctx.sessionID)
             const attempts = verdict?.attempts ?? 1
 
@@ -760,7 +778,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
             }
           }
 
-          if (!review.passed && !review.error && params.force) {
+          if (!review.passed && params.force) {
             // Forcing a clear past a blocked review is a privileged action —
             // require a distinct explicit approval ("taskflow.force") instead
             // of reusing the generic taskflow ask, so the bypass cannot happen
@@ -802,7 +820,7 @@ export const TaskFlowTool = Tool.define("taskflow", {
         const warningText = warnings.length > 0 ? `\n\n${warnings.join("\n")}` : ""
         return {
           title: "Taskflow cleared",
-          output: `Taskflow cleared${reviewBypassNote}${reviewWarning}${warningText}`,
+          output: `Taskflow cleared${reviewBypassNote}${warningText}`,
           metadata: { steps: undefined, step_id: undefined, status: "cleared" },
         }
       }

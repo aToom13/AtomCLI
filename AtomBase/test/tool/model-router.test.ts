@@ -17,6 +17,7 @@ import {
   modelIsRoutable,
   type TaskCategory,
 } from "@/integrations/tool/model-router"
+import { TaskProfile } from "@/core/routing/task-profile"
 import { Provider } from "@/integrations/provider/provider"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
@@ -90,14 +91,15 @@ describe("model-router - estimateComplexity", () => {
     expect(score).toBeLessThan(3)
   })
 
-  test("high complexity for prompt with code block and multiple terms", () => {
+  test("uses the common task profile for code prompts", () => {
     const prompt = `Write a recursive concurrent algorithm to handle async session compaction.
     \`\`\`typescript
     function compact() {}
     \`\`\`
     How does it perform?`
     const score = estimateComplexity(prompt)
-    expect(score).toBeGreaterThanOrEqual(5)
+    expect(score).toBe(TaskProfile.infer(prompt).complexity)
+    expect(score).toBeGreaterThan(estimateComplexity("hello"))
   })
 })
 

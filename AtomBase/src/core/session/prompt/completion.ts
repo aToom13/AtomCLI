@@ -13,6 +13,7 @@ import { Filesystem } from "@/util/util/filesystem"
 import { TaskVerification } from "@/core/execution/task-verification"
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { VerificationEvidence } from "@/core/execution/verification-evidence"
+import { PermissionNext } from "@/util/permission/next"
 
 const { reviewRetryText, reviewBlockedText } = PromptFinalization
 const MAX_COMPLETION_DESCENDANT_DEPTH = 32
@@ -705,6 +706,51 @@ async function resolveCompletion(input: {
         ? undefined
         : await runBlockingReview(input.sessionID, {
             signal: input.abort,
+            requestRetry:
+              input.allowRetry === false
+                ? undefined
+                : async (reason) => {
+                    input.abort.throwIfAborted()
+                    const session = await Session.get(input.sessionID)
+                    const requestID = Identifier.ascending("permission")
+                    const cancel = () => {
+                      void PermissionNext.reply({ requestID, reply: "reject" })
+                    }
+                    // Permission state initializes asynchronously; catch abort both
+                    // before registration and while the request is visible.
+                    const unsubscribe = Bus.subscribe(PermissionNext.Event.Asked, (event) => {
+                      if (event.properties.id === requestID && input.abort.aborted) cancel()
+                    })
+                    input.abort.addEventListener("abort", cancel, { once: true })
+                    try {
+                      await PermissionNext.ask({
+                        id: requestID,
+                        permission: "review.retry",
+                        sessionID: input.sessionID,
+                        patterns: [`${input.execution.executionID}:${input.candidate.digest}`],
+                        always: [],
+                        ruleset: session.permission ?? [],
+                        metadata: {
+                          reason,
+                          description:
+                            "Retry independent review up to three more times; rejection keeps completion blocked. This does not waive review or acceptance checks.",
+                        },
+                      })
+                      input.abort.throwIfAborted()
+                      return true
+                    } catch (error) {
+                      if (
+                        error instanceof PermissionNext.RejectedError ||
+                        error instanceof PermissionNext.CorrectedError ||
+                        error instanceof PermissionNext.DeniedError
+                      )
+                        return false
+                      throw error
+                    } finally {
+                      unsubscribe()
+                      input.abort.removeEventListener("abort", cancel)
+                    }
+                  },
             executionID: input.execution.executionID,
             decision: {
               policyVersion: input.candidate.policyVersion,
@@ -740,7 +786,7 @@ async function resolveCompletion(input: {
       review.reason = `Verification failed: ${failed.join("; ")}`
     }
   }
-  if (!review || review.passed || review.error) {
+  if (!review || review.passed) {
     if (review?.passed && input.candidate.requiresReview && HarnessState.needsReview(input.sessionID)) {
       if (input.allowRetry === false) {
         const original = input.candidate.parts[0]
@@ -801,7 +847,6 @@ async function resolveCompletion(input: {
       sessionID: input.sessionID,
       execution: input.execution,
       digest: input.candidate.digest,
-      reviewWarning: review?.error ? (review.reason ?? "The reviewer could not complete verification") : undefined,
     }).catch(async (error) => {
       if (error instanceof ExecutionRuntime.BudgetExceededError && RETRYABLE_STALE_REASONS.has(error.reason)) {
         const conflicts = recordStaleCommitConflict(input.execution.executionID)
@@ -841,7 +886,7 @@ async function resolveCompletion(input: {
   const blockedText = [
     originalText,
     review.error
-      ? `Verification status: procedural/harness blocker. Independent review could not run: ${review.reason ?? "unknown reviewer error"}`
+      ? `Verification status: procedural/harness blocker. Independent review could not run: ${review.reason ?? "unknown reviewer error"}. Review remains required; no approval or successful completion is claimed. Restore reviewer/provider availability, then send another message to retry. The previous blocked decision stays in the audit history.`
       : `Verification status: verification blocker. ${reviewBlockedText(review.reason)}`,
   ]
     .filter(Boolean)
@@ -868,6 +913,8 @@ async function resolveCompletion(input: {
     reasonMessage: "Independent review could not approve this completion.",
   })
   await projectAndAckCompletion(blocked)
+  // Keep edits and rejection budgets for recovery; discard terminal reviewer bindings.
+  for (const sessionID of await completionSessionTree(input.sessionID)) HarnessState.clearReviewerSessions(sessionID)
   return "blocked"
 }
 

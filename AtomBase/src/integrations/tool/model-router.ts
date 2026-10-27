@@ -137,25 +137,7 @@ function scoreModel(model: Provider.Model, category: TaskCategory, mode: AutoMod
 }
 
 export function estimateComplexity(prompt: string): number {
-  let score = 0
-
-  // Uzunluk: 1000 kelimeye kadar lineer artış
-  score += Math.min(prompt.split(/\s+/).length / 100, 10)
-
-  // Soru işareti sayısı (çok sorulu → daha az odaklı)
-  score += Math.min((prompt.match(/\?/g) ?? []).length * 0.5, 3)
-
-  // Teknik terim yoğunluğu (regex, API, schema, algorithm, ...)
-  const techTerms = ["algorithm", "regex", "schema", "concurrent", "async", "recursive"]
-  score += techTerms.filter((t) => prompt.toLowerCase().includes(t)).length
-
-  // Kod bloğu varlığı
-  if (/```/.test(prompt)) score += 2
-
-  // Çoklu görev işareti ("ve ayrıca", "ardından", "then also")
-  if (/\band\b|\bayrıca\b|\bardından\b/.test(prompt.toLowerCase())) score += 1.5
-
-  return Math.min(score, 10) // 0-10 arası normalleştir
+  return TaskProfile.infer(prompt).complexity
 }
 
 export interface WeightedKeyword {
@@ -739,41 +721,4 @@ export const _internals = {
   estimateComplexity,
   selectCandidates,
   pickWithLoadBalancing,
-}
-
-/**
- * Selects the best reasoning and toolcall capable model to serve as the Meta-Router (Plan/Coordination).
- */
-export function selectMetaRouter(freeModels: Array<[string, Provider.Model]>): { providerID: string; modelID: string } {
-  const activeMr = freeModels
-    .filter(
-      ([, m]) => modelIsRoutable(m) && m.capabilities.reasoning && m.capabilities.toolcall && m.status === "active",
-    )
-    .map(([id, m]) => ({
-      id,
-      providerID: m.providerID,
-      score: 100 + Math.min((m.limit?.context ?? 0) / 10000, 30) + Math.min((m.limit?.output ?? 0) / 1000, 20),
-    }))
-    .sort((a, b) => b.score - a.score)
-
-  if (activeMr.length === 0) {
-    const fallbackMr = freeModels
-      .filter(
-        ([, m]) => modelIsRoutable(m) && (m.capabilities.reasoning || m.capabilities.toolcall) && m.status === "active",
-      )
-      .map(([id, m]) => ({
-        id,
-        providerID: m.providerID,
-        score: (m.capabilities.reasoning ? 50 : 0) + (m.capabilities.toolcall ? 50 : 0),
-      }))
-      .sort((a, b) => b.score - a.score)
-
-    if (fallbackMr.length > 0) {
-      return { providerID: fallbackMr[0].providerID, modelID: fallbackMr[0].id }
-    }
-    const selected = selectCandidates(freeModels, "general")[0]
-    return { providerID: selected[1].providerID, modelID: selected[0] }
-  }
-
-  return { providerID: activeMr[0].providerID, modelID: activeMr[0].id }
 }
