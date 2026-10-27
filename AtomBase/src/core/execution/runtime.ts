@@ -273,6 +273,7 @@ export namespace ExecutionRuntime {
     sessionID: string
     execution: Context
     scope: ExecutionContract.Scope
+    needsMutation?: true
     reason: string
     actorID: string
   }) {
@@ -283,7 +284,10 @@ export namespace ExecutionRuntime {
     const existing = getExecutionState(input.execution.executionID)
     if (!existing) throw new BudgetExceededError("policy_unavailable", input.execution.executionID)
     const currentScope = existing.policy.scope
-    if (ExecutionPolicy.SCOPE_RANK[input.scope] <= ExecutionPolicy.SCOPE_RANK[currentScope]) {
+    const scope =
+      ExecutionPolicy.SCOPE_RANK[input.scope] > ExecutionPolicy.SCOPE_RANK[currentScope] ? input.scope : currentScope
+    const mutation = input.needsMutation === true && !existing.contract.needsMutation
+    if (scope === currentScope && !mutation) {
       return { changed: false as const, scope: currentScope, policy: existing.policy }
     }
     const config = await Config.get()
@@ -293,14 +297,21 @@ export namespace ExecutionRuntime {
     }
     const contract = {
       ...existing.contract,
-      scope: input.scope,
-      likelyCrossBoundary: input.scope === "coordinated" || existing.contract.likelyCrossBoundary,
-      rationale: `${existing.contract.rationale} Scope escalated: ${input.reason}`.trim(),
+      scope,
+      ...(mutation
+        ? {
+            intent: existing.contract.intent === "operate" ? ("operate" as const) : ("change" as const),
+            needsMutation: true,
+            expectedSurfaces: [...new Set([...existing.contract.expectedSurfaces, "workspace" as const])],
+          }
+        : {}),
+      likelyCrossBoundary: scope === "coordinated" || existing.contract.likelyCrossBoundary,
+      rationale: `${existing.contract.rationale} Runtime escalation: ${input.reason}`.trim(),
     }
     const policy = ExecutionPolicy.resolvePolicy(
       contract,
       existing.evidence,
-      [...existing.promotionReasons, `Scope escalated to ${input.scope}: ${input.reason}`],
+      [...existing.promotionReasons, `Scope/capability escalated to ${scope}: ${input.reason}`],
       existing.policy,
     )
     const budget = resolved.store.view(input.execution.executionID)?.budget.execution
@@ -312,7 +323,7 @@ export namespace ExecutionRuntime {
       budget?.steps.limit === undefined ? Math.max(0, policy.budget.maxSteps - existing.policy.budget.maxSteps) : 0
     const applied = resolved.store.applyScopeEscalation({
       executionID: input.execution.executionID,
-      scope: input.scope,
+      scope,
       contract,
       policy,
       promotionReasons: policy.promotionReasons,
@@ -334,10 +345,10 @@ export namespace ExecutionRuntime {
       sessionID: input.sessionID,
       executionID: input.execution.executionID,
       from: currentScope,
-      to: input.scope,
+      to: scope,
       reason: input.reason,
     })
-    return { changed: true as const, scope: input.scope, policy, grantedCalls, grantedSteps }
+    return { changed: true as const, scope, policy, grantedCalls, grantedSteps }
   }
 
   const evidenceRuntime = createEvidenceRuntime({

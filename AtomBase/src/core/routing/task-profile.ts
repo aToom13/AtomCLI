@@ -22,7 +22,16 @@ export namespace TaskProfile {
   const has = (text: string, pattern: RegExp) => pattern.test(text)
 
   function withoutNegativeMutation(text: string) {
-    return text.replace(/\b(?:do not|don't|never)\s+(?:change|edit|modify|write)\b|değiştirme|düzenleme|yazma/g, "")
+    return text.replace(
+      /\b(?:do not|don['’]t|never|without)\s+(?:chang(?:e|ing)|edit(?:ing)?|modif(?:y|ying)|writ(?:e|ing))\b|(?<![\p{L}\p{N}_])(?:değiştirme|düzenleme|yazma)(?![\p{L}\p{N}_])/gu,
+      "",
+    )
+  }
+
+  function hasMutation(text: string) {
+    return /(?<![\p{L}\p{N}_])(?:fix|change|modify|edit|create|build|implement|write|generate|code|make|update|improve|refactor|remove|add|debug|düzelt|oluştur|yap|geliştir|kodla|değiştir|düzenle|ekle|sil|yaz|uygula|kaldır)(?![\p{L}\p{N}_])/u.test(
+      withoutNegativeMutation(text),
+    )
   }
 
   function inferCategory(text: string): Category {
@@ -30,10 +39,7 @@ export namespace TaskProfile {
       /\b(analyze|review|audit|inspect|compare|benchmark|explain|read[- ]?only)\b|analiz|incele|karşılaştır|açıkla|değiştirme/.test(
         text,
       )
-    const mutationIntent =
-      /\b(implement|fix|refactor|debug|build|write|edit)\b|düzelt|uygula|değiştir|ekle|kaldır/.test(
-        withoutNegativeMutation(text),
-      )
+    const mutationIntent = hasMutation(text)
     if (readOnlyIntent && !mutationIntent) return "analysis"
     if (/\b(implement|fix|refactor|debug|code|test|build)\b|düzelt|uygula|kod|hata/.test(text)) return "coding"
     if (/\b(document|readme|guide|tutorial|changelog)\b|doküman|belge|rehber/.test(text)) return "documentation"
@@ -43,15 +49,12 @@ export namespace TaskProfile {
 
   export function isReadOnly(prompt: string) {
     const text = prompt.trim().toLowerCase()
-    const parts = text.split(/[,;]|\b(?:and|then|after that|ve)\b|sonra|ardından/i)
-    const mutation =
-      /^(?:then\s+)?(?:fix|change|edit|create|build|implement|write|generate|code|make|update|improve|refactor|remove|add|düzelt|oluştur|yap|geliştir|kodla|değiştir|düzenle|ekle|sil)(?=\s|$)/i
-    if (parts.slice(1).some((part) => mutation.test(part.trim()))) return false
+    // ponytail: lexical intent only; ambiguous requests retain tools, missed verbs recover through scope_control.
     return (
-      /^(?:please\s+)?(?:what is|what's|how does|how to|why|explain|define|describe|compare|summarize|analyse|analyze|review|inspect|neden|nedir|nasıl|açıkla|anlat|karşılaştır|özetle|incele)(?=\s|\?|$)/i.test(
+      !hasMutation(text) &&
+      /\b(?:what is|what's|how does|how to|why|explain|define|describe|compare|summarize|analyse|analyze|review|inspect|read)\b|(?<![\p{L}\p{N}_])(?:neden|nedir|nasıl|açıkla|anlat|karşılaştır|özetle|incele|oku|salt okunur)(?![\p{L}\p{N}_])/u.test(
         text,
-      ) ||
-      (/\b(?:read[- ]?only|do not change|don't edit)\b|değiştirme|düzenleme/.test(text) && !mutation.test(text))
+      )
     )
   }
 

@@ -46,10 +46,11 @@ export namespace ScopeControl {
 
   export const Info = Tool.define("scope_control", {
     description:
-      "Inspect execution scope, actual runtime/config/auth paths and secret-safe provider source diagnostics. Use status before diagnosing missing credentials; never infer absence from legacy paths. Only the main conversation may escalate or reset. Escalation requires a concrete reason; never claim it succeeded until runtime confirms it.",
+      "Inspect execution scope, actual runtime/config/auth paths and secret-safe provider source diagnostics. Use status before diagnosing missing credentials. If classification omitted edit/write needed for the user's task, escalate with needsMutation=true, target=focused or the current scope, and a concrete reason; never weaken user read-only instructions. Only the main conversation may escalate or reset. Never claim success until runtime confirms it.",
     parameters: z.object({
       action: z.enum(["status", "escalate", "reset"]),
       target: ExecutionContract.Scope.optional(),
+      needsMutation: z.literal(true).optional(),
       reason: z.string().trim().max(1000).optional(),
     }),
     async execute(args, ctx) {
@@ -121,19 +122,25 @@ export namespace ScopeControl {
       if (!args.reason) throw new Error("Scope escalation requires a concrete reason")
       if (mode === "off") throw new Error("Scope escalation is disabled")
       if (mode === "ask") {
-        await ctx.ask({ permission: "scope_escalation", metadata: {}, patterns: [args.target], always: ["*"] })
+        await ctx.ask({
+          permission: "scope_escalation",
+          metadata: { reason: args.reason, needsMutation: args.needsMutation === true },
+          patterns: [args.target],
+          always: ["*"],
+        })
       }
       const result = await ExecutionRuntime.escalateScope({
         sessionID: ctx.sessionID,
         execution,
         scope: args.target,
         reason: args.reason,
+        needsMutation: args.needsMutation,
         actorID: ctx.agent ?? "model",
       })
       return {
         title: result.changed ? "Execution scope escalated" : "Execution scope unchanged",
         output: result.changed
-          ? `Scope ${result.scope} approved by runtime; tools refresh on next step.`
+          ? `Scope ${result.scope} approved by runtime${args.needsMutation ? " with mutation tools" : ""}; tools refresh on next step. Agent restrictions and user permissions still apply.`
           : `Execution already has ${result.scope} scope.`,
         metadata: { error: false, scope: result.scope, changed: result.changed },
       }

@@ -6,6 +6,18 @@ import { ExecutionContract } from "@/core/routing/execution-contract"
 import * as AICompat from "@/util/util/ai-compat"
 
 describe("ExecutionClassifier", () => {
+  test.each([
+    "eval-fixtures/test-authoring/slugify.ts için henüz test yok. README içinde belgelenen her davranışı kapsayan regresyon testlerini eval-fixtures/test-authoring/slugify.test.ts dosyasına yaz. Uygulamayı değiştirme. Testleri çalıştır; başarısızlık varsa düzeltip yeniden çalıştır. Yalnız Bun ve bun:test kullan; testi bun test ile çalıştır. npm/npx/yarn/pnpm kullanma, bağımlılık kurma.",
+    "Don't modify the app, write tests in app.test.ts",
+  ])("keeps write/edit available when only implementation changes are forbidden: %s", async (prompt) => {
+    const { ExecutionPolicy } = await import("@/core/routing/execution-policy")
+    const { contract } = await ExecutionClassifier.classify({ prompt })
+    expect(contract).toMatchObject({ intent: "change", needsMutation: true })
+    const policy = ExecutionPolicy.resolvePolicy(contract)
+    expect(policy.allowedTools).toContain("edit")
+    expect(policy.allowedTools).toContain("write")
+  })
+
   test("classifies locally without invoking the provider or spending a model call", async () => {
     const generate = spyOn(AICompat, "getGenerateObject").mockImplementation(() => {
       throw new Error("unexpected model call")
