@@ -5,6 +5,7 @@ import { ExecutionRuntime } from "@/core/execution/runtime"
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { Identifier } from "@/core/id/id"
+import { SessionRetry } from "@/core/session/retry"
 import { Session } from "@/core/session"
 import { SessionPrompt } from "@/core/session/prompt"
 import { MessageV2 } from "@/core/session/message-v2"
@@ -21,6 +22,73 @@ import { Bus } from "@/core/bus"
 import { PermissionNext } from "@/util/permission/next"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
+
+test("one built-in /review subtask keeps focused scope and targeted memory", async () => {
+  await using project = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: project.path,
+    fn: async () => {
+      const root = await Session.create({})
+      const provider = (await Provider.getProvider("atomcli"))!
+      const model = Object.values(provider.models).find(
+        (item) => !item.id.startsWith("atomcli-") && item.capabilities.toolcall,
+      )!
+      const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (options) => {
+        const child = await Session.create({ parentID: root.id })
+        await options.onSession?.({ sessionId: child.id, isNewSession: true })
+        return { sessionId: child.id, isNewSession: true, output: "No findings", parts: [] }
+      })
+      const evaluations = spyOn(AgentEval, "executionPolicy").mockReturnValue({
+        allowAuxiliarySummaries: false,
+      } as never)
+      const processor = spyOn(SessionProcessor, "create").mockImplementation(
+        (input) =>
+          ({
+            message: input.assistantMessage,
+            partFromToolCall: () => undefined,
+            async process() {
+              await Session.updatePart({
+                id: Identifier.ascending("part"),
+                messageID: input.assistantMessage.id,
+                sessionID: root.id,
+                type: "text",
+                text: "Review completed: no findings.",
+              })
+              input.assistantMessage.finish = "stop"
+              input.assistantMessage.time.completed = Date.now()
+              await Session.updateMessage(input.assistantMessage)
+              return { status: "continue", terminalFinish: "stop" }
+            },
+          }) as never,
+      )
+      try {
+        await SessionPrompt.command({
+          sessionID: root.id,
+          command: "review",
+          arguments: "",
+          agent: "agent",
+          model: `${model.providerID}/${model.id}`,
+        })
+        expect(spawn).toHaveBeenCalledTimes(1)
+        const execution = ExecutionRuntime.list({ sessionID: root.id }).items[0]
+        expect(ExecutionRuntime.getExecutionPolicy(execution.id)).toMatchObject({
+          scope: "focused",
+          budget: { maxSteps: 6, allowMemoryRecall: "targeted" },
+        })
+        const messages = await Session.messages({ sessionID: root.id })
+        expect(
+          messages
+            .flatMap((message) => message.parts)
+            .some((part) => part.type === "tool" && part.tool === "task" && part.state.status === "completed"),
+        ).toBe(true)
+      } finally {
+        spawn.mockRestore()
+        processor.mockRestore()
+        evaluations.mockRestore()
+      }
+    },
+  })
+})
 
 test.each(["coder", "reviewer"])(
   "real %s child prompt returns parallel results without a nested root gate",
@@ -412,6 +480,7 @@ test.each([
         } as never)
         const modelLookup = spyOn(Provider, "getModel").mockResolvedValue(model)
         const recordedReviews = spyOn(ExecutionRuntime, "recordReview")
+        const sleep = spyOn(SessionRetry, "sleep").mockResolvedValue()
         const originalSpawn = SubAgent.spawn
         let dispatches = 0
         const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (options) => {
@@ -557,7 +626,13 @@ test.each([
             expect(
               messages
                 .flatMap((message) => message.parts)
-                .some((part) => part.type === "text" && part.text.includes("Independent review could not run:")),
+                .some(
+                  (part) =>
+                    part.type === "text" &&
+                    (verdict === "inconclusive"
+                      ? part.metadata?.blockerKind === "verification" && part.text.includes("verification blocker")
+                      : part.text.includes("Independent review could not run:")),
+                ),
             ).toBe(true)
           }
           expect(ExecutionRuntime.allowance(execution.executionID)).toEqual(before)
@@ -576,6 +651,7 @@ test.each([
           ExecutionRuntime.finishInvocation(execution, "completed")
           expect(ExecutionRuntime.snapshot(root.id).activeInvocations).toHaveLength(0)
         } finally {
+          sleep.mockRestore()
           processor.mockRestore()
           modelLookup.mockRestore()
           recordedReviews.mockRestore()

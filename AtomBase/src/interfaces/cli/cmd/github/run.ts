@@ -143,6 +143,8 @@ export const GithubRunCommand = cmd({
         const repoData = await fetchRepo()
         session = await Session.create({
           permission: [
+            { permission: "review.retry", action: "deny", pattern: "*" },
+            { permission: "review.require", action: "deny", pattern: "*" },
             {
               permission: "question",
               action: "deny",

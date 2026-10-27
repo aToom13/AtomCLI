@@ -8,6 +8,7 @@ import { Config } from "@/core/config/config"
 import { Identifier } from "@/core/id/id"
 import { Session } from "@/core/session"
 import { ExecutionRuntime } from "@/core/execution/runtime"
+import { SessionRetry } from "@/core/session/retry"
 import { SubAgent } from "@/integrations/tool/subagent"
 import { PermissionNext } from "@/util/permission/next"
 
@@ -37,6 +38,36 @@ describe("TaskFlowTool", () => {
         plan: [{ name: "Step", todos: Array.from({ length: 101 }, (_, index) => `Todo ${index}`) }],
       }).success,
     ).toBe(false)
+  })
+
+  test("denied review obligation leaves no plan or durable blocker", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const session = await Session.create({})
+        const messageID = Identifier.ascending("message")
+        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+        const ctx = {
+          ...dummyCtx,
+          sessionID: session.id,
+          messageID,
+          extra: { execution },
+          ask: async (request: any) => {
+            if (request.permission === "review.require") throw new PermissionNext.RejectedError()
+          },
+        }
+        await expect(
+          (await TaskFlowTool.init()).execute(
+            { action: "start", plan: [{ id: "review", name: "Review", type: "independent_review" }] },
+            ctx,
+          ),
+        ).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+        expect(HarnessState.getSteps(session.id)).toEqual([])
+        expect(ExecutionRuntime.snapshot(session.id).blockers).toEqual([])
+        ExecutionRuntime.cancelExecution(execution)
+      },
+    })
   })
 
   test("restores explicit independent review step types", async () => {
@@ -131,6 +162,7 @@ describe("TaskFlowTool", () => {
         )
         await tool.execute({ action: "update", step_id: "review", status: "running" }, ctx)
         HarnessState.addEditedFile(parent.id, "src/a.ts")
+        const sleep = spyOn(SessionRetry, "sleep").mockResolvedValue()
         let calls = 0
         const spawn = spyOn(SubAgent, "spawn").mockImplementation(async (options) => {
           if (++calls <= 3) throw new Error("temporary reviewer outage")
@@ -147,6 +179,7 @@ describe("TaskFlowTool", () => {
           expect(result.metadata.status).toBe(approve ? "completed" : "error")
           expect(HarnessState.getSteps(parent.id)[0].status).toBe(approve ? "completed" : "running")
         } finally {
+          sleep.mockRestore()
           spawn.mockRestore()
         }
       },

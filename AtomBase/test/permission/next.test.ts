@@ -9,6 +9,51 @@ import { Bus } from "@/core/bus"
 import { assertExternalDirectory } from "@/integrations/tool/external-directory"
 import { tmpdir } from "../fixture/fixture"
 
+test.each(["review.require", "review.retry"])(
+  "%s needs review-specific authorization, even in YOLO",
+  async (permission) => {
+    await using project = await tmpdir()
+    const previous = Flag.ATOMCLI_YOLO
+    Flag.ATOMCLI_YOLO = true
+    try {
+      await Instance.provide({
+        directory: project.path,
+        fn: async () => {
+          let asked = 0
+          const unsubscribe = Bus.subscribe(PermissionNext.Event.Asked, (event) => {
+            asked++
+            void PermissionNext.reply({ requestID: event.properties.id, reply: "reject" })
+          })
+          const request = {
+            sessionID: "session_review_authorization",
+            permission,
+            patterns: ["plan-item"],
+            metadata: {},
+            always: [],
+            ruleset: [{ permission: "*", pattern: "*", action: "allow" as const }],
+          }
+          try {
+            await expect(PermissionNext.ask(request)).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+            expect(asked).toBe(1)
+            await PermissionNext.ask({
+              ...request,
+              ruleset: [...request.ruleset, { permission, pattern: "*", action: "allow" }],
+            })
+            expect(asked).toBe(1)
+            await expect(
+              PermissionNext.ask({ ...request, ruleset: [{ permission, pattern: "*", action: "deny" }] }),
+            ).rejects.toBeInstanceOf(PermissionNext.DeniedError)
+          } finally {
+            unsubscribe()
+          }
+        },
+      })
+    } finally {
+      Flag.ATOMCLI_YOLO = previous
+    }
+  },
+)
+
 test("autonomous config stays project-scoped and safe projects still request approval", async () => {
   await using autonomous = await tmpdir({ config: { agent_mode: "autonomous" } })
   await using safe = await tmpdir({ config: { agent_mode: "safe" } })

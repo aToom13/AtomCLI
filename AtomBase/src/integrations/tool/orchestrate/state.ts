@@ -24,6 +24,7 @@ export type TaskNode = {
 
 export type TaskResult = {
   status: "pending" | "running" | "unknown" | "completed" | "failed" | "skipped"
+  ledgerState?: { status: ExecutionLedger.TaskStatus | "missing"; reason?: string }
   output?: string
   error?: string
   model?: { providerID: string; modelID: string }

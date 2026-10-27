@@ -177,7 +177,10 @@ export const TuiEvent = {
       sessionID: z.string().optional(),
       workflowId: z.string().optional(),
       stepIndex: z.number(),
+      ledgerState: z.object({ status: z.string(), reason: z.string().optional() }).optional(),
       status: z.enum([
+        "blocked",
+        "waiting_user",
         "pending",
         "waiting",
         "paused",

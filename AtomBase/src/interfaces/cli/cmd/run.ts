@@ -222,6 +222,10 @@ export const RunCommand = cmd({
           if (event.type === "permission.asked") {
             const permission = event.properties
             if (permission.sessionID !== sessionID) continue
+            if (!process.stdin.isTTY || args.format === "json") {
+              await sdk.permission.respond({ sessionID, permissionID: permission.id, response: "reject" })
+              continue
+            }
 
             // Auto-reject after 20s timeout using prompts.cancel()
             const PERMISSION_TIMEOUT_MS = 20_000

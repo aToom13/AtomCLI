@@ -3,9 +3,18 @@ import { expect, spyOn, test } from "bun:test"
 import { ExecutionRuntime } from "@/core/execution/runtime"
 import { WorkflowStore } from "@/core/orchestration/workflow-store"
 import { WorkflowStateStore, type WorkflowState } from "@/integrations/tool/orchestrate/state"
-import { findWorkflow } from "@/integrations/tool/orchestrate/lifecycle"
+import { durableTaskResult, findWorkflow } from "@/integrations/tool/orchestrate/lifecycle"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
+
+test("conservative scheduler states retain distinct ledger state and recovery reason", () => {
+  for (const status of ["submitted", "verifying", "blocked", "running"] as const) {
+    const result = durableTaskResult({ status, evidence: ["Provider unavailable"] } as any)
+    expect(result.status).toBe("unknown")
+    expect(result.ledgerState.status).toBe(status)
+    expect(result.ledgerState.reason).toBeTruthy()
+  }
+})
 
 test("reload repairs stale workflow success from ledger evidence, then follows acceptance", async () => {
   await using tmp = await tmpdir()
@@ -37,7 +46,10 @@ test("reload repairs stale workflow success from ledger evidence, then follows a
         durable.status = "accepted"
         expect((await findWorkflow(workflow.id))?.status).toBe("completed")
         durable.status = "needs_revision"
-        expect((await findWorkflow(workflow.id))?.results.worker).toEqual({ status: "pending" })
+        expect((await findWorkflow(workflow.id))?.results.worker).toEqual({
+          status: "pending",
+          ledgerState: { status: "needs_revision", reason: "Submitted output" },
+        })
         durable.status = "failed"
         expect((await findWorkflow(workflow.id))?.results.worker.status).toBe("failed")
       } finally {

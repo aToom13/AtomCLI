@@ -7,6 +7,14 @@ import { SessionLayout } from "@tui/routes/session/layout"
 import { Chain } from "@/integrations/agent/chain"
 
 describe("ChainWidget task viewport", () => {
+  test("retains exact ledger states without displaying completion while verification or recovery is pending", () => {
+    let chain = Chain.addStep(Chain.create(), { id: "worker", name: "Worker", description: "Inspect" })
+    for (const status of ["submitted", "verifying", "blocked", "running", "missing"]) {
+      chain = Chain.updateStepAtIndex(chain, 0, "waiting_user", { status, reason: "Evidence or recovery required" })
+      expect(chain.steps[0].ledgerState).toEqual({ status, reason: "Evidence or recovery required" })
+      expect(chain.status).not.toBe("complete")
+    }
+  })
   test("preserves stable task IDs and follows a specifically activated step", () => {
     let chain = Chain.create()
     for (let index = 0; index < 14; index++) {

@@ -1,5 +1,5 @@
 import { createContext, useContext, createSignal, type Accessor, type Setter, type ParentProps } from "solid-js"
-import { type AgentChain, Chain, type StepTodo, type SubStep } from "@/integrations/agent/chain"
+import { type AgentChain, Chain, type ChainStep, type StepTodo, type SubStep } from "@/integrations/agent/chain"
 
 /**
  * Chain Context — Session-scoped chain state management
@@ -47,7 +47,12 @@ export interface ChainContextValue {
   endSubPlan: (stepIndex: number, success: boolean, sessionID?: string) => void
 
   // Parallel step operations
-  updateStepByIndex: (stepIndex: number, status: string, sessionID?: string) => void
+  updateStepByIndex: (
+    stepIndex: number,
+    status: string,
+    sessionID?: string,
+    ledgerState?: ChainStep["ledgerState"],
+  ) => void
 }
 
 const GLOBAL_KEY = "__global__"
@@ -191,8 +196,15 @@ export function ChainProvider(props: ParentProps) {
     })
   }
 
-  const updateStepByIndex = (stepIndex: number, status: string, sessionID?: string) => {
-    updateChainForSession(key(sessionID), (current) => Chain.updateStepAtIndex(current, stepIndex, status as any))
+  const updateStepByIndex = (
+    stepIndex: number,
+    status: string,
+    sessionID?: string,
+    ledgerState?: ChainStep["ledgerState"],
+  ) => {
+    updateChainForSession(key(sessionID), (current) =>
+      Chain.updateStepAtIndex(current, stepIndex, status as any, ledgerState),
+    )
   }
 
   const clearChain = (sessionID?: string) => {

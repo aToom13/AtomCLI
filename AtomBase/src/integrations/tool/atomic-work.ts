@@ -279,6 +279,30 @@ export namespace AtomicWork {
       const sorted = AtomicPlan.validate([...merged.values()])
       await validateDefinitions(sorted, ctx)
     }
+    if (
+      ["off", "advisory"].includes(reviewPolicy.effectivePolicy) &&
+      definitions.some((definition) =>
+        definition.acceptance.some(
+          (criterion) =>
+            criterion.verification === "reviewer" &&
+            !all
+              .find((task) => task.id === definition.id)
+              ?.acceptance.some(
+                (existing) =>
+                  existing.id === criterion.id &&
+                  existing.verification === "reviewer" &&
+                  existing.description === criterion.description,
+              ),
+        ),
+      )
+    ) {
+      await ctx.ask({
+        permission: "review.require",
+        patterns: [root.id],
+        always: [],
+        metadata: { description: "Require independent reviewer evidence for this Atomic Work plan." },
+      })
+    }
     const updated = await ExecutionRuntime.updateAtomicPlan({
       sessionID: ctx.sessionID,
       execution,

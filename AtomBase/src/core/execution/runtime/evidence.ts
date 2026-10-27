@@ -76,7 +76,6 @@ export function createEvidenceRuntime(input: Dependencies) {
           ? []
           : [...(prev.recentErrorFingerprints ?? []), ...(next.recentErrorFingerprints ?? [])].slice(-6),
       failureCount: (prev.failureCount ?? 0) + (next.failureCount ?? 0),
-      subtasksSpawned: (prev.subtasksSpawned ?? 0) + (next.subtasksSpawned ?? 0),
       hasAuthOrSecurityEffect: Boolean(prev.hasAuthOrSecurityEffect || next.hasAuthOrSecurityEffect),
       hasSchemaOrMigrationEffect: Boolean(prev.hasSchemaOrMigrationEffect || next.hasSchemaOrMigrationEffect),
       hasPublicApiEffect: Boolean(prev.hasPublicApiEffect || next.hasPublicApiEffect),

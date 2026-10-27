@@ -18,7 +18,17 @@ export namespace PermissionNext {
   // edit/write/task/todowrite/todoread are exempt so sub-agent deny rules
   // (e.g. the reviewer's read-only baseline) stay effective under YOLO — the
   // ruleset is still evaluated for these instead of being blindly auto-allowed.
-  const YOLO_EXEMPT_PERMISSIONS = ["window_control", "edit", "write", "ssh", "task", "todowrite", "todoread"]
+  const YOLO_EXEMPT_PERMISSIONS = [
+    "window_control",
+    "edit",
+    "write",
+    "ssh",
+    "task",
+    "todowrite",
+    "todoread",
+    "review.require",
+    "review.retry",
+  ]
 
   export const Action = z.enum(["allow", "deny", "ask"]).meta({
     ref: "PermissionAction",
@@ -195,6 +205,15 @@ export namespace PermissionNext {
         pattern,
         rule: evaluate(request.permission, pattern, ruleset, s.approved, hardDenies),
       }))
+      // A model-added obligation needs review-specific user authorization.
+      // General tool/YOLO approval must not silently turn advisory into mandatory review.
+      if (request.permission === "review.require" || request.permission === "review.retry") {
+        for (const entry of evaluated) {
+          if (entry.rule.action === "allow" && entry.rule.permission === "*") {
+            entry.rule = { permission: request.permission, pattern: entry.pattern, action: "ask" }
+          }
+        }
+      }
       if (evaluated.some(({ rule }) => rule.action === "deny"))
         throw new DeniedError(ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)))
       for (const { pattern, rule } of evaluated) {

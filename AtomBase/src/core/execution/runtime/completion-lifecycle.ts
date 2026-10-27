@@ -162,10 +162,6 @@ export function createCompletionLifecycle(input: CompletionLifecycleDependencies
       )
     }
     const editedFiles = z.string().array().max(MAX_COMPLETION_EDITED_FILES).parse(input.editedFiles)
-    const payload = JSON.stringify(parts)
-    if (new TextEncoder().encode(payload).byteLength > MAX_COMPLETION_PAYLOAD_BYTES) {
-      throw new Error(`Completion payload exceeds ${MAX_COMPLETION_PAYLOAD_BYTES} bytes`)
-    }
     const reviewFiles = JSON.stringify(editedFiles)
     if (new TextEncoder().encode(reviewFiles).byteLength > MAX_COMPLETION_REVIEW_BYTES) {
       throw new Error(`Completion review evidence exceeds ${MAX_COMPLETION_REVIEW_BYTES} bytes`)
@@ -189,6 +185,16 @@ export function createCompletionLifecycle(input: CompletionLifecycleDependencies
     }
     if (input.requiresReview !== (reviewDecision.requirement === "required")) {
       throw new BudgetExceededError("invalid_review_policy", input.execution.executionID)
+    }
+    const lastPart = parts.at(-1)
+    if (reviewDecision.reasonCode === "review_advised" && lastPart) {
+      lastPart.text +=
+        "\n\nIndependent review recommended for these changes. Automatic review did not run; request /review for an independent assessment."
+      lastPart.metadata = { ...lastPart.metadata, reviewAdvisory: true }
+    }
+    const payload = JSON.stringify(parts)
+    if (new TextEncoder().encode(payload).byteLength > MAX_COMPLETION_PAYLOAD_BYTES) {
+      throw new Error(`Completion payload exceeds ${MAX_COMPLETION_PAYLOAD_BYTES} bytes`)
     }
     const snapshotDigest = await contentSnapshotDigest(editedFiles)
     const digestInput = JSON.stringify({

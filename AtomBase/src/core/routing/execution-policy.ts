@@ -84,7 +84,6 @@ export namespace ExecutionPolicy {
     hasSchemaOrMigrationEffect?: boolean
     hasPublicApiEffect?: boolean
     hasDestructiveAction?: boolean
-    subtasksSpawned?: number
     uncertainOutcome?: boolean
   }
 
@@ -263,10 +262,6 @@ export namespace ExecutionPolicy {
       if ((e.failureCount ?? 0) >= 2) {
         targetScope = "coordinated"
         reasons.push("Repeated failure requires multi-strategy coordination")
-      }
-      if ((e.subtasksSpawned ?? 0) > 0) {
-        targetScope = "coordinated"
-        reasons.push("Independent subtasks required")
       }
     }
 

@@ -49,6 +49,10 @@ export async function statusWorkflow(workflowId: string | undefined, sessionID: 
       `| ${task.id} | ${task.agent} | ${task.category} | ${statusEmoji} ${result.status} | ${result.sessionId || "-"} | ${model} |`,
     )
     if (result.error) parts.push(`Task ${task.id}: ${result.error}`)
+    if (result.ledgerState)
+      parts.push(
+        `Ledger ${task.id}: ${result.ledgerState.status}${result.ledgerState.reason ? ` — ${result.ledgerState.reason}` : ""}`,
+      )
     if (result.recovery)
       parts.push(
         `Task ${task.id} recovered; previous failure: ${result.recovery.previousError ?? "recorded in invocation history"}`,

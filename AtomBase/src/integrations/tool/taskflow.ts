@@ -411,6 +411,14 @@ export const TaskFlowTool = Tool.define("taskflow", {
             }
           }
           let binding: Awaited<ReturnType<typeof createDurablePlan>>
+          if (smSteps.some((step) => step.type === "independent_review")) {
+            await ctx.ask({
+              permission: "review.require",
+              patterns: smSteps.filter((step) => step.type === "independent_review").map((step) => step.id),
+              always: [],
+              metadata: { description: "Require independent reviewer PASS before these plan items can complete." },
+            })
+          }
           try {
             binding = await createDurablePlan(ctx, smSteps)
           } catch (error) {

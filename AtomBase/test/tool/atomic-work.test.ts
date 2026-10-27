@@ -30,6 +30,7 @@ import z from "zod"
 import { AgentTool } from "@/integrations/tool/agent-tool"
 import { OrchestrateTool } from "@/integrations/tool/orchestrate"
 import { Config } from "@/core/config/config"
+import { PermissionNext } from "@/util/permission/next"
 
 // Bun 1.3.14 resets the preload's timeout between files; these workflows spawn real Git and test processes.
 setDefaultTimeout(10_000)
@@ -175,6 +176,39 @@ async function setup() {
   })
   return { parent, child, ctx, root, execution, tool: await TaskTool.init() }
 }
+
+test("advisory Atomic plan cannot add reviewer criteria without user authorization", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const { tool, ctx: baseContext, root, execution } = await setup()
+      const ctx = {
+        ...baseContext,
+        ask: async (request: any) => {
+          expect(request.permission).toBe("review.require")
+          asked++
+          throw new PermissionNext.RejectedError()
+        },
+      }
+      let asked = 0
+      await expect(
+        tool.execute(
+          {
+            action: "plan",
+            tasks: [{ id: "worker", prompt: "Inspect fixture", acceptance: automatic }],
+            acceptance: [{ id: "audit", description: "Independent behavior check", verification: "reviewer" }],
+          },
+          ctx,
+        ),
+      ).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+      expect(asked).toBe(1)
+      expect(ExecutionRuntime.atomicRoot(execution.executionID)?.version).toBe(root.version)
+      expect(ExecutionRuntime.tasks(execution.executionID)).toHaveLength(1)
+      ExecutionRuntime.cancelExecution(execution)
+    },
+  })
+})
 
 test("action-specific schema rejects mixed initial payload, preserves default run, and recovers without fallback", async () => {
   await using tmp = await tmpdir()

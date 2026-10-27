@@ -154,6 +154,17 @@ export async function findWorkflow(id: string) {
 // Only ledger acceptance is a completed task; submitted output still needs verification.
 export function durableTaskResult(task: ExecutionLedger.Task, executing = false) {
   return {
+    ledgerState: {
+      status: task.status,
+      reason:
+        task.status === "running" && !executing
+          ? "No active workflow owner; recovery required"
+          : task.status === "blocked" || task.status === "needs_revision"
+            ? task.evidence.at(-1)
+            : ["submitted", "verifying"].includes(task.status)
+              ? "Waiting for criterion verification"
+              : undefined,
+    },
     status:
       task.status === "accepted"
         ? ("completed" as const)
@@ -188,6 +199,10 @@ export async function reconcileDurableTaskProjection(workflow: WorkflowState) {
       )
       const result = current.results[task.id]
       if (!durable) {
+        if (result.ledgerState?.status !== "missing") {
+          result.ledgerState = { status: "missing", reason: "No durable task record" }
+          changed = true
+        }
         if (result.status === "completed") {
           result.status = "unknown"
           result.error = "No durable acceptance evidence"
@@ -197,12 +212,22 @@ export async function reconcileDurableTaskProjection(workflow: WorkflowState) {
       }
       const projected = durableTaskResult(durable, WorkflowExecutionStore.has(workflow.id))
       if (durable.status === "needs_revision" && projected.status === "pending") {
-        if (result.status === "pending" && Object.keys(result).length === 1) continue
-        current.results[task.id] = { status: "pending" }
+        if (
+          result.status === "pending" &&
+          Object.keys(result).length === 2 &&
+          JSON.stringify(result.ledgerState) === JSON.stringify(projected.ledgerState)
+        )
+          continue
+        current.results[task.id] = { status: "pending", ledgerState: projected.ledgerState }
         changed = true
         continue
       }
-      if (result.status === projected.status && result.error === projected.error) continue
+      if (
+        result.status === projected.status &&
+        result.error === projected.error &&
+        JSON.stringify(result.ledgerState) === JSON.stringify(projected.ledgerState)
+      )
+        continue
       current.results[task.id] = {
         ...result,
         ...projected,

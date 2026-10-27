@@ -74,6 +74,7 @@ export interface ChainStep {
   name: string
   description: string
   status: StepStatus
+  ledgerState?: { status: string; reason?: string }
   retryCount: number
   output?: string
   error?: string
@@ -202,10 +203,15 @@ export namespace Chain {
   }
 
   /** Update any step while keeping the active pointer and aggregate status synchronized. */
-  export function updateStepAtIndex(chain: AgentChain, stepIndex: number, status: StepStatus): AgentChain {
+  export function updateStepAtIndex(
+    chain: AgentChain,
+    stepIndex: number,
+    status: StepStatus,
+    ledgerState?: ChainStep["ledgerState"],
+  ): AgentChain {
     const steps = [...chain.steps]
     if (!steps[stepIndex]) return chain
-    steps[stepIndex] = { ...steps[stepIndex], status }
+    steps[stepIndex] = { ...steps[stepIndex], status, ...(ledgerState ? { ledgerState } : {}) }
 
     const activelyRunning = steps.findIndex((step) => ACTIVE_STEP_STATUSES.has(step.status))
     const nextPending = steps.findIndex((step) => step.status === "pending")

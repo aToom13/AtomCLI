@@ -590,17 +590,24 @@ export const OrchestrateTool = Tool.define("orchestrate", {
           refreshWorkflow()
           if (ownsTaskflowUI) {
             for (const task of workflow.tasks) {
-              const status = taskResult(task.id).status
-              if (status === previous[task.id].status) continue
+              const { status, ledgerState } = taskResult(task.id)
+              if (
+                status === previous[task.id].status &&
+                JSON.stringify(ledgerState) === JSON.stringify(previous[task.id].ledgerState)
+              )
+                continue
               await Bus.publish(TuiEvent.ChainParallelUpdate, {
                 sessionID: ctx.sessionID,
                 workflowId: workflow.id,
                 stepIndex: taskIndexMap[task.id],
+                ledgerState,
                 status:
                   status === "completed"
                     ? "complete"
                     : status === "unknown"
-                      ? "waiting"
+                      ? ledgerState && ["submitted", "verifying"].includes(ledgerState.status)
+                        ? "waiting_user"
+                        : "blocked"
                       : status === "skipped"
                         ? "stopped"
                         : status,

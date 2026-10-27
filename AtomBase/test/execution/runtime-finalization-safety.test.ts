@@ -132,6 +132,35 @@ describe("ExecutionRuntime finalization safety", () => {
         HarnessState.addEditedFile(root.id, "index.html")
         const decision = (await evaluateReviewDecision(root.id, execution.executionID)).decision
         expect(decision).toMatchObject({ requirement: "not_required", reasonCode: "review_advised" })
+        const messageID = Identifier.ascending("message")
+        const candidate = await ExecutionRuntime.stageCompletion({
+          sessionID: root.id,
+          execution,
+          messageID,
+          finish: "stop",
+          parts: [
+            {
+              id: Identifier.ascending("part"),
+              sessionID: root.id,
+              messageID,
+              type: "text",
+              text: "Implemented and verified the changes.",
+            },
+          ],
+          editedFiles: [],
+          requiresReview: false,
+          reviewDecision: decision,
+        })
+        const committed = await ExecutionRuntime.commitCompletion({
+          sessionID: root.id,
+          execution,
+          digest: candidate.digest,
+        })
+        expect(committed.parts.filter((part) => part.metadata?.reviewAdvisory)).toHaveLength(1)
+        expect(committed.parts).toHaveLength(1)
+        expect(committed.parts.at(-1)?.text).toStartWith("Implemented and verified the changes.")
+        expect(committed.parts.at(-1)?.text).toContain("request /review")
+
         ExecutionRuntime.cancelExecution(execution)
       },
     })

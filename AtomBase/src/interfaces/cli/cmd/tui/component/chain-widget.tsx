@@ -35,7 +35,12 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
     () =>
       props.chain?.steps.reduce(
         (rows, step) =>
-          rows + 1 + (step.dependsOn?.length ? 1 : 0) + (step.subPlanReason ? 1 : 0) + (step.subSteps?.length ?? 0),
+          rows +
+          1 +
+          (step.ledgerState ? 1 : 0) +
+          (step.dependsOn?.length ? 1 : 0) +
+          (step.subPlanReason ? 1 : 0) +
+          (step.subSteps?.length ?? 0),
         0,
       ) ?? 0,
   )
@@ -67,6 +72,7 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
     showCurrentTask,
   )
   const currentTaskState = createMemo(() => {
+    if (currentStepData()?.ledgerState) return currentStepData()!.ledgerState!.status
     switch (currentStepData()?.status) {
       case "stopped":
         return "durduruldu"
@@ -157,7 +163,12 @@ export function ChainProgressBar(props: { chain: AgentChain | null }) {
     setSelectedSubStep(null)
 
     const rowCounts = chain.steps.map(
-      (step) => 1 + (step.dependsOn?.length ? 1 : 0) + (step.subPlanReason ? 1 : 0) + (step.subSteps?.length ?? 0),
+      (step) =>
+        1 +
+        (step.ledgerState ? 1 : 0) +
+        (step.dependsOn?.length ? 1 : 0) +
+        (step.subPlanReason ? 1 : 0) +
+        (step.subSteps?.length ?? 0),
     )
     const viewportRows = SessionLayout.chainListViewportRows(dimensions().height, expandedHeight())
     const offset = SessionLayout.chainCenteredScrollOffset(rowCounts, current, viewportRows)
@@ -513,6 +524,12 @@ function ChainStepRow(props: {
       </text>
 
       {/* Dependency and Details summary under the step name */}
+      <Show when={props.step.ledgerState}>
+        <text fg={theme.textMuted} paddingLeft={5} wrapMode="none" height={1} flexShrink={0} overflow="hidden">
+          {props.step.ledgerState!.status}
+          {props.step.ledgerState!.reason ? `: ${props.step.ledgerState!.reason}` : ""}
+        </text>
+      </Show>
       <Show when={props.step.dependsOn && props.step.dependsOn.length > 0}>
         <text fg={theme.textMuted} paddingLeft={5} wrapMode="none" height={1} flexShrink={0} overflow="hidden">
           └─ 🔗 Beklenen: {Locale.truncate(props.step.dependsOn!.join(", "), props.maxNameWidth)}

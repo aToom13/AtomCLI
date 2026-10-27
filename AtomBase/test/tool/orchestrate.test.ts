@@ -327,7 +327,10 @@ describe("orchestrate - execution ownership", () => {
             status: "resumable",
             results: { first: { status: "pending" } },
           })
-          expect(WorkflowStateStore.get(id)!.results.first).toEqual({ status: "pending" })
+          expect(WorkflowStateStore.get(id)!.results.first).toEqual({
+            status: "pending",
+            ledgerState: expect.objectContaining({ status: "needs_revision" }),
+          })
 
           const revised = await ExecutionRuntime.getTask({ sessionID: parent.id, execution, taskID })
           expect(
@@ -343,7 +346,10 @@ describe("orchestrate - execution ownership", () => {
             current.results.first = { status: "running" }
           })
           await ExecutionRuntime.invalidateOpenTasks({ sessionID: parent.id, execution, evidence: "Another change" })
-          expect(WorkflowStateStore.get(id)!.results.first).toEqual({ status: "pending" })
+          expect(WorkflowStateStore.get(id)!.results.first).toEqual({
+            status: "pending",
+            ledgerState: expect.objectContaining({ status: "needs_revision" }),
+          })
 
           // Status also reconciles after subscription ends and after a process reload.
           unsubscribe()
@@ -352,7 +358,10 @@ describe("orchestrate - execution ownership", () => {
           const status = await statusWorkflow(id, parent.id)
           expect(status.metadata).toMatchObject({ status: "resumable", tasks: { first: "pending" } })
           WorkflowStateStore.delete(id)
-          expect((await findWorkflow(id))?.results.first).toEqual({ status: "pending" })
+          expect((await findWorkflow(id))?.results.first).toEqual({
+            status: "pending",
+            ledgerState: expect.objectContaining({ status: "needs_revision" }),
+          })
         } finally {
           unsubscribe()
           WorkflowStateStore.delete(id)

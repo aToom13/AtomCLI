@@ -295,13 +295,9 @@ async function reviewFiles(sessionID: string): Promise<string[]> {
   return [...files]
 }
 
-function reviewFromDurableClaim(state: "passed" | "rejected" | "inconclusive"): {
-  passed: boolean
-  exhausted: boolean
-  skipped: boolean
-  reason?: string
-  error?: boolean
-} {
+function reviewFromDurableClaim(
+  state: "passed" | "rejected" | "inconclusive",
+): import("@/integrations/tool/review-gate").ReviewResult {
   if (state === "passed") return { passed: true, exhausted: false, skipped: true }
   if (state === "rejected")
     return {
@@ -873,11 +869,12 @@ async function resolveCompletion(input: {
     for (const sessionID of await completionSessionTree(input.sessionID)) HarnessState.clearReviewScope(sessionID)
     return "committed"
   }
-  if (!review.error && !review.exhausted && input.allowRetry !== false) {
+  if ((!review.error || review.repairable) && !review.exhausted && input.allowRetry !== false) {
     return retry(review.reason)
   }
   const original = input.candidate.parts[0]
-  const blockerKind = review.error ? "procedural_harness" : "verification"
+  const reviewUnavailable = review.error && !review.repairable
+  const blockerKind = reviewUnavailable ? "procedural_harness" : "verification"
   const originalText = input.candidate.parts
     .filter((part): part is MessageV2.TextPart => part.type === "text")
     .map((part) => part.text)
@@ -885,7 +882,7 @@ async function resolveCompletion(input: {
     .trim()
   const blockedText = [
     originalText,
-    review.error
+    reviewUnavailable
       ? `Verification status: procedural/harness blocker. Independent review could not run: ${review.reason ?? "unknown reviewer error"}. Review remains required; no approval or successful completion is claimed. Restore reviewer/provider availability, then send another message to retry. The previous blocked decision stays in the audit history.`
       : `Verification status: verification blocker. ${reviewBlockedText(review.reason)}`,
   ]
@@ -909,7 +906,7 @@ async function resolveCompletion(input: {
       },
     ],
     execution: input.execution,
-    reasonCode: review.error ? "review_unavailable" : "review_rejected",
+    reasonCode: reviewUnavailable ? "review_unavailable" : "review_rejected",
     reasonMessage: "Independent review could not approve this completion.",
   })
   await projectAndAckCompletion(blocked)

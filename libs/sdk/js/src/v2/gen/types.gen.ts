@@ -1848,7 +1848,13 @@ export type EventTuiChainParallelUpdate = {
     sessionID?: string
     workflowId?: string
     stepIndex: number
+    ledgerState?: {
+      status: string
+      reason?: string
+    }
     status:
+      | "blocked"
+      | "waiting_user"
       | "pending"
       | "waiting"
       | "paused"

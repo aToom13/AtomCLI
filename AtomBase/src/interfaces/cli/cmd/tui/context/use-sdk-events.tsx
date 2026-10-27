@@ -169,7 +169,7 @@ export function useSDKEventHandlers() {
 
   sdk.event.on(TuiEvent.ChainParallelUpdate.type, (evt) => {
     const p = evt.properties as any
-    chainCtx.updateStepByIndex(p.stepIndex, p.status, p.sessionID)
+    chainCtx.updateStepByIndex(p.stepIndex, p.status, p.sessionID, p.ledgerState)
   })
 
   // File Tree event handlers

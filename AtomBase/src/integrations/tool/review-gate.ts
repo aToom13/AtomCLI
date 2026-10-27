@@ -11,6 +11,7 @@ import { Instance } from "@/services/project/instance"
 import { SessionExecutionProfile } from "@/core/session/execution-profile"
 import type { ExecutionRuntime } from "@/core/execution/runtime"
 import type { MessageV2 } from "@/core/session/message-v2"
+import { SessionRetry } from "@/core/session/retry"
 
 const log = Log.create({ service: "review-gate" })
 
@@ -37,10 +38,12 @@ export interface ReviewResult {
   exhausted: boolean
   /** True when the review was skipped (no edits or review disabled). */
   skipped: boolean
-  /** True when the review could not run due to an infrastructure error. */
+  /** Inconclusive review; cannot authorize success without further evidence or recovery. */
   error?: boolean
   /** Transport/runtime failure; eligible for bounded retries, never a waiver. */
   retryable?: boolean
+  /** Valid reviewer output needs more evidence; return to the worker, not infrastructure retry. */
+  repairable?: boolean
   /** Validated structured review report when a review ran. */
   report?: ReviewV2.Report
   status?: "not_requested" | "passed" | "rejected" | "inconclusive"
@@ -331,7 +334,7 @@ export async function runBlockingReview(
     const result = await runReviewAttempt(sessionID, options)
     if (!result.retryable || options.signal?.aborted) return result
     if (attempt < maxInfrastructureAttempts) {
-      await Bun.sleep(attempt * 200)
+      await SessionRetry.sleep(2_000 * 2 ** (attempt - 1), options.signal ?? new AbortController().signal)
       continue
     }
     if (!approvedRetry && options.requestRetry && (await options.requestRetry(result.reason ?? "Review unavailable"))) {
@@ -638,6 +641,7 @@ async function runReviewAttempt(
       skipped: false,
       status: report.verdict === "inconclusive" ? "inconclusive" : "rejected",
       error: report.verdict === "inconclusive",
+      repairable: report.verdict === "inconclusive" && !report.reviewers.some((reviewer) => reviewer.error),
       retryable:
         infrastructureFailure &&
         !settled.some(

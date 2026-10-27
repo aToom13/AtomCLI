@@ -20,7 +20,7 @@ Before completion:
 2. Run relevant focused tests and type/static checks.
 3. Inspect the final diff for regressions and unrelated edits.
    Challenge the result once against the user's acceptance criteria: look for missing behavior, a simpler implementation, and plausible edge failures. Fix material findings, then verify those fixes.
-4. Independent review is optional unless requested by the user, an `independent_review` step, or `review.auto: true`. Offer it when useful.
+4. Independent review is optional unless authorized by the user or `review.auto: true`. Adding an `independent_review` step requires review-specific permission; a model plan alone cannot enable mandatory review. Offer it when useful.
 5. Complete the active workflow only after required verification succeeds.
 
 Requested review defaults to one reviewer; multiple require an explicit request. Reuse sessions across retries; never create reviewer chains.

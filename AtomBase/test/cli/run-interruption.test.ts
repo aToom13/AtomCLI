@@ -7,6 +7,69 @@ import { RunCommand } from "@/interfaces/cli/cmd/run"
 import { Instance } from "@/services/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
+test("noninteractive run rejects review retry permission without waiting for a responder", async () => {
+  await using project = await tmpdir()
+  await Instance.provide({
+    directory: project.path,
+    fn: async () => {
+      const root = await Session.create({})
+      const permissionID = Identifier.ascending("permission")
+      let stream: ReadableStreamDefaultController<Uint8Array>
+      const responses: unknown[] = []
+      const emit = (type: string, properties: unknown) =>
+        stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type, properties })}\n\n`))
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const route = new URL(request.url).pathname
+          if (route === "/config") return Response.json({})
+          if (route === "/event")
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  stream = controller
+                  emit("server.connected", {})
+                },
+              }),
+              { headers: { "Content-Type": "text/event-stream" } },
+            )
+          if (route.endsWith("/prompt_async")) {
+            emit("permission.asked", {
+              id: permissionID,
+              sessionID: root.id,
+              permission: "review.retry",
+              patterns: ["candidate"],
+              always: [],
+              metadata: {},
+            })
+            return new Response(null, { status: 204 })
+          }
+          if (route.endsWith(`/permissions/${permissionID}`)) {
+            responses.push(await request.json())
+            emit("session.status", { sessionID: root.id, status: { type: "idle" } })
+            return Response.json(true)
+          }
+          return new Response(null, { status: 404 })
+        },
+      })
+      const stdin = spyOn(Bun.stdin, "text").mockResolvedValue("")
+      try {
+        await RunCommand.handler({
+          message: ["Check"],
+          attach: server.url.origin,
+          session: root.id,
+          format: "json",
+        } as never)
+        expect(responses).toEqual([{ response: "reject" }])
+      } finally {
+        stdin.mockRestore()
+        server.stop(true)
+      }
+    },
+  })
+})
+
 test("CLI stream EOF cancels its exact execution rather than returning success", async () => {
   await using project = await tmpdir()
   await Instance.provide({

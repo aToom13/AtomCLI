@@ -1,7 +1,7 @@
 import "../preload"
 import fs from "fs/promises"
 import path from "path"
-import { describe, expect, test, beforeEach, spyOn } from "bun:test"
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test"
 
 // Spy on only SubAgent.spawn so the shared Bun test process keeps the real
 // lifecycle methods for other test files.
@@ -15,6 +15,7 @@ const spawnMock = spyOn(SubAgent, "spawn").mockImplementation(async (_args: any)
 }))
 
 const { HarnessState } = await import("@/core/session/harness-state")
+const { SessionRetry } = await import("@/core/session/retry")
 const { Config } = await import("@/core/config/config")
 const { Instance } = await import("@/services/project/instance")
 const { Session } = await import("@/core/session")
@@ -46,9 +47,12 @@ function resetSpawn() {
   }))
 }
 
+let retrySleep: ReturnType<typeof spyOn>
 beforeEach(() => {
   resetSpawn()
+  retrySleep = spyOn(SessionRetry, "sleep").mockResolvedValue()
 })
+afterEach(() => retrySleep.mockRestore())
 
 describe("ReviewGate - runBlockingReview", () => {
   test("HTML review refuses legacy QA and missing evidence, accepts current tool evidence and keeps root criteria across continue", async () => {
@@ -141,7 +145,7 @@ describe("ReviewGate - runBlockingReview", () => {
           }
         })
         const missing = await runBlockingReview(parent.id, { executionID: execution.executionID })
-        expect(missing.passed).toBe(false)
+        expect(missing).toMatchObject({ passed: false, repairable: true, retryable: false })
         expect(missing.report?.verdict).toBe("inconclusive")
         expect(spawnMock).toHaveBeenCalledTimes(2)
         supplyEvidence = true
@@ -924,6 +928,7 @@ test.each([false, true])("infrastructure retries remain bounded; user retry appr
           return approve
         },
       })
+      expect(retrySleep.mock.calls.map(([delay]) => delay)).toEqual([2_000, 4_000])
       expect(approvals).toBe(1)
       expect(calls).toBe(approve ? 4 : 3)
       expect(result.passed).toBe(approve)

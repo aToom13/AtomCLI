@@ -227,6 +227,12 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                   description={`${props.request.metadata.description}\n${props.request.metadata.reason}`}
                 />
               </Match>
+              <Match when={props.request.permission === "review.require"}>
+                <TextBody
+                  title="Require independent review"
+                  description={String(props.request.metadata.description ?? "")}
+                />
+              </Match>
               <Match when={true}>
                 <TextBody icon="⚙" title={`Call tool ` + props.request.permission} />
               </Match>
@@ -235,7 +241,9 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
           options={
             props.request.permission === "review.retry"
               ? { once: "Retry review", reject: "Keep blocked" }
-              : { once: "Allow once", always: "Allow always", reject: "Reject" }
+              : props.request.permission === "review.require"
+                ? { once: "Require review", reject: "Reject obligation" }
+                : { once: "Allow once", always: "Allow always", reject: "Reject" }
           }
           escapeKey="reject"
           onSelect={(option) => {
