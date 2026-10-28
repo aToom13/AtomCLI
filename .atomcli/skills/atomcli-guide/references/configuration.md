@@ -177,6 +177,8 @@ Use `none` to disable a binding. Avoid assigning the same key sequence to confli
 
 ## Adaptive execution and classification
 
+Explicit subagent delegation requires `coordinated` scope. Generic orchestration mentions such as `workflow` set a minimum of `focused` without lowering a classifier's `coordinated` result or the session's persisted scope floor. Coordinated work retains the `agent` tool.
+
 Adaptive execution pipelines (`direct`, `focused`, `coordinated`) use the deterministic local `TaskProfile`, shared with model routing. Classification adds no model call. Disable local profiling only when conservative defaults are desired:
 
 ```jsonc

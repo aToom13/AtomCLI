@@ -8,6 +8,7 @@ import { SessionPrompt } from "@/core/session/prompt"
 import { LLM } from "@/core/session/llm"
 import { ExecutionRuntime } from "@/core/execution/runtime"
 import { ExecutionContract } from "@/core/routing/execution-contract"
+import { ExecutionClassifier } from "@/core/routing/execution-classifier"
 import { ExecutionCheckpoint } from "@/core/execution/checkpoint"
 import { Provider } from "@/integrations/provider/provider"
 import { Instance } from "@/services/project/instance"
@@ -250,8 +251,16 @@ test("a direct greeting advertises read and controls in the real prompt turn", a
   })
 })
 
-test("an explicit subagent-delegation turn advertises the coordinated surface (todo + agent, no taskflow/orchestrate)", async () => {
-  await using tmp = await tmpdir({ git: true, config: { experimental: { execution_classification: false } } })
+test.each([
+  ["explicit delegation", "Please spawn two subagents in parallel to build the two modules", undefined, "coordinated"],
+  ["coordinated workflow", "Inspect the workflow across the API, CLI and SDK", "coordinated", "coordinated"],
+  ["direct workflow", "Inspect the workflow", "direct", "focused"],
+  ["focused workflow", "Inspect the workflow", "focused", "focused"],
+] as const)("%s preserves required scope and tools", async (_name, prompt, classifiedScope, expectedScope) => {
+  await using tmp = await tmpdir({
+    git: true,
+    config: { experimental: { execution_classification: classifiedScope !== undefined } },
+  })
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
@@ -273,7 +282,13 @@ test("an explicit subagent-delegation turn advertises the coordinated surface (t
         sessionID: session.id,
         messageID: user.id,
         type: "text",
-        text: "Please spawn two subagents in parallel to build the two modules",
+        text: prompt,
+      })
+      const classifier = spyOn(ExecutionClassifier, "classify").mockResolvedValue({
+        contract: ExecutionContract.fallback("fixture classifier", { scope: classifiedScope ?? "focused" }),
+        durationMs: 0,
+        cached: false,
+        fallback: false,
       })
       const policy = spyOn(AgentEval, "executionPolicy").mockReturnValue({ allowAuxiliarySummaries: false } as never)
       const processor = spyOn(SessionProcessor, "create").mockImplementation(
@@ -284,9 +299,9 @@ test("an explicit subagent-delegation turn advertises the coordinated surface (t
             async process(stream) {
               const ids = Object.keys(stream.tools)
               const contract = ExecutionRuntime.getExecutionContract(stream.execution.executionID)
-              expect(contract?.scope).toBe("coordinated")
-              expect(ids).toContain("agent")
-              expect(ids).toContain("todo")
+              expect(contract?.scope).toBe(expectedScope)
+              expect(ids.includes("agent")).toBe(expectedScope === "coordinated")
+              expect(ids.includes("todo")).toBe(expectedScope === "coordinated")
               expect(ids).not.toContain("taskflow")
               expect(ids).not.toContain("orchestrate")
               input.assistantMessage.finish = "stop"
@@ -297,9 +312,11 @@ test("an explicit subagent-delegation turn advertises the coordinated surface (t
       try {
         await SessionPrompt.loop(session.id)
         expect(processor).toHaveBeenCalledTimes(1)
+        expect(classifier).toHaveBeenCalledTimes(classifiedScope ? 1 : 0)
       } finally {
         processor.mockRestore()
         policy.mockRestore()
+        classifier.mockRestore()
       }
     },
   })

@@ -607,7 +607,7 @@ export namespace SessionPrompt {
               // orchestration mention only floors the scope to focused.
               const minimumScope = explicitDelegation
                 ? "coordinated"
-                : explicitOrchestration
+                : explicitOrchestration && classification.contract.scope === "direct"
                   ? "focused"
                   : classification.contract.scope
               const classifiedScope =
