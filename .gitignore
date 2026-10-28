@@ -148,3 +148,7 @@ logs/
 session-*.md
 .cleanup-manifest.json
 manifest.json
+
+# Local pipeline analysis
+/docs/benchmarks/
+/docs/PIPELINE-MAP.md

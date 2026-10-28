@@ -587,3 +587,24 @@ Browser integration fixtures explicitly focus the page before requesting pointer
 Linux CI and release jobs run `.github/scripts/setup-linux-sandbox.sh` before tests. On Ubuntu with restricted unprivileged user namespaces, it grants the installed bubblewrap launcher an explicit AppArmor user-namespace policy, preserving the host-wide restriction. An actual unprivileged UID/PID namespace probe must pass; sandbox tests and product enforcement are never bypassed.
 
 Workflow drafts are checkpointed to disk before `plan` returns; restart loads them by ID even before ledger registration. Workflow projections require ledger acceptance; revision preserves ledger evidence and returns rejection feedback to the worker. Successful completion clears review scope; blocked review retains edits/rejection budgets but clears reviewer bindings. Session deletion clears descendant harness/QA state and merges deleted-child edits into any surviving parent.
+
+### Ledger task state projection
+
+The ledger is authoritative; workflow scheduler states are conservative projections:
+
+| Ledger task state | Workflow task state |
+| --- | --- |
+| `accepted` | `completed` |
+| `failed`, `cancelled` | `failed` |
+| `needs_revision` with `maxRetries + 1` attempts exhausted | `failed` |
+| `running` with a live workflow owner in this process | `running` |
+| `running` without a local owner | `unknown` |
+| `blocked`, `submitted`, `verifying` | `unknown` |
+| `pending`, retryable `needs_revision` | `pending` |
+| Missing ledger record for a previously `completed` projection | `unknown` |
+
+Task status responses and live Chain events also expose `ledgerState.status/reason`. The TUI shows submitted, verifying, blocked, ownerless running and missing records without collapsing them into an unexplained scheduler `unknown`.
+
+An inactive workflow completes only when every member is completed. Loss of acceptance reopens an old completed workflow as resumable; failed or cancelled tasks cannot establish success. Other aggregate transitions remain controlled by scheduler and lease recovery.
+
+Revision clears stale projected output, errors and success metadata while preserving ledger evidence. Before redispatch, the worker receives bounded, XML-escaped rejection feedback in `<previous_attempt_feedback>` (the last 10,000 characters). Uncertain earlier workflow effects still require explicit reconciliation.
