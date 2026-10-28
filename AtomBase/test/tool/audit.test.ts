@@ -78,6 +78,30 @@ describe("active tool audit", () => {
     expect(result.output).toContain("demo")
   })
 
+  test.each(["write", "edit"])("unavailable %s explains reachable permission-bound recovery", async (name) => {
+    const tool = await InvalidTool.init()
+    const result = await tool.execute(
+      {
+        tool: name,
+        error: `Model tried to call unavailable tool '${name}'. Available tools: scope_control, read, bash.`,
+      },
+      context(),
+    )
+    expect(result.output).toContain('scope_control(action="escalate", target="focused", needsMutation=true')
+    expect(result.output).toContain("needs no scope approval")
+    expect(result.output).toContain("Wait for runtime confirmation")
+    expect(result.output).toContain("Never use Bash to bypass a denial")
+    expect(result.output).toContain("user read-only instructions remain binding")
+  })
+
+  test.each([
+    { tool: "write", error: "Model tried to call unavailable tool 'write'. Available tools: read." },
+    { tool: "write", error: "Invalid arguments. Available tools: scope_control, write." },
+  ])("invalid tool never invents a recovery tool or escalates argument validation", async (input) => {
+    const tool = await InvalidTool.init()
+    expect((await tool.execute(input, context())).output).not.toContain('scope_control(action="escalate"')
+  })
+
   test("allowlist intersection preserves an empty capability set", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
