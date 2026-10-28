@@ -121,7 +121,12 @@ export namespace ScopeControl {
       if (!args.target || args.target === "direct") throw new Error("Escalation target must be focused or coordinated")
       if (!args.reason) throw new Error("Scope escalation requires a concrete reason")
       if (mode === "off") throw new Error("Scope escalation is disabled")
-      if (mode === "ask") {
+      const currentScope = ExecutionRuntime.getExecutionPolicy(execution.executionID)?.scope
+      const mutationRecovery =
+        args.needsMutation === true &&
+        currentScope !== undefined &&
+        ExecutionPolicy.SCOPE_RANK[args.target] <= ExecutionPolicy.SCOPE_RANK[currentScope]
+      if (mode === "ask" && !mutationRecovery) {
         await ctx.ask({
           permission: "scope_escalation",
           metadata: { reason: args.reason, needsMutation: args.needsMutation === true },

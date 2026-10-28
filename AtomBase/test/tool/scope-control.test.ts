@@ -11,92 +11,107 @@ import { Session } from "@/core/session"
 import { ExecutionContract } from "@/core/routing/execution-contract"
 import { Identifier } from "@/core/id/id"
 
-test.each(["auto", "ask", "denied", "off"] as const)(
-  "read-only classification can request mutation tools without broader scope: %s",
-  async (mode) => {
-    await using tmp = await tmpdir({
-      config: {
-        execution_budget: { max_calls: 1, max_steps: 1, unknown_price: "block" },
-        experimental: { scope_escalation: { mode: mode === "denied" ? "ask" : mode, max_per_session: 1, cooldown_ms: 0 } },
+test.each([
+  ["auto", "focused"],
+  ["ask", "focused"],
+  ["denied", "focused"],
+  ["off", "focused"],
+  ["default", "focused"],
+  ["default", "coordinated"],
+] as const)("same-scope mutation recovery needs no approval: %s / %s", async (mode, scope) => {
+  await using tmp = await tmpdir({
+    config: {
+      execution_budget: { max_calls: 1, max_steps: 1, unknown_price: "block" },
+      experimental: {
+        scope_escalation: {
+          mode: mode === "default" ? undefined : mode === "denied" ? "ask" : mode,
+          max_per_session: 1,
+          cooldown_ms: 0,
+        },
       },
-    })
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        await Config.clearCache()
-        const session = await Session.create({})
-        const messageID = Identifier.ascending("message")
-        await Session.updateMessage({
-          id: messageID,
-          sessionID: session.id,
-          role: "user",
-          agent: "build",
-          model: { providerID: "test", modelID: "fixture" },
-          time: { created: Date.now() },
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      await Config.clearCache()
+      const session = await Session.create({})
+      const messageID = Identifier.ascending("message")
+      await Session.updateMessage({
+        id: messageID,
+        sessionID: session.id,
+        role: "user",
+        agent: "build",
+        model: { providerID: "test", modelID: "fixture" },
+        time: { created: Date.now() },
+      })
+      const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
+      ExecutionRuntime.setExecutionContract(
+        execution.executionID,
+        ExecutionContract.parseSafe({
+          intent: "inspect",
+          scope,
+          needsMutation: false,
+          confidence: 0.6,
+          expectedSurfaces: ["workspace"],
+        }),
+      )
+      let asks = 0
+      const ctx = {
+        ...context(session.id, async () => {
+          asks++
+          if (mode === "denied") throw new Error("permission denied")
+        }),
+        extra: { execution },
+      }
+      const tool = await ScopeControl.Info.init()
+      const request = {
+        action: "escalate" as const,
+        target: scope,
+        needsMutation: true as const,
+        reason: "The user asked to write a test file, preserving implementation files.",
+      }
+      const run = tool.execute(request, ctx)
+      if (mode === "off") {
+        await expect(run).rejects.toThrow("disabled")
+        expect(ExecutionRuntime.getExecutionContract(execution.executionID)?.needsMutation).toBe(false)
+        expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)?.allowedTools).not.toContain("write")
+        expect(ExecutionRuntime.scopeEscalationStatus(session.id).count).toBe(0)
+      } else {
+        const result = await run
+        expect(result.metadata.changed).toBe(true)
+        expect(ExecutionRuntime.getExecutionContract(execution.executionID)).toMatchObject({
+          intent: "change",
+          scope,
+          needsMutation: true,
         })
-        const execution = await ExecutionRuntime.resolveInvocation({ sessionID: session.id, invocationID: messageID })
-        ExecutionRuntime.setExecutionContract(
-          execution.executionID,
-          ExecutionContract.parseSafe({
-            intent: "inspect",
-            scope: "focused",
-            needsMutation: false,
-            confidence: 0.6,
-            expectedSurfaces: ["workspace"],
-          }),
+        const policy = ExecutionRuntime.getExecutionPolicy(execution.executionID)!
+        expect(policy.allowedTools).toContain("write")
+        expect(policy.allowedTools).toContain("edit")
+        expect(policy.allowedTools.includes("agent")).toBe(scope === "coordinated")
+        expect(ExecutionRuntime.scopeEscalationStatus(session.id).count).toBe(1)
+        const event = ExecutionRuntime.events(session.id).items.find(
+          (item) => item.type === "execution.scope.escalated",
         )
-        let asks = 0
-        const ctx = {
-          ...context(session.id, async () => {
-            asks++
-            if (mode === "denied") throw new Error("permission denied")
-          }),
-          extra: { execution },
+        expect(event?.properties).toMatchObject({ grantedCalls: 0, grantedSteps: 0, scope })
+        expect(asks).toBe(0)
+        expect((await tool.execute(request, ctx)).metadata.changed).toBe(false)
+        expect(ExecutionRuntime.scopeEscalationStatus(session.id).count).toBe(1)
+        await expect(tool.execute(request, { ...ctx, sessionID: "child" })).rejects.toThrow(
+          "Only the main conversation",
+        )
+        if (scope === "focused") {
+          const broader = tool.execute({ ...request, target: "coordinated" }, ctx)
+          if (mode === "denied") await expect(broader).rejects.toThrow("permission denied")
+          else await expect(broader).rejects.toMatchObject({ reason: "scope_escalation_limit" })
         }
-        const tool = await ScopeControl.Info.init()
-        const request = {
-          action: "escalate" as const,
-          target: "focused" as const,
-          needsMutation: true as const,
-          reason: "The user asked to write a test file, preserving implementation files.",
-        }
-        const run = tool.execute(request, ctx)
-        if (mode === "off" || mode === "denied") {
-          await expect(run).rejects.toThrow(mode === "off" ? "disabled" : "permission denied")
-          expect(ExecutionRuntime.getExecutionContract(execution.executionID)?.needsMutation).toBe(false)
-          expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)?.allowedTools).not.toContain("write")
-          expect(ExecutionRuntime.scopeEscalationStatus(session.id).count).toBe(0)
-        } else {
-          const result = await run
-          expect(result.metadata.changed).toBe(true)
-          expect(ExecutionRuntime.getExecutionContract(execution.executionID)).toMatchObject({
-            intent: "change",
-            scope: "focused",
-            needsMutation: true,
-          })
-          const policy = ExecutionRuntime.getExecutionPolicy(execution.executionID)!
-          expect(policy.allowedTools).toContain("write")
-          expect(policy.allowedTools).toContain("edit")
-          expect(policy.allowedTools).not.toContain("agent")
-          expect(ExecutionRuntime.scopeEscalationStatus(session.id).count).toBe(1)
-          const event = ExecutionRuntime.events(session.id).items.find(
-            (item) => item.type === "execution.scope.escalated",
-          )
-          expect(event?.properties).toMatchObject({ grantedCalls: 0, grantedSteps: 0, scope: "focused" })
-          await expect(tool.execute(request, { ...ctx, sessionID: "child" })).rejects.toThrow(
-            "Only the main conversation",
-          )
-          await expect(tool.execute({ ...request, target: "coordinated" }, ctx)).rejects.toMatchObject({
-            reason: "scope_escalation_limit",
-          })
-          expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)?.scope).toBe("focused")
-        }
-        // A rejected child request never reaches the permission responder.
-        expect(asks).toBe(mode === "ask" ? 2 : mode === "denied" ? 1 : 0)
-      },
-    })
-  },
-)
+        expect(ExecutionRuntime.getExecutionPolicy(execution.executionID)?.scope).toBe(scope)
+      }
+      // A rejected child request never reaches the permission responder.
+      expect(asks).toBe(scope === "focused" && ["default", "ask", "denied"].includes(mode) ? 1 : 0)
+    },
+  })
+})
 
 function context(sessionID: string, ask: () => Promise<void>, rootSessionID = sessionID) {
   return {
